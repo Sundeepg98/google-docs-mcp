@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "google-docs-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server that creates Google Docs with native Tabs (Oct 2024 sidebar feature) — for Claude Desktop and Claude Code"
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,6 +26,7 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "google-auth-oauthlib>=1.0",
+    "markdown-it-py>=3.0",
 ]
 
 [project.urls]
