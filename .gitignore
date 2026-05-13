@@ -1,0 +1,25 @@
+# Secrets — never commit
+credentials/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.so
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Test/coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
