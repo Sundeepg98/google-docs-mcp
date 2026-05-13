@@ -1,18 +1,27 @@
-"""Google Drive API wrapper — currently only the .docx upload+convert path.
+"""Google Drive API wrapper for .docx upload + convert.
 
-Drive's ``files.create`` with ``mimeType=application/vnd.google-apps.document``
-plus a `.docx` media body triggers server-side conversion to a native
-Google Doc, preserving tables, cell shading, colored borders, inline
-images, equations, and most other Word formatting. We then operate on
-the resulting Doc via the Docs API.
+Two entry points:
+
+- ``upload_and_convert_docx`` — local-file path: read a .docx from disk,
+  upload to Drive with conversion to Google Doc. Used when the MCP is
+  called with a filesystem path (Claude Code, Claude Desktop).
+- ``fetch_and_convert_drive_docx`` — Drive-ID path: read a .docx that
+  already lives in the user's Drive (uploaded by some other app, e.g.
+  Claude.ai cloud chat's Drive connector), then upload+convert under
+  our own app's ownership. Used when the MCP is called from an
+  environment that can't pass local file paths.
+
+Both produce the same downstream result: a Google Doc owned by our
+OAuth user, suitable for Docs API operations.
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 GDOC_MIME = "application/vnd.google-apps.document"
@@ -63,4 +72,67 @@ def upload_and_convert_docx(
         "doc_id": doc_id,
         "url": f"https://docs.google.com/document/d/{doc_id}/edit",
         "title": file["name"],
+    }
+
+
+def fetch_and_convert_drive_docx(
+    creds: Credentials,
+    drive_file_id: str,
+    title: str | None = None,
+) -> dict:
+    """Read a .docx already in Drive (any owner) and re-create as a Google Doc.
+
+    The source file's bytes are streamed via Drive's ``files.get_media``
+    using our ``drive.readonly`` scope, then re-uploaded via
+    ``files.create`` with ``mimeType=GDOC_MIME`` so the conversion runs
+    under our app's ownership (``drive.file`` scope). The original .docx
+    is left in place — we never modify or delete it.
+
+    This is the workflow for Claude.ai cloud chat: the user attaches
+    or generates a .docx in chat, cloud chat uploads it to Drive via
+    the Anthropic Drive connector (different app, different scopes),
+    then hands the file ID to this tool.
+    """
+    drive = build("drive", "v3", credentials=creds)
+
+    meta = drive.files().get(
+        fileId=drive_file_id, fields="id,name,mimeType,size"
+    ).execute()
+    if meta.get("mimeType") != DOCX_MIME:
+        raise ValueError(
+            f"Drive file {drive_file_id!r} is not a .docx "
+            f"(mimeType: {meta.get('mimeType')!r}). "
+            "Convert to .docx via Word or Google Docs first."
+        )
+    size = int(meta.get("size") or 0)
+    if size > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"Drive file is {size / 1024 / 1024:.1f} MB; "
+            f"Drive's conversion limit is {MAX_UPLOAD_BYTES // 1024 // 1024} MB."
+        )
+
+    buf = io.BytesIO()
+    request = drive.files().get_media(fileId=drive_file_id)
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+    buf.seek(0)
+
+    fallback_title = meta["name"]
+    if fallback_title.lower().endswith(".docx"):
+        fallback_title = fallback_title[:-5]
+
+    media = MediaIoBaseUpload(buf, mimetype=DOCX_MIME, resumable=False)
+    file = drive.files().create(
+        body={"name": title or fallback_title, "mimeType": GDOC_MIME},
+        media_body=media,
+        fields="id,name",
+    ).execute()
+    doc_id = file["id"]
+    return {
+        "doc_id": doc_id,
+        "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        "title": file["name"],
+        "source_drive_file_id": drive_file_id,
     }

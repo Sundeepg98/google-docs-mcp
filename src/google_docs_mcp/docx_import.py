@@ -30,7 +30,7 @@ from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
 )
-from .drive_api import upload_and_convert_docx
+from .drive_api import fetch_and_convert_drive_docx, upload_and_convert_docx
 
 SplitBy = Literal["heading_1", "heading_2", "page_break", "auto"]
 _STYLE_FOR_SPLIT = {
@@ -52,14 +52,26 @@ class _SplitPoint(TypedDict):
 
 def convert_docx_to_tabbed_doc(
     creds: Credentials,
-    docx_path: Path,
+    docx_path: Path | None = None,
+    docx_drive_file_id: str | None = None,
     split_by: SplitBy = "heading_1",
     title: str | None = None,
 ) -> dict:
-    """Upload a .docx, convert, then restructure into nested tabs.
+    """Convert a .docx into a Google Doc with native nested tabs.
 
-    Returns ``{"doc_id", "url", "tabs": [...], "split_strategy_used"}``.
+    Provide exactly ONE of ``docx_path`` (local filesystem) or
+    ``docx_drive_file_id`` (already-uploaded Drive file). The latter
+    is the path Claude.ai cloud chat uses: it uploads the file via
+    its own Drive connector and hands us the resulting file ID.
+
+    Returns ``{"doc_id", "url", "tabs", "split_strategy_used", ...}``.
     """
+    if (docx_path is None) == (docx_drive_file_id is None):
+        raise ValueError(
+            "Provide exactly one of docx_path or docx_drive_file_id "
+            "(got both, or neither)."
+        )
+
     webapp_url = get_webapp_url()
     if not webapp_url:
         raise RuntimeError(
@@ -69,8 +81,16 @@ def convert_docx_to_tabbed_doc(
             "`google-docs-mcp configure-webapp <URL>`."
         )
 
-    # 1. Drive upload + lossless conversion.
-    converted = upload_and_convert_docx(creds, docx_path, title=title)
+    # 1. Drive upload + lossless conversion (or fetch-then-convert).
+    if docx_path is not None:
+        converted = upload_and_convert_docx(creds, docx_path, title=title)
+        source_label = docx_path.name
+    else:
+        assert docx_drive_file_id is not None  # narrowing for typecheckers
+        converted = fetch_and_convert_drive_docx(
+            creds, docx_drive_file_id, title=title
+        )
+        source_label = f"drive file {docx_drive_file_id}"
     doc_id = converted["doc_id"]
 
     # 2. Find split points in the converted doc's primary tab body.
@@ -89,7 +109,7 @@ def convert_docx_to_tabbed_doc(
             "split_strategy_used": strategy_used,
             "note": (
                 "No split points found; doc is left as a single-tab "
-                f"conversion of {docx_path.name}."
+                f"conversion of {source_label}."
             ),
         }
 

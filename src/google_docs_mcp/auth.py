@@ -8,6 +8,7 @@ Client config discovery order (first match wins):
   2. ``<creds_dir>/credentials.json``
   3. ``~/.gmail-mcp/gcp-oauth.keys.json`` (reused from gmail-mcp)
 """
+import json
 import os
 from pathlib import Path
 
@@ -18,6 +19,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
+    # drive.readonly lets us read files uploaded by OTHER apps (e.g. cloud
+    # chat's Drive connector). Required for the ``docx_drive_file_id``
+    # input path on convert_docx_to_tabbed_doc.
+    "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 
@@ -71,6 +76,13 @@ def load_credentials(creds_dir: Path) -> Credentials:
     creds_dir.mkdir(parents=True, exist_ok=True)
     token_file = creds_dir / "token.json"
 
+    # Check the actual granted scopes in the token file BEFORE loading
+    # via google-auth — ``from_authorized_user_file(file, SCOPES)`` echoes
+    # the SCOPES arg back as ``creds.scopes``, masking missing grants
+    # until the refresh attempt fails with ``invalid_scope``.
+    if token_file.exists() and not _token_has_all_scopes(token_file, SCOPES):
+        token_file.unlink()  # stale scope set — force fresh OAuth
+
     if token_file.exists():
         creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
         if creds.valid:
@@ -85,3 +97,19 @@ def load_credentials(creds_dir: Path) -> Credentials:
     creds = flow.run_local_server(port=0)
     token_file.write_text(creds.to_json())
     return creds
+
+
+def _token_has_all_scopes(token_file: Path, required: list[str]) -> bool:
+    """Inspect the raw token JSON to see what scopes were actually granted.
+
+    Unlike ``Credentials.scopes`` (which mirrors whatever was passed in to
+    ``from_authorized_user_file``), the raw JSON's ``scopes`` field holds
+    the actual set the user consented to. Used to detect when a version
+    bump adds a new scope and the cached token needs replacing.
+    """
+    try:
+        data = json.loads(token_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    granted = set(data.get("scopes") or [])
+    return all(scope in granted for scope in required)

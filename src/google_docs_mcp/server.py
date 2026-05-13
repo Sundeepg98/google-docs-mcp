@@ -239,11 +239,12 @@ def append_to_tab(
 
 @mcp.tool()
 def convert_docx_to_tabbed_doc(
-    docx_path: str,
+    docx_path: str | None = None,
+    docx_drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
     title: str | None = None,
 ) -> dict:
-    """Convert a local .docx file into a Google Doc with native nested tabs.
+    """Convert a .docx into a Google Doc with native nested tabs.
 
     Pipeline: Drive imports the .docx (lossless: tables, cell shading,
     colored borders, images, equations all preserved) → we identify
@@ -259,9 +260,15 @@ def convert_docx_to_tabbed_doc(
     with the URL after deploying.
 
     Args:
-        docx_path: Absolute path to a local ``.docx`` file. Must end in
-            ``.docx`` (older ``.doc`` is not accepted by Drive's
-            converter — convert via Word or Google Docs first).
+        docx_path: Absolute path to a local ``.docx`` file. Use this
+            when the file lives on the machine the MCP server runs on
+            (Claude Code, Claude Desktop). Must end in ``.docx``.
+        docx_drive_file_id: Google Drive file ID of a .docx already
+            uploaded to Drive. Use this when calling from Claude.ai
+            cloud chat — cloud chat can upload the .docx via its own
+            Drive connector and pass us the resulting file ID.
+            Requires the ``drive.readonly`` OAuth scope (added in
+            v0.8.0; you may need to re-authorize once).
         split_by: How to identify tab boundaries in the converted doc.
             - ``"heading_1"`` (default): each Heading 1 paragraph
               starts a new tab; the tab title is the heading text.
@@ -273,17 +280,30 @@ def convert_docx_to_tabbed_doc(
         title: Optional override for the resulting doc's title. Defaults
             to the .docx filename without extension.
 
+    Exactly one of ``docx_path`` or ``docx_drive_file_id`` must be set.
+
     Returns:
-        ``{"doc_id", "url", "tabs": [...], "split_strategy_used"}``.
+        ``{"doc_id", "url", "tabs": [...], "split_strategy_used", ...}``.
         ``tabs`` is the post-restructure tab list from the Apps Script
         side (each entry has ``id``, ``title``, ``depth``). If no split
         points were found, returns the converted single-tab doc unchanged
         plus a ``note`` field explaining why.
     """
-    path = Path(docx_path).expanduser()
+    if (docx_path is None) == (docx_drive_file_id is None):
+        raise ToolError(
+            "Provide exactly one of docx_path or docx_drive_file_id "
+            "(got both, or neither)."
+        )
+    path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
         creds = _get_credentials()
-        return _convert_docx(creds, path, split_by=split_by, title=title)
+        return _convert_docx(
+            creds,
+            docx_path=path,
+            docx_drive_file_id=docx_drive_file_id,
+            split_by=split_by,
+            title=title,
+        )
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
     except ValueError as e:
