@@ -28,23 +28,44 @@ def _get_credentials():
 
 @mcp.tool()
 def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
-    """Create a Google Doc with multiple native tabs (Oct 2024 sidebar feature).
+    """Create a Google Doc with native tabs, optionally nested up to 3 levels.
 
     Each tab is a separately-navigable section in the Google Docs left
-    sidebar — not just an outline heading. Use one tab per logical
-    subtopic.
+    sidebar — not just an outline heading. Tabs can have child tabs
+    (and grandchildren) for hierarchical structure.
 
     Args:
         title: Document title (shown in Google Drive).
-        tabs: List of tabs. Each entry is
-            ``{"title": str, "content": str, "icon_emoji"?: str, "content_format"?: "markdown"|"text"}``.
-            Order is preserved; the first entry becomes the default tab.
-            ``content`` is rendered as markdown by default — set
-            ``content_format: "text"`` for raw text. ``icon_emoji`` is
-            an optional single emoji shown beside the tab title.
+        tabs: List of tabs. Each entry is a dict with these fields:
+            - ``title`` (str, required): the tab name
+            - ``content`` (str, required): the tab body, rendered as
+              markdown by default
+            - ``icon_emoji`` (str, optional): a single emoji shown
+              beside the tab title (max 8 UTF-8 bytes)
+            - ``content_format`` (``"markdown"`` | ``"text"``, optional,
+              default ``"markdown"``): set to ``"text"`` to skip
+              markdown parsing for pre-formatted content
+            - ``children`` (list[TabSpec], optional): child tabs nested
+              under this one. Max nesting depth is 3 levels (root +
+              2 child levels).
+
+            Order is preserved at every level; the first root entry
+            becomes the default tab.
+
+            Example with nesting:
+
+                [{"title": "Section A", "content": "...", "children": [
+                    {"title": "A.1", "content": "..."},
+                    {"title": "A.2", "content": "...", "children": [
+                        {"title": "A.2.i", "content": "..."}
+                    ]}
+                 ]},
+                 {"title": "Section B", "content": "..."}]
 
     Returns:
-        ``{"doc_id": str, "url": str, "tabs": [{"title", "tab_id"}, ...]}``
+        ``{"doc_id": str, "url": str, "tabs": [{"title", "tab_id",
+        "depth", "parent_tab_id"}, ...]}``. The ``tabs`` list is in
+        pre-order traversal so callers can reconstruct the tree.
     """
     if not tabs:
         raise ToolError("Must provide at least one tab")

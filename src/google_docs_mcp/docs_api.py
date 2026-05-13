@@ -6,6 +6,9 @@ requests run after inserts so indices stay stable. Adapted from the
 pattern used in ``a-bonus/google-docs-mcp`` (MIT, TypeScript) — re-
 implemented in Python, not vendored.
 """
+from __future__ import annotations
+
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -16,6 +19,7 @@ from markdown_it.token import Token
 
 CODE_FONT = "Roboto Mono"
 CODE_BG_RGB = {"red": 0.945, "green": 0.957, "blue": 0.965}  # #F1F3F4
+MAX_NESTING_DEPTH = 3  # Google Docs UI hard limit: root + 2 child levels
 
 
 class TabSpec(TypedDict):
@@ -23,44 +27,42 @@ class TabSpec(TypedDict):
     content: str
     icon_emoji: NotRequired[str | None]
     content_format: NotRequired[Literal["markdown", "text"]]
+    children: NotRequired[list[TabSpec]]
 
 
 def make_doc_with_tabs(
     creds: Credentials, title: str, tabs: list[TabSpec]
 ) -> dict:
-    """Create a Google Doc with multiple native tabs.
+    """Create a Google Doc with multiple native tabs (up to 3 levels deep).
 
-    Each ``TabSpec`` may carry ``icon_emoji`` (one grapheme, max 8 bytes)
-    and ``content_format`` (default ``"markdown"``; ``"text"`` for raw).
+    Each ``TabSpec`` may carry ``icon_emoji`` (one grapheme, max 8 bytes),
+    ``content_format`` (default ``"markdown"``; ``"text"`` for raw), and
+    ``children`` (a list of nested ``TabSpec`` for child tabs).
+
+    Tabs are created level-by-level (root tabs first, then depth-1
+    children, then depth-2 grandchildren) because Google assigns tabIds
+    server-side and child tabs need their parent's ID at creation time.
     """
-    docs = build("docs", "v1", credentials=creds)
+    flat = _flatten_tab_tree(tabs)
+    max_depth = max((d for d, _, _ in flat), default=0)
+    if max_depth >= MAX_NESTING_DEPTH:
+        raise ValueError(
+            f"Max nesting depth is {MAX_NESTING_DEPTH} "
+            f"(root + {MAX_NESTING_DEPTH - 1} child levels); "
+            f"got depth {max_depth + 1}"
+        )
 
+    docs = build("docs", "v1", credentials=creds)
     doc = docs.documents().create(body={"title": title}).execute()
     doc_id = doc["documentId"]
 
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
-    first_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
-
-    # Rename the auto-created first tab; add the rest with optional emoji.
-    structure_requests: list[dict] = [_rename_tab_request(first_tab_id, tabs[0])]
-    structure_requests += [_add_tab_request(t) for t in tabs[1:]]
-    docs.documents().batchUpdate(
-        documentId=doc_id, body={"requests": structure_requests}
-    ).execute()
-
-    # Re-fetch to learn each tab's server-assigned tabId in document order.
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
-    tab_resources = fetched.get("tabs", [])
+    path_to_tab_id = _materialize_tab_tree(docs, doc_id, flat)
 
     content_requests: list[dict] = []
-    for tab_resource, tab_input in zip(tab_resources, tabs):
-        tab_id = tab_resource["tabProperties"]["tabId"]
-        fmt = tab_input.get("content_format", "markdown")
-        content = tab_input.get("content", "")
+    for _depth, path, spec in flat:
+        tab_id = path_to_tab_id[path]
+        fmt = spec.get("content_format", "markdown")
+        content = spec.get("content", "")
         if fmt == "text":
             content_requests.extend(_plain_text_requests(content, tab_id))
         else:
@@ -76,12 +78,109 @@ def make_doc_with_tabs(
         "url": f"https://docs.google.com/document/d/{doc_id}/edit",
         "tabs": [
             {
-                "title": t["tabProperties"]["title"],
-                "tab_id": t["tabProperties"]["tabId"],
+                "title": spec["title"],
+                "tab_id": path_to_tab_id[path],
+                "depth": depth,
+                "parent_tab_id": (
+                    path_to_tab_id[path[:-1]] if depth > 0 else None
+                ),
             }
-            for t in tab_resources
+            for depth, path, spec in flat
         ],
     }
+
+
+def _flatten_tab_tree(
+    tabs: list[TabSpec],
+) -> list[tuple[int, tuple[int, ...], TabSpec]]:
+    """Pre-order traversal yielding (depth, path, spec) for every tab.
+
+    ``path`` is the tuple of sibling indices from root, e.g. ``(0, 1)``
+    means ``tabs[0].children[1]``.
+    """
+    out: list[tuple[int, tuple[int, ...], TabSpec]] = []
+
+    def walk(specs: list[TabSpec], parent_path: tuple[int, ...]) -> None:
+        for i, spec in enumerate(specs):
+            path = (*parent_path, i)
+            out.append((len(path) - 1, path, spec))
+            walk(spec.get("children") or [], path)
+
+    walk(tabs, ())
+    return out
+
+
+def _materialize_tab_tree(
+    docs: Any,
+    doc_id: str,
+    flat: list[tuple[int, tuple[int, ...], TabSpec]],
+) -> dict[tuple[int, ...], str]:
+    """Create the tab structure level-by-level; return path -> tab_id map.
+
+    Each level is one batchUpdate + one re-fetch to learn the new
+    server-assigned tab IDs before the next level can reference them
+    as ``parentTabId``.
+    """
+    path_to_tab_id: dict[tuple[int, ...], str] = {}
+    max_depth = max((d for d, _, _ in flat), default=0)
+
+    for level in range(max_depth + 1):
+        level_specs = [(p, s) for d, p, s in flat if d == level]
+        if not level_specs:
+            continue
+
+        if level == 0:
+            fetched = docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute()
+            first_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
+            requests = [_rename_tab_request(first_tab_id, level_specs[0][1])]
+            for _path, spec in level_specs[1:]:
+                requests.append(_add_tab_request(spec))
+        else:
+            requests = []
+            for path, spec in level_specs:
+                parent_id = path_to_tab_id[path[:-1]]
+                requests.append(_add_tab_request(spec, parent_tab_id=parent_id))
+
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute()
+
+        fetched = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+
+        if level == 0:
+            for i, (path, _spec) in enumerate(level_specs):
+                path_to_tab_id[path] = fetched["tabs"][i]["tabProperties"]["tabId"]
+        else:
+            by_parent: dict[tuple[int, ...], list[tuple[int, ...]]] = defaultdict(list)
+            for path, _spec in level_specs:
+                by_parent[path[:-1]].append(path)
+            for parent_path, child_paths in by_parent.items():
+                parent_id = path_to_tab_id[parent_path]
+                parent_tab = _find_tab_by_id(fetched["tabs"], parent_id)
+                if parent_tab is None:
+                    raise RuntimeError(
+                        f"Parent tab {parent_id} disappeared from re-fetch"
+                    )
+                child_tabs = parent_tab.get("childTabs") or []
+                for i, path in enumerate(child_paths):
+                    path_to_tab_id[path] = child_tabs[i]["tabProperties"]["tabId"]
+
+    return path_to_tab_id
+
+
+def _find_tab_by_id(tabs: list[dict], target_id: str) -> dict | None:
+    """Recursively locate a tab in a nested ``tabs`` array by its tabId."""
+    for tab in tabs:
+        if tab["tabProperties"]["tabId"] == target_id:
+            return tab
+        nested = _find_tab_by_id(tab.get("childTabs") or [], target_id)
+        if nested is not None:
+            return nested
+    return None
 
 
 def _tab_properties(tab: TabSpec, *, include_title: bool = True) -> dict:
@@ -106,8 +205,11 @@ def _rename_tab_request(tab_id: str, tab: TabSpec) -> dict:
     }
 
 
-def _add_tab_request(tab: TabSpec) -> dict:
-    return {"addDocumentTab": {"tabProperties": _tab_properties(tab)}}
+def _add_tab_request(tab: TabSpec, parent_tab_id: str | None = None) -> dict:
+    props = _tab_properties(tab)
+    if parent_tab_id:
+        props["parentTabId"] = parent_tab_id
+    return {"addDocumentTab": {"tabProperties": props}}
 
 
 def _plain_text_requests(content: str, tab_id: str) -> list[dict]:
