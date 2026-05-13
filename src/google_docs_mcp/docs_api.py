@@ -342,6 +342,107 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> list[dict]:
     return out
 
 
+def read_tab_content(
+    creds: Credentials,
+    doc_id: str,
+    tab_id: str | None = None,
+    tab_title: str | None = None,
+) -> dict:
+    """Read the body content of a single tab.
+
+    Identify the tab by ``tab_id`` (exact) or ``tab_title`` (first match,
+    pre-order). Returns structural metadata plus a paragraphs list so the
+    caller can verify what actually landed in the tab — useful right
+    after ``convert_docx_to_tabbed_doc`` to confirm content moved
+    correctly.
+
+    Tables are reported as a count + a placeholder line; full table
+    cell extraction is deferred to a later iteration. Inline images
+    show up as ``[image]`` markers within the paragraph text.
+    """
+    if not tab_id and not tab_title:
+        raise ValueError("Provide either tab_id or tab_title")
+
+    docs = build("docs", "v1", credentials=creds)
+    fetched = docs.documents().get(
+        documentId=doc_id, includeTabsContent=True
+    ).execute()
+    all_tabs = fetched.get("tabs") or []
+
+    if tab_id:
+        tab = _find_tab_by_id(all_tabs, tab_id)
+    else:
+        tab = _find_tab_by_title(all_tabs, tab_title or "")
+
+    if tab is None:
+        raise ValueError(
+            f"Tab not found in doc {doc_id} "
+            f"(tab_id={tab_id!r}, tab_title={tab_title!r})"
+        )
+
+    body_content = tab["documentTab"]["body"]["content"]
+    paragraphs: list[dict] = []
+    table_count = 0
+    image_count = 0
+
+    for elem in body_content:
+        if "paragraph" in elem:
+            para = elem["paragraph"]
+            style = para.get("paragraphStyle", {}).get(
+                "namedStyleType", "NORMAL_TEXT"
+            )
+            chunks: list[str] = []
+            for pe in para.get("elements", []):
+                if "textRun" in pe:
+                    chunks.append(pe["textRun"].get("content", ""))
+                elif "inlineObjectElement" in pe:
+                    chunks.append("[image]")
+                    image_count += 1
+                elif "person" in pe:
+                    chunks.append(
+                        f"[person:{pe['person'].get('personProperties', {}).get('email', '?')}]"
+                    )
+                elif "richLink" in pe:
+                    chunks.append("[link]")
+            text = "".join(chunks).rstrip("\n")
+            if text or style != "NORMAL_TEXT":
+                paragraphs.append({"style": style, "text": text})
+        elif "table" in elem:
+            tbl = elem["table"]
+            rows = tbl.get("rows", 0)
+            cols = tbl.get("columns", 0)
+            table_count += 1
+            paragraphs.append(
+                {"style": "TABLE", "text": f"[table {rows}x{cols}]"}
+            )
+        elif "sectionBreak" in elem:
+            continue
+        elif "tableOfContents" in elem:
+            paragraphs.append({"style": "TOC", "text": "[table of contents]"})
+
+    return {
+        "tab_id": tab["tabProperties"]["tabId"],
+        "title": tab["tabProperties"]["title"],
+        "paragraph_count": sum(
+            1 for p in paragraphs if p["style"] not in ("TABLE", "TOC")
+        ),
+        "table_count": table_count,
+        "image_count": image_count,
+        "paragraphs": paragraphs,
+    }
+
+
+def _find_tab_by_title(tabs: list[dict], target_title: str) -> dict | None:
+    """Recursively locate a tab in nested ``tabs`` by exact title match."""
+    for tab in tabs:
+        if tab["tabProperties"].get("title") == target_title:
+            return tab
+        nested = _find_tab_by_title(tab.get("childTabs") or [], target_title)
+        if nested is not None:
+            return nested
+    return None
+
+
 def append_to_tab(
     creds: Credentials,
     doc_id: str,

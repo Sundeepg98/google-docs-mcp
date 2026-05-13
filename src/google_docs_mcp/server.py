@@ -25,6 +25,7 @@ from .docs_api import (
     append_to_tab as _append_to_tab,
     get_doc_outline as _get_doc_outline,
     make_doc_with_tabs,
+    read_tab_content as _read_tab_content,
 )
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 
@@ -166,6 +167,38 @@ def get_doc_outline(doc_id: str) -> list[dict]:
     try:
         creds = _get_credentials()
         return _get_doc_outline(creds, doc_id)
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def read_tab_content(
+    doc_id: str,
+    tab_id: str | None = None,
+    tab_title: str | None = None,
+) -> dict:
+    """Read the body content of a single tab.
+
+    Use ``get_doc_outline`` first to see the tab list, then pass either
+    a ``tab_id`` (exact) or ``tab_title`` (first pre-order match).
+
+    Returns:
+        ``{"tab_id", "title", "paragraph_count", "table_count",
+        "image_count", "paragraphs": [{"style", "text"}, ...]}``.
+        ``paragraphs[].style`` is a Docs namedStyleType
+        (``HEADING_1``, ``NORMAL_TEXT``, etc.) or ``"TABLE"`` /
+        ``"TOC"`` placeholders. ``text`` has trailing newlines stripped;
+        inline images appear as ``[image]`` markers inside the text.
+
+    This is the canonical "what's actually inside this tab?" tool —
+    use it after ``convert_docx_to_tabbed_doc`` to confirm content
+    moved correctly without opening the doc in a browser.
+    """
+    try:
+        creds = _get_credentials()
+        return _read_tab_content(creds, doc_id, tab_id=tab_id, tab_title=tab_title)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
 

@@ -148,10 +148,19 @@ def _detect_splits(
                 return splits, strategy
         return [], "auto"
 
+    # Filter to elements that DocumentApp.Body.getChild() exposes.
+    # ``sectionBreak`` is a REST-only structural element (it describes the
+    # section's page properties) and Apps Script does NOT count it as a
+    # body child. If we leave it in, our indices run one ahead of what
+    # Apps Script sees and the last range gets rejected as out-of-bounds.
+    docapp_children = [
+        elem for elem in body_content if "sectionBreak" not in elem
+    ]
+
     splits: list[_SplitPoint] = []
     target_style = _STYLE_FOR_SPLIT.get(split_by)
 
-    for child_idx, elem in enumerate(body_content):
+    for child_idx, elem in enumerate(docapp_children):
         para = elem.get("paragraph")
         if para is None:
             if splits:
