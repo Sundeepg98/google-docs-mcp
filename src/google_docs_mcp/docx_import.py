@@ -126,7 +126,9 @@ def convert_docx_to_tabbed_doc(
     return {
         "doc_id": doc_id,
         "url": converted["url"],
-        "tabs": response["result"]["tabs"],
+        "tabs": response.get("tabs", []),
+        "moved_children": response.get("movedChildren", 0),
+        "warnings": response.get("warnings", []),
         "split_strategy_used": strategy_used,
     }
 
