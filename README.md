@@ -135,6 +135,77 @@ refresh tokens are used silently.
 Required scopes:
 - `https://www.googleapis.com/auth/documents`
 - `https://www.googleapis.com/auth/drive.file`
+- `https://www.googleapis.com/auth/drive.readonly` (added v0.8.0, for
+  reading `.docx` files uploaded by other apps — e.g. Claude.ai cloud
+  chat's Drive connector)
+
+## Remote HTTP mode (Fly.io)
+
+For workflows where the caller can't reach your local machine (e.g.
+Claude.ai cloud chat with files in its sandbox), the same package runs
+as a remote HTTP server.
+
+Endpoints:
+- `GET  /health` — Fly.io health check, unauthenticated
+- `POST /api/convert` — multipart `.docx` upload + conversion. Form
+  fields: `file` (the .docx), `split_by` (optional), `title` (optional).
+  Returns the same JSON shape as the MCP tool.
+- `POST /mcp/*` — proper MCP-over-HTTP transport for any future
+  Claude surface that supports MCP custom connectors.
+
+All non-health endpoints require an `Authorization: Bearer <token>`
+header (token set via `MCP_BEARER_TOKEN` env var).
+
+### Deploy to Fly.io
+
+```bash
+# One-time
+fly launch --no-deploy --copy-config
+fly volumes create gdmcp_data --size 1 --region <your-region>
+fly secrets set MCP_BEARER_TOKEN=$(openssl rand -hex 32)
+
+# Deploy
+fly deploy
+```
+
+Then upload your existing OAuth token and (optional) Apps Script config
+to the persistent volume:
+
+```bash
+# Use the Fly SSH SFTP shell
+fly ssh sftp shell
+# Inside the shell:
+put ~/.google-docs-mcp/token.json /data/google-docs-mcp/token.json
+put ~/.gmail-mcp/gcp-oauth.keys.json /data/google-docs-mcp/credentials.json
+put ~/.google-docs-mcp/config.json /data/google-docs-mcp/config.json
+exit
+fly apps restart
+```
+
+After deploy, `curl https://<your-app>.fly.dev/health` should return
+`{"ok":true,...}`.
+
+### Cloud chat workflow
+
+In Claude.ai cloud chat, ask Claude to write a Python script that POSTs
+the `.docx` to your Fly.io endpoint:
+
+```python
+import requests, os
+with open('/mnt/user-data/outputs/QA_Bank.docx', 'rb') as f:
+    r = requests.post(
+        'https://<your-app>.fly.dev/api/convert',
+        headers={'Authorization': f'Bearer {os.environ["MCP_TOKEN"]}'},
+        files={'file': ('QA_Bank.docx', f,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document')},
+        data={'split_by': 'heading_1', 'title': 'Q&A Bank tabified'},
+    )
+print(r.json()['url'])
+```
+
+The script runs in cloud chat's sandbox; the bytes flow through HTTPS
+to your Fly.io endpoint without going through MCP tool args (which
+have practical size limits).
 
 ## Usage example
 

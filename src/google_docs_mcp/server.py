@@ -10,6 +10,7 @@ Apps Script setup needed by ``convert_docx_to_tabbed_doc``; see the
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -323,12 +324,32 @@ _CLI_SUBCOMMANDS = {"setup-apps-script", "configure-webapp", "status", "help", "
 
 
 def main() -> None:
-    # Dispatch: ``google-docs-mcp`` with no args (or as MCP subprocess)
-    # runs the MCP server. Recognized subcommands route to cli.py.
+    """Entry point.
+
+    Dispatches in order:
+      1. ``google-docs-mcp <cli-subcommand>`` -> route to ``cli.py``
+      2. ``MCP_TRANSPORT=http`` env var (or ``--http`` flag) -> run as
+         remote HTTP server (Fly.io / cloud chat use case). Listens on
+         ``$PORT`` (default 8080). Includes both the FastMCP ``/mcp``
+         endpoint AND a simple ``/api/convert`` REST endpoint for
+         clients that don't speak MCP protocol (e.g. cloud chat's
+         Python sandbox).
+      3. Otherwise -> stdio (Claude Code / Claude Desktop).
+    """
     if len(sys.argv) > 1 and sys.argv[1] in _CLI_SUBCOMMANDS:
         from .cli import cli_main
         sys.exit(cli_main(sys.argv[1:]))
-    mcp.run()
+
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    if "--http" in sys.argv:
+        transport = "http"
+
+    if transport == "http":
+        from .http_server import run_http
+        port = int(os.environ.get("PORT", "8080"))
+        run_http(mcp, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

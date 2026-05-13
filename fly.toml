@@ -1,0 +1,46 @@
+# Fly.io config for google-docs-mcp remote HTTP server.
+#
+# Setup (one-time):
+#   fly launch --no-deploy           # generate the app
+#   fly volumes create gdmcp_data --size 1 --region <your-region>
+#   fly secrets set MCP_BEARER_TOKEN=$(openssl rand -hex 32)
+#   fly deploy
+#
+# After deploy, upload your token.json + gcp-oauth.keys.json to the
+# /data volume via `fly ssh sftp shell` so the server can authenticate
+# to Google APIs without an interactive OAuth flow.
+
+app = "google-docs-mcp"  # change to your app name
+primary_region = "iad"   # change to your nearest Fly region
+
+[build]
+
+[[mounts]]
+  source = "gdmcp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0    # cold-start tolerable for batch workflow
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 25
+
+[[vm]]
+  size = "shared-cpu-1x"  # cheapest tier, sufficient for low traffic
+  memory = "512mb"
+
+[checks.health]
+  port = 8080
+  type = "http"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "15s"
+  method = "GET"
+  path = "/health"
