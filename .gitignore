@@ -1,6 +1,7 @@
 # Secrets — never commit
 credentials/
 .env
+.fly-token-temp.txt
 
 # Python
 __pycache__/

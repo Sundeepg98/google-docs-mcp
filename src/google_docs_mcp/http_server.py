@@ -132,10 +132,25 @@ async def convert_endpoint(request: Request) -> JSONResponse:
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
-    """Reject requests without the right ``Authorization: Bearer <token>``.
+    """Bearer-token auth gate for the REST ``/api/*`` endpoints only.
 
-    Token is set via ``MCP_BEARER_TOKEN`` env var. ``/health`` is exempt
-    so Fly.io health probes don't need to know the token.
+    Token is set via ``MCP_BEARER_TOKEN`` env var.
+
+    Scope of protection (intentionally narrow):
+    - ``/api/*`` (currently just ``/api/convert``) — bearer required.
+      Cloud chat's Python sandbox calls these and can trivially set
+      the Authorization header.
+
+    Everything else — ``/health``, ``/mcp``, ``/mcp/*``,
+    ``/.well-known/*``, ``/register`` — is intentionally open:
+    - ``/health`` is the Fly.io liveness probe.
+    - ``/mcp*`` and the OAuth-discovery endpoints (``/.well-known/...``,
+      ``/register``) need to be reachable without auth so claude.ai's
+      custom-connector setup can probe them. Claude.ai's connector
+      framework speaks MCP+OAuth, not bearer tokens; returning 401
+      from these confuses the discovery flow (claude.ai shows
+      "Couldn't reach the MCP server"). Until we wire FastMCP's
+      OAuthProxy, /mcp/* relies on URL secrecy.
     """
 
     def __init__(self, app: Any, *, token: str) -> None:
@@ -143,7 +158,7 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         self._expected = f"Bearer {token}"
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if request.url.path == "/health":
+        if not request.url.path.startswith("/api/"):
             return await call_next(request)
         provided = request.headers.get("authorization", "")
         if provided != self._expected:
@@ -171,15 +186,32 @@ def build_app(mcp: FastMCP) -> Starlette:
 
     middleware = [Middleware(BearerTokenMiddleware, token=token)]
 
+    # FastMCP 3.x quirk: the StreamableHTTPSessionManager inside
+    # mcp.http_app() needs its lifespan to run on the PARENT ASGI app
+    # too — otherwise the first POST to /mcp errors with
+    # "task group was not initialized". So we build the mcp sub-app
+    # once and hand its lifespan up to Starlette.
+    #
+    # Endpoint shape: we set ``path="/mcp"`` on FastMCP and mount at
+    # ``/``. This makes ``POST /mcp`` (no trailing slash) the canonical
+    # endpoint — claude.ai's custom-connector client hits ``/mcp``
+    # exactly and chokes on Starlette's auto 307 redirect to ``/mcp/``
+    # when the FastMCP sub-app is mounted at ``/mcp`` instead.
+    mcp_app = mcp.http_app(path="/mcp")
+
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/api/convert", convert_endpoint, methods=["POST"]),
-        # FastMCP's MCP-protocol-over-HTTP, for future Claude surfaces
-        # that speak MCP directly. The path prefix is ``/mcp``.
-        Mount("/mcp", app=mcp.http_app(path="/")),
+        # FastMCP at root mount, with its endpoint at /mcp internally.
+        # /mcp (no slash) is the canonical endpoint claude.ai uses.
+        Mount("/", app=mcp_app),
     ]
 
-    return Starlette(routes=routes, middleware=middleware)
+    return Starlette(
+        routes=routes,
+        middleware=middleware,
+        lifespan=mcp_app.lifespan,
+    )
 
 
 def run_http(mcp: FastMCP, *, port: int = 8080) -> None:

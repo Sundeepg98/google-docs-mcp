@@ -136,3 +136,57 @@ def fetch_and_convert_drive_docx(
         "title": file["name"],
         "source_drive_file_id": drive_file_id,
     }
+
+
+def copy_google_doc(
+    creds: Credentials,
+    google_doc_id: str,
+    title: str | None = None,
+) -> dict:
+    """Make a working copy of an existing Google Doc (no .docx conversion).
+
+    Used when the user's Drive already has a Google Doc (e.g. because
+    they uploaded a .docx via the Drive web UI with auto-convert ON,
+    which discards the raw .docx bytes). We can't re-import — there
+    are no .docx bytes to re-import. Instead we copy the Google Doc
+    and restructure the copy, leaving the original untouched.
+
+    The copy is created with ``drive.files.copy()`` and inherits the
+    user's ownership. Our restructure pipeline then modifies the copy
+    in place via REST + Apps Script — same code path as the .docx
+    conversion case, just without the initial mime-type conversion.
+    """
+    drive = build("drive", "v3", credentials=creds)
+    meta = drive.files().get(
+        fileId=google_doc_id, fields="id,name,mimeType"
+    ).execute()
+    if meta.get("mimeType") != GDOC_MIME:
+        raise ValueError(
+            f"Drive file {google_doc_id!r} is not a Google Doc "
+            f"(mimeType: {meta.get('mimeType')!r}). For .docx files "
+            "use fetch_and_convert_drive_docx instead."
+        )
+
+    fallback_title = (title or meta["name"]) + " (tabified)"
+    new_file = drive.files().copy(
+        fileId=google_doc_id,
+        body={"name": fallback_title},
+        fields="id,name",
+    ).execute()
+    new_id = new_file["id"]
+    return {
+        "doc_id": new_id,
+        "url": f"https://docs.google.com/document/d/{new_id}/edit",
+        "title": new_file["name"],
+        "source_google_doc_id": google_doc_id,
+    }
+
+
+def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
+    """Return the mime type of a Drive file. Used to route to the
+    right ingestion function (raw .docx vs already-converted Google Doc)."""
+    drive = build("drive", "v3", credentials=creds)
+    meta = drive.files().get(
+        fileId=drive_file_id, fields="mimeType"
+    ).execute()
+    return meta.get("mimeType", "")

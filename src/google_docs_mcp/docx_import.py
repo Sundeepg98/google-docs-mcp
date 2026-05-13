@@ -30,7 +30,14 @@ from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
 )
-from .drive_api import fetch_and_convert_drive_docx, upload_and_convert_docx
+from .drive_api import (
+    DOCX_MIME,
+    GDOC_MIME,
+    classify_drive_file,
+    copy_google_doc,
+    fetch_and_convert_drive_docx,
+    upload_and_convert_docx,
+)
 
 SplitBy = Literal["heading_1", "heading_2", "page_break", "auto"]
 _STYLE_FOR_SPLIT = {
@@ -81,15 +88,31 @@ def convert_docx_to_tabbed_doc(
             "`google-docs-mcp configure-webapp <URL>`."
         )
 
-    # 1. Drive upload + lossless conversion (or fetch-then-convert).
+    # 1. Get the source content into a Google Doc we own.
+    # Three input modes:
+    #   - local .docx path -> upload+convert via Drive
+    #   - drive file id pointing to a raw .docx -> fetch+convert
+    #   - drive file id pointing to an already-converted Google Doc
+    #     -> copy (no conversion needed; the Doc is already native)
     if docx_path is not None:
         converted = upload_and_convert_docx(creds, docx_path, title=title)
         source_label = docx_path.name
     else:
         assert docx_drive_file_id is not None  # narrowing for typecheckers
-        converted = fetch_and_convert_drive_docx(
-            creds, docx_drive_file_id, title=title
-        )
+        source_mime = classify_drive_file(creds, docx_drive_file_id)
+        if source_mime == DOCX_MIME:
+            converted = fetch_and_convert_drive_docx(
+                creds, docx_drive_file_id, title=title
+            )
+        elif source_mime == GDOC_MIME:
+            converted = copy_google_doc(
+                creds, docx_drive_file_id, title=title
+            )
+        else:
+            raise ValueError(
+                f"Drive file {docx_drive_file_id!r} has mimeType "
+                f"{source_mime!r}. Expected .docx or Google Doc."
+            )
         source_label = f"drive file {docx_drive_file_id}"
     doc_id = converted["doc_id"]
 

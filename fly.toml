@@ -10,8 +10,8 @@
 # /data volume via `fly ssh sftp shell` so the server can authenticate
 # to Google APIs without an interactive OAuth flow.
 
-app = "google-docs-mcp"  # change to your app name
-primary_region = "iad"   # change to your nearest Fly region
+app = "sundeepg98-docs-mcp"
+primary_region = "bom"
 
 [build]
 
