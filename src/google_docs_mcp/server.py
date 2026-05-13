@@ -27,6 +27,7 @@ from .docs_api import (
     get_doc_outline as _get_doc_outline,
     make_doc_with_tabs,
     read_tab_content as _read_tab_content,
+    set_tab_icons as _set_tab_icons,
 )
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 
@@ -244,6 +245,7 @@ def convert_docx_to_tabbed_doc(
     docx_drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
     title: str | None = None,
+    tab_icons: list[str] | None = None,
 ) -> dict:
     """Convert a .docx into a Google Doc with native nested tabs.
 
@@ -280,6 +282,11 @@ def convert_docx_to_tabbed_doc(
               use the first strategy that finds any split points.
         title: Optional override for the resulting doc's title. Defaults
             to the .docx filename without extension.
+        tab_icons: Optional list of single emojis to assign to detected
+            tabs in order (first emoji → first detected split, etc.).
+            Shorter lists are fine — remaining tabs get no icon. To set
+            icons later (or match by title rather than order), use
+            ``set_tab_icons``.
 
     Exactly one of ``docx_path`` or ``docx_drive_file_id`` must be set.
 
@@ -304,12 +311,55 @@ def convert_docx_to_tabbed_doc(
             docx_drive_file_id=docx_drive_file_id,
             split_by=split_by,
             title=title,
+            tab_icons=tab_icons,
         )
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
     except ValueError as e:
         raise ToolError(str(e)) from e
     except RuntimeError as e:
+        raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
+    """Set or update icon emojis on existing tabs by title match.
+
+    Title matching is case-insensitive substring: the first tab whose
+    title contains the key (or whose title is contained in the key)
+    gets the emoji. Useful right after ``convert_docx_to_tabbed_doc``
+    when the caller wants to decorate the auto-named tabs without
+    re-running the conversion.
+
+    Args:
+        doc_id: The Google Doc ID.
+        icons_by_title: Map of tab title (or fragment) to a single
+            emoji string. Example::
+
+                {"Profile": "\U0001f464", "Experience": "\U0001f4bc",
+                 "Skills": "\U0001f6e0️", "Education": "\U0001f393"}
+
+            Each emoji must be ≤8 UTF-8 bytes (the Docs API limit).
+
+    Returns:
+        ``{"updated_count": int,
+           "matched": {requested_title: tab_id, ...},
+           "unmatched_titles": [...]}``.
+    """
+    if not icons_by_title:
+        raise ToolError("icons_by_title cannot be empty")
+    for key, emoji in icons_by_title.items():
+        if emoji and len(emoji.encode("utf-8")) > 8:
+            raise ToolError(
+                f"icons_by_title[{key!r}] must be a single emoji "
+                "(≤8 UTF-8 bytes)"
+            )
+    try:
+        creds = _get_credentials()
+        return _set_tab_icons(creds, doc_id, icons_by_title)
+    except ValueError as e:
         raise ToolError(str(e)) from e
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e

@@ -63,13 +63,18 @@ def convert_docx_to_tabbed_doc(
     docx_drive_file_id: str | None = None,
     split_by: SplitBy = "heading_1",
     title: str | None = None,
+    tab_icons: list[str] | None = None,
 ) -> dict:
     """Convert a .docx into a Google Doc with native nested tabs.
 
     Provide exactly ONE of ``docx_path`` (local filesystem) or
-    ``docx_drive_file_id`` (already-uploaded Drive file). The latter
-    is the path Claude.ai cloud chat uses: it uploads the file via
-    its own Drive connector and hands us the resulting file ID.
+    ``docx_drive_file_id`` (already-uploaded Drive file — accepts
+    both raw .docx and already-converted Google Docs).
+
+    ``tab_icons`` is an optional list of emoji icons assigned in
+    detected-split order. If shorter than the number of splits, the
+    remaining tabs get no icon. To set icons later (or by title
+    match instead of order), use ``set_tab_icons``.
 
     Returns ``{"doc_id", "url", "tabs", "split_strategy_used", ...}``.
     """
@@ -135,6 +140,12 @@ def convert_docx_to_tabbed_doc(
                 f"conversion of {source_label}."
             ),
         }
+
+    # Assign optional icons in detected-split order.
+    if tab_icons:
+        for i, split in enumerate(splits):
+            if i < len(tab_icons) and tab_icons[i]:
+                split["icon_emoji"] = tab_icons[i]
 
     # 3. Cap nesting depth defensively — _detect_splits won't currently
     # produce nested splits, but a future strategy might.

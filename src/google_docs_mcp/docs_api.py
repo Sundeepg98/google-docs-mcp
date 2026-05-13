@@ -443,6 +443,79 @@ def _find_tab_by_title(tabs: list[dict], target_title: str) -> dict | None:
     return None
 
 
+def set_tab_icons(
+    creds: Credentials,
+    doc_id: str,
+    icons_by_title: dict[str, str],
+) -> dict:
+    """Set/update icon emojis on existing tabs by matching tab titles.
+
+    Title matching is case-insensitive substring: the first tab whose
+    title contains the key (or whose title is contained in the key)
+    gets the emoji. Useful right after ``convert_docx_to_tabbed_doc``
+    when the caller wants to decorate the auto-named tabs.
+
+    Returns the count of tabs updated, the title -> tab_id map of
+    matches, and a list of keys that didn't match any tab.
+    """
+    if not icons_by_title:
+        raise ValueError("icons_by_title cannot be empty")
+
+    docs = build("docs", "v1", credentials=creds)
+    fetched = docs.documents().get(
+        documentId=doc_id, includeTabsContent=True
+    ).execute()
+
+    # Collect all (tab_id, title) pairs across the nesting.
+    all_tabs: list[tuple[str, str]] = []
+
+    def walk(tabs: list[dict]) -> None:
+        for tab in tabs:
+            props = tab["tabProperties"]
+            all_tabs.append((props["tabId"], props.get("title", "")))
+            walk(tab.get("childTabs") or [])
+
+    walk(fetched.get("tabs") or [])
+
+    matched: dict[str, str] = {}  # key -> tab_id
+    requests: list[dict] = []
+
+    for key, emoji in icons_by_title.items():
+        if not emoji:
+            continue
+        key_low = key.lower()
+        for tab_id, title in all_tabs:
+            if tab_id in matched.values():
+                continue  # don't reuse a tab for multiple keys
+            t_low = title.lower()
+            if key_low in t_low or t_low in key_low:
+                matched[key] = tab_id
+                requests.append(
+                    {
+                        "updateDocumentTabProperties": {
+                            "tabProperties": {
+                                "tabId": tab_id,
+                                "iconEmoji": emoji,
+                            },
+                            "fields": "iconEmoji",
+                        }
+                    }
+                )
+                break
+
+    if requests:
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute()
+
+    unmatched = [k for k in icons_by_title if k not in matched]
+    return {
+        "updated_count": len(requests),
+        "matched": matched,
+        "unmatched_titles": unmatched,
+    }
+
+
 def append_to_tab(
     creds: Credentials,
     doc_id: str,
