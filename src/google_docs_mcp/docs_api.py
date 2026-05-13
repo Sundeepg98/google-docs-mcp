@@ -183,6 +183,217 @@ def _find_tab_by_id(tabs: list[dict], target_id: str) -> dict | None:
     return None
 
 
+def _get_tab_depth(tabs: list[dict], target_id: str, current_depth: int = 0) -> int:
+    """Return the nesting depth of a tab (root=0), or -1 if not found."""
+    for tab in tabs:
+        if tab["tabProperties"]["tabId"] == target_id:
+            return current_depth
+        result = _get_tab_depth(
+            tab.get("childTabs") or [], target_id, current_depth + 1
+        )
+        if result >= 0:
+            return result
+    return -1
+
+
+def add_tabs_to_doc(
+    creds: Credentials,
+    doc_id: str,
+    tabs: list[TabSpec],
+    parent_tab_id: str | None = None,
+) -> dict:
+    """Append tabs to an existing Google Doc, optionally nested under a parent.
+
+    Same nesting rules apply (max 3 levels). When ``parent_tab_id`` is
+    given, the new tabs become its children; otherwise they become
+    root-level siblings of existing root tabs.
+    """
+    flat = _flatten_tab_tree(tabs)
+    if not flat:
+        return {"tabs": []}
+
+    max_depth = max((d for d, _, _ in flat), default=0)
+
+    docs = build("docs", "v1", credentials=creds)
+
+    if parent_tab_id:
+        fetched = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+        parent_depth = _get_tab_depth(fetched.get("tabs") or [], parent_tab_id)
+        if parent_depth < 0:
+            raise ValueError(
+                f"Parent tab {parent_tab_id} not found in doc {doc_id}"
+            )
+        if parent_depth + 1 + max_depth >= MAX_NESTING_DEPTH:
+            raise ValueError(
+                f"Adding under depth-{parent_depth} parent would exceed "
+                f"max nesting depth of {MAX_NESTING_DEPTH}"
+            )
+
+    path_to_tab_id: dict[tuple[int, ...], str] = {}
+
+    for level in range(max_depth + 1):
+        level_specs = [(p, s) for d, p, s in flat if d == level]
+        if not level_specs:
+            continue
+
+        if level == 0:
+            requests = [
+                _add_tab_request(s, parent_tab_id=parent_tab_id)
+                for _path, s in level_specs
+            ]
+        else:
+            requests = []
+            for path, spec in level_specs:
+                pid = path_to_tab_id[path[:-1]]
+                requests.append(_add_tab_request(spec, parent_tab_id=pid))
+
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute()
+
+        fetched = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+
+        if level == 0:
+            if parent_tab_id:
+                parent = _find_tab_by_id(fetched.get("tabs") or [], parent_tab_id)
+                siblings = (parent or {}).get("childTabs") or []
+            else:
+                siblings = fetched.get("tabs") or []
+            new_tabs = siblings[-len(level_specs):]
+            for i, (path, _spec) in enumerate(level_specs):
+                path_to_tab_id[path] = new_tabs[i]["tabProperties"]["tabId"]
+        else:
+            by_parent: dict[tuple[int, ...], list[tuple[int, ...]]] = defaultdict(list)
+            for path, _spec in level_specs:
+                by_parent[path[:-1]].append(path)
+            for parent_path, child_paths in by_parent.items():
+                pid = path_to_tab_id[parent_path]
+                parent_tab = _find_tab_by_id(fetched.get("tabs") or [], pid)
+                children = (parent_tab or {}).get("childTabs") or []
+                new_children = children[-len(child_paths):]
+                for i, path in enumerate(child_paths):
+                    path_to_tab_id[path] = new_children[i]["tabProperties"]["tabId"]
+
+    content_requests: list[dict] = []
+    for _depth, path, spec in flat:
+        tab_id = path_to_tab_id[path]
+        fmt = spec.get("content_format", "markdown")
+        content = spec.get("content", "")
+        if fmt == "text":
+            content_requests.extend(_plain_text_requests(content, tab_id))
+        else:
+            content_requests.extend(render_content_to_requests(content, tab_id))
+
+    if content_requests:
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": content_requests}
+        ).execute()
+
+    return {
+        "tabs": [
+            {
+                "title": spec["title"],
+                "tab_id": path_to_tab_id[path],
+                "depth": depth,
+                "parent_tab_id": (
+                    path_to_tab_id[path[:-1]] if depth > 0 else parent_tab_id
+                ),
+            }
+            for depth, path, spec in flat
+        ],
+    }
+
+
+def get_doc_outline(creds: Credentials, doc_id: str) -> list[dict]:
+    """Return a flat pre-order list of every tab in a doc with structure metadata.
+
+    Each entry: ``{tab_id, title, parent_tab_id, depth, index, icon_emoji}``.
+    No content is returned — use ``read_tab_content`` for that.
+    """
+    docs = build("docs", "v1", credentials=creds)
+    # includeTabsContent must be True for the tabs[] field to be populated
+    # at all; without it the response uses the legacy single-tab schema.
+    fetched = docs.documents().get(
+        documentId=doc_id, includeTabsContent=True
+    ).execute()
+
+    out: list[dict] = []
+
+    def walk(tabs: list[dict], parent_id: str | None, depth: int) -> None:
+        for i, tab in enumerate(tabs):
+            props = tab["tabProperties"]
+            out.append(
+                {
+                    "tab_id": props["tabId"],
+                    "title": props.get("title", ""),
+                    "parent_tab_id": parent_id,
+                    "depth": depth,
+                    "index": i,
+                    "icon_emoji": props.get("iconEmoji"),
+                }
+            )
+            walk(tab.get("childTabs") or [], props["tabId"], depth + 1)
+
+    walk(fetched.get("tabs") or [], None, 0)
+    return out
+
+
+def append_to_tab(
+    creds: Credentials,
+    doc_id: str,
+    tab_id: str,
+    content: str,
+    content_format: Literal["markdown", "text"] = "markdown",
+) -> dict:
+    """Append content to the end of an existing tab's body.
+
+    Markdown is rendered like in ``create_tabbed_doc``; ``text`` mode
+    inserts raw. Existing content is untouched.
+    """
+    if not content:
+        return {"tab_id": tab_id, "appended_chars": 0}
+
+    docs = build("docs", "v1", credentials=creds)
+    fetched = docs.documents().get(
+        documentId=doc_id, includeTabsContent=True
+    ).execute()
+    tab = _find_tab_by_id(fetched.get("tabs") or [], tab_id)
+    if tab is None:
+        raise ValueError(f"Tab {tab_id} not found in doc {doc_id}")
+
+    body_content = tab["documentTab"]["body"]["content"]
+    # The body always ends with an implicit trailing newline at endIndex - 1.
+    # Insert just before it so we extend the body rather than overflowing it.
+    end_index = (
+        body_content[-1]["endIndex"] - 1 if body_content else 1
+    )
+
+    if content_format == "text":
+        requests = [
+            {
+                "insertText": {
+                    "location": {"tabId": tab_id, "index": end_index},
+                    "text": content,
+                }
+            }
+        ]
+    else:
+        requests = render_content_to_requests(
+            content, tab_id, starting_index=end_index
+        )
+
+    if requests:
+        docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute()
+
+    return {"tab_id": tab_id, "appended_chars": len(content)}
+
+
 def _tab_properties(tab: TabSpec, *, include_title: bool = True) -> dict:
     props: dict[str, Any] = {}
     if include_title:
@@ -459,18 +670,23 @@ def _finalize(ctx: _Ctx) -> None:
         )
 
 
-def render_content_to_requests(content: str, tab_id: str) -> list[dict]:
+def render_content_to_requests(
+    content: str, tab_id: str, starting_index: int = 1
+) -> list[dict]:
     """Convert markdown to Google Docs batchUpdate requests for one tab.
 
-    Inserts run sequentially from index 1; styling runs after. Coverage:
+    Inserts run sequentially from ``starting_index`` (default 1, the
+    start of an empty body); styling runs after. Coverage:
     H1–H6, ``**bold**``, ``*italic*``, ``~~strike~~``, ``\\`inline code\\```,
     fenced code blocks, links (including bare URLs via linkify),
     bulleted/numbered lists (nested), blockquotes, soft/hard breaks.
-    Tables and images are deferred.
+    Tables and images are deferred. Use ``starting_index > 1`` when
+    appending to an existing tab body — pass the body's current
+    end index minus 1 to insert before the trailing newline.
     """
     if not content or not content.strip():
         return []
-    ctx = _Ctx(tab_id=tab_id)
+    ctx = _Ctx(tab_id=tab_id, current_index=starting_index)
     md = MarkdownIt("commonmark", {"html": False, "linkify": True, "breaks": False})
     md.enable("strikethrough")
     for tok in md.parse(content):
