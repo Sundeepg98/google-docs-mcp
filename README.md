@@ -37,6 +37,17 @@ Returns the new document's ID and URL plus the generated tab IDs.
 
 ### Install
 
+**Recommended — `pipx`** (isolated, single global command):
+
+```bash
+pipx install git+https://github.com/Sundeepg98/google-docs-mcp.git
+```
+
+This installs the `google-docs-mcp` command into its own isolated venv,
+available globally. Upgrade later with `pipx upgrade google-docs-mcp`.
+
+**Alternative — clone and `pip install -e .`** (for development):
+
 ```bash
 git clone https://github.com/Sundeepg98/google-docs-mcp.git
 cd google-docs-mcp
@@ -44,11 +55,10 @@ python -m venv .venv
 
 # Windows
 .venv\Scripts\activate
-
 # macOS/Linux
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### OAuth client config
@@ -77,21 +87,34 @@ of where the client config came from. Both files are in `.gitignore`.
 
 Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
 `~/Library/Application Support/Claude/claude_desktop_config.json`
-(macOS) and add:
+(macOS).
+
+**With `pipx` install** (the command is on your PATH):
 
 ```json
 {
   "mcpServers": {
     "google-docs": {
-      "command": "/absolute/path/to/google-docs-mcp/.venv/bin/python",
-      "args": ["/absolute/path/to/google-docs-mcp/server.py"]
+      "command": "google-docs-mcp"
     }
   }
 }
 ```
 
-On Windows escape backslashes (`C:\\path\\to\\...\\python.exe`) and
-point at `.venv\\Scripts\\python.exe`.
+**With dev install** (point at the venv's entry-point script):
+
+```json
+{
+  "mcpServers": {
+    "google-docs": {
+      "command": "/absolute/path/to/google-docs-mcp/.venv/bin/google-docs-mcp"
+    }
+  }
+}
+```
+
+On Windows the script lives at `.venv\\Scripts\\google-docs-mcp.exe` —
+escape backslashes in JSON.
 
 Restart Claude Desktop. The tool icon should now list
 `create_tabbed_doc` under `google-docs`.
@@ -105,8 +128,9 @@ inside Claude Code and reconnect, or restart the session.
 ### First-run OAuth
 
 The first call opens your default browser. Sign in to Google → grant
-the Docs scope. The token is cached to `credentials/token.json`. After
-that no browser dance — refresh tokens are used silently.
+the Docs scope. The token is cached at `~/.google-docs-mcp/token.json`
+(override with `GOOGLE_DOCS_DATA_DIR`). After that no browser dance —
+refresh tokens are used silently.
 
 Required scopes:
 - `https://www.googleapis.com/auth/documents`
@@ -125,7 +149,8 @@ URL.
 
 ## Customizing content rendering
 
-The interesting design decision lives in `docs_api.py`, function
+The interesting design decision lives in
+`src/google_docs_mcp/docs_api.py`, function
 `render_content_to_requests(content, tab_id)`. The default inserts
 plain text. Replace it with whatever rendering you want:
 

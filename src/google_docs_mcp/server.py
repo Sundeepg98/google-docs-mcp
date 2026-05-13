@@ -1,16 +1,11 @@
 """Google Docs MCP Server with native Tabs support.
 
-Exposes one tool to Claude Desktop: ``create_tabbed_doc``.
+Exposes one tool to MCP clients: ``create_tabbed_doc``.
 """
-from pathlib import Path
-
 from fastmcp import FastMCP
 
-from auth import load_credentials
-from docs_api import TabSpec, make_doc_with_tabs
-
-CREDS_DIR = Path(__file__).parent / "credentials"
-CREDS_DIR.mkdir(exist_ok=True)
+from .auth import default_data_dir, load_credentials
+from .docs_api import TabSpec, make_doc_with_tabs
 
 mcp = FastMCP("google-docs")
 
@@ -37,7 +32,7 @@ def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     if not tabs:
         raise ValueError("Must provide at least one tab")
 
-    creds = load_credentials(CREDS_DIR)
+    creds = load_credentials(default_data_dir())
     return make_doc_with_tabs(creds, title, tabs)
 
 

@@ -81,14 +81,9 @@ def make_doc_with_tabs(creds: Credentials, title: str, tabs: list[TabSpec]) -> d
 def render_content_to_requests(content: str, tab_id: str) -> list[dict]:
     """Convert tab content into Google Docs batchUpdate requests.
 
-    >>> CONTRIBUTION POINT — see README "What you can customize" <<<
-
-    The default below inserts plain text into the tab body. Extend it to
-    handle whatever input format you want: markdown headings -> Doc heading
-    styles, fenced code -> monospace runs, bullets -> createParagraphBullets,
-    etc.
+    Default: plain text insertion. Wave B will extend this to handle
+    markdown (headings, bullets, bold/italic, code blocks).
     """
-    # TODO: Replace this with your formatting logic.
     return [
         {
             "insertText": {
