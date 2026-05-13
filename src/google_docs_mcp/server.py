@@ -1,9 +1,17 @@
 """Google Docs MCP Server with native Tabs support.
 
-Exposes one tool to MCP clients: ``create_tabbed_doc``.
+Exposes MCP tools for working with native Google Docs tabs:
+``create_tabbed_doc``, ``add_tabs``, ``get_doc_outline``,
+``append_to_tab``, and ``convert_docx_to_tabbed_doc``.
+
+The same entry point also implements one-off CLI commands for the
+Apps Script setup needed by ``convert_docx_to_tabbed_doc``; see the
+``cli`` module for those.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -18,6 +26,7 @@ from .docs_api import (
     get_doc_outline as _get_doc_outline,
     make_doc_with_tabs,
 )
+from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 
 mcp = FastMCP("google-docs")
 
@@ -195,12 +204,77 @@ def append_to_tab(
         raise ToolError(_format_http_error(e)) from e
 
 
+@mcp.tool()
+def convert_docx_to_tabbed_doc(
+    docx_path: str,
+    split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
+    title: str | None = None,
+) -> dict:
+    """Convert a local .docx file into a Google Doc with native nested tabs.
+
+    Pipeline: Drive imports the .docx (lossless: tables, cell shading,
+    colored borders, images, equations all preserved) → we identify
+    split points by walking the converted doc → REST creates empty
+    nested tab shells → Apps Script moves content from the primary tab
+    into the new shells using ``Element.copy()`` (the only path that
+    preserves drawings, equations, and table cell shading because no
+    REST request type can re-emit those).
+
+    Prerequisite: you must have deployed the helper Apps Script Web
+    App once. Run ``google-docs-mcp setup-apps-script`` to get the
+    deployment recipe, then ``google-docs-mcp configure-webapp <URL>``
+    with the URL after deploying.
+
+    Args:
+        docx_path: Absolute path to a local ``.docx`` file. Must end in
+            ``.docx`` (older ``.doc`` is not accepted by Drive's
+            converter — convert via Word or Google Docs first).
+        split_by: How to identify tab boundaries in the converted doc.
+            - ``"heading_1"`` (default): each Heading 1 paragraph
+              starts a new tab; the tab title is the heading text.
+            - ``"heading_2"``: same but for Heading 2.
+            - ``"page_break"``: every page break starts a new tab.
+              Title is auto-generated (``Page 2``, ``Page 3``, ...).
+            - ``"auto"``: try heading_1 → heading_2 → page_break and
+              use the first strategy that finds any split points.
+        title: Optional override for the resulting doc's title. Defaults
+            to the .docx filename without extension.
+
+    Returns:
+        ``{"doc_id", "url", "tabs": [...], "split_strategy_used"}``.
+        ``tabs`` is the post-restructure tab list from the Apps Script
+        side (each entry has ``id``, ``title``, ``depth``). If no split
+        points were found, returns the converted single-tab doc unchanged
+        plus a ``note`` field explaining why.
+    """
+    path = Path(docx_path).expanduser()
+    try:
+        creds = _get_credentials()
+        return _convert_docx(creds, path, split_by=split_by, title=title)
+    except FileNotFoundError as e:
+        raise ToolError(str(e)) from e
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    except RuntimeError as e:
+        raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
 def _format_http_error(e: HttpError) -> str:
     details = e.error_details if hasattr(e, "error_details") else str(e)
     return f"Google Docs API error: {e.status_code} {e.reason}. Details: {details}"
 
 
+_CLI_SUBCOMMANDS = {"setup-apps-script", "configure-webapp", "status", "help", "-h", "--help"}
+
+
 def main() -> None:
+    # Dispatch: ``google-docs-mcp`` with no args (or as MCP subprocess)
+    # runs the MCP server. Recognized subcommands route to cli.py.
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_SUBCOMMANDS:
+        from .cli import cli_main
+        sys.exit(cli_main(sys.argv[1:]))
     mcp.run()
 
 
