@@ -18,6 +18,7 @@ Fly.io probes.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -36,6 +37,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from .auth import default_data_dir, load_credentials
+from .docs_api import set_tab_icons as _set_tab_icons
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 
 log = logging.getLogger("google_docs_mcp.http")
@@ -51,12 +53,17 @@ async def health(_request: Request) -> JSONResponse:
 
 
 async def convert_endpoint(request: Request) -> JSONResponse:
-    """``POST /api/convert`` — multipart .docx upload + conversion.
+    """``POST /api/convert`` — multipart .docx upload + conversion + optional icons.
 
     Form fields:
       ``file``: the .docx file (multipart/form-data)
       ``split_by``: optional, one of "heading_1"|"heading_2"|"page_break"|"auto"
       ``title``: optional document title override
+      ``icons_by_title``: optional JSON string mapping tab-title fragments
+        to single-emoji strings, applied after conversion via
+        set_tab_icons. Example: '{"Profile":"\\ud83d\\udc64","Skills":"\\ud83d\\udee0"}'.
+        Matching is case-insensitive substring (same semantics as the
+        set_tab_icons MCP tool).
     """
     form = await request.form()
     upload = form.get("file")
@@ -83,6 +90,29 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     title_raw = form.get("title")
     title: str | None = title_raw if isinstance(title_raw, str) and title_raw else None
 
+    icons_raw = form.get("icons_by_title")
+    icons_by_title: dict[str, str] | None = None
+    if icons_raw:
+        if not isinstance(icons_raw, str):
+            return JSONResponse(
+                {"error": "icons_by_title must be a JSON string"}, status_code=400
+            )
+        try:
+            parsed = json.loads(icons_raw)
+        except json.JSONDecodeError as e:
+            return JSONResponse(
+                {"error": f"icons_by_title is not valid JSON: {e}"},
+                status_code=400,
+            )
+        if not isinstance(parsed, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+        ):
+            return JSONResponse(
+                {"error": "icons_by_title must be a JSON object of {string: string}"},
+                status_code=400,
+            )
+        icons_by_title = parsed
+
     # Stream the upload to a temp file so docx_import can read it as a
     # path. Avoids holding the full payload in memory + reuses the
     # existing local-file code path.
@@ -101,6 +131,9 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             split_by=split_by_raw,  # type: ignore[arg-type]
             title=title,
         )
+        if icons_by_title and result.get("doc_id"):
+            icon_result = _set_tab_icons(creds, result["doc_id"], icons_by_title)
+            result["icons"] = icon_result
         return JSONResponse(result)
     except FileNotFoundError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
