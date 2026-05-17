@@ -526,6 +526,57 @@ def gdocs_rename_tab(
 
 
 @mcp.tool()
+def gdocs_server_info() -> dict:
+    """Server identity + full tool inventory — for change detection across sessions.
+
+    USE WHEN: you want to confirm what version of the MCP you're
+    talking to, detect renames/additions/removals between sessions,
+    or verify a redeploy actually rolled out.
+
+    The ``tools`` list is the COMPLETE registered tool inventory
+    direct from the server's own registry — not filtered or summarized.
+    Counting it and diffing across sessions is the canonical way for a
+    caller to detect drift between what their cache thinks the server
+    has and what it actually has.
+
+    Returns:
+        ``{"version", "build_time", "git_commit", "tool_count",
+        "tools": [...]}``.
+        ``build_time`` and ``git_commit`` are baked in at Docker build
+        time via --build-arg; if the deploy script didn't pass them
+        they show as ``"unknown"``.
+    """
+    # Pull the live tool list from FastMCP's registry. Internal attribute
+    # path on FastMCP 2.x — stable across patch versions but worth a
+    # touch test on FastMCP major upgrades.
+    try:
+        tools_dict = mcp._tool_manager._tools  # type: ignore[attr-defined]
+        tool_names = sorted(tools_dict.keys())
+    except AttributeError:
+        # Fallback if FastMCP rearranges internals: at least return
+        # something instead of crashing.
+        tool_names = []
+
+    # Read version via importlib.metadata to avoid the circular-import
+    # trap (__init__.py imports server.main, so server can't import
+    # __version__ from the partially-loaded package at module-load
+    # time). Reading from installed package metadata is also more
+    # honest — it reflects the wheel that's actually deployed.
+    from importlib.metadata import version as _pkg_version
+    try:
+        ver = _pkg_version("google-docs-mcp")
+    except Exception:  # noqa: BLE001
+        ver = "unknown"
+    return {
+        "version": ver,
+        "build_time": os.environ.get("BUILD_TIME", "unknown"),
+        "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+        "tool_count": len(tool_names),
+        "tools": tool_names,
+    }
+
+
+@mcp.tool()
 def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     """Build a Google Docs URL that opens directly to a specific tab.
 

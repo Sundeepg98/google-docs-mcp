@@ -9,6 +9,14 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
+# Bake in deploy provenance. Both default to "unknown" so a vanilla
+# `docker build` works for local testing without git context. The
+# deploy.sh wrapper passes the real values via --build-arg.
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV BUILD_TIME=${BUILD_TIME}
+
 # Persistent data dir for OAuth token + Apps Script config.
 # In production, mount a Fly Volume here so token.json survives restarts.
 RUN mkdir -p /data/google-docs-mcp

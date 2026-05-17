@@ -1,5 +1,5 @@
 """Google Docs MCP server with native Tabs support."""
 from .server import main
 
-__version__ = "0.17.4"
+__version__ = "0.18.0"
 __all__ = ["main"]
