@@ -38,7 +38,6 @@ from starlette.routing import Mount, Route
 
 from .auth import default_data_dir, load_credentials
 from .crypto import NonceStore, verify_signed_params
-from .docs_api import set_tab_icons as _set_tab_icons
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 
 # Process-wide single-use nonce tracker for signed upload URLs.
@@ -151,18 +150,20 @@ async def convert_endpoint(request: Request) -> JSONResponse:
 
     try:
         creds = load_credentials(default_data_dir())
+        # Pass icons_by_title INTO the convert pipeline so they're
+        # applied between Apps Script restructure and placeholder
+        # delete. Calling set_tab_icons AFTER delete races against
+        # Google's server-state propagation and 500s on heavy converts.
         result = _convert_docx(
             creds,
             docx_path=tmp_path,
             split_by=split_by_raw,  # type: ignore[arg-type]
             title=title,
+            icons_by_title=icons_by_title,
             placeholder_behavior=placeholder_behavior_raw,  # type: ignore[arg-type]
             placeholder_title=placeholder_title_raw,
             placeholder_icon=placeholder_icon_raw,
         )
-        if icons_by_title and result.get("doc_id"):
-            icon_result = _set_tab_icons(creds, result["doc_id"], icons_by_title)
-            result["icons"] = icon_result
         return JSONResponse(result)
     except FileNotFoundError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

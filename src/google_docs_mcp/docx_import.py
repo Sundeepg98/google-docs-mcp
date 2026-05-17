@@ -31,6 +31,7 @@ from .docs_api import (
     add_tabs_to_doc,
     delete_tab,
     rename_tab,
+    set_tab_icons,
 )
 
 PlaceholderBehavior = Literal["delete", "rename", "keep"]
@@ -70,6 +71,7 @@ def convert_docx_to_tabbed_doc(
     split_by: SplitBy = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
+    icons_by_title: dict[str, str] | None = None,
     placeholder_behavior: PlaceholderBehavior = "delete",
     placeholder_title: str = DEFAULT_PLACEHOLDER_TITLE,
     placeholder_icon: str = DEFAULT_PLACEHOLDER_ICON,
@@ -186,7 +188,20 @@ def convert_docx_to_tabbed_doc(
             f"{response.get('error', 'no error message returned')}"
         )
 
-    # 6. Apply the user's chosen placeholder-tab policy:
+    # 6. Apply post-restructure icons by title match. MUST run BEFORE
+    # the placeholder delete — Google returns 500 on the icon-apply
+    # batchUpdate if we delete a tab and then immediately submit
+    # another tab-touching batch in the same logical sequence (server
+    # state hasn't settled). Race confirmed empirically on 14-section
+    # converts. Order is: Apps Script → set_tab_icons → delete/rename.
+    icons_result: dict | None = None
+    if icons_by_title:
+        try:
+            icons_result = set_tab_icons(creds, doc_id, icons_by_title)
+        except Exception as e:  # noqa: BLE001
+            icons_result = {"error": str(e)}
+
+    # 7. Apply the user's chosen placeholder-tab policy:
     #    delete: remove the now-empty placeholder so the sidebar shows
     #            only section tabs (default; cleanest)
     #    rename: keep it but rename to placeholder_title with an icon
@@ -214,7 +229,7 @@ def convert_docx_to_tabbed_doc(
     if placeholder_warning:
         warnings.append(placeholder_warning)
 
-    return {
+    result = {
         "doc_id": doc_id,
         "url": converted["url"],
         "tabs": response.get("tabs", []),
@@ -222,6 +237,9 @@ def convert_docx_to_tabbed_doc(
         "warnings": warnings,
         "split_strategy_used": strategy_used,
     }
+    if icons_result is not None:
+        result["icons"] = icons_result
+    return result
 
 
 def _detect_splits(
