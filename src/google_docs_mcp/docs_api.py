@@ -308,11 +308,17 @@ def add_tabs_to_doc(
     }
 
 
-def get_doc_outline(creds: Credentials, doc_id: str) -> list[dict]:
-    """Return a flat pre-order list of every tab in a doc with structure metadata.
+def get_doc_outline(creds: Credentials, doc_id: str) -> dict:
+    """Return the doc's tab structure plus its trash state.
 
-    Each entry: ``{tab_id, title, parent_tab_id, depth, index, icon_emoji}``.
-    No content is returned — use ``read_tab_content`` for that.
+    Shape: ``{"doc_id", "trashed", "tabs": [...]}``. Each entry in
+    ``tabs`` is ``{tab_id, title, parent_tab_id, depth, index,
+    icon_emoji}`` in pre-order traversal.
+
+    ``trashed`` surfaces whether the underlying Drive file is in trash
+    (hidden from normal Drive UI but still accessible by ID). When
+    True, callers should usually warn the user before continuing to
+    edit — the file is invisible to them in Drive.
     """
     docs = build("docs", "v1", credentials=creds)
     # includeTabsContent must be True for the tabs[] field to be populated
@@ -321,12 +327,12 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> list[dict]:
         documentId=doc_id, includeTabsContent=True
     ).execute()
 
-    out: list[dict] = []
+    tabs_out: list[dict] = []
 
     def walk(tabs: list[dict], parent_id: str | None, depth: int) -> None:
         for i, tab in enumerate(tabs):
             props = tab["tabProperties"]
-            out.append(
+            tabs_out.append(
                 {
                     "tab_id": props["tabId"],
                     "title": props.get("title", ""),
@@ -339,7 +345,13 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> list[dict]:
             walk(tab.get("childTabs") or [], props["tabId"], depth + 1)
 
     walk(fetched.get("tabs") or [], None, 0)
-    return out
+
+    # Surface Drive trash state. Best-effort: if the Drive lookup
+    # fails we report trashed=False rather than failing the call.
+    from .drive_api import is_file_trashed
+    trashed = is_file_trashed(creds, doc_id)
+
+    return {"doc_id": doc_id, "trashed": trashed, "tabs": tabs_out}
 
 
 def read_tab_content(
@@ -420,9 +432,11 @@ def read_tab_content(
         elif "tableOfContents" in elem:
             paragraphs.append({"style": "TOC", "text": "[table of contents]"})
 
+    from .drive_api import is_file_trashed
     return {
         "tab_id": tab["tabProperties"]["tabId"],
         "title": tab["tabProperties"]["title"],
+        "trashed": is_file_trashed(creds, doc_id),
         "paragraph_count": sum(
             1 for p in paragraphs if p["style"] not in ("TABLE", "TOC")
         ),
@@ -511,7 +525,12 @@ def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
             walk(tab.get("childTabs") or [], depth + 1)
 
     walk(fetched.get("tabs") or [])
-    return {"doc_id": doc_id, "tabs": out}
+    from .drive_api import is_file_trashed
+    return {
+        "doc_id": doc_id,
+        "trashed": is_file_trashed(creds, doc_id),
+        "tabs": out,
+    }
 
 
 def _summarize_body_paragraphs(content: list[dict]) -> list[dict]:

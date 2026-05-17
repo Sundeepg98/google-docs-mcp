@@ -219,7 +219,7 @@ def gdocs_add_tabs(
 
 
 @mcp.tool()
-def gdocs_get_doc_outline(doc_id: str) -> list[dict]:
+def gdocs_get_doc_outline(doc_id: str) -> dict:
     """List every tab in a Google Doc with its structure (no body content).
 
     Useful as a discovery step before ``gdocs_append_to_tab`` or other
@@ -229,10 +229,17 @@ def gdocs_get_doc_outline(doc_id: str) -> list[dict]:
         doc_id: The document ID.
 
     Returns:
-        A flat pre-order list. Each entry is
-        ``{"tab_id", "title", "parent_tab_id", "depth", "index", "icon_emoji"}``.
-        ``depth`` is 0 for root tabs. ``parent_tab_id`` is ``null`` for
-        root tabs. ``index`` is the tab's sibling order under its parent.
+        ``{"doc_id", "trashed": bool, "tabs": [...]}``. Each entry in
+        ``tabs`` is ``{"tab_id", "title", "parent_tab_id", "depth",
+        "index", "icon_emoji"}`` in pre-order traversal. ``depth`` is
+        0 for root tabs; ``parent_tab_id`` is null for root tabs;
+        ``index`` is the sibling order under the parent.
+
+        ``trashed`` flags whether the underlying Drive file is in
+        trash. The file is hidden from the user's Drive UI when True,
+        but API calls (including this one) still work. Surface this
+        to the user before doing further edits — they probably didn't
+        mean to keep editing a hidden file.
     """
     try:
         creds = _get_credentials()
@@ -513,6 +520,29 @@ def gdocs_rename_tab(
         return {"doc_id": doc_id, "tab_id": tab_id, "updated_fields": updated}
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
+    """Build a Google Docs URL that opens directly to a specific tab.
+
+    USE WHEN: you want to give the user a link that lands them on a
+    particular tab (e.g. after generating a tabbed doc, link them to
+    the section they asked about). Cleaner than telling them "open the
+    doc and click tab N".
+
+    No API call — pure URL construction. Google Docs supports the
+    ``?tab=t.<TAB_ID>`` query param natively; this just composes it.
+
+    Args:
+        doc_id: The document ID.
+        tab_id: The tab's ID (from ``gdocs_get_doc_outline``).
+
+    Returns:
+        ``{"doc_id", "tab_id", "url"}`` — ``url`` is the deep link.
+    """
+    url = f"https://docs.google.com/document/d/{doc_id}/edit?tab={tab_id}"
+    return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
 
 
 @mcp.tool()

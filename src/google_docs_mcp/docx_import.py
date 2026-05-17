@@ -284,12 +284,12 @@ def convert_docx_to_tabbed_doc(
     # taken BEFORE steps 6 (icons) and 7 (placeholder rename/delete)
     # ran, so its titles + missing icon_emoji are stale.
     try:
-        final_outline = get_doc_outline(creds, doc_id)
+        outline = get_doc_outline(creds, doc_id)
         # Keep ``id`` as alias for ``tab_id`` so callers that already
         # use the Apps-Script-snapshot shape don't break.
-        for t in final_outline:
+        for t in outline["tabs"]:
             t["id"] = t["tab_id"]
-        final_tabs: list[dict] = final_outline
+        final_tabs: list[dict] = outline["tabs"]
     except Exception:  # noqa: BLE001
         # Fallback: keep the pre-finalization snapshot if the refresh
         # fails. Better stale data than no response.

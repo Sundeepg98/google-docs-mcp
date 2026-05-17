@@ -191,6 +191,24 @@ def copy_google_doc(
     }
 
 
+def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
+    """Return whether the Drive file is currently in trash.
+
+    Used by read-side tools (``get_doc_outline``, ``read_*``) to
+    surface ``trashed: true`` in responses so callers know they're
+    working with a hidden file. Best-effort — if the lookup itself
+    fails (e.g. file deleted permanently), returns False.
+    """
+    drive = build("drive", "v3", credentials=creds)
+    try:
+        meta = drive.files().get(
+            fileId=drive_file_id, fields="trashed"
+        ).execute()
+        return bool(meta.get("trashed"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
     """Return the mime type of a Drive file. Used to route to the
     right ingestion function (raw .docx vs already-converted Google Doc)."""
