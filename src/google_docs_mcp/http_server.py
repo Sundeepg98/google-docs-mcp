@@ -39,6 +39,7 @@ from starlette.routing import Mount, Route
 from .auth import default_data_dir, load_credentials
 from .crypto import NonceStore, verify_signed_params
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
+from .errors import friendly_http_error_message
 
 # Process-wide single-use nonce tracker for signed upload URLs.
 _NONCE_STORE = NonceStore()
@@ -115,6 +116,12 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    replace_doc_id_raw = form.get("replace_doc_id")
+    replace_doc_id: str | None = (
+        replace_doc_id_raw if isinstance(replace_doc_id_raw, str) and replace_doc_id_raw
+        else None
+    )
+
     icons_raw = form.get("icons_by_title")
     icons_by_title: dict[str, str] | None = None
     if icons_raw:
@@ -163,6 +170,7 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             placeholder_behavior=placeholder_behavior_raw,  # type: ignore[arg-type]
             placeholder_title=placeholder_title_raw,
             placeholder_icon=placeholder_icon_raw,
+            replace_doc_id=replace_doc_id,
         )
         return JSONResponse(result)
     except FileNotFoundError as e:
@@ -172,13 +180,10 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     except RuntimeError as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     except HttpError as e:
-        details = (
-            e.error_details if hasattr(e, "error_details") else str(e)
-        )
         return JSONResponse(
             {
-                "error": f"Google API error: {e.status_code} {e.reason}",
-                "details": details,
+                "error": friendly_http_error_message(e),
+                "status_code": e.status_code,
             },
             status_code=502,
         )

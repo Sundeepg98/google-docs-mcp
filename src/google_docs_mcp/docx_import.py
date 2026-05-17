@@ -43,6 +43,7 @@ from .drive_api import (
     classify_drive_file,
     copy_google_doc,
     fetch_and_convert_drive_docx,
+    trash_drive_file,
     upload_and_convert_docx,
 )
 
@@ -67,7 +68,7 @@ class _SplitPoint(TypedDict):
 def convert_docx_to_tabbed_doc(
     creds: Credentials,
     docx_path: Path | None = None,
-    docx_drive_file_id: str | None = None,
+    drive_file_id: str | None = None,
     split_by: SplitBy = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
@@ -75,12 +76,27 @@ def convert_docx_to_tabbed_doc(
     placeholder_behavior: PlaceholderBehavior = "delete",
     placeholder_title: str = DEFAULT_PLACEHOLDER_TITLE,
     placeholder_icon: str = DEFAULT_PLACEHOLDER_ICON,
+    replace_doc_id: str | None = None,
+    docx_drive_file_id: str | None = None,  # deprecated alias for drive_file_id
 ) -> dict:
-    """Convert a .docx into a Google Doc with native nested tabs.
+    """Convert a .docx OR a Google Doc into a Google Doc with native nested tabs.
 
-    Provide exactly ONE of ``docx_path`` (local filesystem) or
-    ``docx_drive_file_id`` (already-uploaded Drive file — accepts
-    both raw .docx and already-converted Google Docs).
+    Three input modes — pick the one that matches your environment:
+
+    - ``docx_path``: absolute path to a local ``.docx`` on the machine
+      the MCP server runs on. Works for local stdio MCP (Claude Code /
+      Claude Desktop). DOES NOT work from claude.ai cloud chat — the
+      remote server can't see the chat sandbox's filesystem.
+    - ``drive_file_id``: Drive file ID of an already-uploaded .docx OR
+      Google Doc. Use this when the document already lives on Drive.
+      Note that programmatically-uploaded .docx blobs can fail Drive
+      conversion with 400 conversionUnsupportedConversionPath — if
+      that happens from cloud chat, switch to the signed-URL flow.
+    - **Signed-URL flow** (NOT a parameter here): from cloud chat,
+      call ``get_signed_upload_url`` then POST the .docx bytes to
+      that URL with multipart/form-data. The REST endpoint accepts
+      the same fields as this tool. This is the only reliable path
+      for sandbox-built .docx files.
 
     ``tab_icons`` is an optional list of emoji icons assigned in
     detected-split order. If shorter than the number of splits, the
@@ -89,9 +105,13 @@ def convert_docx_to_tabbed_doc(
 
     Returns ``{"doc_id", "url", "tabs", "split_strategy_used", ...}``.
     """
-    if (docx_path is None) == (docx_drive_file_id is None):
+    # Backward-compat: accept the old name drive_file_id as an alias.
+    if drive_file_id is not None and drive_file_id is None:
+        drive_file_id = drive_file_id
+
+    if (docx_path is None) == (drive_file_id is None):
         raise ValueError(
-            "Provide exactly one of docx_path or docx_drive_file_id "
+            "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
         )
 
@@ -114,22 +134,22 @@ def convert_docx_to_tabbed_doc(
         converted = upload_and_convert_docx(creds, docx_path, title=title)
         source_label = docx_path.name
     else:
-        assert docx_drive_file_id is not None  # narrowing for typecheckers
-        source_mime = classify_drive_file(creds, docx_drive_file_id)
+        assert drive_file_id is not None  # narrowing for typecheckers
+        source_mime = classify_drive_file(creds, drive_file_id)
         if source_mime == DOCX_MIME:
             converted = fetch_and_convert_drive_docx(
-                creds, docx_drive_file_id, title=title
+                creds, drive_file_id, title=title
             )
         elif source_mime == GDOC_MIME:
             converted = copy_google_doc(
-                creds, docx_drive_file_id, title=title
+                creds, drive_file_id, title=title
             )
         else:
             raise ValueError(
-                f"Drive file {docx_drive_file_id!r} has mimeType "
+                f"Drive file {drive_file_id!r} has mimeType "
                 f"{source_mime!r}. Expected .docx or Google Doc."
             )
-        source_label = f"drive file {docx_drive_file_id}"
+        source_label = f"drive file {drive_file_id}"
     doc_id = converted["doc_id"]
 
     # 2. Find split points in the converted doc's primary tab body.
@@ -225,9 +245,37 @@ def convert_docx_to_tabbed_doc(
         except Exception as e:  # noqa: BLE001
             placeholder_warning = f"could not rename placeholder tab: {e}"
 
-    warnings = list(response.get("warnings", []))
+    # Split the Apps Script warnings into real warnings (problems the
+    # caller should act on) vs info notes (cosmetic things the API
+    # forces on us). The "remove_failed:N:...Can't remove the last
+    # paragraph in a document section." warning is structural —
+    # Google Docs requires at least one paragraph per section, so the
+    # script can't fully empty the placeholder tab. Always fires; never
+    # actionable. Moving it to ``info`` keeps ``warnings`` meaningful.
+    raw_warnings = list(response.get("warnings", []))
+    info: list[str] = []
+    warnings: list[str] = []
+    for w in raw_warnings:
+        if "Can't remove the last paragraph" in w:
+            info.append(w)
+        else:
+            warnings.append(w)
     if placeholder_warning:
         warnings.append(placeholder_warning)
+
+    # 8. Optional idempotency: trash the prior version so iterating on
+    # a doc doesn't leave a trail of orphaned copies in Drive. Failures
+    # here are non-fatal — surface as info, not warning.
+    replaced_note: str | None = None
+    if replace_doc_id:
+        try:
+            trash_drive_file(creds, replace_doc_id)
+            replaced_note = (
+                f"trashed prior version {replace_doc_id} "
+                "(recoverable from Drive trash for 30 days)"
+            )
+        except Exception as e:  # noqa: BLE001
+            info.append(f"could not trash replace_doc_id {replace_doc_id}: {e}")
 
     result = {
         "doc_id": doc_id,
@@ -235,10 +283,13 @@ def convert_docx_to_tabbed_doc(
         "tabs": response.get("tabs", []),
         "moved_children": response.get("movedChildren", 0),
         "warnings": warnings,
+        "info": info,
         "split_strategy_used": strategy_used,
     }
     if icons_result is not None:
         result["icons"] = icons_result
+    if replaced_note:
+        result["replaced_doc_id"] = replace_doc_id
     return result
 
 

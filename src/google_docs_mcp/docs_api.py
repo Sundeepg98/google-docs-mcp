@@ -432,6 +432,107 @@ def read_tab_content(
     }
 
 
+def replace_all_text(
+    creds: Credentials,
+    doc_id: str,
+    find: str,
+    replace: str,
+    *,
+    match_case: bool = False,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Find-and-replace text across some or all tabs.
+
+    By default (``tab_ids=None``), the replacement runs across **every**
+    tab in the document. Pass an explicit ``tab_ids`` list to scope the
+    operation — important because omitting the field silently hits all
+    tabs, which can be a surprise.
+
+    Returns ``{"occurrences_changed": int, "scope": "all_tabs" | tab_ids}``.
+    """
+    if not find:
+        raise ValueError("find string cannot be empty")
+    docs = build("docs", "v1", credentials=creds)
+    req: dict[str, Any] = {
+        "replaceAllText": {
+            "containsText": {"text": find, "matchCase": match_case},
+            "replaceText": replace,
+        }
+    }
+    if tab_ids is not None:
+        if not tab_ids:
+            raise ValueError("tab_ids list cannot be empty; omit to target all tabs")
+        req["replaceAllText"]["tabsCriteria"] = {"tabIds": list(tab_ids)}
+
+    resp = docs.documents().batchUpdate(
+        documentId=doc_id, body={"requests": [req]}
+    ).execute()
+    occurrences = (
+        resp.get("replies", [{}])[0]
+        .get("replaceAllText", {})
+        .get("occurrencesChanged", 0)
+    )
+    return {
+        "occurrences_changed": occurrences,
+        "scope": "all_tabs" if tab_ids is None else tab_ids,
+    }
+
+
+def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
+    """Read body content of every tab in one call.
+
+    Bulk version of ``read_tab_content``. Useful when you want a
+    whole-document dump (e.g. for offline review or text search).
+
+    Returns ``{"doc_id", "tabs": [{tab_id, title, depth, paragraphs:
+    [{style, text}, ...]}, ...]}`` — tabs in pre-order traversal.
+    """
+    docs = build("docs", "v1", credentials=creds)
+    fetched = docs.documents().get(
+        documentId=doc_id, includeTabsContent=True
+    ).execute()
+
+    out: list[dict] = []
+
+    def walk(tabs: list[dict], depth: int = 0) -> None:
+        for tab in tabs:
+            props = tab["tabProperties"]
+            body = tab.get("documentTab", {}).get("body", {})
+            paragraphs = _summarize_body_paragraphs(body.get("content") or [])
+            out.append(
+                {
+                    "tab_id": props["tabId"],
+                    "title": props.get("title", ""),
+                    "depth": depth,
+                    "paragraph_count": len(paragraphs),
+                    "paragraphs": paragraphs,
+                }
+            )
+            walk(tab.get("childTabs") or [], depth + 1)
+
+    walk(fetched.get("tabs") or [])
+    return {"doc_id": doc_id, "tabs": out}
+
+
+def _summarize_body_paragraphs(content: list[dict]) -> list[dict]:
+    """Extract paragraph style + visible text from a body's content list."""
+    out: list[dict] = []
+    for elem in content:
+        if "paragraph" in elem:
+            para = elem["paragraph"]
+            style = para.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
+            text = "".join(
+                pe.get("textRun", {}).get("content", "")
+                for pe in para.get("elements", [])
+            ).rstrip("\n")
+            out.append({"style": style, "text": text})
+        elif "table" in elem:
+            out.append({"style": "TABLE", "text": ""})
+        elif "tableOfContents" in elem:
+            out.append({"style": "TOC", "text": ""})
+    return out
+
+
 def delete_tab(creds: Credentials, doc_id: str, tab_id: str) -> None:
     """Delete a single tab (and its child tabs) from a Google Doc.
 

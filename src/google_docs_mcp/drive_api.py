@@ -190,3 +190,16 @@ def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
         fileId=drive_file_id, fields="mimeType"
     ).execute()
     return meta.get("mimeType", "")
+
+
+def trash_drive_file(creds: Credentials, drive_file_id: str) -> None:
+    """Move a Drive file to trash (recoverable for 30 days).
+
+    Used by ``convert_docx_to_tabbed_doc(replace_doc_id=...)`` to
+    sweep the old version after the new conversion succeeds — keeps
+    Drive tidy while iterating without permanent data loss.
+    """
+    drive = build("drive", "v3", credentials=creds)
+    drive.files().update(
+        fileId=drive_file_id, body={"trashed": True}
+    ).execute()

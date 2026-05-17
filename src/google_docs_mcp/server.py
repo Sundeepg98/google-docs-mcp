@@ -21,6 +21,7 @@ from googleapiclient.errors import HttpError
 
 from .auth import default_data_dir, load_credentials
 from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
+from .errors import friendly_http_error_message
 from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
@@ -28,11 +29,15 @@ from .docs_api import (
     delete_tab as _delete_tab,
     get_doc_outline as _get_doc_outline,
     make_doc_with_tabs,
+    read_all_tabs as _read_all_tabs,
     read_tab_content as _read_tab_content,
     rename_tab as _rename_tab,
+    replace_all_text as _replace_all_text,
     set_tab_icons as _set_tab_icons,
 )
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
+from .preview import preview_tab_split as _preview_tab_split
+from .retrofit import retrofit_existing_docx as _retrofit_existing_docx
 
 mcp = FastMCP("google-docs")
 
@@ -245,7 +250,7 @@ def append_to_tab(
 @mcp.tool()
 def convert_docx_to_tabbed_doc(
     docx_path: str | None = None,
-    docx_drive_file_id: str | None = None,
+    drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
@@ -253,32 +258,39 @@ def convert_docx_to_tabbed_doc(
     placeholder_behavior: Literal["delete", "rename", "keep"] = "delete",
     placeholder_title: str = "Overview",
     placeholder_icon: str = "\U0001f4d1",
+    replace_doc_id: str | None = None,
+    docx_drive_file_id: str | None = None,
 ) -> dict:
-    """Convert a .docx into a Google Doc with native nested tabs.
+    """Convert a .docx OR Google Doc into a Google Doc with native tabs.
+
+    Three input paths depending on where you're calling from:
+
+    - **Claude Code / Claude Desktop (local MCP)**: pass ``docx_path``
+      with the absolute path to the .docx on this machine.
+    - **claude.ai cloud chat**: do NOT use this MCP tool directly for
+      file upload — the .docx bytes can't traverse the tool boundary
+      cleanly. Instead, call ``get_signed_upload_url`` and POST the
+      bytes to that URL via your Python sandbox. This is the only
+      reliable upload route from cloud chat.
+    - **File already on Drive (either .docx or Google Doc)**: pass
+      ``drive_file_id``. Works whether the file is still a .docx or
+      has been auto-converted to a Google Doc.
 
     Pipeline: Drive imports the .docx (lossless: tables, cell shading,
     colored borders, images, equations all preserved) → we identify
     split points by walking the converted doc → REST creates empty
     nested tab shells → Apps Script moves content from the primary tab
-    into the new shells using ``Element.copy()`` (the only path that
-    preserves drawings, equations, and table cell shading because no
-    REST request type can re-emit those).
+    into the new shells using ``Element.copy()``.
 
-    Prerequisite: you must have deployed the helper Apps Script Web
-    App once. Run ``google-docs-mcp setup-apps-script`` to get the
-    deployment recipe, then ``google-docs-mcp configure-webapp <URL>``
-    with the URL after deploying.
+    Prerequisite: helper Apps Script Web App must be deployed once.
+    Run ``google-docs-mcp setup-apps-script`` for setup instructions.
 
     Args:
-        docx_path: Absolute path to a local ``.docx`` file. Use this
-            when the file lives on the machine the MCP server runs on
-            (Claude Code, Claude Desktop). Must end in ``.docx``.
-        docx_drive_file_id: Google Drive file ID of a .docx already
-            uploaded to Drive. Use this when calling from Claude.ai
-            cloud chat — cloud chat can upload the .docx via its own
-            Drive connector and pass us the resulting file ID.
-            Requires the ``drive.readonly`` OAuth scope (added in
-            v0.8.0; you may need to re-authorize once).
+        docx_path: Absolute path to a local ``.docx`` (local MCP only).
+        drive_file_id: Drive file ID of an existing .docx or Google Doc.
+            Accepts both mime types and routes automatically.
+        docx_drive_file_id: Deprecated alias for ``drive_file_id``.
+            Kept for backward compatibility.
         split_by: How to identify tab boundaries in the converted doc.
             - ``"heading_1"`` (default): each Heading 1 paragraph
               starts a new tab; the tab title is the heading text.
@@ -307,18 +319,21 @@ def convert_docx_to_tabbed_doc(
         placeholder_icon: Single emoji to use when
             ``placeholder_behavior`` is ``"rename"``. Default 📑.
 
-    Exactly one of ``docx_path`` or ``docx_drive_file_id`` must be set.
+    Exactly one of ``docx_path`` or ``drive_file_id`` must be set.
 
     Returns:
-        ``{"doc_id", "url", "tabs": [...], "split_strategy_used", ...}``.
-        ``tabs`` is the post-restructure tab list from the Apps Script
-        side (each entry has ``id``, ``title``, ``depth``). If no split
-        points were found, returns the converted single-tab doc unchanged
-        plus a ``note`` field explaining why.
+        ``{"doc_id", "url", "tabs": [...], "split_strategy_used",
+        "warnings": [], "info": [], ...}``. ``tabs`` is the post-
+        restructure tab list (id/title/depth). If no split points were
+        found, returns the converted single-tab doc unchanged plus a
+        ``note`` explaining why.
     """
-    if (docx_path is None) == (docx_drive_file_id is None):
+    if docx_drive_file_id is not None and drive_file_id is None:
+        drive_file_id = docx_drive_file_id
+
+    if (docx_path is None) == (drive_file_id is None):
         raise ToolError(
-            "Provide exactly one of docx_path or docx_drive_file_id "
+            "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
         )
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
@@ -327,7 +342,7 @@ def convert_docx_to_tabbed_doc(
         return _convert_docx(
             creds,
             docx_path=path,
-            docx_drive_file_id=docx_drive_file_id,
+            drive_file_id=drive_file_id,
             split_by=split_by,
             title=title,
             tab_icons=tab_icons,
@@ -335,6 +350,7 @@ def convert_docx_to_tabbed_doc(
             placeholder_behavior=placeholder_behavior,
             placeholder_title=placeholder_title,
             placeholder_icon=placeholder_icon,
+            replace_doc_id=replace_doc_id,
         )
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
@@ -409,6 +425,65 @@ def delete_tab(doc_id: str, tab_id: str) -> dict:
 
 
 @mcp.tool()
+def replace_all_text(
+    doc_id: str,
+    find: str,
+    replace: str,
+    match_case: bool = False,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Find-and-replace text across tabs.
+
+    By default scope is ALL tabs (matches Google's default behavior
+    when ``tabsCriteria`` is omitted). Pass ``tab_ids`` to scope to
+    specific tabs — use ``get_doc_outline`` to find IDs first.
+
+    Args:
+        doc_id: Document ID.
+        find: Substring to search for. Must be non-empty.
+        replace: Replacement text (can be empty to delete matches).
+        match_case: Whether matching is case-sensitive. Default False.
+        tab_ids: Optional list of tab IDs to scope the replacement to.
+            Omit (or pass None) to replace across every tab.
+
+    Returns:
+        ``{"occurrences_changed": int, "scope": "all_tabs" | [tab_ids]}``.
+    """
+    try:
+        creds = _get_credentials()
+        return _replace_all_text(
+            creds, doc_id, find, replace,
+            match_case=match_case, tab_ids=tab_ids,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def read_all_tabs(doc_id: str) -> dict:
+    """Read body content of every tab in a Google Doc.
+
+    Bulk equivalent of calling ``read_tab_content`` for each tab from
+    ``get_doc_outline``. Returns paragraphs (style + text) for each
+    tab in pre-order traversal.
+
+    Args:
+        doc_id: Document ID.
+
+    Returns:
+        ``{"doc_id", "tabs": [{tab_id, title, depth, paragraph_count,
+        paragraphs: [{style, text}, ...]}, ...]}``.
+    """
+    try:
+        creds = _get_credentials()
+        return _read_all_tabs(creds, doc_id)
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
 def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     """Set or update icon emojis on existing tabs by title match.
 
@@ -444,6 +519,109 @@ def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     try:
         creds = _get_credentials()
         return _set_tab_icons(creds, doc_id, icons_by_title)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def retrofit_existing_docx(
+    markers: list[dict],
+    docx_path: str | None = None,
+    drive_file_id: str | None = None,
+    title: str | None = None,
+    icons_by_title: dict[str, str] | None = None,
+    placeholder_behavior: Literal["delete", "rename", "keep"] = "delete",
+    placeholder_title: str = "Overview",
+    placeholder_icon: str = "\U0001f4d1",
+    replace_doc_id: str | None = None,
+) -> dict:
+    """Inject Heading 1 markers into a styled .docx, then convert.
+
+    For pre-existing styled documents (curriculum decks, branded
+    deliverables) where section boundaries are table banners, not
+    Heading paragraphs. The default converter can't split those —
+    this tool injects synthetic Heading 1 paragraphs at the boundaries
+    you specify, without rebuilding the doc or disturbing its
+    formatting, then converts normally.
+
+    Args:
+        markers: ordered list of
+            ``[{"marker_text": "...", "tab_title": "..."}, ...]``.
+            Each ``marker_text`` is a short distinctive phrase that
+            appears in the section's banner (case-sensitive substring
+            match against visible text of paragraphs and tables).
+            The matching block gets a Heading 1 paragraph with
+            ``tab_title`` inserted before it.
+        docx_path: Absolute path to a local ``.docx`` (local MCP only).
+        drive_file_id: Drive file ID of an existing .docx OR Google Doc.
+        title / icons_by_title / placeholder_*  / replace_doc_id:
+            Pass-through to ``convert_docx_to_tabbed_doc``.
+
+    Returns:
+        Same shape as ``convert_docx_to_tabbed_doc``, plus
+        ``"retrofit": {"markers_matched": int, "markers_missed": [...]}``.
+        If zero markers matched, returns an ``error`` field with
+        guidance and does not create a Google Doc.
+    """
+    path: Path | None = Path(docx_path).expanduser() if docx_path else None
+    try:
+        creds = _get_credentials()
+        return _retrofit_existing_docx(
+            creds,
+            markers=markers,
+            docx_path=path,
+            drive_file_id=drive_file_id,
+            title=title,
+            icons_by_title=icons_by_title,
+            placeholder_behavior=placeholder_behavior,
+            placeholder_title=placeholder_title,
+            placeholder_icon=placeholder_icon,
+            replace_doc_id=replace_doc_id,
+        )
+    except FileNotFoundError as e:
+        raise ToolError(str(e)) from e
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    except RuntimeError as e:
+        raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def preview_tab_split(
+    docx_path: str | None = None,
+    drive_file_id: str | None = None,
+    split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
+) -> dict:
+    """Dry-run: report what tabs would be created without creating a doc.
+
+    Validates a .docx (or already-on-Drive file) before you commit to
+    a conversion. Surfaces: detected boundaries, titles, over-length
+    titles (will be truncated to 80 chars), and zero-boundary cases.
+
+    Args:
+        docx_path: Absolute path to a local ``.docx`` (local MCP only).
+        drive_file_id: Drive file ID of an existing .docx OR Google Doc.
+            For Google Docs, we export as .docx via Drive then parse.
+        split_by: Same as ``convert_docx_to_tabbed_doc``.
+
+    Returns:
+        ``{"split_strategy_used", "tab_count", "tabs":
+        [{title, raw_title, warnings}, ...], "problems": [...]}``.
+        Empty ``problems`` means the convert would proceed cleanly.
+    """
+    path: Path | None = Path(docx_path).expanduser() if docx_path else None
+    try:
+        creds = _get_credentials() if drive_file_id else None
+        return _preview_tab_split(
+            creds=creds, docx_path=path, drive_file_id=drive_file_id,
+            split_by=split_by,
+        )
+    except FileNotFoundError as e:
+        raise ToolError(str(e)) from e
     except ValueError as e:
         raise ToolError(str(e)) from e
     except HttpError as e:
@@ -508,8 +686,7 @@ def get_signed_upload_url(
 
 
 def _format_http_error(e: HttpError) -> str:
-    details = e.error_details if hasattr(e, "error_details") else str(e)
-    return f"Google Docs API error: {e.status_code} {e.reason}. Details: {details}"
+    return friendly_http_error_message(e)
 
 
 _CLI_SUBCOMMANDS = {"setup-apps-script", "configure-webapp", "status", "help", "-h", "--help"}
