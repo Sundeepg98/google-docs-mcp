@@ -21,6 +21,7 @@ from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -226,22 +227,78 @@ def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     succeeds without error. Uses ``files.update`` (trash) — NEVER
     ``files.delete`` (permanent purge), so the operation is reversible.
 
-    Returns the file's metadata after the trash: ``{file_id, name,
-    trashed: True, mimeType, was_already_trashed: bool}``. The
-    ``name`` lets the caller confirm the right file was touched;
-    ``was_already_trashed`` flags the no-op case.
+    Returns:
+        Success: ``{file_id, name, mimeType, trashed: True,
+        was_already_trashed: bool}``.
+        Soft-failure (NOT raised, returned as data so batch cleanups
+        can skip-and-continue): ``{file_id, trashed: False, reason,
+        message}`` where ``reason`` is:
+        - ``"not_found"`` — file id doesn't resolve (404 on get)
+        - ``"app_not_authorized"`` — OAuth app lacks write access
+          (file wasn't created by this app; drive.file scope can only
+          touch files this app owns; 403 appNotAuthorizedToFile)
+
+        Other errors still raise ``HttpError`` so genuine bugs surface.
     """
     drive = build("drive", "v3", credentials=creds)
-    # Read current state first so we can flag idempotent no-ops.
-    before = drive.files().get(
-        fileId=drive_file_id, fields="id,name,mimeType,trashed"
-    ).execute()
+
+    # Read current state first so we can flag idempotent no-ops AND
+    # detect non-existent IDs early with a clean reason.
+    try:
+        before = drive.files().get(
+            fileId=drive_file_id, fields="id,name,mimeType,trashed"
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "file_id": drive_file_id,
+                "trashed": False,
+                "reason": "not_found",
+                "message": (
+                    f"Drive file {drive_file_id!r} not found. Check the "
+                    "ID; the file may have been permanently deleted or "
+                    "the OAuth user lacks any access to it."
+                ),
+            }
+        raise
+
     was_already_trashed = bool(before.get("trashed"))
-    updated = drive.files().update(
-        fileId=drive_file_id,
-        body={"trashed": True},
-        fields="id,name,mimeType,trashed",
-    ).execute()
+
+    try:
+        updated = drive.files().update(
+            fileId=drive_file_id,
+            body={"trashed": True},
+            fields="id,name,mimeType,trashed",
+        ).execute()
+    except HttpError as e:
+        # drive.file scope only grants write to files this app created.
+        # Trashing a file uploaded externally (e.g. via the Drive web UI
+        # by the user, or by another app) returns 403
+        # appNotAuthorizedToFile. Return that as data, not as an
+        # exception, so a batch cleanup can skip-and-continue.
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "file_id": drive_file_id,
+                    "name": before.get("name"),
+                    "mimeType": before.get("mimeType"),
+                    "trashed": False,
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks write access to this file — it "
+                        "wasn't created by this app. drive.file scope "
+                        "only permits writes to app-created files. To "
+                        "trash, the file's owner must do it via the "
+                        "Drive UI."
+                    ),
+                }
+        raise
+
     return {
         "file_id": updated.get("id"),
         "name": updated.get("name"),
