@@ -693,7 +693,8 @@ def preview_tab_split(
 
     Validates a .docx (or already-on-Drive file) before you commit to
     a conversion. Surfaces: detected boundaries, titles, over-length
-    titles (will be truncated to 80 chars), and zero-boundary cases.
+    titles (will be truncated to 50 chars — the Google Docs API limit),
+    and zero-boundary cases.
 
     Args:
         docx_path: Absolute path to a local ``.docx`` (local MCP only).
