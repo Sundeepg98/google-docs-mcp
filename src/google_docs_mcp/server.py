@@ -536,6 +536,7 @@ def retrofit_existing_docx(
     placeholder_title: str = "Overview",
     placeholder_icon: str = "\U0001f4d1",
     replace_doc_id: str | None = None,
+    case_sensitive: bool = False,
 ) -> dict:
     """Inject Heading 1 markers into a styled .docx, then convert.
 
@@ -558,12 +559,21 @@ def retrofit_existing_docx(
         drive_file_id: Drive file ID of an existing .docx OR Google Doc.
         title / icons_by_title / placeholder_*  / replace_doc_id:
             Pass-through to ``convert_docx_to_tabbed_doc``.
+        case_sensitive: Default False — matching tolerates Word's
+            autocorrect changing case. Set True for exact case match.
+
+    Matching is Unicode-normalized (NFKC), whitespace-collapsed, and
+    works across fragmented <w:r> run boundaries plus <w:sym> chars
+    (NBSP etc.) — Word frequently splits visually-contiguous phrases
+    across multiple runs for spell-check tags and rPr changes.
 
     Returns:
         Same shape as ``convert_docx_to_tabbed_doc``, plus
-        ``"retrofit": {"markers_matched": int, "markers_missed": [...]}``.
-        If zero markers matched, returns an ``error`` field with
-        guidance and does not create a Google Doc.
+        ``"retrofit": {"markers_matched": int, "markers_missed":
+        [{"marker_text", "candidate_blocks": [first 100 chars of each
+        block's normalized text]}, ...]}``. If zero markers matched,
+        returns an ``error`` field plus the candidate_blocks list for
+        debugging (no Google Doc is created).
     """
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
@@ -579,6 +589,7 @@ def retrofit_existing_docx(
             placeholder_title=placeholder_title,
             placeholder_icon=placeholder_icon,
             replace_doc_id=replace_doc_id,
+            case_sensitive=case_sensitive,
         )
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
