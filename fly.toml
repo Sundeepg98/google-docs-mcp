@@ -39,8 +39,8 @@ primary_region = "bom"
 [checks.health]
   port = 8080
   type = "http"
-  interval = "30s"
-  timeout = "5s"
-  grace_period = "15s"
-  method = "GET"
-  path = "/health"
+  interval = "5m"      # was 30s — kept machine awake every 30s, defeating auto_stop.
+  timeout = "5s"       # 5m means machine actually sleeps between health probes, cutting
+  grace_period = "15s" # ~80% of compute cost. Outage detection takes up to 5m instead of
+  method = "GET"       # 90s, irrelevant for a low-traffic personal MCP — real requests
+  path = "/health"     # surface a broken server instantly.
