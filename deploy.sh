@@ -11,6 +11,20 @@
 #   ./deploy.sh --strategy=immediate
 set -euo pipefail
 
+# Run unit tests first — fail fast before pushing a broken image.
+# Skip with SKIP_TESTS=1 ./deploy.sh if you really need to bypass
+# (e.g. tests themselves are broken and you're hot-fixing).
+if [ "${SKIP_TESTS:-0}" = "0" ]; then
+  echo "running unit tests (set SKIP_TESTS=1 to bypass)..."
+  python -m pytest tests/unit -q || {
+    echo ""
+    echo "❌ unit tests FAILED — refusing to deploy."
+    echo "   fix the tests OR run with SKIP_TESTS=1 to bypass."
+    exit 1
+  }
+  echo "✅ unit tests passed."
+fi
+
 GIT_COMMIT=$(git rev-parse --short HEAD)
 BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 

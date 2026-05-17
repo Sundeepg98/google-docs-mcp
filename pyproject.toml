@@ -30,6 +30,11 @@ dependencies = [
     "python-docx>=1.0",  # used by preview_tab_split + retrofit_existing_docx
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/Sundeepg98/google-docs-mcp"
 Issues = "https://github.com/Sundeepg98/google-docs-mcp/issues"
