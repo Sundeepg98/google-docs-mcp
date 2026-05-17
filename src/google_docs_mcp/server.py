@@ -736,7 +736,7 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
 
 
 @mcp.tool()
-def gdocs_untrash_file(file_id) -> dict:
+def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     """Restore a trashed Drive file back to its original location.
 
     Inverse of ``gdocs_trash_file``. Ships together so a wrong trash
@@ -772,7 +772,7 @@ def gdocs_untrash_file(file_id) -> dict:
 
 
 @mcp.tool()
-def gdocs_trash_file(file_id) -> dict:
+def gdocs_trash_file(file_id: str | list[str]) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
     USE WHEN: you need to clean up an obsolete Drive file — a
