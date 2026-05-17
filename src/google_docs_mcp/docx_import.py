@@ -30,6 +30,7 @@ from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
     delete_tab,
+    get_doc_outline,
     rename_tab,
     set_tab_icons,
 )
@@ -277,10 +278,27 @@ def convert_docx_to_tabbed_doc(
         except Exception as e:  # noqa: BLE001
             info.append(f"could not trash replace_doc_id {replace_doc_id}: {e}")
 
+    # 9. Refresh tabs from the live doc so the response reflects FINAL
+    # state — including renamed placeholder, applied icons, and any
+    # tab IDs assigned by Google. The Apps Script returns a snapshot
+    # taken BEFORE steps 6 (icons) and 7 (placeholder rename/delete)
+    # ran, so its titles + missing icon_emoji are stale.
+    try:
+        final_outline = get_doc_outline(creds, doc_id)
+        # Keep ``id`` as alias for ``tab_id`` so callers that already
+        # use the Apps-Script-snapshot shape don't break.
+        for t in final_outline:
+            t["id"] = t["tab_id"]
+        final_tabs: list[dict] = final_outline
+    except Exception:  # noqa: BLE001
+        # Fallback: keep the pre-finalization snapshot if the refresh
+        # fails. Better stale data than no response.
+        final_tabs = response.get("tabs", [])
+
     result = {
         "doc_id": doc_id,
         "url": converted["url"],
-        "tabs": response.get("tabs", []),
+        "tabs": final_tabs,
         "moved_children": response.get("movedChildren", 0),
         "warnings": warnings,
         "info": info,
@@ -346,7 +364,11 @@ def _detect_splits(
         if is_split:
             splits.append(
                 _SplitPoint(
-                    title=(title_text or f"Section {len(splits) + 1}")[:80].strip()
+                    # Google Docs API rejects tab titles >50 chars with
+                    # a 400 ("The tab title cannot be longer than 50
+                    # characters"). Truncate to match the API limit so
+                    # we don't fail at addDocumentTab time.
+                    title=(title_text or f"Section {len(splits) + 1}")[:50].strip()
                     or f"Section {len(splits) + 1}",
                     icon_emoji=None,
                     ranges=[(child_idx, child_idx)],

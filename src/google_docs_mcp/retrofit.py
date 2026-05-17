@@ -99,7 +99,14 @@ def retrofit_existing_docx(
     # 1. Load the .docx bytes.
     if docx_path is not None:
         if not docx_path.exists():
-            raise FileNotFoundError(f"DOCX file not found: {docx_path}")
+            raise FileNotFoundError(
+                f"docx_path not found: {docx_path}. The 'docx_path' "
+                "parameter only works when the MCP server can see the file "
+                "on its own filesystem (local stdio MCP — Claude Code / "
+                "Claude Desktop). From claude.ai cloud chat the remote "
+                "server can't see your sandbox. Upload the .docx to Drive "
+                "first (drive.files.create) and pass its id as drive_file_id."
+            )
         with open(docx_path, "rb") as f:
             src_bytes = f.read()
     else:

@@ -44,7 +44,16 @@ def upload_and_convert_docx(
     operations on it work under the standard ``documents`` scope.
     """
     if not docx_path.exists():
-        raise FileNotFoundError(f"DOCX file not found: {docx_path}")
+        raise FileNotFoundError(
+            f"docx_path not found: {docx_path}. The 'docx_path' parameter "
+            "only works when the MCP server can see the file on its own "
+            "filesystem — i.e. when running locally as a stdio MCP host "
+            "(Claude Code / Claude Desktop). From claude.ai cloud chat the "
+            "server cannot see your sandbox's filesystem; instead either "
+            "(a) call get_signed_upload_url and POST the .docx bytes to "
+            "the returned URL via your Python sandbox, or (b) upload to "
+            "Drive first and pass drive_file_id."
+        )
     if docx_path.suffix.lower() != ".docx":
         raise ValueError(
             f"Expected a .docx file (got '{docx_path.suffix}'). "

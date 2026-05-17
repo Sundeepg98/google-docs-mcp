@@ -22,7 +22,7 @@ from .drive_api import DOCX_MIME, GDOC_MIME
 
 PreviewSplitBy = Literal["heading_1", "heading_2", "page_break", "auto"]
 
-TITLE_MAX_CHARS = 80  # internal cap also enforced by convert_docx_to_tabbed_doc
+TITLE_MAX_CHARS = 50  # Google Docs API hard limit (returns 400 above this)
 
 _STYLE_FOR_SPLIT = {
     "heading_1": "Heading 1",
