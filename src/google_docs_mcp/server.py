@@ -39,7 +39,53 @@ from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 from .preview import preview_tab_split as _preview_tab_split
 from .retrofit import retrofit_existing_docx as _retrofit_existing_docx
 
-mcp = FastMCP("google-docs")
+_SERVER_INSTRUCTIONS = """\
+This server creates and edits Google Docs with the native Tabs feature
+(October 2024+ sidebar tabs).
+
+TOOL SELECTION — pick the right tool for what the user is asking:
+
+1. NEW content you are composing in the conversation (the user describes
+   sections, you have the text to put in them):
+   -> create_tabbed_doc(title, tabs=[{title, content (markdown),
+      icon_emoji?, children?}])
+   No file. No upload. One MCP call. This is the DEFAULT for any
+   request like "make me a tabbed doc with these sections".
+
+2. EXISTING .docx or Google Doc that already lives on Drive (the user
+   provides a file ID, or you've already located one):
+   -> convert_docx_to_tabbed_doc(drive_file_id=..., split_by="heading_1")
+   Splits the existing doc into tabs by heading style. NEVER use this
+   for content composed in chat — that is create_tabbed_doc's job.
+
+3. EXISTING styled .docx with NO Heading 1 paragraphs (banners are
+   tables, etc.):
+   -> retrofit_existing_docx(markers=[{marker_text, tab_title}, ...])
+   Injects synthetic Heading 1 paragraphs before each marker block,
+   then converts. Preserves all original formatting.
+
+4. EDIT existing tabs in an existing doc:
+   -> rename_tab, delete_tab, set_tab_icons, replace_all_text, add_tabs,
+      append_to_tab
+
+5. READ what is in a doc:
+   -> get_doc_outline (structure + icons, no content) or
+      read_all_tabs / read_tab_content (with text)
+
+6. PREVIEW what a conversion would produce before committing:
+   -> preview_tab_split(docx_path or drive_file_id, split_by)
+
+7. SANDBOX-built .docx that absolutely must ship raw bytes over HTTP
+   (e.g. the file already exists in your Python sandbox and rebuilding
+   from text would lose formatting):
+   -> get_signed_upload_url, then POST. Almost never the right answer
+   for new content from chat — prefer create_tabbed_doc.
+
+In doubt: if the request reads like "build me a doc with these
+sections", use create_tabbed_doc and nothing else.
+"""
+
+mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
 
 # Lazy module-level cache so the OAuth flow / discovery client setup
 # happens on the first tool call rather than at import time. Subsequent
@@ -56,11 +102,23 @@ def _get_credentials():
 
 @mcp.tool()
 def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
-    """Create a Google Doc with native tabs, optionally nested up to 3 levels.
+    """DEFAULT tool for building a tabbed Google Doc from text content.
 
-    Each tab is a separately-navigable section in the Google Docs left
-    sidebar — not just an outline heading. Tabs can have child tabs
-    (and grandchildren) for hierarchical structure.
+    USE WHEN: You are composing a new document in the conversation —
+    you have the section titles and the body text (as markdown) and
+    want a Google Doc with one native tab per section. ONE MCP call,
+    no file, no upload. This is the right answer for any request like
+    "make me a tabbed doc with sections X, Y, Z" or "create a research
+    doc covering these topics".
+
+    DO NOT USE when: the source is an existing .docx or Google Doc on
+    Drive — that is `convert_docx_to_tabbed_doc`'s job. Do not build a
+    .docx in your sandbox just to call the .docx converter; if you have
+    the text, this tool consumes it directly.
+
+    Tabs are separately-navigable sidebar entries (Oct 2024+ Docs
+    feature), not just outline headings. Tabs may have child tabs (and
+    grandchildren) up to 3 levels deep.
 
     Args:
         title: Document title (shown in Google Drive).
@@ -261,20 +319,32 @@ def convert_docx_to_tabbed_doc(
     replace_doc_id: str | None = None,
     docx_drive_file_id: str | None = None,
 ) -> dict:
-    """Convert a .docx OR Google Doc into a Google Doc with native tabs.
+    """Convert an EXISTING .docx or Google Doc on Drive into tabs.
 
-    Three input paths depending on where you're calling from:
+    USE WHEN: the user already has a document on Drive (.docx or
+    native Google Doc) and wants its existing heading structure
+    converted into sidebar tabs. Pass ``drive_file_id``.
 
-    - **Claude Code / Claude Desktop (local MCP)**: pass ``docx_path``
-      with the absolute path to the .docx on this machine.
-    - **claude.ai cloud chat**: do NOT use this MCP tool directly for
-      file upload — the .docx bytes can't traverse the tool boundary
-      cleanly. Instead, call ``get_signed_upload_url`` and POST the
-      bytes to that URL via your Python sandbox. This is the only
-      reliable upload route from cloud chat.
-    - **File already on Drive (either .docx or Google Doc)**: pass
-      ``drive_file_id``. Works whether the file is still a .docx or
-      has been auto-converted to a Google Doc.
+    DO NOT USE when:
+    - You are composing the document in the conversation. Use
+      ``create_tabbed_doc`` instead — give it the section titles and
+      markdown content directly. Building a .docx in your sandbox just
+      to feed this tool is the wrong shape; you'd lose formatting and
+      add 4 unnecessary steps.
+    - The source doc has table-banner section markers but NO Heading 1
+      paragraphs. Use ``retrofit_existing_docx`` to inject headings
+      first.
+
+    Input paths:
+    - ``drive_file_id``: any .docx or Google Doc already on Drive.
+      Auto-routes by mime type. PREFERRED.
+    - ``docx_path``: absolute path on the SERVER's filesystem. Only
+      works for local stdio MCP (Claude Code / Claude Desktop). Does
+      NOT work from claude.ai cloud chat — the server cannot see your
+      sandbox.
+    - Sandbox-built .docx in cloud chat: call ``get_signed_upload_url``
+      then POST. Only do this if you genuinely have an existing .docx
+      file in the sandbox (not a docx you just built from text).
 
     Pipeline: Drive imports the .docx (lossless: tables, cell shading,
     colored borders, images, equations all preserved) → we identify
@@ -538,14 +608,26 @@ def retrofit_existing_docx(
     replace_doc_id: str | None = None,
     case_sensitive: bool = False,
 ) -> dict:
-    """Inject Heading 1 markers into a styled .docx, then convert.
+    """Retrofit a styled .docx that has NO Heading 1s with synthetic ones.
 
-    For pre-existing styled documents (curriculum decks, branded
-    deliverables) where section boundaries are table banners, not
-    Heading paragraphs. The default converter can't split those —
-    this tool injects synthetic Heading 1 paragraphs at the boundaries
-    you specify, without rebuilding the doc or disturbing its
-    formatting, then converts normally.
+    USE WHEN: the source is a pre-existing styled deliverable (a
+    curriculum deck, branded handout, contract template) where section
+    boundaries are visual elements (table banners, colored bars) and
+    there are no actual Heading 1 paragraphs. ``convert_docx_to_tabbed_doc``
+    can't split those because it relies on heading styles.
+
+    DO NOT USE when:
+    - You are composing new content in chat. Use ``create_tabbed_doc``.
+    - The source already has Heading 1 paragraphs. Use
+      ``convert_docx_to_tabbed_doc`` directly — no retrofit needed.
+
+    How it works: provide ``markers`` as an ordered list of
+    ``{marker_text, tab_title}``. For each, the tool finds a body
+    paragraph or table containing ``marker_text`` (case-insensitive,
+    Unicode-normalized, tolerant of fragmented runs) and injects a
+    Heading 1 paragraph with ``tab_title`` before it. Then runs the
+    normal convert pipeline. Original formatting is preserved exactly —
+    we only ADD heading paragraphs, never remove anything.
 
     Args:
         markers: ordered list of
@@ -644,16 +726,20 @@ def get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
 ) -> dict:
-    """Mint a single-use, time-limited signed URL for direct .docx upload.
+    """Mint a signed URL ONLY for uploading an existing .docx file's bytes.
 
-    Built for the claude.ai cloud-chat workflow where the model's Python
-    sandbox needs to POST a .docx to ``/api/convert`` but can't share
-    credentials with the connector. The model calls this tool through
-    the OAuth-protected MCP transport, gets back a self-authenticating
-    URL, and hands it to its Python sandbox as a literal. The sandbox
-    then does an ordinary ``requests.post(url, files=...)`` with NO
-    Authorization header — the HMAC signature inside the URL is the
-    credential.
+    USE WHEN: you genuinely have an existing .docx file in your Python
+    sandbox (e.g. one a user uploaded, one a pipeline produced) and
+    need to POST its raw bytes to /api/convert from cloud chat. The
+    signed URL is the credential — no Authorization header needed.
+
+    DO NOT USE when:
+    - You are composing new content from text. Use ``create_tabbed_doc``
+      — it takes markdown directly and skips this upload dance entirely.
+      Building a .docx in the sandbox just to upload it here is pointless
+      extra work.
+    - The .docx already lives on Drive. Use
+      ``convert_docx_to_tabbed_doc(drive_file_id=...)`` instead.
 
     The URL is single-use (the server tracks consumed nonces) and
     expires after ``ttl_seconds`` (default 10 min, max 1 hour).
