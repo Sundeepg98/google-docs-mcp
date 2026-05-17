@@ -20,6 +20,7 @@ from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
 from .auth import default_data_dir, load_credentials
+from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
 from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
@@ -363,6 +364,63 @@ def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
         raise ToolError(str(e)) from e
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def get_signed_upload_url(
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    max_bytes: int = 50 * 1024 * 1024,
+) -> dict:
+    """Mint a single-use, time-limited signed URL for direct .docx upload.
+
+    Built for the claude.ai cloud-chat workflow where the model's Python
+    sandbox needs to POST a .docx to ``/api/convert`` but can't share
+    credentials with the connector. The model calls this tool through
+    the OAuth-protected MCP transport, gets back a self-authenticating
+    URL, and hands it to its Python sandbox as a literal. The sandbox
+    then does an ordinary ``requests.post(url, files=...)`` with NO
+    Authorization header — the HMAC signature inside the URL is the
+    credential.
+
+    The URL is single-use (the server tracks consumed nonces) and
+    expires after ``ttl_seconds`` (default 10 min, max 1 hour).
+
+    Args:
+        ttl_seconds: How long the URL stays valid. Default 600s; keep
+            short to limit blast radius if the URL leaks into a chat
+            transcript.
+        max_bytes: Advisory upload size cap baked into the signature.
+            Defaults to 50 MB (Drive's converter ceiling).
+
+    Returns:
+        ``{"url", "expires_at", "max_bytes", "nonce", "usage_hint"}``.
+        ``usage_hint`` is a one-line Python snippet showing how to use
+        the URL — the model copies it into the sandbox.
+    """
+    base = os.environ.get("PUBLIC_BASE_URL", "https://sundeepg98-docs-mcp.fly.dev")
+    signing_key = os.environ.get("MCP_BEARER_TOKEN")
+    if not signing_key:
+        raise ToolError(
+            "MCP_BEARER_TOKEN env var not set on the server — "
+            "signed URLs require it as the HMAC key."
+        )
+    if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
+        raise ToolError(
+            f"ttl_seconds must be 1..{MAX_TTL_SECONDS}, got {ttl_seconds}"
+        )
+
+    minted = sign_upload_url(
+        base_url=f"{base}/api/convert",
+        signing_key=signing_key,
+        ttl_seconds=ttl_seconds,
+        max_bytes=max_bytes,
+    )
+    minted["usage_hint"] = (
+        "requests.post(URL, files={'file': ('doc.docx', open('/path/to/doc.docx','rb'), "
+        "'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}, "
+        "data={'split_by': 'heading_1', 'icons_by_title': '<json-string>'})"
+    )
+    return minted
 
 
 def _format_http_error(e: HttpError) -> str:

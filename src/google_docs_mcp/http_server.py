@@ -37,8 +37,12 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from .auth import default_data_dir, load_credentials
+from .crypto import NonceStore, verify_signed_params
 from .docs_api import set_tab_icons as _set_tab_icons
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
+
+# Process-wide single-use nonce tracker for signed upload URLs.
+_NONCE_STORE = NonceStore()
 
 log = logging.getLogger("google_docs_mcp.http")
 
@@ -189,17 +193,42 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: Any, *, token: str) -> None:
         super().__init__(app)
         self._expected = f"Bearer {token}"
+        self._signing_key = token  # HMAC key for signed-URL auth path
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         if not request.url.path.startswith("/api/"):
             return await call_next(request)
+
+        # Auth path 1: bearer header (legacy / direct API callers).
         provided = request.headers.get("authorization", "")
-        if provided != self._expected:
-            return JSONResponse(
-                {"error": "missing or invalid bearer token"},
-                status_code=401,
+        if provided == self._expected:
+            return await call_next(request)
+
+        # Auth path 2: signed-URL query string (cloud-chat sandbox).
+        # If all four signed-URL params are present, validate the HMAC
+        # and consume the nonce here so the endpoint sees an already-
+        # authorized request. Bearer-token fallback still wins if both
+        # are present and the header matches.
+        qp = request.query_params
+        if all(k in qp for k in ("exp", "nonce", "max", "sig")):
+            ok, err, _max = verify_signed_params(
+                signing_key=self._signing_key,
+                exp=qp["exp"],
+                nonce=qp["nonce"],
+                max_bytes=qp["max"],
+                sig=qp["sig"],
+                nonce_store=_NONCE_STORE,
             )
-        return await call_next(request)
+            if ok:
+                return await call_next(request)
+            return JSONResponse(
+                {"error": f"signed URL rejected: {err}"}, status_code=401
+            )
+
+        return JSONResponse(
+            {"error": "missing or invalid credentials (bearer header or signed URL)"},
+            status_code=401,
+        )
 
 
 # ---------------------------------------------------------------------------
