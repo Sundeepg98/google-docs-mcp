@@ -432,6 +432,59 @@ def read_tab_content(
     }
 
 
+def delete_tab(creds: Credentials, doc_id: str, tab_id: str) -> None:
+    """Delete a single tab (and its child tabs) from a Google Doc.
+
+    Uses the REST ``deleteTab`` batchUpdate request (the API name is
+    ``deleteTab``, not ``deleteDocumentTab``). Per the API contract,
+    deleting a tab cascades to its child tabs.
+    """
+    docs = build("docs", "v1", credentials=creds)
+    docs.documents().batchUpdate(
+        documentId=doc_id,
+        body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
+    ).execute()
+
+
+def rename_tab(
+    creds: Credentials,
+    doc_id: str,
+    tab_id: str,
+    *,
+    title: str | None = None,
+    icon_emoji: str | None = None,
+) -> None:
+    """Rename a tab and/or set its icon emoji.
+
+    Pass either ``title``, ``icon_emoji``, or both. Wraps
+    ``updateDocumentTabProperties`` with the appropriate field mask.
+    """
+    fields = []
+    props: dict[str, Any] = {"tabId": tab_id}
+    if title is not None:
+        props["title"] = title
+        fields.append("title")
+    if icon_emoji is not None:
+        props["iconEmoji"] = icon_emoji
+        fields.append("iconEmoji")
+    if not fields:
+        return
+    docs = build("docs", "v1", credentials=creds)
+    docs.documents().batchUpdate(
+        documentId=doc_id,
+        body={
+            "requests": [
+                {
+                    "updateDocumentTabProperties": {
+                        "tabProperties": props,
+                        "fields": ",".join(fields),
+                    }
+                }
+            ]
+        },
+    ).execute()
+
+
 def _find_tab_by_title(tabs: list[dict], target_title: str) -> dict | None:
     """Recursively locate a tab in nested ``tabs`` by exact title match."""
     for tab in tabs:

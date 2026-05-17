@@ -94,6 +94,28 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     title_raw = form.get("title")
     title: str | None = title_raw if isinstance(title_raw, str) and title_raw else None
 
+    placeholder_behavior_raw = form.get("placeholder_behavior") or "delete"
+    if (
+        not isinstance(placeholder_behavior_raw, str)
+        or placeholder_behavior_raw not in {"delete", "rename", "keep"}
+    ):
+        return JSONResponse(
+            {
+                "error": f"Invalid placeholder_behavior: {placeholder_behavior_raw!r} "
+                "(must be 'delete', 'rename', or 'keep')"
+            },
+            status_code=400,
+        )
+    placeholder_title_raw = form.get("placeholder_title") or "Overview"
+    placeholder_icon_raw = form.get("placeholder_icon") or "\U0001f4d1"
+    if not isinstance(placeholder_title_raw, str) or not isinstance(
+        placeholder_icon_raw, str
+    ):
+        return JSONResponse(
+            {"error": "placeholder_title and placeholder_icon must be strings"},
+            status_code=400,
+        )
+
     icons_raw = form.get("icons_by_title")
     icons_by_title: dict[str, str] | None = None
     if icons_raw:
@@ -134,6 +156,9 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             docx_path=tmp_path,
             split_by=split_by_raw,  # type: ignore[arg-type]
             title=title,
+            placeholder_behavior=placeholder_behavior_raw,  # type: ignore[arg-type]
+            placeholder_title=placeholder_title_raw,
+            placeholder_icon=placeholder_icon_raw,
         )
         if icons_by_title and result.get("doc_id"):
             icon_result = _set_tab_icons(creds, result["doc_id"], icons_by_title)

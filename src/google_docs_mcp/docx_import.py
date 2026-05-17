@@ -29,7 +29,13 @@ from .docs_api import (
     MAX_NESTING_DEPTH,
     TabSpec,
     add_tabs_to_doc,
+    delete_tab,
+    rename_tab,
 )
+
+PlaceholderBehavior = Literal["delete", "rename", "keep"]
+DEFAULT_PLACEHOLDER_TITLE = "Overview"
+DEFAULT_PLACEHOLDER_ICON = "\U0001f4d1"  # 📑
 from .drive_api import (
     DOCX_MIME,
     GDOC_MIME,
@@ -64,6 +70,9 @@ def convert_docx_to_tabbed_doc(
     split_by: SplitBy = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
+    placeholder_behavior: PlaceholderBehavior = "delete",
+    placeholder_title: str = DEFAULT_PLACEHOLDER_TITLE,
+    placeholder_icon: str = DEFAULT_PLACEHOLDER_ICON,
 ) -> dict:
     """Convert a .docx into a Google Doc with native nested tabs.
 
@@ -156,12 +165,12 @@ def convert_docx_to_tabbed_doc(
             f"Google Docs UI allows at most {MAX_NESTING_DEPTH}."
         )
 
-    # 4. REST creates the empty tab shells under the primary tab.
+    # 4. REST creates the empty tab shells at root level — siblings of
+    # the placeholder primary tab, not children of it. Gives the user a
+    # sidebar of top-level section tabs instead of one collapsed root.
     primary_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
     shell_specs = [_split_to_tabspec(s) for s in splits]
-    add_tabs_to_doc(
-        creds, doc_id, shell_specs, parent_tab_id=primary_tab_id
-    )
+    add_tabs_to_doc(creds, doc_id, shell_specs)
 
     # 5. Apps Script moves content into the shells with full fidelity.
     payload = {
@@ -177,12 +186,40 @@ def convert_docx_to_tabbed_doc(
             f"{response.get('error', 'no error message returned')}"
         )
 
+    # 6. Apply the user's chosen placeholder-tab policy:
+    #    delete: remove the now-empty placeholder so the sidebar shows
+    #            only section tabs (default; cleanest)
+    #    rename: keep it but rename to placeholder_title with an icon
+    #            (useful if you want a landing/intro tab)
+    #    keep:   leave as "Tab 1", do nothing (caller will edit manually)
+    placeholder_warning: str | None = None
+    if placeholder_behavior == "delete":
+        try:
+            delete_tab(creds, doc_id, primary_tab_id)
+        except Exception as e:  # noqa: BLE001
+            placeholder_warning = f"could not delete placeholder tab: {e}"
+    elif placeholder_behavior == "rename":
+        try:
+            rename_tab(
+                creds,
+                doc_id,
+                primary_tab_id,
+                title=placeholder_title,
+                icon_emoji=placeholder_icon,
+            )
+        except Exception as e:  # noqa: BLE001
+            placeholder_warning = f"could not rename placeholder tab: {e}"
+
+    warnings = list(response.get("warnings", []))
+    if placeholder_warning:
+        warnings.append(placeholder_warning)
+
     return {
         "doc_id": doc_id,
         "url": converted["url"],
         "tabs": response.get("tabs", []),
         "moved_children": response.get("movedChildren", 0),
-        "warnings": response.get("warnings", []),
+        "warnings": warnings,
         "split_strategy_used": strategy_used,
     }
 

@@ -25,9 +25,11 @@ from .docs_api import (
     TabSpec,
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
+    delete_tab as _delete_tab,
     get_doc_outline as _get_doc_outline,
     make_doc_with_tabs,
     read_tab_content as _read_tab_content,
+    rename_tab as _rename_tab,
     set_tab_icons as _set_tab_icons,
 )
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
@@ -247,6 +249,9 @@ def convert_docx_to_tabbed_doc(
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
+    placeholder_behavior: Literal["delete", "rename", "keep"] = "delete",
+    placeholder_title: str = "Overview",
+    placeholder_icon: str = "\U0001f4d1",
 ) -> dict:
     """Convert a .docx into a Google Doc with native nested tabs.
 
@@ -288,6 +293,18 @@ def convert_docx_to_tabbed_doc(
             Shorter lists are fine — remaining tabs get no icon. To set
             icons later (or match by title rather than order), use
             ``set_tab_icons``.
+        placeholder_behavior: What to do with the original "Tab 1"
+            placeholder after content has been split into section tabs.
+            - ``"delete"`` (default): remove the now-empty placeholder
+              so the sidebar shows only section tabs.
+            - ``"rename"``: rename it to ``placeholder_title`` with
+              ``placeholder_icon``. Use this if you want a landing/
+              intro tab as the first sidebar entry.
+            - ``"keep"``: leave it untouched as "Tab 1".
+        placeholder_title: Title to use when ``placeholder_behavior``
+            is ``"rename"``. Default ``"Overview"``.
+        placeholder_icon: Single emoji to use when
+            ``placeholder_behavior`` is ``"rename"``. Default 📑.
 
     Exactly one of ``docx_path`` or ``docx_drive_file_id`` must be set.
 
@@ -313,6 +330,9 @@ def convert_docx_to_tabbed_doc(
             split_by=split_by,
             title=title,
             tab_icons=tab_icons,
+            placeholder_behavior=placeholder_behavior,
+            placeholder_title=placeholder_title,
+            placeholder_icon=placeholder_icon,
         )
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
@@ -320,6 +340,68 @@ def convert_docx_to_tabbed_doc(
         raise ToolError(str(e)) from e
     except RuntimeError as e:
         raise ToolError(str(e)) from e
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def rename_tab(
+    doc_id: str,
+    tab_id: str,
+    title: str | None = None,
+    icon_emoji: str | None = None,
+) -> dict:
+    """Rename a tab and/or set its icon emoji.
+
+    Pass either ``title``, ``icon_emoji``, or both. At least one must
+    be non-null. Use ``get_doc_outline`` first to find the ``tab_id``.
+
+    Args:
+        doc_id: The document ID.
+        tab_id: The tab's ID (from ``get_doc_outline``).
+        title: New title for the tab, or ``None`` to leave unchanged.
+        icon_emoji: New icon (single emoji, ≤8 UTF-8 bytes), or ``None``
+            to leave unchanged.
+
+    Returns:
+        ``{"doc_id", "tab_id", "updated_fields": ["title", "iconEmoji"]}``.
+    """
+    if title is None and icon_emoji is None:
+        raise ToolError("Provide at least one of title or icon_emoji")
+    if icon_emoji is not None and len(icon_emoji.encode("utf-8")) > 8:
+        raise ToolError("icon_emoji must be a single emoji (≤8 UTF-8 bytes)")
+    try:
+        creds = _get_credentials()
+        _rename_tab(creds, doc_id, tab_id, title=title, icon_emoji=icon_emoji)
+        updated = []
+        if title is not None:
+            updated.append("title")
+        if icon_emoji is not None:
+            updated.append("iconEmoji")
+        return {"doc_id": doc_id, "tab_id": tab_id, "updated_fields": updated}
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def delete_tab(doc_id: str, tab_id: str) -> dict:
+    """Delete a single tab (and its child tabs) from a Google Doc.
+
+    Use ``get_doc_outline`` first to find the ``tab_id``. If the tab
+    has child tabs they are deleted with it (per the Google Docs API
+    contract for ``deleteTab``).
+
+    Args:
+        doc_id: The document ID.
+        tab_id: The tab's ID.
+
+    Returns:
+        ``{"doc_id", "deleted_tab_id"}``.
+    """
+    try:
+        creds = _get_credentials()
+        _delete_tab(creds, doc_id, tab_id)
+        return {"doc_id": doc_id, "deleted_tab_id": tab_id}
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
 
