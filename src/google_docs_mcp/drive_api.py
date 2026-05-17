@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import Any
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -283,13 +284,15 @@ def find_doc_by_title(
     exact: bool = False,
     include_trashed: bool = False,
     page_size: int = 50,
+    verify_writable: bool = True,
 ) -> dict:
     """Search Drive for Google Docs / .docx files matching a title.
 
     Newest-first by modified_time. Each match includes whether it's
-    trashed and whether this OAuth app can write to it (i.e. whether
-    drive.file scope permits trash/untrash/move on it — the file was
-    created by this app).
+    trashed and (if ``verify_writable``) whether this OAuth app's
+    drive.file scope can actually write to it — which is the same
+    test that determines whether ``trash_drive_file`` /
+    ``untrash_drive_file`` / ``move_to_folder`` will succeed.
 
     Args:
         query: title text to match.
@@ -297,10 +300,20 @@ def find_doc_by_title(
             (``name contains 'X'``).
         include_trashed: False (default) excludes trashed files.
         page_size: max results to return (Drive API caps at 100).
+        verify_writable: True (default) probes each match with a
+            batched no-op update to determine actual writability under
+            this app's drive.file scope. Costs one extra batched HTTP
+            request per call but guarantees ``owned_by_app`` agrees
+            with what trash/untrash/move will actually do. Pass False
+            to skip the probe and leave ``owned_by_app`` as ``None``
+            (unknown) — faster but the caller must then verify by
+            attempting the write.
 
     Returns:
         ``{"matches": [{file_id, name, mimeType, modified_time,
         trashed, owned_by_app}, ...], "count": int}``.
+        ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
+        ``verify_writable=False``.
     """
     drive = build("drive", "v3", credentials=creds)
 
@@ -321,13 +334,10 @@ def find_doc_by_title(
         q=q,
         orderBy="modifiedTime desc",
         pageSize=min(max(page_size, 1), 100),
-        fields=(
-            "files(id,name,mimeType,modifiedTime,trashed,"
-            "capabilities/canTrash)"
-        ),
+        fields="files(id,name,mimeType,modifiedTime,trashed)",
     ).execute()
 
-    matches = []
+    matches: list[dict] = []
     for f in resp.get("files", []):
         matches.append({
             "file_id": f["id"],
@@ -335,12 +345,51 @@ def find_doc_by_title(
             "mimeType": f.get("mimeType", ""),
             "modified_time": f.get("modifiedTime", ""),
             "trashed": bool(f.get("trashed")),
-            # canTrash is the most direct signal that our drive.file
-            # scope can mutate this file — i.e. our app created it.
-            "owned_by_app": bool(
-                (f.get("capabilities") or {}).get("canTrash")
-            ),
+            "owned_by_app": None,  # filled below if verify_writable
         })
+
+    # Probe writability with a batched no-op update per match. Setting
+    # ``trashed`` to its current value is a true no-op (state doesn't
+    # change) but still triggers Drive's drive.file scope check — the
+    # SAME check that trash_drive_file's real update triggers. If the
+    # probe succeeds, the file is writable under this app's scope; if
+    # it 403s with appNotAuthorizedToFile, it isn't.
+    #
+    # NOTE: ``capabilities.canTrash`` and ``capabilities.canEdit`` are
+    # USER-LEVEL signals — they reflect what the OAuth user is allowed
+    # to do, NOT what this app's scope permits. They wrongly report
+    # True for files the user owns but uploaded outside this app.
+    # That mismatch is why a no-op probe is the only reliable check.
+    if verify_writable and matches:
+        write_results: dict[str, bool] = {}
+
+        def make_callback(fid: str):
+            def cb(_request_id: str, _response: Any, exception: Any) -> None:
+                if exception is None:
+                    write_results[fid] = True
+                elif isinstance(exception, HttpError) and exception.status_code == 403:
+                    # Any 403 means we can't write. The specific
+                    # reason we care about is appNotAuthorizedToFile,
+                    # but any 403 is "not writable for our purposes."
+                    write_results[fid] = False
+                else:
+                    # Unknown error — be conservative and say "we
+                    # don't know" rather than claim writable.
+                    write_results[fid] = False
+            return cb
+
+        batch = drive.new_batch_http_request()
+        for m in matches:
+            probe_req = drive.files().update(
+                fileId=m["file_id"],
+                body={"trashed": m["trashed"]},
+                fields="id",
+            )
+            batch.add(probe_req, callback=make_callback(m["file_id"]))
+        batch.execute()
+
+        for m in matches:
+            m["owned_by_app"] = write_results.get(m["file_id"], False)
 
     return {"matches": matches, "count": len(matches)}
 

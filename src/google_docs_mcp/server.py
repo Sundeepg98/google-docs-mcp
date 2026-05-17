@@ -651,35 +651,40 @@ def gdocs_find_doc_by_title(
     query: str,
     exact: bool = False,
     include_trashed: bool = False,
+    verify_writable: bool = True,
 ) -> dict:
     """Look up a Google Doc / .docx by title — find a file_id from a name.
 
     USE WHEN: you have a doc name (the user just told you, or it's
     from a past session) and need its file_id to call any other tool.
-    Without this, the only way to get a file_id was to have it pasted
-    into the conversation.
 
-    Matches are returned newest-first by modified_time, so the most
-    recent doc with that title is at index 0. Each match flags
+    Matches return newest-first by modified_time. Each match flags
     ``trashed`` and ``owned_by_app``:
     - ``trashed: true`` means the file is in Drive Trash (hidden from
       the user's Drive UI; recoverable for 30 days)
     - ``owned_by_app: true`` means this OAuth app's drive.file scope
-      can write to it (trash, rename, move). False = read-only —
-      app didn't create it.
+      can ACTUALLY write to it — i.e. ``gdocs_trash_file`` /
+      ``gdocs_untrash_file`` / ``gdocs_move_to_folder`` will succeed.
+      This is verified via a batched no-op write probe (NOT inferred
+      from user-level capabilities which can disagree).
 
     Args:
         query: Title text to search for.
         exact: True = exact title match. False (default) = substring
             ("contains") match.
         include_trashed: False (default) excludes trashed files from
-            results. Pass True to surface them too.
+            results.
+        verify_writable: True (default) probes each match with a
+            batched no-op update to determine actual writability under
+            this app's drive.file scope. Pass False to skip the probe
+            (faster, but ``owned_by_app`` will be ``None`` and the
+            caller must verify before mutating).
 
     Returns:
         ``{"matches": [{file_id, name, mimeType, modified_time,
-        trashed, owned_by_app}, ...], "count": int}``. Empty matches
-        means nothing matched — try a substring (exact=False) or
-        broaden the query.
+        trashed, owned_by_app}, ...], "count": int}``.
+        ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
+        ``verify_writable=False``.
     """
     if not query.strip():
         raise ToolError("query cannot be empty")
@@ -687,7 +692,9 @@ def gdocs_find_doc_by_title(
         creds = _get_credentials()
         return _find_doc_by_title(
             creds, query,
-            exact=exact, include_trashed=include_trashed,
+            exact=exact,
+            include_trashed=include_trashed,
+            verify_writable=verify_writable,
         )
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
