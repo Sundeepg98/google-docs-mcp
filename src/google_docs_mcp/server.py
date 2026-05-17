@@ -1,11 +1,11 @@
 """Google Docs MCP Server with native Tabs support.
 
 Exposes MCP tools for working with native Google Docs tabs:
-``create_tabbed_doc``, ``add_tabs``, ``get_doc_outline``,
-``append_to_tab``, and ``convert_docx_to_tabbed_doc``.
+``gdocs_make_tabbed_doc``, ``gdocs_add_tabs``, ``gdocs_get_doc_outline``,
+``gdocs_append_to_tab``, and ``gdocs_tab_existing_doc``.
 
 The same entry point also implements one-off CLI commands for the
-Apps Script setup needed by ``convert_docx_to_tabbed_doc``; see the
+Apps Script setup needed by ``gdocs_tab_existing_doc``; see the
 ``cli`` module for those.
 """
 from __future__ import annotations
@@ -41,48 +41,49 @@ from .retrofit import retrofit_existing_docx as _retrofit_existing_docx
 
 _SERVER_INSTRUCTIONS = """\
 This server creates and edits Google Docs with the native Tabs feature
-(October 2024+ sidebar tabs).
+(October 2024+ sidebar tabs). All tools are prefixed ``gdocs_``.
 
 TOOL SELECTION — pick the right tool for what the user is asking:
 
-1. NEW content you are composing in the conversation (the user describes
-   sections, you have the text to put in them):
-   -> create_tabbed_doc(title, tabs=[{title, content (markdown),
+1. NEW content you are composing in the conversation (you have the
+   section titles and the text — no source file):
+   -> gdocs_make_tabbed_doc(title, tabs=[{title, content (markdown),
       icon_emoji?, children?}])
    No file. No upload. One MCP call. This is the DEFAULT for any
    request like "make me a tabbed doc with these sections".
 
-2. EXISTING .docx or Google Doc that already lives on Drive (the user
-   provides a file ID, or you've already located one):
-   -> convert_docx_to_tabbed_doc(drive_file_id=..., split_by="heading_1")
-   Splits the existing doc into tabs by heading style. NEVER use this
-   for content composed in chat — that is create_tabbed_doc's job.
+2. EXISTING .docx or Google Doc already on Drive — convert its
+   heading structure into tabs:
+   -> gdocs_tab_existing_doc(drive_file_id=..., split_by="heading_1")
+   NEVER use this for content composed in chat — that is
+   gdocs_make_tabbed_doc's job.
 
-3. EXISTING styled .docx with NO Heading 1 paragraphs (banners are
-   tables, etc.):
-   -> retrofit_existing_docx(markers=[{marker_text, tab_title}, ...])
-   Injects synthetic Heading 1 paragraphs before each marker block,
-   then converts. Preserves all original formatting.
+3. EXISTING styled doc on Drive with NO Heading 1 paragraphs (e.g.
+   section banners are inside tables):
+   -> gdocs_tab_existing_doc(drive_file_id=..., markers=[
+        {marker_text, tab_title}, ...])
+   Same tool as #2; passing ``markers`` triggers retrofit (injects
+   synthetic Heading 1s before each marker block, then converts).
 
 4. EDIT existing tabs in an existing doc:
-   -> rename_tab, delete_tab, set_tab_icons, replace_all_text, add_tabs,
-      append_to_tab
+   -> gdocs_rename_tab, gdocs_delete_tab, gdocs_set_tab_icons,
+      gdocs_replace_all_text, gdocs_add_tabs, gdocs_append_to_tab
 
 5. READ what is in a doc:
-   -> get_doc_outline (structure + icons, no content) or
-      read_all_tabs / read_tab_content (with text)
+   -> gdocs_get_doc_outline (structure + icons, no body text)
+   -> gdocs_read_doc(doc_id, tab_id?) (body text — one tab or all)
 
 6. PREVIEW what a conversion would produce before committing:
-   -> preview_tab_split(docx_path or drive_file_id, split_by)
+   -> gdocs_preview_tab_split(docx_path or drive_file_id, split_by)
 
 7. SANDBOX-built .docx that absolutely must ship raw bytes over HTTP
-   (e.g. the file already exists in your Python sandbox and rebuilding
+   (the file already exists as bytes in your sandbox and rebuilding
    from text would lose formatting):
-   -> get_signed_upload_url, then POST. Almost never the right answer
-   for new content from chat — prefer create_tabbed_doc.
+   -> gdocs_get_signed_upload_url, then POST. Almost never right for
+   new content from chat — prefer gdocs_make_tabbed_doc.
 
 In doubt: if the request reads like "build me a doc with these
-sections", use create_tabbed_doc and nothing else.
+sections", use gdocs_make_tabbed_doc and nothing else.
 """
 
 mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
@@ -101,7 +102,7 @@ def _get_credentials():
 
 
 @mcp.tool()
-def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
+def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     """DEFAULT tool for building a tabbed Google Doc from text content.
 
     USE WHEN: You are composing a new document in the conversation —
@@ -112,7 +113,7 @@ def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     doc covering these topics".
 
     DO NOT USE when: the source is an existing .docx or Google Doc on
-    Drive — that is `convert_docx_to_tabbed_doc`'s job. Do not build a
+    Drive — that is `gdocs_tab_existing_doc`'s job. Do not build a
     .docx in your sandbox just to call the .docx converter; if you have
     the text, this tool consumes it directly.
 
@@ -173,21 +174,21 @@ def create_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
 
 
 @mcp.tool()
-def add_tabs(
+def gdocs_add_tabs(
     doc_id: str,
     tabs: list[TabSpec],
     parent_tab_id: str | None = None,
 ) -> dict:
     """Append tabs to an existing Google Doc, optionally nested.
 
-    Same nesting rules as ``create_tabbed_doc``. Pass ``parent_tab_id``
+    Same nesting rules as ``gdocs_make_tabbed_doc``. Pass ``parent_tab_id``
     to make the new tabs children of an existing tab; omit it to add
     them as new root-level tabs.
 
     Args:
-        doc_id: The document ID (from a prior ``create_tabbed_doc`` or
+        doc_id: The document ID (from a prior ``gdocs_make_tabbed_doc`` or
             ``find_doc_by_title`` call, or the URL ``/d/{id}/edit``).
-        tabs: Same shape as ``create_tabbed_doc.tabs``.
+        tabs: Same shape as ``gdocs_make_tabbed_doc.tabs``.
         parent_tab_id: Optional. If given, new tabs are children of this
             tab. Total nesting (parent depth + new tabs depth) must not
             exceed 3 levels.
@@ -217,10 +218,10 @@ def add_tabs(
 
 
 @mcp.tool()
-def get_doc_outline(doc_id: str) -> list[dict]:
+def gdocs_get_doc_outline(doc_id: str) -> list[dict]:
     """List every tab in a Google Doc with its structure (no body content).
 
-    Useful as a discovery step before ``append_to_tab`` or other
+    Useful as a discovery step before ``gdocs_append_to_tab`` or other
     targeted operations — you need a ``tab_id`` to call them.
 
     Args:
@@ -240,31 +241,41 @@ def get_doc_outline(doc_id: str) -> list[dict]:
 
 
 @mcp.tool()
-def read_tab_content(
+def gdocs_read_doc(
     doc_id: str,
     tab_id: str | None = None,
     tab_title: str | None = None,
 ) -> dict:
-    """Read the body content of a single tab.
+    """Read tab body content — one tab or all of them.
 
-    Use ``get_doc_outline`` first to see the tab list, then pass either
-    a ``tab_id`` (exact) or ``tab_title`` (first pre-order match).
+    USE WHEN: you need the actual text/paragraphs inside a doc.
+    For tab structure WITHOUT body text (faster, smaller), use
+    ``gdocs_get_doc_outline`` instead.
+
+    Behavior:
+    - ``tab_id`` given (exact) OR ``tab_title`` (first pre-order match):
+      returns a single-tab dict.
+    - Neither given: returns ALL tabs as a list (whole-doc dump).
 
     Returns:
-        ``{"tab_id", "title", "paragraph_count", "table_count",
-        "image_count", "paragraphs": [{"style", "text"}, ...]}``.
-        ``paragraphs[].style`` is a Docs namedStyleType
-        (``HEADING_1``, ``NORMAL_TEXT``, etc.) or ``"TABLE"`` /
-        ``"TOC"`` placeholders. ``text`` has trailing newlines stripped;
-        inline images appear as ``[image]`` markers inside the text.
+        Single-tab mode: ``{"tab_id", "title", "paragraph_count",
+        "table_count", "image_count", "paragraphs": [{"style", "text"},
+        ...]}``.
+        All-tabs mode: ``{"doc_id", "tabs": [{tab_id, title, depth,
+        paragraph_count, paragraphs: [...]}, ...]}``.
 
-    This is the canonical "what's actually inside this tab?" tool —
-    use it after ``convert_docx_to_tabbed_doc`` to confirm content
-    moved correctly without opening the doc in a browser.
+    ``paragraphs[].style`` is a Docs namedStyleType (``HEADING_1``,
+    ``NORMAL_TEXT``, etc.) or ``"TABLE"`` / ``"TOC"`` placeholders.
+    ``text`` has trailing newlines stripped; inline images appear as
+    ``[image]`` markers.
     """
     try:
         creds = _get_credentials()
-        return _read_tab_content(creds, doc_id, tab_id=tab_id, tab_title=tab_title)
+        if tab_id is None and tab_title is None:
+            return _read_all_tabs(creds, doc_id)
+        return _read_tab_content(
+            creds, doc_id, tab_id=tab_id, tab_title=tab_title
+        )
     except ValueError as e:
         raise ToolError(str(e)) from e
     except HttpError as e:
@@ -272,7 +283,7 @@ def read_tab_content(
 
 
 @mcp.tool()
-def append_to_tab(
+def gdocs_append_to_tab(
     doc_id: str,
     tab_id: str,
     content: str,
@@ -281,12 +292,12 @@ def append_to_tab(
     """Append content to the end of an existing tab's body.
 
     Existing content is left untouched. Markdown is rendered with the
-    same renderer as ``create_tabbed_doc`` (headings, bold/italic,
+    same renderer as ``gdocs_make_tabbed_doc`` (headings, bold/italic,
     code, lists, links, blockquotes).
 
     Args:
         doc_id: The document ID.
-        tab_id: The target tab's ID (get from ``get_doc_outline`` or
+        tab_id: The target tab's ID (get from ``gdocs_get_doc_outline`` or
             from the ``tabs[].tab_id`` of a prior create/add call).
         content: The content to append.
         content_format: ``"markdown"`` (default) or ``"text"``.
@@ -306,13 +317,15 @@ def append_to_tab(
 
 
 @mcp.tool()
-def convert_docx_to_tabbed_doc(
+def gdocs_tab_existing_doc(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
     title: str | None = None,
     tab_icons: list[str] | None = None,
     icons_by_title: dict[str, str] | None = None,
+    markers: list[dict] | None = None,
+    case_sensitive: bool = False,
     placeholder_behavior: Literal["delete", "rename", "keep"] = "delete",
     placeholder_title: str = "Overview",
     placeholder_icon: str = "\U0001f4d1",
@@ -322,18 +335,24 @@ def convert_docx_to_tabbed_doc(
     """Convert an EXISTING .docx or Google Doc on Drive into tabs.
 
     USE WHEN: the user already has a document on Drive (.docx or
-    native Google Doc) and wants its existing heading structure
-    converted into sidebar tabs. Pass ``drive_file_id``.
+    native Google Doc) and wants tabs based on its existing structure.
 
-    DO NOT USE when:
-    - You are composing the document in the conversation. Use
-      ``create_tabbed_doc`` instead — give it the section titles and
-      markdown content directly. Building a .docx in your sandbox just
-      to feed this tool is the wrong shape; you'd lose formatting and
-      add 4 unnecessary steps.
-    - The source doc has table-banner section markers but NO Heading 1
-      paragraphs. Use ``retrofit_existing_docx`` to inject headings
-      first.
+    DO NOT USE when: you are composing the document in the conversation.
+    Use ``gdocs_make_tabbed_doc`` instead — give it the section titles
+    and markdown content directly. Building a .docx in your sandbox just
+    to feed this tool is the wrong shape; you'd lose formatting and add
+    4 unnecessary steps.
+
+    Two modes:
+    1. ``split_by`` heading style (default). For docs that already have
+       Heading 1 (or Heading 2 / page breaks) paragraphs.
+    2. ``markers`` retrofit. For styled docs where section boundaries
+       are visual (table banners, colored bars) and NO Heading 1
+       paragraphs exist. Pass ``markers`` as ordered
+       ``[{marker_text, tab_title}, ...]``; the tool injects synthetic
+       Heading 1s before each marker block, then runs the normal
+       conversion. Original formatting is preserved exactly — only
+       headings are added.
 
     Input paths:
     - ``drive_file_id``: any .docx or Google Doc already on Drive.
@@ -342,7 +361,7 @@ def convert_docx_to_tabbed_doc(
       works for local stdio MCP (Claude Code / Claude Desktop). Does
       NOT work from claude.ai cloud chat — the server cannot see your
       sandbox.
-    - Sandbox-built .docx in cloud chat: call ``get_signed_upload_url``
+    - Sandbox-built .docx in cloud chat: call ``gdocs_get_signed_upload_url``
       then POST. Only do this if you genuinely have an existing .docx
       file in the sandbox (not a docx you just built from text).
 
@@ -375,7 +394,7 @@ def convert_docx_to_tabbed_doc(
             tabs in order (first emoji → first detected split, etc.).
             Shorter lists are fine — remaining tabs get no icon. To set
             icons later (or match by title rather than order), use
-            ``set_tab_icons``.
+            ``gdocs_set_tab_icons``.
         placeholder_behavior: What to do with the original "Tab 1"
             placeholder after content has been split into section tabs.
             - ``"delete"`` (default): remove the now-empty placeholder
@@ -388,15 +407,23 @@ def convert_docx_to_tabbed_doc(
             is ``"rename"``. Default ``"Overview"``.
         placeholder_icon: Single emoji to use when
             ``placeholder_behavior`` is ``"rename"``. Default 📑.
+        markers: Optional list of ``[{marker_text, tab_title}, ...]``
+            for the retrofit mode. When provided, the tool injects
+            synthetic Heading 1 paragraphs before each marker block
+            before converting. Matching is Unicode-normalized
+            (NFKC), whitespace-collapsed, case-insensitive by default,
+            and tolerant of fragmented OOXML runs.
+        case_sensitive: Default False. Only applies when ``markers``
+            is given.
 
     Exactly one of ``docx_path`` or ``drive_file_id`` must be set.
 
     Returns:
         ``{"doc_id", "url", "tabs": [...], "split_strategy_used",
-        "warnings": [], "info": [], ...}``. ``tabs`` is the post-
-        restructure tab list (id/title/depth). If no split points were
-        found, returns the converted single-tab doc unchanged plus a
-        ``note`` explaining why.
+        "warnings": [], "info": [], ...}``. When ``markers`` was
+        provided, also includes ``"retrofit": {"markers_matched",
+        "markers_missed": [...]}``. If zero markers matched, returns
+        an ``error`` field plus candidate_blocks for debugging.
     """
     if docx_drive_file_id is not None and drive_file_id is None:
         drive_file_id = docx_drive_file_id
@@ -409,6 +436,22 @@ def convert_docx_to_tabbed_doc(
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
         creds = _get_credentials()
+        if markers:
+            # Retrofit path: inject Heading 1s before each marker, then
+            # convert. Single tool, two modes — discriminated by markers.
+            return _retrofit_existing_docx(
+                creds,
+                markers=markers,
+                docx_path=path,
+                drive_file_id=drive_file_id,
+                title=title,
+                icons_by_title=icons_by_title,
+                placeholder_behavior=placeholder_behavior,
+                placeholder_title=placeholder_title,
+                placeholder_icon=placeholder_icon,
+                replace_doc_id=replace_doc_id,
+                case_sensitive=case_sensitive,
+            )
         return _convert_docx(
             creds,
             docx_path=path,
@@ -433,7 +476,7 @@ def convert_docx_to_tabbed_doc(
 
 
 @mcp.tool()
-def rename_tab(
+def gdocs_rename_tab(
     doc_id: str,
     tab_id: str,
     title: str | None = None,
@@ -442,11 +485,11 @@ def rename_tab(
     """Rename a tab and/or set its icon emoji.
 
     Pass either ``title``, ``icon_emoji``, or both. At least one must
-    be non-null. Use ``get_doc_outline`` first to find the ``tab_id``.
+    be non-null. Use ``gdocs_get_doc_outline`` first to find the ``tab_id``.
 
     Args:
         doc_id: The document ID.
-        tab_id: The tab's ID (from ``get_doc_outline``).
+        tab_id: The tab's ID (from ``gdocs_get_doc_outline``).
         title: New title for the tab, or ``None`` to leave unchanged.
         icon_emoji: New icon (single emoji, ≤8 UTF-8 bytes), or ``None``
             to leave unchanged.
@@ -472,10 +515,10 @@ def rename_tab(
 
 
 @mcp.tool()
-def delete_tab(doc_id: str, tab_id: str) -> dict:
+def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
-    Use ``get_doc_outline`` first to find the ``tab_id``. If the tab
+    Use ``gdocs_get_doc_outline`` first to find the ``tab_id``. If the tab
     has child tabs they are deleted with it (per the Google Docs API
     contract for ``deleteTab``).
 
@@ -495,7 +538,7 @@ def delete_tab(doc_id: str, tab_id: str) -> dict:
 
 
 @mcp.tool()
-def replace_all_text(
+def gdocs_replace_all_text(
     doc_id: str,
     find: str,
     replace: str,
@@ -506,7 +549,7 @@ def replace_all_text(
 
     By default scope is ALL tabs (matches Google's default behavior
     when ``tabsCriteria`` is omitted). Pass ``tab_ids`` to scope to
-    specific tabs — use ``get_doc_outline`` to find IDs first.
+    specific tabs — use ``gdocs_get_doc_outline`` to find IDs first.
 
     Args:
         doc_id: Document ID.
@@ -532,34 +575,12 @@ def replace_all_text(
 
 
 @mcp.tool()
-def read_all_tabs(doc_id: str) -> dict:
-    """Read body content of every tab in a Google Doc.
-
-    Bulk equivalent of calling ``read_tab_content`` for each tab from
-    ``get_doc_outline``. Returns paragraphs (style + text) for each
-    tab in pre-order traversal.
-
-    Args:
-        doc_id: Document ID.
-
-    Returns:
-        ``{"doc_id", "tabs": [{tab_id, title, depth, paragraph_count,
-        paragraphs: [{style, text}, ...]}, ...]}``.
-    """
-    try:
-        creds = _get_credentials()
-        return _read_all_tabs(creds, doc_id)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
-
-
-@mcp.tool()
-def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
+def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     """Set or update icon emojis on existing tabs by title match.
 
     Title matching is case-insensitive substring: the first tab whose
     title contains the key (or whose title is contained in the key)
-    gets the emoji. Useful right after ``convert_docx_to_tabbed_doc``
+    gets the emoji. Useful right after ``gdocs_tab_existing_doc``
     when the caller wants to decorate the auto-named tabs without
     re-running the conversion.
 
@@ -596,95 +617,7 @@ def set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
 
 
 @mcp.tool()
-def retrofit_existing_docx(
-    markers: list[dict],
-    docx_path: str | None = None,
-    drive_file_id: str | None = None,
-    title: str | None = None,
-    icons_by_title: dict[str, str] | None = None,
-    placeholder_behavior: Literal["delete", "rename", "keep"] = "delete",
-    placeholder_title: str = "Overview",
-    placeholder_icon: str = "\U0001f4d1",
-    replace_doc_id: str | None = None,
-    case_sensitive: bool = False,
-) -> dict:
-    """Retrofit a styled .docx that has NO Heading 1s with synthetic ones.
-
-    USE WHEN: the source is a pre-existing styled deliverable (a
-    curriculum deck, branded handout, contract template) where section
-    boundaries are visual elements (table banners, colored bars) and
-    there are no actual Heading 1 paragraphs. ``convert_docx_to_tabbed_doc``
-    can't split those because it relies on heading styles.
-
-    DO NOT USE when:
-    - You are composing new content in chat. Use ``create_tabbed_doc``.
-    - The source already has Heading 1 paragraphs. Use
-      ``convert_docx_to_tabbed_doc`` directly — no retrofit needed.
-
-    How it works: provide ``markers`` as an ordered list of
-    ``{marker_text, tab_title}``. For each, the tool finds a body
-    paragraph or table containing ``marker_text`` (case-insensitive,
-    Unicode-normalized, tolerant of fragmented runs) and injects a
-    Heading 1 paragraph with ``tab_title`` before it. Then runs the
-    normal convert pipeline. Original formatting is preserved exactly —
-    we only ADD heading paragraphs, never remove anything.
-
-    Args:
-        markers: ordered list of
-            ``[{"marker_text": "...", "tab_title": "..."}, ...]``.
-            Each ``marker_text`` is a short distinctive phrase that
-            appears in the section's banner (case-sensitive substring
-            match against visible text of paragraphs and tables).
-            The matching block gets a Heading 1 paragraph with
-            ``tab_title`` inserted before it.
-        docx_path: Absolute path to a local ``.docx`` (local MCP only).
-        drive_file_id: Drive file ID of an existing .docx OR Google Doc.
-        title / icons_by_title / placeholder_*  / replace_doc_id:
-            Pass-through to ``convert_docx_to_tabbed_doc``.
-        case_sensitive: Default False — matching tolerates Word's
-            autocorrect changing case. Set True for exact case match.
-
-    Matching is Unicode-normalized (NFKC), whitespace-collapsed, and
-    works across fragmented <w:r> run boundaries plus <w:sym> chars
-    (NBSP etc.) — Word frequently splits visually-contiguous phrases
-    across multiple runs for spell-check tags and rPr changes.
-
-    Returns:
-        Same shape as ``convert_docx_to_tabbed_doc``, plus
-        ``"retrofit": {"markers_matched": int, "markers_missed":
-        [{"marker_text", "candidate_blocks": [first 100 chars of each
-        block's normalized text]}, ...]}``. If zero markers matched,
-        returns an ``error`` field plus the candidate_blocks list for
-        debugging (no Google Doc is created).
-    """
-    path: Path | None = Path(docx_path).expanduser() if docx_path else None
-    try:
-        creds = _get_credentials()
-        return _retrofit_existing_docx(
-            creds,
-            markers=markers,
-            docx_path=path,
-            drive_file_id=drive_file_id,
-            title=title,
-            icons_by_title=icons_by_title,
-            placeholder_behavior=placeholder_behavior,
-            placeholder_title=placeholder_title,
-            placeholder_icon=placeholder_icon,
-            replace_doc_id=replace_doc_id,
-            case_sensitive=case_sensitive,
-        )
-    except FileNotFoundError as e:
-        raise ToolError(str(e)) from e
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-    except RuntimeError as e:
-        raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
-
-
-@mcp.tool()
-def preview_tab_split(
+def gdocs_preview_tab_split(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
@@ -700,7 +633,7 @@ def preview_tab_split(
         docx_path: Absolute path to a local ``.docx`` (local MCP only).
         drive_file_id: Drive file ID of an existing .docx OR Google Doc.
             For Google Docs, we export as .docx via Drive then parse.
-        split_by: Same as ``convert_docx_to_tabbed_doc``.
+        split_by: Same as ``gdocs_tab_existing_doc``.
 
     Returns:
         ``{"split_strategy_used", "tab_count", "tabs":
@@ -723,7 +656,7 @@ def preview_tab_split(
 
 
 @mcp.tool()
-def get_signed_upload_url(
+def gdocs_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
 ) -> dict:
@@ -735,12 +668,12 @@ def get_signed_upload_url(
     signed URL is the credential — no Authorization header needed.
 
     DO NOT USE when:
-    - You are composing new content from text. Use ``create_tabbed_doc``
+    - You are composing new content from text. Use ``gdocs_make_tabbed_doc``
       — it takes markdown directly and skips this upload dance entirely.
       Building a .docx in the sandbox just to upload it here is pointless
       extra work.
     - The .docx already lives on Drive. Use
-      ``convert_docx_to_tabbed_doc(drive_file_id=...)`` instead.
+      ``gdocs_tab_existing_doc(drive_file_id=...)`` instead.
 
     The URL is single-use (the server tracks consumed nonces) and
     expires after ``ttl_seconds`` (default 10 min, max 1 hour).
