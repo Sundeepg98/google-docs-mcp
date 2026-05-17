@@ -21,6 +21,7 @@ from googleapiclient.errors import HttpError
 
 from .auth import default_data_dir, load_credentials
 from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
+from .drive_api import trash_drive_file as _trash_drive_file
 from .errors import friendly_http_error_message
 from .docs_api import (
     TabSpec,
@@ -510,6 +511,38 @@ def gdocs_rename_tab(
         if icon_emoji is not None:
             updated.append("iconEmoji")
         return {"doc_id": doc_id, "tab_id": tab_id, "updated_fields": updated}
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def gdocs_trash_file(file_id: str) -> dict:
+    """Move a Drive file (Google Doc, .docx, anything) to trash.
+
+    USE WHEN: you need to clean up an obsolete Drive file — a
+    superseded conversion, a test doc, a broken output. ``gdocs_delete_tab``
+    only removes a tab within a doc; this removes the whole document
+    (or any other Drive file by ID).
+
+    Uses ``files.update(trashed=True)``, NOT ``files.delete``. The file
+    moves to Drive Trash and is recoverable for 30 days. Permanent
+    deletion is intentionally not exposed.
+
+    Idempotent: trashing an already-trashed file succeeds and the
+    response flags ``was_already_trashed: true``.
+
+    Args:
+        file_id: The Drive file ID. Any file the OAuth user has edit
+            access to is eligible.
+
+    Returns:
+        ``{"file_id", "name", "mimeType", "trashed": True,
+        "was_already_trashed": bool}``. ``name`` lets the caller confirm
+        the right file was touched.
+    """
+    try:
+        creds = _get_credentials()
+        return _trash_drive_file(creds, file_id)
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
 

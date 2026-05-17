@@ -201,14 +201,33 @@ def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
     return meta.get("mimeType", "")
 
 
-def trash_drive_file(creds: Credentials, drive_file_id: str) -> None:
+def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     """Move a Drive file to trash (recoverable for 30 days).
 
-    Used by ``convert_docx_to_tabbed_doc(replace_doc_id=...)`` to
-    sweep the old version after the new conversion succeeds — keeps
-    Drive tidy while iterating without permanent data loss.
+    Idempotent: setting ``trashed=True`` on an already-trashed file
+    succeeds without error. Uses ``files.update`` (trash) — NEVER
+    ``files.delete`` (permanent purge), so the operation is reversible.
+
+    Returns the file's metadata after the trash: ``{file_id, name,
+    trashed: True, mimeType, was_already_trashed: bool}``. The
+    ``name`` lets the caller confirm the right file was touched;
+    ``was_already_trashed`` flags the no-op case.
     """
     drive = build("drive", "v3", credentials=creds)
-    drive.files().update(
-        fileId=drive_file_id, body={"trashed": True}
+    # Read current state first so we can flag idempotent no-ops.
+    before = drive.files().get(
+        fileId=drive_file_id, fields="id,name,mimeType,trashed"
     ).execute()
+    was_already_trashed = bool(before.get("trashed"))
+    updated = drive.files().update(
+        fileId=drive_file_id,
+        body={"trashed": True},
+        fields="id,name,mimeType,trashed",
+    ).execute()
+    return {
+        "file_id": updated.get("id"),
+        "name": updated.get("name"),
+        "mimeType": updated.get("mimeType"),
+        "trashed": bool(updated.get("trashed")),
+        "was_already_trashed": was_already_trashed,
+    }
