@@ -276,6 +276,188 @@ def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     }
 
 
+def find_doc_by_title(
+    creds: Credentials,
+    query: str,
+    *,
+    exact: bool = False,
+    include_trashed: bool = False,
+    page_size: int = 50,
+) -> dict:
+    """Search Drive for Google Docs / .docx files matching a title.
+
+    Newest-first by modified_time. Each match includes whether it's
+    trashed and whether this OAuth app can write to it (i.e. whether
+    drive.file scope permits trash/untrash/move on it — the file was
+    created by this app).
+
+    Args:
+        query: title text to match.
+        exact: True = exact match (``name = 'X'``); False = substring
+            (``name contains 'X'``).
+        include_trashed: False (default) excludes trashed files.
+        page_size: max results to return (Drive API caps at 100).
+
+    Returns:
+        ``{"matches": [{file_id, name, mimeType, modified_time,
+        trashed, owned_by_app}, ...], "count": int}``.
+    """
+    drive = build("drive", "v3", credentials=creds)
+
+    # Escape single quotes inside the query — Drive's q DSL requires
+    # quoting them with a backslash.
+    safe_query = query.replace("'", "\\'")
+    operator = "=" if exact else "contains"
+    q_parts = [f"name {operator} '{safe_query}'"]
+    q_parts.append(
+        "(mimeType = 'application/vnd.google-apps.document' OR "
+        "mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')"
+    )
+    if not include_trashed:
+        q_parts.append("trashed = false")
+    q = " and ".join(q_parts)
+
+    resp = drive.files().list(
+        q=q,
+        orderBy="modifiedTime desc",
+        pageSize=min(max(page_size, 1), 100),
+        fields=(
+            "files(id,name,mimeType,modifiedTime,trashed,"
+            "capabilities/canTrash)"
+        ),
+    ).execute()
+
+    matches = []
+    for f in resp.get("files", []):
+        matches.append({
+            "file_id": f["id"],
+            "name": f.get("name", ""),
+            "mimeType": f.get("mimeType", ""),
+            "modified_time": f.get("modifiedTime", ""),
+            "trashed": bool(f.get("trashed")),
+            # canTrash is the most direct signal that our drive.file
+            # scope can mutate this file — i.e. our app created it.
+            "owned_by_app": bool(
+                (f.get("capabilities") or {}).get("canTrash")
+            ),
+        })
+
+    return {"matches": matches, "count": len(matches)}
+
+
+def move_to_folder(
+    creds: Credentials, drive_file_id: str, folder_id: str
+) -> dict:
+    """Move a Drive file from its current parents into ``folder_id``.
+
+    Uses ``files.update`` with ``addParents``/``removeParents`` — moves
+    in place, no copy. Soft-failure on 403 app_not_authorized and 404
+    not_found, matching ``trash_drive_file``'s contract so batch
+    workflows can skip-and-continue.
+
+    Returns:
+        Success: ``{file_id, name, mimeType, parents: [...]}``.
+        Soft-failure: ``{file_id, reason, message, parents?}`` where
+        ``reason`` is one of:
+        - ``"not_found"`` — file_id doesn't resolve
+        - ``"folder_not_found"`` — folder_id doesn't resolve
+        - ``"app_not_authorized"`` — drive.file scope can't write
+    """
+    drive = build("drive", "v3", credentials=creds)
+
+    try:
+        before = drive.files().get(
+            fileId=drive_file_id,
+            fields="id,name,mimeType,parents",
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "file_id": drive_file_id,
+                "reason": "not_found",
+                "message": (
+                    f"Drive file {drive_file_id!r} not found. Check the ID."
+                ),
+            }
+        raise
+
+    # Sanity-check the folder exists and is actually a folder. Catching
+    # this here gives a clean reason instead of relying on Drive's
+    # error message for an invalid addParents value.
+    try:
+        folder_meta = drive.files().get(
+            fileId=folder_id, fields="id,mimeType"
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "file_id": drive_file_id,
+                "reason": "folder_not_found",
+                "message": (
+                    f"Target folder {folder_id!r} not found. Verify the ID; "
+                    "shared-with-me folders may need the user to add them "
+                    "to My Drive first."
+                ),
+            }
+        raise
+    if folder_meta.get("mimeType") != "application/vnd.google-apps.folder":
+        return {
+            "file_id": drive_file_id,
+            "reason": "folder_not_found",
+            "message": (
+                f"Target id {folder_id!r} is not a folder "
+                f"(mimeType: {folder_meta.get('mimeType')!r})."
+            ),
+        }
+
+    current_parents = before.get("parents", []) or []
+    if folder_id in current_parents and len(current_parents) == 1:
+        # Already in the target folder, no-op.
+        return {
+            "file_id": drive_file_id,
+            "name": before.get("name"),
+            "mimeType": before.get("mimeType"),
+            "parents": current_parents,
+            "note": "file was already in the target folder; no move performed",
+        }
+
+    try:
+        updated = drive.files().update(
+            fileId=drive_file_id,
+            addParents=folder_id,
+            removeParents=",".join(current_parents) if current_parents else None,
+            fields="id,name,mimeType,parents",
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "file_id": drive_file_id,
+                    "name": before.get("name"),
+                    "mimeType": before.get("mimeType"),
+                    "parents": current_parents,
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks write access — file wasn't created "
+                        "by this app. drive.file scope only permits writes "
+                        "to app-created files."
+                    ),
+                }
+        raise
+
+    return {
+        "file_id": updated.get("id"),
+        "name": updated.get("name"),
+        "mimeType": updated.get("mimeType"),
+        "parents": updated.get("parents", []),
+    }
+
+
 def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
     """Return whether the Drive file is currently in trash.
 

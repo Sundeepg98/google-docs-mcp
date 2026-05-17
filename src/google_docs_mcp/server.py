@@ -22,6 +22,8 @@ from googleapiclient.errors import HttpError
 from .auth import default_data_dir, load_credentials
 from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
 from .drive_api import (
+    find_doc_by_title as _find_doc_by_title,
+    move_to_folder as _move_to_folder,
     trash_drive_file as _trash_drive_file,
     untrash_drive_file as _untrash_drive_file,
 )
@@ -526,7 +528,7 @@ def gdocs_rename_tab(
 
 
 @mcp.tool()
-def gdocs_server_info() -> dict:
+async def gdocs_server_info() -> dict:
     """Server identity + full tool inventory — for change detection across sessions.
 
     USE WHEN: you want to confirm what version of the MCP you're
@@ -546,15 +548,13 @@ def gdocs_server_info() -> dict:
         time via --build-arg; if the deploy script didn't pass them
         they show as ``"unknown"``.
     """
-    # Pull the live tool list from FastMCP's registry. Internal attribute
-    # path on FastMCP 2.x — stable across patch versions but worth a
-    # touch test on FastMCP major upgrades.
+    # FastMCP's tool registry is async-accessed via list_tools().
+    # Making this whole tool async lets us await it directly without
+    # nested-event-loop gymnastics.
     try:
-        tools_dict = mcp._tool_manager._tools  # type: ignore[attr-defined]
-        tool_names = sorted(tools_dict.keys())
-    except AttributeError:
-        # Fallback if FastMCP rearranges internals: at least return
-        # something instead of crashing.
+        tools = await mcp.list_tools()
+        tool_names = sorted(t.name for t in tools)
+    except Exception:  # noqa: BLE001
         tool_names = []
 
     # Read version via importlib.metadata to avoid the circular-import
@@ -599,8 +599,137 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
 
 
+def _run_batch(
+    items: list[str], fn, success_key: str
+) -> dict:
+    """Apply ``fn(creds, file_id)`` to each id, aggregate per-item.
+
+    Used by the batch forms of trash/untrash. Each item's outcome is
+    independent — a 403/404 on one doesn't stop the rest. Returns
+    ``{results: [...], summary: {succeeded, skipped, failed}}`` where:
+    - succeeded = item ended in the desired terminal state
+    - skipped   = soft-failure (not_found, app_not_authorized)
+    - failed    = unexpected hard error captured per-item
+    """
+    creds = _get_credentials()
+    results: list[dict] = []
+    succeeded = 0
+    skipped = 0
+    failed = 0
+    for fid in items:
+        try:
+            r = fn(creds, fid)
+            results.append(r)
+            if r.get("reason"):
+                skipped += 1
+            elif r.get(success_key) is True or (
+                success_key == "active" and r.get("trashed") is False
+            ):
+                succeeded += 1
+            else:
+                # Defensive — shouldn't happen
+                skipped += 1
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            results.append({
+                "file_id": fid,
+                "reason": "unexpected_error",
+                "message": str(e)[:300],
+            })
+    return {
+        "results": results,
+        "summary": {
+            "succeeded": succeeded,
+            "skipped": skipped,
+            "failed": failed,
+        },
+    }
+
+
 @mcp.tool()
-def gdocs_untrash_file(file_id: str) -> dict:
+def gdocs_find_doc_by_title(
+    query: str,
+    exact: bool = False,
+    include_trashed: bool = False,
+) -> dict:
+    """Look up a Google Doc / .docx by title — find a file_id from a name.
+
+    USE WHEN: you have a doc name (the user just told you, or it's
+    from a past session) and need its file_id to call any other tool.
+    Without this, the only way to get a file_id was to have it pasted
+    into the conversation.
+
+    Matches are returned newest-first by modified_time, so the most
+    recent doc with that title is at index 0. Each match flags
+    ``trashed`` and ``owned_by_app``:
+    - ``trashed: true`` means the file is in Drive Trash (hidden from
+      the user's Drive UI; recoverable for 30 days)
+    - ``owned_by_app: true`` means this OAuth app's drive.file scope
+      can write to it (trash, rename, move). False = read-only —
+      app didn't create it.
+
+    Args:
+        query: Title text to search for.
+        exact: True = exact title match. False (default) = substring
+            ("contains") match.
+        include_trashed: False (default) excludes trashed files from
+            results. Pass True to surface them too.
+
+    Returns:
+        ``{"matches": [{file_id, name, mimeType, modified_time,
+        trashed, owned_by_app}, ...], "count": int}``. Empty matches
+        means nothing matched — try a substring (exact=False) or
+        broaden the query.
+    """
+    if not query.strip():
+        raise ToolError("query cannot be empty")
+    try:
+        creds = _get_credentials()
+        return _find_doc_by_title(
+            creds, query,
+            exact=exact, include_trashed=include_trashed,
+        )
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
+    """Move a Drive file into a folder (out of root or wherever it lives).
+
+    USE WHEN: the MCP just created a doc (which lands in Drive root by
+    default) and you want to file it into a project / curriculum
+    folder. Also works for moving any existing file.
+
+    Uses ``files.update(addParents, removeParents)`` — moves in place,
+    not a copy. The file's content and ID are unchanged.
+
+    Soft-failure (returned as data, not raised) matches the trash
+    tools' contract so batch workflows can skip-and-continue:
+    - ``reason: "not_found"`` — file_id doesn't resolve
+    - ``reason: "folder_not_found"`` — folder_id doesn't resolve OR
+      points at something that isn't a folder
+    - ``reason: "app_not_authorized"`` — OAuth app's drive.file scope
+      can't write to this file (file wasn't created by this app)
+
+    Args:
+        file_id: The file to move.
+        folder_id: The destination folder's Drive ID.
+
+    Returns:
+        Success: ``{file_id, name, mimeType, parents: [folder_id, ...]}``.
+        No-op (already there): same shape plus ``note`` explaining.
+        Soft-failure: ``{file_id, reason, message, ...}``.
+    """
+    try:
+        creds = _get_credentials()
+        return _move_to_folder(creds, file_id, folder_id)
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
+
+
+@mcp.tool()
+def gdocs_untrash_file(file_id) -> dict:
     """Restore a trashed Drive file back to its original location.
 
     Inverse of ``gdocs_trash_file``. Ships together so a wrong trash
@@ -613,10 +742,12 @@ def gdocs_untrash_file(file_id: str) -> dict:
     so batch restores can skip-and-continue.
 
     Args:
-        file_id: The Drive file ID. Must be a file the OAuth user has
-            write access to AND that was created by this OAuth app.
+        file_id: A single Drive file ID (str) OR a list of IDs for
+            batch untrash. List form returns
+            ``{results: [...], summary: {succeeded, skipped, failed}}``
+            with one result per input ID — independent outcomes.
 
-    Returns:
+    Returns (single-ID mode):
         Success: ``{"file_id", "name", "mimeType", "trashed": False,
         "was_already_active": bool}``. ``was_already_active=True``
         means the file wasn't trashed to begin with (idempotent no-op).
@@ -624,6 +755,8 @@ def gdocs_untrash_file(file_id: str) -> dict:
         "message"}`` with ``reason`` in {``"not_found"``,
         ``"app_not_authorized"``}.
     """
+    if isinstance(file_id, list):
+        return _run_batch(file_id, _untrash_drive_file, "active")
     try:
         creds = _get_credentials()
         return _untrash_drive_file(creds, file_id)
@@ -632,7 +765,7 @@ def gdocs_untrash_file(file_id: str) -> dict:
 
 
 @mcp.tool()
-def gdocs_trash_file(file_id: str) -> dict:
+def gdocs_trash_file(file_id) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
     USE WHEN: you need to clean up an obsolete Drive file — a
@@ -648,14 +781,19 @@ def gdocs_trash_file(file_id: str) -> dict:
     response flags ``was_already_trashed: true``.
 
     Args:
-        file_id: The Drive file ID. Any file the OAuth user has edit
-            access to is eligible.
+        file_id: A single Drive file ID (str) OR a list of IDs for
+            batch trash. List form returns
+            ``{results: [...], summary: {succeeded, skipped, failed}}``
+            with one result per input — each item processed
+            independently (one soft-failure does not abort the rest).
 
-    Returns:
+    Returns (single-ID mode):
         ``{"file_id", "name", "mimeType", "trashed": True,
         "was_already_trashed": bool}``. ``name`` lets the caller confirm
         the right file was touched.
     """
+    if isinstance(file_id, list):
+        return _run_batch(file_id, _trash_drive_file, "trashed")
     try:
         creds = _get_credentials()
         return _trash_drive_file(creds, file_id)

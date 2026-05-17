@@ -165,6 +165,7 @@ def convert_docx_to_tabbed_doc(
         return {
             "doc_id": doc_id,
             "url": converted["url"],
+            "action": "replaced" if replace_doc_id else "created",
             "tabs": [],
             "split_strategy_used": strategy_used,
             "note": (
@@ -298,6 +299,10 @@ def convert_docx_to_tabbed_doc(
     result = {
         "doc_id": doc_id,
         "url": converted["url"],
+        # action distinguishes a brand-new doc from one that REPLACED
+        # an older doc via replace_doc_id (the old one is trashed and
+        # the caller can verify the lifecycle from the payload alone).
+        "action": "replaced" if replace_doc_id else "created",
         "tabs": final_tabs,
         "moved_children": response.get("movedChildren", 0),
         "warnings": warnings,
