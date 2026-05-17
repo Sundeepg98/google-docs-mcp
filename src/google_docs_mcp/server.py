@@ -21,7 +21,10 @@ from googleapiclient.errors import HttpError
 
 from .auth import default_data_dir, load_credentials
 from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
-from .drive_api import trash_drive_file as _trash_drive_file
+from .drive_api import (
+    trash_drive_file as _trash_drive_file,
+    untrash_drive_file as _untrash_drive_file,
+)
 from .errors import friendly_http_error_message
 from .docs_api import (
     TabSpec,
@@ -543,6 +546,38 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     """
     url = f"https://docs.google.com/document/d/{doc_id}/edit?tab={tab_id}"
     return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
+
+
+@mcp.tool()
+def gdocs_untrash_file(file_id: str) -> dict:
+    """Restore a trashed Drive file back to its original location.
+
+    Inverse of ``gdocs_trash_file``. Ships together so a wrong trash
+    call by the agent is recoverable. Works only within Drive's 30-day
+    trash window — beyond that the file is permanently gone and this
+    returns ``reason: "not_found"``.
+
+    Uses ``files.update(trashed=False)``. Same soft-failure handling
+    as ``gdocs_trash_file`` (404 and 403 returned as data, not raised),
+    so batch restores can skip-and-continue.
+
+    Args:
+        file_id: The Drive file ID. Must be a file the OAuth user has
+            write access to AND that was created by this OAuth app.
+
+    Returns:
+        Success: ``{"file_id", "name", "mimeType", "trashed": False,
+        "was_already_active": bool}``. ``was_already_active=True``
+        means the file wasn't trashed to begin with (idempotent no-op).
+        Soft-failure: ``{"file_id", "trashed": <current>, "reason",
+        "message"}`` with ``reason`` in {``"not_found"``,
+        ``"app_not_authorized"``}.
+    """
+    try:
+        creds = _get_credentials()
+        return _untrash_drive_file(creds, file_id)
+    except HttpError as e:
+        raise ToolError(_format_http_error(e)) from e
 
 
 @mcp.tool()

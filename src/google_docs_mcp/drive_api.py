@@ -192,6 +192,90 @@ def copy_google_doc(
     }
 
 
+def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
+    """Restore a Drive file from trash to its original location.
+
+    Inverse of ``trash_drive_file``. Sets ``trashed=False`` via
+    ``files.update``. Same graceful-error semantics: 404 (file not
+    found) and 403 (app_not_authorized) return as soft-failure dicts
+    instead of raising, so batch restores can skip-and-continue.
+
+    Idempotent: untrashing a not-currently-trashed file succeeds and
+    flags ``was_already_active: true``.
+
+    Returns:
+        Success: ``{file_id, name, mimeType, trashed: False,
+        was_already_active: bool}``.
+        Soft-failure: ``{file_id, trashed: <current>, reason,
+        message}`` where ``reason`` is ``"not_found"`` or
+        ``"app_not_authorized"``.
+
+        Recovery window: Drive auto-purges trashed files after 30
+        days. Beyond that, the file is gone permanently and this
+        returns ``not_found``.
+    """
+    drive = build("drive", "v3", credentials=creds)
+
+    try:
+        before = drive.files().get(
+            fileId=drive_file_id, fields="id,name,mimeType,trashed"
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "file_id": drive_file_id,
+                "trashed": False,
+                "reason": "not_found",
+                "message": (
+                    f"Drive file {drive_file_id!r} not found. Check the "
+                    "ID; the file may have been permanently deleted "
+                    "(beyond the 30-day trash window) or the OAuth user "
+                    "lacks any access to it."
+                ),
+            }
+        raise
+
+    was_already_active = not bool(before.get("trashed"))
+
+    try:
+        updated = drive.files().update(
+            fileId=drive_file_id,
+            body={"trashed": False},
+            fields="id,name,mimeType,trashed",
+        ).execute()
+    except HttpError as e:
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "file_id": drive_file_id,
+                    "name": before.get("name"),
+                    "mimeType": before.get("mimeType"),
+                    "trashed": bool(before.get("trashed")),
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks write access to this file — it "
+                        "wasn't created by this app. drive.file scope "
+                        "only permits writes to app-created files. To "
+                        "untrash, the file's owner must do it via the "
+                        "Drive UI."
+                    ),
+                }
+        raise
+
+    return {
+        "file_id": updated.get("id"),
+        "name": updated.get("name"),
+        "mimeType": updated.get("mimeType"),
+        "trashed": bool(updated.get("trashed")),
+        "was_already_active": was_already_active,
+    }
+
+
 def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
     """Return whether the Drive file is currently in trash.
 
