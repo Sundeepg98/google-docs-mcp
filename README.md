@@ -11,7 +11,9 @@ separately-navigable section in the Docs sidebar, not just an outline
 heading.
 
 Works as: local stdio MCP (Claude Desktop / Code) **or** remote
-HTTP MCP (claude.ai custom connector via Fly.io).
+HTTP MCP (claude.ai custom connector via Fly.io). The cloud
+deployment is fully multi-tenant as of v1.1 — each user operates on
+their own Drive with their own Google identity.
 
 ## Why this exists
 
@@ -19,9 +21,10 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 18 tools
+wraps that flow + the supporting Drive operations into 19 tools
 (`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
-find, retrofit, trash/untrash, and convert existing docs.
+find, retrofit, trash/untrash, convert existing docs, and one-shot
+per-user Apps Script Web App setup.
 
 ## Tool index
 
@@ -46,6 +49,7 @@ on a live server to get the authoritative list with descriptions.
 | **Move into a folder** | `gdocs_move_to_folder(file_id, folder_id)` |
 | **Get deep link to a tab** | `gdocs_get_tab_url(doc_id, tab_id)` |
 | **Sandbox upload URL** (cloud chat) | `gdocs_get_signed_upload_url()` |
+| **Set up Apps Script Web App** (per-user) | `gdocs_setup_apps_script()` |
 | **Server identity / inventory** | `gdocs_server_info()` |
 
 ## Setup — local stdio (Claude Desktop / Claude Code)
