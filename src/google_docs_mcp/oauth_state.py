@@ -29,9 +29,34 @@ import base64
 import hashlib
 import hmac
 import secrets
+import threading
 import time
 
 from .crypto import NonceStore
+
+# Per-nonce PKCE code_verifier store. Kept server-side rather than
+# encoded in the state token because putting the verifier in the URL
+# (which already carries the code on the callback) would defeat
+# PKCE's whole purpose — the protection comes from the verifier
+# being secret AND held only by the legitimate client.
+#
+# In-process dict, same lifetime/semantics as NonceStore. Survives
+# until: (a) the nonce is consumed via verify_state, or (b) the entry
+# ages out via opportunistic eviction (next sign or verify call).
+# If the Fly machine restarts between sign_state and the user's
+# OAuth callback completing, the verifier is forgotten and that flow
+# fails — acceptable since OAuth flows are short (TTL is 10 min).
+_pending_verifiers: dict[str, tuple[str, int]] = {}  # nonce -> (verifier, exp)
+_pending_lock = threading.Lock()
+
+
+def _evict_expired_verifiers() -> None:
+    """Drop verifier entries whose exp has passed. Cheap to call often."""
+    now = int(time.time())
+    with _pending_lock:
+        stale = [n for n, (_, exp) in _pending_verifiers.items() if exp <= now]
+        for n in stale:
+            del _pending_verifiers[n]
 
 DEFAULT_TTL_SECONDS = 600  # 10 minutes — long enough for browser dance,
                            # short enough that a leaked URL is mostly dead.
@@ -42,11 +67,21 @@ def _canonical(sub_b64: str, nonce: str, exp: int) -> str:
     return f"{sub_b64}.{nonce}.{exp}"
 
 
-def sign_state(user_id: str, signing_key: str, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:
+def sign_state(
+    user_id: str,
+    signing_key: str,
+    *,
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    code_verifier: str | None = None,
+) -> str:
     """Mint a fresh signed state token binding ``user_id`` to a TTL.
 
     Returns a ``.``-separated string: ``sub_b64.nonce.exp.sig``. Pass
     this verbatim as the ``state`` query param in the Google auth URL.
+
+    If ``code_verifier`` is provided (PKCE), it's stored server-side
+    under the generated nonce. ``verify_state`` will retrieve it on
+    consume so the OAuth callback can pass it to ``Flow.fetch_token``.
     """
     if not user_id:
         raise ValueError("user_id is required")
@@ -58,50 +93,66 @@ def sign_state(user_id: str, signing_key: str, *, ttl_seconds: int = DEFAULT_TTL
     sub_b64 = base64.urlsafe_b64encode(user_id.encode("utf-8")).decode("ascii").rstrip("=")
     nonce = secrets.token_urlsafe(16)
     exp = int(time.time()) + ttl_seconds
+
+    if code_verifier:
+        _evict_expired_verifiers()
+        with _pending_lock:
+            _pending_verifiers[nonce] = (code_verifier, exp)
+
     sig = _hmac(signing_key, _canonical(sub_b64, nonce, exp))
     return f"{sub_b64}.{nonce}.{exp}.{sig}"
 
 
 def verify_state(
     state: str, signing_key: str, nonce_store: NonceStore
-) -> tuple[bool, str | None, str | None]:
+) -> tuple[bool, str | None, str | None, str | None]:
     """Validate + consume a state token.
 
-    Returns ``(ok, user_id_if_ok, error_if_not_ok)``. On success the
-    nonce is marked consumed atomically — a second call with the same
-    state returns ``(False, None, "state already used")``.
+    Returns ``(ok, user_id, error, code_verifier)``. On success the
+    nonce is marked consumed atomically and any PKCE ``code_verifier``
+    stored at sign time is popped from the pending store and returned.
+    A second call with the same state returns
+    ``(False, None, "state already used", None)``.
+
+    The 4-tuple shape is stable: when no PKCE was used, the 4th
+    element is ``None`` — caller checks before using.
     """
     if not state:
-        return False, None, "state is empty"
+        return False, None, "state is empty", None
 
     parts = state.split(".")
     if len(parts) != 4:
-        return False, None, "state malformed (expected sub.nonce.exp.sig)"
+        return False, None, "state malformed (expected sub.nonce.exp.sig)", None
     sub_b64, nonce, exp_str, sig = parts
 
     try:
         exp = int(exp_str)
     except ValueError:
-        return False, None, "exp must be an integer"
+        return False, None, "exp must be an integer", None
 
     if exp <= int(time.time()):
-        return False, None, "state has expired"
+        return False, None, "state has expired", None
 
     expected = _hmac(signing_key, _canonical(sub_b64, nonce, exp))
     if not hmac.compare_digest(expected, sig):
-        return False, None, "signature mismatch"
+        return False, None, "signature mismatch", None
 
     if not nonce_store.consume(nonce, exp):
-        return False, None, "state already used"
+        return False, None, "state already used", None
+
+    # Pop the PKCE verifier (if any) atomically alongside the nonce.
+    with _pending_lock:
+        verifier_entry = _pending_verifiers.pop(nonce, None)
+    code_verifier = verifier_entry[0] if verifier_entry else None
 
     try:
         # Restore the padding stripped at sign time before decoding.
         padded = sub_b64 + "=" * (-len(sub_b64) % 4)
         user_id = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
-        return False, None, "sub_b64 not decodable"
+        return False, None, "sub_b64 not decodable", None
 
-    return True, user_id, None
+    return True, user_id, None, code_verifier
 
 
 def _hmac(key: str, message: str) -> str:

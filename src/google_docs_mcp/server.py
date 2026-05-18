@@ -1074,8 +1074,16 @@ def gdocs_setup_apps_script() -> dict:
 
     Without this setup, ``gdocs_tab_existing_doc`` fails with "Apps
     Script Web App URL not configured." Other tools
-    (``gdocs_make_tabbed_doc``, edit tools, read tools) don't need it
-    and work without setup.
+    (``gdocs_make_tabbed_doc``, edit tools, read tools) do not need
+    this Apps-Script-specific setup — but, like all tools in this
+    server, they DO require the one-time Google OAuth authorization
+    grant (Drive + Docs scopes). The OAuth grant happens automatically
+    on first tool call: any tool that needs creds returns
+    ``status: "needs_authorization"`` with a click-to-authorize URL;
+    after consent, all subsequent tools in the session work without
+    further prompts. Only ``gdocs_tab_existing_doc``'s lossless
+    retrofit path additionally needs THIS tool
+    (``gdocs_setup_apps_script``) to have been run once.
 
     Idempotent: safe to retry if interrupted; resumes from the last
     successful step. The user_store row (cloud) or

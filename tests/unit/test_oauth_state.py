@@ -28,7 +28,7 @@ def test_sign_then_verify_roundtrip(signing_key, fresh_nonce_store):
     from google_docs_mcp.oauth_state import sign_state, verify_state
 
     state = sign_state("user-sub-abc", signing_key)
-    ok, user_id, err = verify_state(state, signing_key, fresh_nonce_store)
+    ok, user_id, err, _verifier = verify_state(state, signing_key, fresh_nonce_store)
 
     assert ok is True
     assert user_id == "user-sub-abc"
@@ -42,8 +42,8 @@ def test_state_is_single_use_replay_rejected(signing_key, fresh_nonce_store):
 
     state = sign_state("user-sub-def", signing_key)
 
-    ok1, _, _ = verify_state(state, signing_key, fresh_nonce_store)
-    ok2, _, err2 = verify_state(state, signing_key, fresh_nonce_store)
+    ok1, _, _, _ = verify_state(state, signing_key, fresh_nonce_store)
+    ok2, _, err2, _ = verify_state(state, signing_key, fresh_nonce_store)
 
     assert ok1 is True
     assert ok2 is False
@@ -57,7 +57,7 @@ def test_tampered_sig_rejected(signing_key, fresh_nonce_store):
     sub_b64, nonce, exp, _sig = state.split(".")
     tampered = f"{sub_b64}.{nonce}.{exp}.deadbeef" + "0" * 56
 
-    ok, user_id, err = verify_state(tampered, signing_key, fresh_nonce_store)
+    ok, user_id, err, _ = verify_state(tampered, signing_key, fresh_nonce_store)
     assert ok is False
     assert user_id is None
     assert err == "signature mismatch"
@@ -74,7 +74,7 @@ def test_tampered_sub_rejected(signing_key, fresh_nonce_store):
     victim_b64 = base64.urlsafe_b64encode(b"victim-sub").decode("ascii").rstrip("=")
     swapped = f"{victim_b64}.{nonce}.{exp}.{sig}"
 
-    ok, user_id, err = verify_state(swapped, signing_key, fresh_nonce_store)
+    ok, user_id, err, _ = verify_state(swapped, signing_key, fresh_nonce_store)
     assert ok is False
     assert err == "signature mismatch"
 
@@ -86,7 +86,7 @@ def test_expired_state_rejected(signing_key, fresh_nonce_store):
     state = sign_state("user-sub-ghi", signing_key, ttl_seconds=1)
     time.sleep(1.1)
 
-    ok, _, err = verify_state(state, signing_key, fresh_nonce_store)
+    ok, _, err, _ = verify_state(state, signing_key, fresh_nonce_store)
     assert ok is False
     assert err == "state has expired"
 
@@ -95,7 +95,7 @@ def test_wrong_signing_key_rejected(signing_key, fresh_nonce_store):
     from google_docs_mcp.oauth_state import sign_state, verify_state
 
     state = sign_state("user-sub-jkl", signing_key)
-    ok, _, err = verify_state(state, "different-key", fresh_nonce_store)
+    ok, _, err, _ = verify_state(state, "different-key", fresh_nonce_store)
     assert ok is False
     assert err == "signature mismatch"
 
@@ -104,7 +104,7 @@ def test_malformed_state_rejected(signing_key, fresh_nonce_store):
     from google_docs_mcp.oauth_state import verify_state
 
     for bad in ("", "abc", "a.b.c", "a.b.c.d.e", "a.b.notanint.sig"):
-        ok, _, err = verify_state(bad, signing_key, fresh_nonce_store)
+        ok, _, err, _ = verify_state(bad, signing_key, fresh_nonce_store)
         assert ok is False, f"expected rejection for {bad!r}"
         assert err is not None
 
@@ -147,6 +147,6 @@ def test_unicode_user_id_roundtrips(signing_key, fresh_nonce_store):
     from google_docs_mcp.oauth_state import sign_state, verify_state
 
     state = sign_state("user-ünıcödé-123", signing_key)
-    ok, user_id, _ = verify_state(state, signing_key, fresh_nonce_store)
+    ok, user_id, _, _ = verify_state(state, signing_key, fresh_nonce_store)
     assert ok is True
     assert user_id == "user-ünıcödé-123"

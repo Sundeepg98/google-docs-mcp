@@ -262,18 +262,22 @@ def build_authorization_url(
         raise ValueError("user_id is required")
 
     flow = Flow.from_client_config(client_config, scopes=scopes or GOOGLE_API_SCOPES)
-    # Disable PKCE — we're a confidential client (have client_secret),
-    # PKCE was designed for public clients that can't keep a secret.
-    # Enabling it here would require storing the auto-generated
-    # code_verifier server-side between the auth-URL build and the
-    # callback — we're stateless except for user_store, which doesn't
-    # know about the verifier. v1.2 can add proper PKCE with server-
-    # side verifier storage if we want defense-in-depth. For now,
-    # client_secret + HMAC-signed single-use state are sufficient.
-    flow.autogenerate_code_verifier = False
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
 
-    state = sign_state(user_id, signing_key, ttl_seconds=ttl_seconds)
+    # Proper PKCE: generate our own code_verifier so we control storage,
+    # then pass it to sign_state for server-side persistence keyed by
+    # the state's nonce. verify_state retrieves it on callback so the
+    # token exchange can complete. This makes PKCE behavior
+    # deterministic across all auth URLs (every URL has code_challenge;
+    # the matching verifier is always recoverable on callback).
+    import secrets as _secrets
+    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits
+    flow.code_verifier = code_verifier
+
+    state = sign_state(
+        user_id, signing_key, ttl_seconds=ttl_seconds,
+        code_verifier=code_verifier,
+    )
     # access_type=offline + prompt=consent: the only combination that
     # *reliably* returns a refresh_token. Without prompt=consent Google
     # may skip the consent screen on a re-auth and omit refresh_token,
@@ -307,7 +311,7 @@ def exchange_code_for_credentials(
     raw in user_store and reconstruct with ``Credentials(...)`` at
     consumption time.
     """
-    ok, user_id, err = verify_state(state, signing_key, nonce_store)
+    ok, user_id, err, code_verifier = verify_state(state, signing_key, nonce_store)
     if not ok:
         # Don't leak which validation failed publicly — could help an
         # attacker probe HMAC vs replay vs expiry. The server log
@@ -321,10 +325,15 @@ def exchange_code_for_credentials(
     flow = Flow.from_client_config(
         client_config, scopes=scopes or GOOGLE_API_SCOPES, state=state,
     )
-    # Match the build_authorization_url config — PKCE disabled, see
-    # rationale above.
-    flow.autogenerate_code_verifier = False
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
+    # Restore the PKCE verifier from server-side store so fetch_token
+    # can pass it to Google. If verifier is None here, either PKCE
+    # wasn't used at sign time OR the server restarted between sign
+    # and verify — fetch_token will fail loudly with "invalid_grant:
+    # Missing code verifier" in that case, which is the right
+    # behavior (user just retries the auth flow).
+    if code_verifier:
+        flow.code_verifier = code_verifier
 
     try:
         flow.fetch_token(authorization_response=authorization_response_url)
