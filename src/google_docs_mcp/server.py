@@ -906,7 +906,7 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
 
 
 @mcp.tool()
-def gdocs_trash_file(file_id: str | list[str]) -> dict:
+def gdocs_trash_file(file_id: str) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
     USE WHEN: you need to clean up an obsolete Drive file — a
