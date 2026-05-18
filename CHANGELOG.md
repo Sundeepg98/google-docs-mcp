@@ -4,6 +4,53 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.4] — 2026-05-18
+
+Closes the two gaps surfaced by the gdocs_test_manifest audit on
+v1.1.3.
+
+### Fixed
+
+- **`named_regression_guards.missing` was non-empty** because two
+  named guards lived only in `tests/integration/` (gated behind
+  `--live`) and so didn't appear in the deploy artifact's
+  test-results.json (which comes from `pytest tests/unit -q`).
+
+  - **`test_owned_by_app_agrees_with_trash_outcome`** added as a
+    new unit test in `test_soft_failure_contracts.py`. Mocks both
+    the write-probe (used by `find_doc_by_title`) and the trash
+    update (used by `trash_drive_file`) to share a single backing
+    behavior, then asserts they agree across both the app-owned and
+    external-file scenarios. Complements the existing live
+    integration test (which still runs the full real-Drive E2E
+    when invoked with `--live`).
+
+  - **`test_preview_flags_what_convert_truncates`** moved from
+    `tests/integration/test_title_threshold.py` to
+    `tests/unit/test_preview_threshold_consistency.py`. The original
+    was mislabeled as live (it took `live_creds` as a fixture but
+    never used it — `preview_tab_split` runs locally for the
+    `docx_path=` input mode). No live coverage lost; the test
+    asserts the same contract, now in CI.
+
+  After this, `gdocs_test_manifest.named_regression_guards.missing`
+  is empty — all 8 named guards present in unit suite.
+
+- **`ci_run_url` defaulted to `""`** which conflated "no CI run
+  exists yet" with "should have been set but wasn't." Per the
+  v1.1.3 spec, empty must now be reserved for "broken pipeline."
+  Deploys not from CI now report `ci_run_url: "local"` explicitly.
+
+### Tests
+
+- New unit test (5 mocks-with-batch-callback plumbing): proves the
+  find-probe and trash-update return-value relationship is
+  consistent. The mock setup is more involved than typical unit
+  tests because the production code uses Drive's batched-HTTP
+  pattern with per-request callbacks.
+- Moved test stays green in its new home.
+- Total: 212 unit + 5 live (was 6 — test_title_threshold.py removed).
+
 ## [1.1.3] — 2026-05-18
 
 Closes "verify the test_suite block isn't just a number to trust"

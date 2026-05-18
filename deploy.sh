@@ -35,9 +35,12 @@ if command -v gh >/dev/null 2>&1; then
       --json url --jq '.[0].url // ""' 2>/dev/null || echo "")
 fi
 if [ -z "${CI_RUN_URL}" ]; then
-  echo "⚠️  no CI run found yet for commit ${GIT_COMMIT_FULL} —"
-  echo "    ci_run_url will be empty. Re-deploy after CI completes,"
-  echo "    or just push first and let CI catch up."
+  # No CI run found — explicit "local" so empty always means
+  # "should have been set but wasn't" (caller can distinguish a
+  # broken pipeline from a deliberate manual deploy).
+  CI_RUN_URL="local"
+  echo "⚠️  no CI run found for commit ${GIT_COMMIT_FULL} — ci_run_url='local'"
+  echo "    (manual deploy; re-deploy after CI completes for a real URL)"
 fi
 
 # Run unit tests first — fail fast before pushing a broken image.

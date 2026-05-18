@@ -1,15 +1,16 @@
-"""Preview agrees with conversion on the 50-char title limit.
+"""Preview agrees with conversion on the 50-char title limit (unit).
 
 If preview says "fine" but conversion 400s, the dry-run is useless.
 This guard makes sure they share the same threshold.
+
+Previously this test lived in tests/integration/ but it doesn't
+actually need Drive — preview_tab_split runs locally when given
+docx_path. Moved here so it appears in the deploy artifact's
+gdocs_test_manifest output as a named regression guard.
 """
 from __future__ import annotations
 
 import io
-
-import pytest
-
-pytestmark = pytest.mark.live
 
 
 def _docx_with_oversized_heading() -> bytes:
@@ -25,7 +26,12 @@ def _docx_with_oversized_heading() -> bytes:
     return buf.getvalue()
 
 
-def test_preview_flags_what_convert_truncates(live_creds, tmp_path):
+def test_preview_flags_what_convert_truncates(tmp_path):
+    """Named regression guard. preview_tab_split MUST warn on titles
+    exceeding 50 chars AND truncate them to exactly 50 — matching
+    what convert_docx_to_tabbed_doc actually does. If the two
+    thresholds drift apart, the dry-run lies.
+    """
     from google_docs_mcp.preview import preview_tab_split
 
     docx_path = tmp_path / "oversize.docx"

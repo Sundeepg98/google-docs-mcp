@@ -132,6 +132,93 @@ def test_untrash_idempotent_on_active_file(mock_drive):
 # -----------------------------------------------------------------
 
 
+def test_owned_by_app_agrees_with_trash_outcome(mock_drive):
+    """v0.19.0 regression guard (unit-level). find_doc_by_title's
+    ``owned_by_app`` MUST agree with whether trash_drive_file actually
+    succeeds on the same file. Pre-v0.19.1 find used
+    ``capabilities.canTrash`` (USER-level) but trash actually checks
+    APP-level authorization — they disagreed for files the user owned
+    but uploaded outside the app's scope.
+
+    Tested by mocking Drive such that the no-op write-probe and the
+    real trash update return CONSISTENT results, then asserting the
+    two functions agree on every scenario.
+
+    Live equivalent: ``tests/integration/test_consistency_owned_by_app.py``.
+    """
+    from google_docs_mcp.drive_api import find_doc_by_title, trash_drive_file
+
+    file_meta = {
+        "id": "F", "name": "test.docx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "trashed": False, "owners": [], "capabilities": {},
+    }
+
+    def setup_drive_state(*, probe_succeeds: bool, trash_succeeds: bool):
+        """Configure the Drive mock for a given (probe, trash) outcome pair."""
+        mock_drive.files().list().execute.return_value = {"files": [file_meta]}
+
+        # Build a fake batch that records callbacks and replays them on
+        # execute() with the configured success/failure.
+        batch = MagicMock()
+        batch._callbacks = []
+
+        def batch_add(_req, callback=None):
+            batch._callbacks.append(callback)
+
+        def batch_execute():
+            for cb in batch._callbacks:
+                if probe_succeeds:
+                    cb("req1", {"id": "F"}, None)
+                else:
+                    cb("req1", None, _mock_http_error(403, "appNotAuthorizedToFile"))
+
+        batch.add.side_effect = batch_add
+        batch.execute.side_effect = batch_execute
+        mock_drive.new_batch_http_request.return_value = batch
+
+        # Trash path: get() always succeeds (file exists), update()
+        # mirrors the probe outcome.
+        mock_drive.files().get().execute.return_value = file_meta
+        if trash_succeeds:
+            mock_drive.files().update().execute.return_value = {
+                **file_meta, "trashed": True,
+            }
+            mock_drive.files().update().execute.side_effect = None
+        else:
+            mock_drive.files().update().execute.side_effect = _mock_http_error(
+                403, "appNotAuthorizedToFile",
+            )
+
+    # ---- Scenario 1: app-owned file. Probe + trash both succeed. ----
+    setup_drive_state(probe_succeeds=True, trash_succeeds=True)
+    search = find_doc_by_title(MagicMock(), "test.docx", exact=True)
+    owned_by_app_1 = search["matches"][0]["owned_by_app"]
+    trash_result_1 = trash_drive_file(MagicMock(), "F")
+    trash_succeeded_1 = trash_result_1.get("reason") is None
+
+    assert owned_by_app_1 == trash_succeeded_1, (
+        f"app-owned scenario: find said owned_by_app={owned_by_app_1} "
+        f"but trash succeeded={trash_succeeded_1} (result={trash_result_1!r}). "
+        "Cross-tool consistency BROKEN — the v0.19.0 bug class."
+    )
+    assert owned_by_app_1 is True
+
+    # ---- Scenario 2: external file. Probe + trash both 403. ----
+    setup_drive_state(probe_succeeds=False, trash_succeeds=False)
+    search = find_doc_by_title(MagicMock(), "test.docx", exact=True)
+    owned_by_app_2 = search["matches"][0]["owned_by_app"]
+    trash_result_2 = trash_drive_file(MagicMock(), "F")
+    trash_succeeded_2 = trash_result_2.get("reason") is None
+
+    assert owned_by_app_2 == trash_succeeded_2, (
+        f"external-file scenario: find said owned_by_app={owned_by_app_2} "
+        f"but trash succeeded={trash_succeeded_2} (result={trash_result_2!r}). "
+        "Cross-tool consistency BROKEN — the v0.19.0 bug class."
+    )
+    assert owned_by_app_2 is False
+
+
 def test_move_returns_soft_failure_on_folder_not_found(mock_drive):
     from google_docs_mcp.drive_api import move_to_folder
 
