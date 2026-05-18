@@ -689,14 +689,19 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
     import json
     from datetime import datetime, timezone
 
+    # mutation_check is independent state (separate artifact), so it
+    # gets attached to whatever we return — even the unknown branches.
+    # Callers can rely on the field always being present.
+    mutation_check = _read_mutation_check()
+
     path = _find_test_results_path()
     if path is None:
-        return {"status": "unknown"}
+        return {"status": "unknown", "mutation_check": mutation_check}
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"status": "unknown"}
+        return {"status": "unknown", "mutation_check": mutation_check}
 
     summary = data.get("summary") or {}
     passed = int(summary.get("passed", 0))
@@ -746,7 +751,7 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
         "status": status,
         "ci_run_url": ci_run_url,
         "report_digest": stored_digest,
-        "mutation_check": _read_mutation_check(),
+        "mutation_check": mutation_check,
     }
 
 
