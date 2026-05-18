@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
-    "fastmcp>=2.0",
+    "fastmcp>=2.13",  # v1.1: GoogleProvider + OAuthProxy + get_access_token deps
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "google-auth-oauthlib>=1.0",

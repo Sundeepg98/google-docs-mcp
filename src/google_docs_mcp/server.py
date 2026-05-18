@@ -1177,6 +1177,13 @@ def main() -> None:
 
     if transport == "http":
         from .http_server import run_http
+        from .oauth_google import configure_auth_for_http
+
+        # v1.1+: wire GoogleProvider so HTTP requests are per-user
+        # authenticated. Stdio path below intentionally skips this —
+        # local trust model, single user, no auth middleware.
+        configure_auth_for_http(mcp)
+
         port = int(os.environ.get("PORT", "8080"))
         run_http(mcp, port=port)
     else:

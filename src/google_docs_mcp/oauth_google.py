@@ -29,6 +29,7 @@ flows and the per-user key breaks. See README setup.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from google_auth_oauthlib.flow import Flow
@@ -51,6 +52,116 @@ GOOGLE_API_SCOPES = [
 
 CALLBACK_PATH = "/oauth/google/api/callback"
 START_PATH = "/oauth/google/api/start"
+
+# Identity-only scopes — what GoogleProvider's ``required_scopes``
+# advertises so Claude.ai's connector OAuth completes with at least
+# enough to identify the user. The full Workspace scope set goes into
+# ``valid_scopes`` (and the post-init patches) so it gets requested
+# during the same consent screen.
+IDENTITY_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+]
+
+
+def configure_auth_for_http(mcp) -> None:
+    """Wire FastMCP's GoogleProvider so HTTP requests are per-user-authed.
+
+    Call ONCE at HTTP startup before ``mcp.run()`` / ``run_http(mcp)``.
+    Stdio mode never calls this; ``mcp.auth`` stays None and FastMCP
+    skips auth middleware entirely — preserving the v1.0 local trust
+    model for Claude Desktop / Code.
+
+    Implementation mirrors ``taylorwilsdon/google_workspace_mcp``'s
+    ``configure_server_for_http`` (``core/server.py:494-539``):
+
+    1. ``required_scopes=[openid, email]`` — minimum for identity.
+       ``email`` must be REQUIRED (not just valid) or
+       ``get_access_token().claims["email"]`` returns None and our
+       per-user lookup breaks.
+    2. ``valid_scopes=[full union]`` — advertises Workspace scopes
+       at the well-known endpoint.
+    3. **Post-init patches**: writing ``valid_scopes`` in the
+       constructor only updates discovery metadata. To make
+       Claude.ai's DCR client actually REQUEST the Workspace scopes,
+       we must also mutate:
+       - ``provider.client_registration_options.default_scopes``
+       - ``provider._default_scope_str`` (private — fragile across
+         FastMCP versions; documented in v1.1 release notes)
+       Without these, Claude.ai gets identity-only tokens and every
+       Workspace tool call silently fails with insufficient scope.
+
+    Sets ``OAUTHLIB_RELAX_TOKEN_SCOPE=1`` so partial-grant consents
+    (user unchecked Apps Script on the Google consent screen) don't
+    raise from ``Flow.fetch_token``.
+
+    Idempotent — if ``mcp.auth`` is already set, returns without
+    re-wiring.
+    """
+    if mcp.auth is not None:
+        return
+
+    # Tolerate partial-grant consents. Without this, if a user unchecks
+    # "manage Apps Script" on the consent screen, the entire OAuth
+    # callback raises and re-auth becomes a dead-end. With it, the
+    # creds reflect what was actually granted and our per-tool scope
+    # check later triggers a targeted re-elicit.
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+    # NEVER set OAUTHLIB_INSECURE_TRANSPORT on Fly — we're on HTTPS.
+    # Documented warning in the agent's research; surface loudly if
+    # someone foot-guns themselves.
+    if os.environ.get("OAUTHLIB_INSECURE_TRANSPORT") == "1":
+        raise RuntimeError(
+            "OAUTHLIB_INSECURE_TRANSPORT=1 detected. This is for local "
+            "http://localhost dev ONLY and must NEVER be set on Fly "
+            "(which uses HTTPS). Remove it from your fly.toml / secrets."
+        )
+
+    cfg = resolve_runtime_oauth_config()
+    client_block = cfg["client_config"].get("web") or cfg["client_config"].get("installed") or {}
+    client_id = client_block.get("client_id")
+    client_secret = client_block.get("client_secret")
+    if not (client_id and client_secret):
+        raise RuntimeError(
+            "GoogleProvider requires client_id and client_secret in "
+            "GOOGLE_OAUTH_CLIENT_SECRETS_JSON. Check your OAuth client "
+            "config has the 'web' or 'installed' block populated."
+        )
+
+    # Import GoogleProvider lazily so stdio users without fastmcp's
+    # extras installed don't trip on a missing dep at module-load time.
+    from fastmcp.server.auth.providers.google import GoogleProvider
+
+    full_scope_union = sorted(set(IDENTITY_SCOPES) | set(GOOGLE_API_SCOPES))
+
+    provider = GoogleProvider(
+        client_id=client_id,
+        client_secret=client_secret,
+        base_url=cfg["base_url"],
+        required_scopes=IDENTITY_SCOPES,
+        valid_scopes=full_scope_union,
+    )
+
+    # Post-init scope bundling — taylorwilsdon's core/server.py:524-537.
+    # These are what actually make Claude.ai request the Workspace
+    # scopes during connector consent (vs just openid+email).
+    if getattr(provider, "client_registration_options", None) is not None:
+        provider.client_registration_options.default_scopes = full_scope_union
+    # Private attr — load-bearing per the agent's source dive. If a
+    # future FastMCP renames this, every Workspace tool call silently
+    # 401s; CI live tests will catch it (re-consent is needed anyway).
+    provider._default_scope_str = " ".join(full_scope_union)
+    # CIMD path (Claude Code uses CIMD; Claude.ai uses DCR — set both
+    # so we work across surfaces).
+    cimd_mgr = getattr(provider, "_cimd_manager", None)
+    if cimd_mgr is not None:
+        try:
+            cimd_mgr.default_scope = " ".join(full_scope_union)
+        except AttributeError:
+            pass  # older FastMCP without _cimd_manager.default_scope
+
+    mcp.auth = provider
 
 
 def resolve_runtime_oauth_config() -> dict:
