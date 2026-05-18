@@ -47,6 +47,32 @@ def live_creds():
     return load_credentials(data_dir)
 
 
+@pytest.fixture
+def created_docs(live_creds):
+    """Test-scoped list to register doc IDs for auto-trash on teardown.
+
+    Use instead of per-test try/finally cleanup. Tests append created
+    doc IDs to the list; teardown trashes every one of them, ignoring
+    individual failures. Already-trashed / already-deleted docs are
+    fine — trash_drive_file is idempotent enough.
+
+    Example:
+        def test_x(live_creds, created_docs):
+            d = make_doc_with_tabs(live_creds, "t", [...])
+            created_docs.append(d["doc_id"])
+            # ... assertions ...
+            # No finally needed — fixture trashes on teardown.
+    """
+    from google_docs_mcp.drive_api import trash_drive_file
+    ids: list[str] = []
+    yield ids
+    for doc_id in ids:
+        try:
+            trash_drive_file(live_creds, doc_id)
+        except Exception:
+            pass  # best-effort; don't fail teardown on cleanup hiccups
+
+
 @pytest.fixture(scope="session")
 def test_folder_id(live_creds):
     """Get-or-create a 'google-docs-mcp-tests' folder in My Drive.
