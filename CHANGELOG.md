@@ -4,6 +4,30 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-05-18
+
+**Fixed: orphan Apps Script projects on setup retry.**
+
+`setup-apps-script-auto` now persists per-step state to
+`~/.google-docs-mcp/setup-state.json`. If any step in the 4-step
+pipeline (create project → push files → create version → deploy webapp)
+fails, the next retry resumes from the first incomplete step instead
+of creating a second Apps Script project in the user's Drive.
+
+Handles three resume scenarios:
+- Same content + same impersonate user → resume from first incomplete step
+- Edited `restructure.gs` (different content hash) → start fresh
+- User manually deleted the script in Drive (cached script_id 404s) →
+  detect and start fresh
+
+Caught preventively via the v1.0 architecture-review pass. Without the
+ledger, a user retrying after a flaky network would have accumulated
+"ghost scripts" requiring manual Drive cleanup.
+
++6 unit tests in `tests/unit/test_setup_idempotency.py` covering cold
+start, mid-step crash + resume, content-change reset, and manual-delete
+recovery. Total tests: 78 unit + 4 live.
+
 ## [1.0.0] — 2026-05-18
 
 First stable release.

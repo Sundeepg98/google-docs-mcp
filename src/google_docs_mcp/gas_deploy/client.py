@@ -18,6 +18,7 @@ from typing import Any
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Apps Script's manifest file is conventionally named "appsscript" with
 # type JSON. Every project requires exactly one.
@@ -52,6 +53,22 @@ class AppsScriptClient:
 
     def __init__(self, creds: Credentials) -> None:
         self._svc = build("script", "v1", credentials=creds)
+
+    def script_exists(self, script_id: str) -> bool:
+        """True if the Apps Script project is still reachable.
+
+        Used by the setup-state idempotency layer to detect when a user
+        has manually deleted a script from Drive between runs — in
+        which case the cached state's ``script_id`` is dead and we
+        must start fresh.
+        """
+        try:
+            self._svc.projects().get(scriptId=script_id).execute()
+            return True
+        except HttpError as e:
+            if e.status_code == 404:
+                return False
+            raise
 
     def create_project(self, title: str) -> str:
         """Create a new standalone Apps Script project. Returns the scriptId."""

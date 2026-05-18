@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import config
+from . import setup_state
 from .auth import (
     default_data_dir,
     load_credentials,
@@ -86,31 +87,80 @@ def setup_apps_script_auto(
 
     client = AppsScriptClient(creds)
 
-    script_id = client.create_project(PROJECT_TITLE)
-
     gs_source = RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")
-    client.push_files(
-        script_id,
-        manifest=_MANIFEST,
-        files={SCRIPT_FILENAME: gs_source},
-    )
+    files = {SCRIPT_FILENAME: gs_source}
 
-    version = client.create_version(
-        script_id, description="initial deploy via setup-apps-script-auto"
-    )
+    # Idempotency: resume a previous interrupted run if the inputs
+    # match. See setup_state.py for the full rationale.
+    content_hash = setup_state.compute_content_hash(_MANIFEST, files)
+    state = setup_state.load_state(data_dir)
 
-    deployment = client.deploy_webapp(
-        script_id, version,
-        description="google-docs-mcp restructure webapp",
-        execute_as="USER_DEPLOYING",
-        access="MYSELF",
-    )
+    if not setup_state.state_matches_target(state, content_hash, impersonate_user):
+        # Different setup target (content changed or different
+        # impersonate user) — start fresh.
+        state = {
+            "content_hash": content_hash,
+            "impersonate": impersonate_user,
+        }
+        setup_state.save_state(data_dir, state)
+    elif "script_id" in state and not client.script_exists(state["script_id"]):
+        # The cached project was manually deleted between runs.
+        # Clear that entry and any downstream state; redo from step 1.
+        state = {
+            "content_hash": content_hash,
+            "impersonate": impersonate_user,
+        }
+        setup_state.save_state(data_dir, state)
+
+    # Step 1: projects.create
+    if "script_id" not in state:
+        state["script_id"] = client.create_project(PROJECT_TITLE)
+        setup_state.save_state(data_dir, state)
+
+    # Step 2: projects.updateContent
+    # (Idempotent at the API level — re-pushing the same files is a
+    # no-op. Skip only if we've already passed step 3, since
+    # versions.create is what we'd be redoing otherwise.)
+    if "version_number" not in state:
+        client.push_files(
+            state["script_id"], manifest=_MANIFEST, files=files,
+        )
+
+    # Step 3: projects.versions.create
+    if "version_number" not in state:
+        state["version_number"] = client.create_version(
+            state["script_id"],
+            description="initial deploy via setup-apps-script-auto",
+        )
+        setup_state.save_state(data_dir, state)
+
+    # Step 4: projects.deployments.create
+    if "deployment_id" not in state:
+        deployment = client.deploy_webapp(
+            state["script_id"], state["version_number"],
+            description="google-docs-mcp restructure webapp",
+            execute_as="USER_DEPLOYING",
+            access="MYSELF",
+        )
+        state["deployment_id"] = deployment.deployment_id
+        state["url"] = deployment.url
+        setup_state.save_state(data_dir, state)
+    else:
+        # All steps already completed in a prior run — just reconstruct
+        # the result object from cached state.
+        deployment = WebAppDeployment(
+            script_id=state["script_id"],
+            deployment_id=state["deployment_id"],
+            version=state["version_number"],
+            url=state["url"],
+        )
 
     # Persist the URL so the runtime can find it without manual config.
+    # (Idempotent — always-overwrite is fine since state is the truth.)
     cfg = config.load()
-    cfg["apps_script_webapp_url"] = deployment.url
-    cfg["apps_script_script_id"] = script_id
-    cfg["apps_script_deployment_id"] = deployment.deployment_id
+    cfg["apps_script_webapp_url"] = state["url"]
+    cfg["apps_script_script_id"] = state["script_id"]
+    cfg["apps_script_deployment_id"] = state["deployment_id"]
     config.save(cfg)
 
     return deployment
