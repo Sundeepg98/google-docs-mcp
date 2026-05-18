@@ -4,6 +4,80 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] — 2026-05-18
+
+Closes "verify the test_suite block isn't just a number to trust"
+gap. Three additions that make the suite independently verifiable.
+
+### Added
+
+- **`test_suite.ci_run_url`** — link to the GitHub Actions run that
+  produced this artifact. Populated by `deploy.sh` via best-effort
+  `gh run list --commit=<sha>`; empty string if no run found
+  (deploy ran before CI completed, gh not installed, etc.).
+
+- **`test_suite.report_digest`** — sha256 of the canonicalized
+  `test-results.json` payload (excluding the `_meta` block itself,
+  chicken-and-egg). Stored in `_meta.digest` in the JSON file at
+  deploy time; recomputed by the server at read time and compared.
+
+- **`test_suite.status: "tampered"`** — new status value emitted
+  when the recomputed digest doesn't match the stored one. Catches
+  post-build edits to the artifact's `summary` (e.g. someone hand-
+  editing the passed count). The status hierarchy is now:
+  - `unknown`: artifact missing or summary empty (SKIP_TESTS path)
+  - `tampered`: stored digest doesn't match recomputed digest
+  - `failed`: any test failed
+  - `passed`: all green AND digest verifies
+
+- **`gdocs_test_manifest()` MCP tool** — surfaces the test inventory
+  + per-test outcomes from the CI artifact. Returns:
+  ```
+  {
+    status: "ok" | "unknown" | "tampered",
+    total: int,
+    tests: [{nodeid, outcome}, ...],
+    named_regression_guards: {present: [...], missing: [...]},
+  }
+  ```
+  Lets any caller confirm specific named guards (e.g.
+  `test_owned_by_app_agrees_with_trash_outcome`) actually exist and
+  passed — instead of trusting an opaque "203". Tool count: 20 → 21.
+
+### Fixed
+
+- **Lazy cwd evaluation in `_find_test_results_path`** — was
+  computing candidates at module-load time, freezing the working
+  directory. Caught by `test_test_suite_status_tampered_when_digest_
+  mismatches` which monkeypatches `chdir`. Now evaluated at each
+  call.
+
+### Tests
+
+- `test_canonical_digest_excludes_meta_block_and_is_stable` — same
+  payload in different dict-iteration orders → identical digest;
+  tampering changes the digest.
+- `test_test_suite_status_tampered_when_digest_mismatches` — the
+  killer guard: edit summary.passed without re-signing → server
+  reports status="tampered".
+- `test_gdocs_test_manifest_exists_and_returns_required_shape` —
+  manifest tool returns the documented shape regardless of artifact
+  presence.
+- All 21 tool's `test_tool_descriptions_truthful` and
+  `test_tool_input_schema_non_empty` extended to the new tool
+  (gdocs_test_manifest joins no_args allowlist).
+
+Total: 210 unit + 6 live tests, all green.
+
+### Deferred to v1.2.0
+
+- **CI mutation testing stage** — automated proof that injected
+  regressions turn their named test red. Substantial CI workflow
+  changes; separate atomic commit. The manual adversarial test
+  (branch + PR #8) already proved the loop works on file_id; the
+  v1.2 work is automating that across all 8 named guards on every
+  build.
+
 ## [1.1.2] — 2026-05-18
 
 ### Added

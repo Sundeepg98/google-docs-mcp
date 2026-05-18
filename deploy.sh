@@ -6,9 +6,15 @@
 # server exposes via gdocs_server_info. Without this wrapper those
 # fields default to "unknown".
 #
-# Also writes test-results.json (via pytest --json-report) so
-# gdocs_server_info's test_suite block reflects what was actually
-# tested when the image was built — not the most recent local run.
+# Also writes test-results.json (via pytest --json-report) with:
+#   - _git_commit  : the commit the suite ran against
+#   - _ci_run_url  : link to the GitHub Actions run for this commit
+#                    (best-effort via `gh` CLI; "" if no run found)
+#   - _meta.digest : sha256 of the canonicalized payload (minus _meta)
+# so gdocs_server_info's test_suite block can: (a) prove which CI run
+# produced the results, and (b) detect post-build tampering with the
+# numbers (server recomputes the digest at read time and reports
+# status="tampered" on mismatch).
 #
 # Pass through any extra flyctl deploy flags as args, e.g.:
 #   ./deploy.sh                 # standard deploy
@@ -16,7 +22,23 @@
 set -euo pipefail
 
 GIT_COMMIT=$(git rev-parse --short HEAD)
+GIT_COMMIT_FULL=$(git rev-parse HEAD)
 BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Best-effort: query GitHub Actions for the most recent run on this
+# commit. If gh isn't installed, no run exists yet, or the user isn't
+# authenticated, fall back to empty string — gdocs_server_info will
+# report ci_run_url="" which the caller can interpret.
+CI_RUN_URL=""
+if command -v gh >/dev/null 2>&1; then
+  CI_RUN_URL=$(gh run list --commit="${GIT_COMMIT_FULL}" --limit=1 \
+      --json url --jq '.[0].url // ""' 2>/dev/null || echo "")
+fi
+if [ -z "${CI_RUN_URL}" ]; then
+  echo "⚠️  no CI run found yet for commit ${GIT_COMMIT_FULL} —"
+  echo "    ci_run_url will be empty. Re-deploy after CI completes,"
+  echo "    or just push first and let CI catch up."
+fi
 
 # Run unit tests first — fail fast before pushing a broken image.
 # Also write test-results.json so gdocs_server_info can surface the
@@ -34,24 +56,33 @@ if [ "${SKIP_TESTS:-0}" = "0" ]; then
     exit 1
   }
   echo "✅ unit tests passed."
-
-  # Inject GIT_COMMIT into the results so the runtime can compare it
-  # against the deployed commit — divergence means the image shipped
-  # without a matching test run (which is itself a red flag).
-  python -c "
-import json
-with open('test-results.json') as f:
-    d = json.load(f)
-d['_git_commit'] = '${GIT_COMMIT}'
-with open('test-results.json', 'w') as f:
-    json.dump(d, f)
-"
 else
   echo "⚠️  SKIP_TESTS=1 — writing stub test-results.json"
   cat > test-results.json <<EOF
-{"_git_commit": "${GIT_COMMIT}", "_skipped_reason": "SKIP_TESTS=1 at build time", "summary": {}}
+{"_skipped_reason": "SKIP_TESTS=1 at build time", "summary": {}}
 EOF
 fi
+
+# Inject provenance + digest. The digest is computed AFTER the
+# provenance fields are added (so the digest covers the as-deployed
+# state) but BEFORE _meta itself is added (chicken-and-egg). Server
+# re-canonicalizes the same way at read time.
+python -c "
+import hashlib, json
+with open('test-results.json') as f:
+    d = json.load(f)
+d['_git_commit'] = '${GIT_COMMIT}'
+d['_ci_run_url'] = '${CI_RUN_URL}'
+# Drop any prior _meta before computing the digest.
+d.pop('_meta', None)
+canon = json.dumps(d, sort_keys=True, separators=(',', ':'))
+digest = 'sha256:' + hashlib.sha256(canon.encode('utf-8')).hexdigest()
+d['_meta'] = {'digest': digest}
+with open('test-results.json', 'w') as f:
+    json.dump(d, f)
+print(f'  digest: {digest}')
+print(f'  ci_run_url: {\"${CI_RUN_URL}\" or \"(none)\"}')
+"
 
 echo "deploying GIT_COMMIT=${GIT_COMMIT} BUILD_TIME=${BUILD_TIME}"
 

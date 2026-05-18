@@ -54,6 +54,59 @@ def test_server_info_includes_build_provenance_keys():
     assert "git_commit" in info
 
 
+def test_canonical_digest_excludes_meta_block_and_is_stable():
+    """The digest computed at deploy time must be reproducible at read
+    time with the same canonicalization rules. Tests the hashing
+    contract: sort_keys + tight separators + _meta excluded.
+    """
+    from google_docs_mcp.server import _canonical_digest
+
+    # Same payload, different dict-iteration order → identical digest.
+    a = {"summary": {"passed": 5}, "_git_commit": "abc", "_meta": {"digest": "old"}}
+    b = {"_meta": {"digest": "different"}, "_git_commit": "abc", "summary": {"passed": 5}}
+    assert _canonical_digest(a) == _canonical_digest(b)
+    assert _canonical_digest(a).startswith("sha256:")
+
+    # Tampering with the payload changes the digest.
+    tampered = {"summary": {"passed": 999}, "_git_commit": "abc"}
+    assert _canonical_digest(tampered) != _canonical_digest(a)
+
+
+def test_test_suite_status_tampered_when_digest_mismatches(tmp_path, monkeypatch):
+    """The killer guard: edit the numbers in test-results.json without
+    re-signing → server reports status='tampered', not 'passed'."""
+    import json
+    from google_docs_mcp.server import _read_test_suite_status, _canonical_digest
+
+    # Build a legit results file with correct digest.
+    legit = {
+        "created": 1748600000.0,
+        "summary": {"passed": 203, "failed": 0, "skipped": 0},
+        "_git_commit": "abc1234",
+        "_ci_run_url": "https://github.com/x/y/actions/runs/1",
+    }
+    legit["_meta"] = {"digest": _canonical_digest(legit)}
+
+    path = tmp_path / "test-results.json"
+    path.write_text(json.dumps(legit))
+    monkeypatch.chdir(tmp_path)
+
+    # Sanity: legit file → status=passed.
+    result = _read_test_suite_status("abc1234")
+    assert result["status"] == "passed", f"sanity check failed: {result!r}"
+
+    # Now tamper: bump the passed count without recomputing the digest.
+    tampered = json.loads(path.read_text())
+    tampered["summary"]["passed"] = 9999
+    path.write_text(json.dumps(tampered))
+
+    result = _read_test_suite_status("abc1234")
+    assert result["status"] == "tampered", (
+        f"editing the count without re-signing should report "
+        f"status='tampered', got: {result!r}"
+    )
+
+
 def test_server_info_includes_test_suite_block():
     """v1.1.2+ contract: test_suite block surfaces CI status.
 
@@ -77,7 +130,8 @@ def test_server_info_includes_test_suite_block():
 
     # When status is "passed" the full shape applies.
     if suite["status"] == "passed":
-        for key in ("last_run", "commit", "passed", "failed", "skipped"):
+        for key in ("last_run", "commit", "passed", "failed", "skipped",
+                    "ci_run_url", "report_digest"):
             assert key in suite, (
                 f"test_suite.{key} missing when status='passed'; "
                 f"got: {suite!r}"
@@ -85,3 +139,28 @@ def test_server_info_includes_test_suite_block():
         assert suite["failed"] == 0, (
             f"status='passed' but failed={suite['failed']} — contradiction"
         )
+        # report_digest must start with the hash-algorithm prefix so
+        # callers can pin the algorithm without parsing.
+        assert suite["report_digest"].startswith("sha256:"), (
+            f"report_digest format unexpected: {suite['report_digest']!r}"
+        )
+
+
+def test_gdocs_test_manifest_exists_and_returns_required_shape():
+    """gdocs_test_manifest must return tests + named_regression_guards.
+    Status varies (ok/unknown/tampered) depending on artifact state.
+    Shape is constant."""
+    import asyncio
+    from google_docs_mcp.server import gdocs_test_manifest
+
+    result = asyncio.run(gdocs_test_manifest()) if asyncio.iscoroutinefunction(
+        gdocs_test_manifest,
+    ) else gdocs_test_manifest()
+    assert "status" in result
+    assert result["status"] in ("ok", "unknown", "tampered")
+    assert "total" in result
+    assert "tests" in result and isinstance(result["tests"], list)
+    assert "named_regression_guards" in result
+    guards = result["named_regression_guards"]
+    assert "present" in guards and isinstance(guards["present"], list)
+    assert "missing" in guards and isinstance(guards["missing"], list)

@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "gdocs_replace_all_text",
     "gdocs_reset_authorization",  # v1.1.1+: force re-consent / recovery
     "gdocs_server_info",
+    "gdocs_test_manifest",  # v1.1.3+: surface test inventory + outcomes
     "gdocs_set_tab_icons",
     "gdocs_setup_apps_script",  # v1.1+: per-user Apps Script setup
     "gdocs_tab_existing_doc",
@@ -254,7 +255,7 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
     # introspection. setup_apps_script identifies the calling user
     # via OAuth context (get_access_token claims) so needs no kwargs;
     # the deploy is parameter-less by design.
-    no_arg_tools = {"gdocs_server_info", "gdocs_setup_apps_script"}
+    no_arg_tools = {"gdocs_server_info", "gdocs_setup_apps_script", "gdocs_test_manifest"}
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these
 

@@ -636,14 +636,51 @@ async def gdocs_server_info() -> dict:
     }
 
 
+def _find_test_results_path() -> Path | None:
+    """Locate the test-results.json artifact.
+
+    Container path first (/app/test-results.json, populated by
+    Dockerfile COPY), then CWD as local-dev fallback. Evaluated at
+    call time — NOT at import — so monkeypatched cwds in tests work.
+    """
+    candidates = [
+        Path("/app/test-results.json"),
+        Path.cwd() / "test-results.json",
+    ]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def _canonical_digest(data: dict) -> str:
+    """SHA-256 of the JSON with ``_meta`` removed, sorted-key serialized.
+
+    The digest is computed over everything EXCEPT the ``_meta`` block
+    (because the digest itself lives inside _meta — chicken/egg).
+    Canonicalization (sort_keys + tight separators) gives a stable
+    hash regardless of Python's dict-iteration order.
+    """
+    import hashlib
+    import json as _json
+    payload = {k: v for k, v in data.items() if k != "_meta"}
+    canon = _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
 def _read_test_suite_status(deployed_commit: str) -> dict:
     """Surface the CI test-suite status baked into the build.
 
-    deploy.sh writes ``test-results.json`` via pytest-json-report
-    and the Dockerfile COPIes it into the image. If the file's
-    absent or unparseable (vanilla `docker build` skips it; SKIP_TESTS
-    writes a stub), return ``{"status": "unknown"}`` per the
-    documented contract.
+    deploy.sh writes ``test-results.json`` via pytest-json-report,
+    embeds ``_git_commit`` + ``_ci_run_url`` + ``_meta.digest``, and
+    the Dockerfile COPIes it into the image. If the file's absent or
+    unparseable (vanilla `docker build` skips it; SKIP_TESTS writes a
+    stub), return ``{"status": "unknown"}`` per the documented
+    contract.
+
+    **Tamper detection.** At read time we re-canonicalize the JSON
+    (minus ``_meta``) and compare the recomputed digest against the
+    stored one. If they diverge, somebody edited the file
+    post-build — return ``status: "tampered"`` so a caller can
+    distinguish "the suite passed but someone fiddled with the
+    numbers" from a legitimate pass.
 
     ``test_suite.commit`` should equal the running build's
     ``git_commit``; divergence means the image shipped without a
@@ -651,16 +688,8 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
     """
     import json
     from datetime import datetime, timezone
-    from pathlib import Path
 
-    # Container path is /app/test-results.json (Dockerfile COPY).
-    # Local-dev fallback: CWD (useful for `python -m google_docs_mcp`
-    # from the repo root after running deploy.sh's pytest step).
-    candidates = [
-        Path("/app/test-results.json"),
-        Path.cwd() / "test-results.json",
-    ]
-    path = next((p for p in candidates if p.exists()), None)
+    path = _find_test_results_path()
     if path is None:
         return {"status": "unknown"}
 
@@ -685,16 +714,24 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
     else:
         last_run = "unknown"
 
-    # Test-suite commit is the one deploy.sh injected when it ran
-    # pytest. If absent → unknown. If present but differs from the
-    # deployed git_commit → still report what we have; the caller
-    # can compare and notice divergence themselves.
+    # Test-suite commit + CI run URL written by deploy.sh.
     test_commit = data.get("_git_commit", "unknown")
+    ci_run_url = data.get("_ci_run_url", "")
 
-    # Status logic: must have a populated summary AND zero failures.
-    # SKIP_TESTS stub has empty summary → status="unknown" naturally.
+    # Report digest verification — tamper detection.
+    stored_meta = data.get("_meta") or {}
+    stored_digest = stored_meta.get("digest", "")
+    recomputed_digest = _canonical_digest(data)
+    digest_matches = bool(stored_digest) and stored_digest == recomputed_digest
+
+    # Status logic: must have a populated summary AND zero failures
+    # AND the digest must verify. SKIP_TESTS stub has empty summary
+    # → status="unknown" naturally. Mismatched digest → "tampered"
+    # even if the numbers look green.
     if not summary:
         status = "unknown"
+    elif stored_digest and not digest_matches:
+        status = "tampered"
     elif failed == 0 and passed > 0:
         status = "passed"
     else:
@@ -707,6 +744,99 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
         "failed": failed,
         "skipped": skipped,
         "status": status,
+        "ci_run_url": ci_run_url,
+        "report_digest": stored_digest,
+    }
+
+
+@mcp.tool()
+def gdocs_test_manifest() -> dict:
+    """List every test in the CI artifact + its pass/fail outcome.
+
+    Read / verify / audit / inspect / list the test inventory of the
+    running build. Use to: confirm specific named regression guards
+    (e.g. test_owned_by_app_consistency) actually exist and passed,
+    spot-check what "203 passed" means, find which test failed if
+    test_suite.status is not "passed".
+
+    Returned shape:
+        {
+          status: "ok" | "unknown" | "tampered",
+          total: int,
+          tests: [{nodeid: str, outcome: "passed"|"failed"|"skipped"}, ...],
+          named_regression_guards: {
+            present: [list of named-guard test ids found in the suite],
+            missing: [list of named guards NOT found — should be empty],
+          },
+        }
+
+    Status "unknown" when the artifact's missing/unparseable;
+    "tampered" when the report_digest doesn't match the canonicalized
+    payload (same logic as gdocs_server_info.test_suite); "ok"
+    otherwise.
+    """
+    import json
+
+    path = _find_test_results_path()
+    if path is None:
+        return {
+            "status": "unknown",
+            "reason": "test-results.json not found in container",
+            "total": 0,
+            "tests": [],
+            "named_regression_guards": {"present": [], "missing": []},
+        }
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "status": "unknown",
+            "reason": "test-results.json unparseable",
+            "total": 0,
+            "tests": [],
+            "named_regression_guards": {"present": [], "missing": []},
+        }
+
+    stored_digest = (data.get("_meta") or {}).get("digest", "")
+    digest_matches = stored_digest and stored_digest == _canonical_digest(data)
+    if stored_digest and not digest_matches:
+        return {
+            "status": "tampered",
+            "reason": "report_digest mismatch — file was edited after CI",
+            "total": 0,
+            "tests": [],
+            "named_regression_guards": {"present": [], "missing": []},
+        }
+
+    tests_raw = data.get("tests") or []
+    tests = [
+        {"nodeid": t.get("nodeid", ""), "outcome": t.get("outcome", "")}
+        for t in tests_raw
+    ]
+
+    # The 8 named regression guards from v1.1.x — see CHANGELOG and
+    # tests/unit/test_*.py docstrings. If any are missing the suite's
+    # coverage of cycle bugs has regressed.
+    REQUIRED_GUARDS = [
+        "test_owned_by_app_agrees_with_trash_outcome",
+        "test_trash_file_id_accepts_str_or_list",
+        "test_inject_matches_fragmented_runs",
+        "test_deploy_webapp_body_does_not_include_entryPoints",
+        "test_preview_flags_what_convert_truncates",
+        "test_auth_pkce_consistency_every_url",
+        "test_tool_descriptions_truthful",
+        "test_tool_discoverability_via_server_info",
+    ]
+    test_names = {t["nodeid"].split("::")[-1].split("[")[0] for t in tests}
+    present = [g for g in REQUIRED_GUARDS if g in test_names]
+    missing = [g for g in REQUIRED_GUARDS if g not in test_names]
+
+    return {
+        "status": "ok",
+        "total": len(tests),
+        "tests": tests,
+        "named_regression_guards": {"present": present, "missing": missing},
     }
 
 
