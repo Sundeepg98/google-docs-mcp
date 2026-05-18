@@ -262,6 +262,15 @@ def build_authorization_url(
         raise ValueError("user_id is required")
 
     flow = Flow.from_client_config(client_config, scopes=scopes or GOOGLE_API_SCOPES)
+    # Disable PKCE — we're a confidential client (have client_secret),
+    # PKCE was designed for public clients that can't keep a secret.
+    # Enabling it here would require storing the auto-generated
+    # code_verifier server-side between the auth-URL build and the
+    # callback — we're stateless except for user_store, which doesn't
+    # know about the verifier. v1.2 can add proper PKCE with server-
+    # side verifier storage if we want defense-in-depth. For now,
+    # client_secret + HMAC-signed single-use state are sufficient.
+    flow.autogenerate_code_verifier = False
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
 
     state = sign_state(user_id, signing_key, ttl_seconds=ttl_seconds)
@@ -312,6 +321,9 @@ def exchange_code_for_credentials(
     flow = Flow.from_client_config(
         client_config, scopes=scopes or GOOGLE_API_SCOPES, state=state,
     )
+    # Match the build_authorization_url config — PKCE disabled, see
+    # rationale above.
+    flow.autogenerate_code_verifier = False
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
 
     try:
