@@ -33,15 +33,24 @@ from starlette.datastructures import UploadFile
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
+from . import user_store
 from .auth import default_data_dir, load_credentials
 from .crypto import NonceStore, verify_signed_params
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 from .errors import friendly_http_error_message
+from .oauth_google import (
+    CALLBACK_PATH,
+    OAuthCallbackError,
+    exchange_code_for_credentials,
+    load_client_config,
+)
 
-# Process-wide single-use nonce tracker for signed upload URLs.
+# Process-wide single-use nonce tracker. Used by BOTH the signed-upload
+# URLs (existing) and the v1.1+ OAuth state-param replay protection
+# (new). Single store is fine — nonce strings are unique-per-mint.
 _NONCE_STORE = NonceStore()
 
 log = logging.getLogger("google_docs_mcp.http")
@@ -54,6 +63,174 @@ log = logging.getLogger("google_docs_mcp.http")
 
 async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+
+
+# ---------------------------------------------------------------------------
+# OAuth callback (v1.1+) — downstream Google API auth, per-user
+# ---------------------------------------------------------------------------
+
+
+def _resolve_client_config() -> dict:
+    """Load the Google OAuth client_secrets JSON.
+
+    Resolution order (first match wins):
+      1. ``GOOGLE_OAUTH_CLIENT_SECRETS_JSON`` env var — full JSON inline.
+         Right for Fly secrets where we don't want files on disk.
+      2. ``GOOGLE_OAUTH_CLIENT_SECRETS_PATH`` env var — path to JSON file.
+      3. Fall back to the existing stdio-mode discovery in auth.py.
+    """
+    inline = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRETS_JSON")
+    if inline:
+        data = json.loads(inline)
+        if not any(k in data for k in ("web", "installed")):
+            raise RuntimeError(
+                "GOOGLE_OAUTH_CLIENT_SECRETS_JSON must contain a 'web' "
+                "or 'installed' top-level key"
+            )
+        return data
+
+    path_str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRETS_PATH")
+    if path_str:
+        return load_client_config(Path(path_str))
+
+    from .auth import find_client_config
+    return load_client_config(find_client_config(default_data_dir()))
+
+
+def _resolve_base_url(request: Request) -> str:
+    """Determine the public-facing base URL for OAuth redirects.
+
+    Prefers ``GOOGLE_OAUTH_BASE_URL`` env var (most reliable in prod
+    behind Fly's edge proxy). Falls back to reconstructing from the
+    request's scheme + host headers — fine for local dev, fragile if
+    the deployment is behind a non-standard reverse proxy that
+    doesn't set X-Forwarded-*.
+    """
+    override = os.environ.get("GOOGLE_OAUTH_BASE_URL")
+    if override:
+        return override.rstrip("/")
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    return f"{scheme}://{host}"
+
+
+_OAUTH_SUCCESS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Authorization complete</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 480px; margin: 96px auto; padding: 0 24px;
+            color: #1f2328; line-height: 1.6; }}
+    .check {{ font-size: 48px; }}
+    .small {{ color: #656d76; font-size: 14px; margin-top: 32px; }}
+  </style>
+</head>
+<body>
+  <div class="check">{check}</div>
+  <h1>{heading}</h1>
+  <p>{body}</p>
+  <p class="small">You can close this tab now.</p>
+</body>
+</html>"""
+
+
+def _success_page() -> Response:
+    html = _OAUTH_SUCCESS_HTML.format(
+        check="✅",
+        heading="Google access granted",
+        body=(
+            "google-docs-mcp can now act on your Drive, Docs, and Apps Script "
+            "on your behalf. Return to your chat and retry the action."
+        ),
+    )
+    return Response(html, status_code=200, media_type="text/html")
+
+
+def _error_page(message: str, status_code: int) -> Response:
+    html = _OAUTH_SUCCESS_HTML.format(
+        check="⚠️",
+        heading="Authorization didn't complete",
+        body=message,
+    )
+    return Response(html, status_code=status_code, media_type="text/html")
+
+
+async def oauth_google_api_callback(request: Request) -> Response:
+    """``GET /oauth/google/api/callback?code=...&state=...``
+
+    Final leg of the per-user Google OAuth dance. Verifies the
+    HMAC-signed state, exchanges the auth code for tokens, persists
+    them to ``user_store`` keyed by Google ``sub``. Returns a simple
+    HTML page the user sees in their browser.
+    """
+    qp = request.query_params
+
+    # Google sends ?error=access_denied if the user clicked Cancel on
+    # the consent screen. Surface that cleanly instead of trying to
+    # exchange a nonexistent code.
+    if "error" in qp:
+        log.info("oauth: user cancelled consent (%s)", qp["error"])
+        return _error_page(
+            f"You declined the authorization (Google said: {qp['error']}). "
+            "Re-run the tool in your chat to try again.",
+            status_code=400,
+        )
+
+    if "code" not in qp or "state" not in qp:
+        return _error_page(
+            "Missing 'code' or 'state' in callback URL. This usually "
+            "means Google did not complete the authorization.",
+            status_code=400,
+        )
+
+    signing_key = os.environ.get("MCP_BEARER_TOKEN")
+    if not signing_key:
+        # Misconfigured server — fail closed rather than handing out
+        # creds without state validation.
+        log.error("oauth: MCP_BEARER_TOKEN unset; cannot verify state")
+        return _error_page(
+            "Server configuration error. Contact the operator.",
+            status_code=500,
+        )
+
+    try:
+        client_config = _resolve_client_config()
+    except (RuntimeError, ValueError, FileNotFoundError, json.JSONDecodeError) as e:
+        log.error("oauth: client_config load failed: %s", e)
+        return _error_page(
+            "Server configuration error (OAuth client not configured). "
+            "Contact the operator.",
+            status_code=500,
+        )
+
+    base_url = _resolve_base_url(request)
+
+    try:
+        user_id, creds_json = exchange_code_for_credentials(
+            state=qp["state"],
+            authorization_response_url=str(request.url),
+            base_url=base_url,
+            client_config=client_config,
+            signing_key=signing_key,
+            nonce_store=_NONCE_STORE,
+        )
+    except OAuthCallbackError as e:
+        log.warning("oauth: callback rejected: %s", e)
+        return _error_page(str(e), status_code=e.status_code)
+
+    try:
+        user_store.save_state(user_id, {"google_creds_json": creds_json})
+    except Exception as e:  # noqa: BLE001 — last line of defence
+        log.exception("oauth: user_store.save_state failed for %s", user_id)
+        return _error_page(
+            f"Failed to persist credentials: {e}. Contact the operator.",
+            status_code=500,
+        )
+
+    log.info("oauth: persisted Google API creds for user %s", user_id)
+    return _success_page()
 
 
 async def convert_endpoint(request: Request) -> JSONResponse:
@@ -295,6 +472,11 @@ def build_app(mcp: FastMCP) -> Starlette:
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/api/convert", convert_endpoint, methods=["POST"]),
+        # OAuth callback for the v1.1+ per-user Google API auth. Public
+        # by design (browser hits it after Google redirect, no bearer
+        # token available). Security via HMAC-signed state + single-use
+        # nonce store, not via header auth.
+        Route(CALLBACK_PATH, oauth_google_api_callback, methods=["GET"]),
         # FastMCP at root mount, with its endpoint at /mcp internally.
         # /mcp (no slash) is the canonical endpoint claude.ai uses.
         Mount("/", app=mcp_app),
