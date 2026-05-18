@@ -4,6 +4,90 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-05-18
+
+Closes the "is the gate real?" gap. Two big additions: CI-driven
+deploys (so a broken commit literally cannot reach production) and
+automated mutation testing (so the suite proves it catches bugs
+on every build, not just once when written).
+
+### Added
+
+- **CI-gated deploys via GitHub Actions.** New
+  `.github/workflows/deploy.yml`:
+  - Triggers on push to `main` (and `workflow_dispatch`).
+  - Jobs: `unit` → `mutation` → `deploy`. Each depends on the
+    previous; deploy runs ONLY if both test jobs are green.
+  - The `unit` job runs `pytest` + injects provenance into
+    `test-results.json` (git_commit, ci_run_url from
+    `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`,
+    sha256 digest of the canonicalized payload).
+  - The `mutation` job runs `scripts/mutation_check.py` — see below.
+  - The `deploy` job downloads both artifacts, runs `flyctl deploy`
+    with provenance build-args, runs a /health smoke check.
+  - Concurrency: cancels in-flight deploys when a newer commit
+    supersedes.
+
+  **One-time setup:** the `FLY_API_TOKEN` repo secret must be set:
+  ```
+  flyctl tokens create deploy -a sundeepg98-docs-mcp -j | jq -r .token | gh secret set FLY_API_TOKEN
+  ```
+  Pipes the token directly from flyctl to gh — it never appears in
+  shell history or chat.
+
+  After this is set, every push to main runs CI; if any test fails,
+  the deploy doesn't happen. `ci_run_url` in the test_suite block
+  becomes a real GitHub Actions URL (replacing `"local"` for
+  CI-built deploys).
+
+- **`scripts/mutation_check.py` — automated mutation testing.**
+  For each named regression guard, applies a known bug-injecting
+  patch (e.g. revert `file_id: str | list[str]` → `file_id: str`),
+  runs pytest filtered to that guard, asserts the guard goes red.
+  If any guard does NOT catch its mutation, the build fails — that
+  guard is "asleep" and can't be trusted.
+
+  v1.2.0 ships mutations for 3 of the 8 named guards (the cleanest
+  string-replace patches):
+  - `test_trash_file_id_accepts_str_or_list` (file_id schema)
+  - `test_deploy_webapp_body_does_not_include_entryPoints` (the
+    v1.1.1 Apps Script bug)
+  - `test_tool_descriptions_truthful` (the v1.1.1 docstring lie)
+
+  Other 5 guards (`test_owned_by_app_*`, `test_inject_matches_*`,
+  `test_preview_*`, `test_auth_pkce_*`, `test_tool_discoverability_*`)
+  need multi-line diffs or library-quirk workarounds and are
+  documented as TODOs in the script. Each one added = the gate
+  gets one notch sharper. Iterative ship.
+
+- **`test_suite.mutation_check` block** in `gdocs_server_info`:
+  ```
+  mutation_check: {
+    ran: int,
+    caught: int,
+    status: "passed" | "failed" | "unknown",
+    asleep_guards: [list of guards that failed to catch their bug],
+  }
+  ```
+  Populated from `mutation-check.json` baked into the image by CI.
+  `status: "passed"` requires `ran > 0 AND caught == ran`. Empty
+  artifact or local-only deploy → `"unknown"`.
+
+### Changed
+
+- **Local `deploy.sh` is now the emergency fallback.** Primary
+  deploy path is push-to-main → CI. Local `./deploy.sh` still
+  works for hot-fixes that need to bypass CI (e.g. CI itself is
+  broken); in that case `ci_run_url` reports `"local"` and
+  `mutation_check.status` reports `"unknown"` — those values are
+  the signals "this build didn't go through CI."
+
+### Tests
+
++ extended `test_server_info_includes_test_suite_block` to assert
+  the new `mutation_check` sub-block is always present with a valid
+  status. Total: 212 unit + 5 live, all green.
+
 ## [1.1.4] — 2026-05-18
 
 Closes the two gaps surfaced by the gdocs_test_manifest audit on

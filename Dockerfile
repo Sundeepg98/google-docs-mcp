@@ -25,6 +25,10 @@ ENV BUILD_TIME=${BUILD_TIME}
 # if present and silently skips otherwise — no build error when
 # the file is missing.
 COPY test-results.jso[n] /app/test-results.json
+# Same glob trick for the mutation-check artifact — present in CI
+# builds (uploaded by the mutation job, downloaded by the deploy
+# job), absent for local `docker build` without going through CI.
+COPY mutation-check.jso[n] /app/mutation-check.json
 
 # Persistent data dir for OAuth token + Apps Script config.
 # In production, mount a Fly Volume here so token.json survives restarts.

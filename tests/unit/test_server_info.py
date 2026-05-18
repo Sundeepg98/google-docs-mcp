@@ -145,6 +145,13 @@ def test_server_info_includes_test_suite_block():
             f"report_digest format unexpected: {suite['report_digest']!r}"
         )
 
+    # mutation_check block must always be present (v1.2.0+ contract).
+    assert "mutation_check" in suite
+    mc = suite["mutation_check"]
+    assert "status" in mc
+    assert mc["status"] in ("passed", "failed", "unknown")
+    assert "ran" in mc and "caught" in mc
+
 
 def test_gdocs_test_manifest_exists_and_returns_required_shape():
     """gdocs_test_manifest must return tests + named_regression_guards.

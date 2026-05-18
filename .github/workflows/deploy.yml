@@ -1,0 +1,173 @@
+name: deploy
+
+# Build and deploy from CI — replaces the prior local-only `./deploy.sh`
+# path. A commit that breaks unit tests cannot reach production because
+# the deploy step depends on `unit` passing.
+#
+# Triggers:
+#   - push to main → automatic deploy (CI-gated)
+#   - workflow_dispatch → manual trigger from the Actions tab
+#
+# Required repository secret:
+#   FLY_API_TOKEN — generated via:
+#     flyctl tokens create deploy -a sundeepg98-docs-mcp -j | jq -r .token | gh secret set FLY_API_TOKEN
+#   (the -j JSON output + jq + pipe means the token never appears in
+#   shell history or chat — it goes straight from flyctl to gh)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel an in-flight deploy if a newer commit lands while it's running —
+# the newer one would just supersede this one anyway.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit tests (Python 3.13 — deploy-gate)
+    runs-on: ubuntu-latest
+    outputs:
+      results-digest: ${{ steps.compute-digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: install package + test deps
+        run: pip install -e ".[test]"
+
+      - name: pytest with JSON report
+        run: |
+          python -m pytest tests/unit -q \
+              --json-report --json-report-file=test-results.json
+
+      - name: inject provenance + digest into test-results.json
+        id: compute-digest
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          with open("test-results.json") as f:
+              d = json.load(f)
+          d["_git_commit"] = os.environ["GIT_COMMIT"][:7]
+          d["_ci_run_url"] = os.environ["CI_RUN_URL"]
+          d.pop("_meta", None)
+          canon = json.dumps(d, sort_keys=True, separators=(",", ":"))
+          digest = "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+          d["_meta"] = {"digest": digest}
+          with open("test-results.json", "w") as f:
+              json.dump(d, f)
+          # Surface the digest to the next job via job outputs.
+          with open(os.environ["GITHUB_OUTPUT"], "a") as gho:
+              gho.write(f"digest={digest}\n")
+          print(f"digest: {digest}")
+          print(f"ci_run_url: {os.environ['CI_RUN_URL']}")
+          PY
+
+      - name: upload test-results.json for deploy job
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.json
+          if-no-files-found: error
+          retention-days: 7
+
+  mutation:
+    name: mutation check (prove guards catch their bugs)
+    needs: unit  # only run after unit suite is green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: install package + test deps
+        run: pip install -e ".[test]"
+
+      - name: run mutation script
+        run: python scripts/mutation_check.py
+
+      - name: upload mutation-check.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-check
+          path: mutation-check.json
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: deploy to Fly
+    needs: [unit, mutation]  # gate: BOTH unit and mutation must be green
+    runs-on: ubuntu-latest
+    # Don't deploy on PR-triggered runs, only on push to main.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: fetch test-results.json from unit job
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: .
+
+      - name: fetch mutation-check.json from mutation job
+        uses: actions/download-artifact@v4
+        with:
+          name: mutation-check
+          path: .
+
+      - name: verify both artifacts present
+        run: |
+          test -s test-results.json    || { echo "no test-results.json"; exit 1; }
+          test -s mutation-check.json  || { echo "no mutation-check.json"; exit 1; }
+          echo "test-results.json:   $(wc -c < test-results.json) bytes"
+          echo "mutation-check.json: $(wc -c < mutation-check.json) bytes"
+
+      - name: deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          GIT_COMMIT: ${{ github.sha }}
+          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
+        run: |
+          if [ -z "${FLY_API_TOKEN}" ]; then
+            echo "❌ FLY_API_TOKEN secret not set."
+            echo "   Run locally: flyctl tokens create deploy -a sundeepg98-docs-mcp -j | jq -r .token | gh secret set FLY_API_TOKEN"
+            exit 1
+          fi
+          GIT_COMMIT_SHORT="${GIT_COMMIT:0:7}"
+          BUILD_TIME_SAFE="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+          echo "deploying GIT_COMMIT=${GIT_COMMIT_SHORT} BUILD_TIME=${BUILD_TIME_SAFE}"
+          flyctl deploy --remote-only \
+              --build-arg "GIT_COMMIT=${GIT_COMMIT_SHORT}" \
+              --build-arg "BUILD_TIME=${BUILD_TIME_SAFE}"
+
+      - name: smoke check
+        run: |
+          # Health endpoint should be 200 within 30s of deploy.
+          for i in 1 2 3 4 5; do
+            if curl -fsS https://sundeepg98-docs-mcp.fly.dev/health; then
+              echo ""
+              echo "✓ health check passed"
+              exit 0
+            fi
+            echo "health check attempt $i failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "❌ health check failed after 5 retries"
+          exit 1

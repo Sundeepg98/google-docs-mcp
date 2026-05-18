@@ -746,6 +746,42 @@ def _read_test_suite_status(deployed_commit: str) -> dict:
         "status": status,
         "ci_run_url": ci_run_url,
         "report_digest": stored_digest,
+        "mutation_check": _read_mutation_check(),
+    }
+
+
+def _read_mutation_check() -> dict:
+    """Surface mutation-test results baked into the build.
+
+    Reads /app/mutation-check.json (CWD fallback for local dev),
+    produced by scripts/mutation_check.py in CI. Each entry there is
+    a {guard, caught, duration_ms} dict; we summarize to
+    {ran, caught, status, asleep_guards}. Missing file → unknown.
+
+    A guard is "asleep" if applying a known bug-injecting patch does
+    NOT turn it red — which means the guard couldn't catch its bug
+    today, and we can't trust it to catch the bug in production.
+    """
+    import json
+
+    candidates = [
+        Path("/app/mutation-check.json"),
+        Path.cwd() / "mutation-check.json",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        return {"status": "unknown", "ran": 0, "caught": 0}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"status": "unknown", "ran": 0, "caught": 0}
+
+    return {
+        "ran": int(data.get("ran", 0)),
+        "caught": int(data.get("caught", 0)),
+        "status": data.get("status", "unknown"),
+        "asleep_guards": list(data.get("asleep_guards", [])),
     }
 
 
