@@ -31,6 +31,7 @@ EXPECTED_TOOLS = {
     "gdocs_read_doc",
     "gdocs_rename_tab",
     "gdocs_replace_all_text",
+    "gdocs_reset_authorization",  # v1.1.1+: force re-consent / recovery
     "gdocs_server_info",
     "gdocs_set_tab_icons",
     "gdocs_setup_apps_script",  # v1.1+: per-user Apps Script setup

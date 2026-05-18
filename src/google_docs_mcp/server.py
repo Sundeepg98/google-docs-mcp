@@ -616,10 +616,20 @@ async def gdocs_server_info() -> dict:
         ver = _pkg_version("google-docs-mcp")
     except Exception:  # noqa: BLE001
         ver = "unknown"
+
+    # Append GIT_COMMIT as semver build metadata so every deploy from
+    # a distinct commit reports a unique version string — without
+    # requiring a manual pyproject bump on every hot-fix. Format
+    # follows semver §10: `version+buildmetadata`. PEP 440 also
+    # tolerates `+local` segments for the same purpose.
+    git_commit = os.environ.get("GIT_COMMIT", "unknown")
+    if git_commit and git_commit != "unknown":
+        ver = f"{ver}+{git_commit}"
+
     return {
         "version": ver,
         "build_time": os.environ.get("BUILD_TIME", "unknown"),
-        "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+        "git_commit": git_commit,
         "tool_count": len(tool_names),
         "tools": tool_names,
     }
@@ -1152,6 +1162,101 @@ def gdocs_setup_apps_script() -> dict:
             "You can now use gdocs_tab_existing_doc and other tools "
             "that need lossless content moves."
         ),
+    }
+
+
+@mcp.tool()
+def gdocs_reset_authorization(full: bool = False) -> dict:
+    """Clear the calling user's stored Google API authorization.
+
+    USE WHEN: you want to force a fresh OAuth consent flow on the next
+    call — for testing PKCE / re-consenting after a scope change /
+    recovering from a stale or revoked grant.
+
+    HTTP mode (cloud chat, claude.ai connector):
+      - Default (``full=False``): clears only the stored Google
+        credentials (``google_creds_json``). The user's Apps Script
+        Web App setup (URL, script_id, deployment_id) is preserved.
+        Next tool call that needs creds returns
+        ``status: "needs_authorization"`` with a fresh auth_url.
+      - ``full=True``: clears the entire user_store row, including
+        the Apps Script setup. Next call to ``gdocs_setup_apps_script``
+        will create a NEW project in Drive.
+
+    Stdio mode (Claude Desktop / Code on a developer laptop):
+      - Default: deletes the cached OAuth token at
+        ``~/.google-docs-mcp/token.json``. Next tool call triggers
+        the local browser-consent flow.
+      - ``full=True``: also deletes the local Apps Script
+        ``setup-state.json`` ledger and the URL in ``config.json`` —
+        next ``setup-apps-script`` CLI run will create a new project.
+
+    DOES NOT trash any Apps Script projects in your Drive — those
+    remain (you can manually delete them in Drive if you want to
+    free up space). Just clears the local/server-side record of the
+    authorization.
+
+    Args:
+        full: If True, also clear Apps Script setup state, not just
+            credentials. Default False (least destructive).
+
+    Returns:
+        ``{status: "reset", message: str, cleared: [list of what
+        was cleared]}``.
+    """
+    user_id = current_user_id_or_none()
+    cleared: list[str] = []
+
+    if user_id is not None:
+        # HTTP / multi-tenant mode
+        from . import user_store
+        if full:
+            user_store.clear_state(user_id)
+            cleared.append("user_store row (creds + apps_script_*)")
+        else:
+            # Only nuke google_creds_json; preserve apps_script_*
+            user_store.save_state(user_id, {"google_creds_json": None})
+            cleared.append("google_creds_json")
+        return {
+            "status": "reset",
+            "message": (
+                "Authorization cleared for your account. The next tool "
+                "call that needs Google API access will return "
+                "'needs_authorization' with a fresh auth URL — click it "
+                "to re-consent."
+            ),
+            "cleared": cleared,
+        }
+
+    # Stdio / no-auth-context mode
+    data_dir = default_data_dir()
+    token_file = data_dir / "token.json"
+    if token_file.exists():
+        token_file.unlink()
+        cleared.append(str(token_file))
+    if full:
+        setup_state_file = data_dir / "setup-state.json"
+        if setup_state_file.exists():
+            setup_state_file.unlink()
+            cleared.append(str(setup_state_file))
+        cfg_file = data_dir / "config.json"
+        if cfg_file.exists():
+            cfg_file.unlink()
+            cleared.append(str(cfg_file))
+
+    # Bust the module-level creds cache so the next tool call doesn't
+    # return the in-memory token that we just deleted from disk.
+    global _creds_cache
+    _creds_cache = None
+
+    return {
+        "status": "reset",
+        "message": (
+            "Local OAuth token cleared. The next tool call will trigger "
+            "the local browser-consent flow."
+            + (" Apps Script setup state also cleared." if full else "")
+        ),
+        "cleared": cleared,
     }
 
 
