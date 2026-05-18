@@ -53,6 +53,56 @@ CALLBACK_PATH = "/oauth/google/api/callback"
 START_PATH = "/oauth/google/api/start"
 
 
+def resolve_runtime_oauth_config() -> dict:
+    """Bundle the env-derived OAuth config for tool code.
+
+    Returns ``{client_config, signing_key, base_url}`` — the kwargs
+    ``credentials.get_credentials_for_user`` needs. Read from env
+    only (no request context), so it's safe to call from MCP tool
+    code that doesn't have access to the HTTP request.
+
+    Raises ``RuntimeError`` if any required env var is missing —
+    that's an operator-config issue, not a user-facing one, and
+    we want it to surface loudly at first call.
+    """
+    import json as _json
+    import os as _os
+
+    signing_key = _os.environ.get("MCP_BEARER_TOKEN")
+    if not signing_key:
+        raise RuntimeError(
+            "MCP_BEARER_TOKEN env var is required for OAuth state signing"
+        )
+
+    base_url = _os.environ.get("GOOGLE_OAUTH_BASE_URL")
+    if not base_url:
+        raise RuntimeError(
+            "GOOGLE_OAUTH_BASE_URL env var is required when resolving "
+            "OAuth config without a request context (set it to the "
+            "publicly-reachable URL of this server, e.g. "
+            "https://my-app.fly.dev)"
+        )
+
+    inline = _os.environ.get("GOOGLE_OAUTH_CLIENT_SECRETS_JSON")
+    if inline:
+        client_config = _json.loads(inline)
+    else:
+        path = _os.environ.get("GOOGLE_OAUTH_CLIENT_SECRETS_PATH")
+        if not path:
+            raise RuntimeError(
+                "One of GOOGLE_OAUTH_CLIENT_SECRETS_JSON or "
+                "GOOGLE_OAUTH_CLIENT_SECRETS_PATH env vars is required"
+            )
+        from pathlib import Path as _Path
+        client_config = load_client_config(_Path(path))
+
+    return {
+        "client_config": client_config,
+        "signing_key": signing_key,
+        "base_url": base_url.rstrip("/"),
+    }
+
+
 class OAuthCallbackError(Exception):
     """Raised when the OAuth callback can't complete (bad state, bad code, etc.).
 

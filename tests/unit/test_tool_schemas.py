@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "gdocs_replace_all_text",
     "gdocs_server_info",
     "gdocs_set_tab_icons",
+    "gdocs_setup_apps_script",  # v1.1+: per-user Apps Script setup
     "gdocs_tab_existing_doc",
     "gdocs_trash_file",
     "gdocs_untrash_file",
