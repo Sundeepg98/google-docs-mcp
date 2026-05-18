@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal
+
+# typing_extensions for backward compat: NotRequired was added to typing
+# in 3.11, and pydantic requires typing_extensions.TypedDict (not
+# typing.TypedDict) for proper schema generation on Python < 3.12.
+# Importing both from typing_extensions makes the package usable on
+# the full 3.10+ range we claim to support.
+from typing_extensions import NotRequired, TypedDict
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
