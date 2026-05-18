@@ -277,12 +277,26 @@ Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). 
 | `src/google_docs_mcp/crypto.py` | HMAC signing for upload URLs |
 | `src/google_docs_mcp/errors.py` | Friendly error mapping for known Google API failures |
 
+## Known limitations
+
+- **`setActiveTab` (persistent default-tab setting) not exposed.** The Docs REST API doesn't support it; the Apps Script `DocumentApp.setActiveTab()` does but would require extending our Web App. For the common case (linking the user to a specific tab), `gdocs_get_tab_url` returns a `?tab=t.xxx` deep link that achieves the same UX.
+- **Drive's converter 500s on `.docx` files using `<w:sym w:char="00A0"/>` for NBSP.** Our retrofit handles this construct correctly in-memory (the run-fragmentation fix), but Drive can't convert the document. Use the literal `\xa0` character inside `<w:t>` (the form Word actually produces) instead.
+- **Per-tab headers/footers not supported.** Tabs render as continuous scroll in the Docs UI; page headers only matter for paginated PDF export — a narrow case not worth the Apps Script complexity.
+
 ## Caveats
 
 - Tokens are stored unencrypted at `~/.google-docs-mcp/token.json`. Don't sync that path to a shared drive.
 - This is a single-user server (one OAuth identity). For multi-tenant use, refactor to per-user OAuth at the connector layer.
 - Drive's `drive.file` scope restricts writes to files this app created. Trash/untrash/move on externally-uploaded files returns `reason: "app_not_authorized"` (soft-failure, not raised — see `gdocs_find_doc_by_title`'s `owned_by_app` flag).
 - Apps Script Web App is a hard prerequisite for `gdocs_tab_existing_doc` and retrofit — the script does what REST can't (preserve drawings/equations/cell shading during content moves).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
