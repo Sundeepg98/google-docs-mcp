@@ -1167,11 +1167,19 @@ def gdocs_setup_apps_script() -> dict:
 
 @mcp.tool()
 def gdocs_reset_authorization(full: bool = False) -> dict:
-    """Clear the calling user's stored Google API authorization.
+    """Reset / revoke / clear stored Google OAuth credentials. Force re-consent.
+
+    Use this tool to: sign out, re-authorize, re-consent after a scope
+    change, switch Google accounts, recover from a stale or revoked
+    grant, force a fresh OAuth flow for testing (PKCE / consent
+    screen), or roll back to the needs_authorization state. Equivalent
+    in spirit to "log out and log back in" for the Google Drive / Docs
+    / Apps Script API access this server uses on your behalf.
 
     USE WHEN: you want to force a fresh OAuth consent flow on the next
     call — for testing PKCE / re-consenting after a scope change /
-    recovering from a stale or revoked grant.
+    recovering from a stale or revoked grant / switching the Google
+    account this server acts as.
 
     HTTP mode (cloud chat, claude.ai connector):
       - Default (``full=False``): clears only the stored Google
