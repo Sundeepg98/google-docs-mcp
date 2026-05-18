@@ -115,21 +115,30 @@ First tool call opens the browser. Sign in → grant scopes. Tokens cached after
 
 `gdocs_tab_existing_doc` and the retrofit path use a helper Apps Script Web App for lossless content restructuring (tables, drawings, cell shading — content REST can't re-emit). **Skip this section** if you only use `gdocs_make_tabbed_doc` and edit tools.
 
+### Automated (recommended)
+
 ```bash
-# Print the deployment recipe + the .gs script content
-google-docs-mcp setup-apps-script
+google-docs-mcp setup-apps-script-auto
 ```
 
-This prints step-by-step instructions to create the script in Apps Script Editor, deploy it as a Web App, and copy the deployment URL. Then:
+Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs`, deploys as a Web App with `executeAs: USER_DEPLOYING / access: MYSELF`, and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
+
+The plumbing lives in `src/google_docs_mcp/gas_deploy/` as a clean sub-package boundary — if a second project ever needs Apps Script project management, that folder can be `git mv`'d out and published as a standalone package.
+
+### Manual (fallback)
+
+If the automated path doesn't work (e.g. you can't run a local browser OAuth flow), print the manual recipe:
 
 ```bash
+google-docs-mcp setup-apps-script    # prints step-by-step UI instructions
+# then after deploying via the UI and copying the URL:
 google-docs-mcp configure-webapp https://script.google.com/macros/s/.../exec
 ```
 
-Verifies the URL with a health-check ping and saves it to `~/.google-docs-mcp/config.json`. Check status anytime:
+### Check status
 
 ```bash
-google-docs-mcp status
+google-docs-mcp status   # shows configured URL + pings the webapp
 ```
 
 ## Remote HTTP mode (Fly.io + claude.ai cloud chat)

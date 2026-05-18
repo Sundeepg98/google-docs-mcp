@@ -3,8 +3,13 @@
 ``google-docs-mcp`` with no args runs the MCP server (default mode).
 Subcommands handle the Apps Script Web App deployment and config:
 
-  google-docs-mcp setup-apps-script        - print deployment recipe + script
-  google-docs-mcp configure-webapp <URL>   - save the deployed webapp URL
+  google-docs-mcp setup-apps-script-auto   - automated: API-driven deploy
+                                              (recommended; one OAuth consent
+                                              replaces the manual UI dance)
+  google-docs-mcp setup-apps-script        - manual: print deployment recipe
+                                              for users who can't run a
+                                              browser OAuth flow locally
+  google-docs-mcp configure-webapp <URL>   - save a manually-deployed URL
   google-docs-mcp status                   - show current config state
 """
 from __future__ import annotations
@@ -25,6 +30,8 @@ def cli_main(argv: list[str]) -> int:
         return 0
     cmd = argv[0]
     rest = argv[1:]
+    if cmd == "setup-apps-script-auto":
+        return _cmd_setup_auto(rest)
     if cmd == "setup-apps-script":
         return _cmd_setup(rest)
     if cmd == "configure-webapp":
@@ -37,6 +44,35 @@ def cli_main(argv: list[str]) -> int:
     print(f"Unknown command: {cmd}\n", file=sys.stderr)
     _print_help()
     return 2
+
+
+def _cmd_setup_auto(_rest: list[str]) -> int:
+    """Automated path: create + push + deploy in one shot via Apps Script API."""
+    from .setup_apps_script import setup_apps_script_auto
+    print(
+        "Setting up Apps Script Web App automatically.\n"
+        "If this is your first run, a browser window will open for\n"
+        "OAuth consent — grant the Apps Script + Drive scopes shown.\n"
+    )
+    try:
+        deployment = setup_apps_script_auto()
+    except Exception as e:  # noqa: BLE001
+        print(f"\nSetup failed: {e}", file=sys.stderr)
+        print(
+            "\nIf the API path doesn't work for you (firewall, scope\n"
+            "consent issues, etc.), fall back to the manual recipe with:\n"
+            "  google-docs-mcp setup-apps-script",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Web App deployed successfully.")
+    print(f"  scriptId:     {deployment.script_id}")
+    print(f"  deploymentId: {deployment.deployment_id}")
+    print(f"  version:      {deployment.version}")
+    print(f"  /exec URL:    {deployment.url}")
+    print(f"\nSaved to {config.config_path()}.")
+    print("Test it with: google-docs-mcp status")
+    return 0
 
 
 def _print_help() -> None:

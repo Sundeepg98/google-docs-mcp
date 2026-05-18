@@ -14,6 +14,8 @@ from typing import TypedDict
 
 class Config(TypedDict, total=False):
     apps_script_webapp_url: str
+    apps_script_script_id: str       # set by setup-apps-script-auto; lets
+    apps_script_deployment_id: str   # us update vs re-create on re-deploy
 
 
 def config_path() -> Path:

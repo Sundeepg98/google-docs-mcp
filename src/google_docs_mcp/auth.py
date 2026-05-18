@@ -67,12 +67,23 @@ def find_client_config(creds_dir: Path) -> Path:
     )
 
 
-def load_credentials(creds_dir: Path) -> Credentials:
+def load_credentials(
+    creds_dir: Path,
+    extra_scopes: list[str] | None = None,
+) -> Credentials:
     """Return valid Google OAuth credentials, running the consent flow if needed.
 
     Tokens are written to ``<creds_dir>/token.json`` regardless of where
     the client config came from — keeping app-specific scopes isolated.
+
+    ``extra_scopes`` (optional) adds to the runtime ``SCOPES`` list — used
+    by one-off privileged operations like ``setup-apps-script-auto``
+    that need Apps Script management scopes which pure runtime callers
+    don't need. If the cached token lacks any of these, it's deleted
+    and a fresh consent flow runs.
     """
+    required = SCOPES + (list(extra_scopes) if extra_scopes else [])
+
     creds_dir.mkdir(parents=True, exist_ok=True)
     token_file = creds_dir / "token.json"
 
@@ -80,11 +91,11 @@ def load_credentials(creds_dir: Path) -> Credentials:
     # via google-auth — ``from_authorized_user_file(file, SCOPES)`` echoes
     # the SCOPES arg back as ``creds.scopes``, masking missing grants
     # until the refresh attempt fails with ``invalid_scope``.
-    if token_file.exists() and not _token_has_all_scopes(token_file, SCOPES):
+    if token_file.exists() and not _token_has_all_scopes(token_file, required):
         token_file.unlink()  # stale scope set — force fresh OAuth
 
     if token_file.exists():
-        creds = Credentials.from_authorized_user_file(str(token_file), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_file), required)
         if creds.valid:
             return creds
         if creds.expired and creds.refresh_token:
@@ -93,7 +104,7 @@ def load_credentials(creds_dir: Path) -> Credentials:
             return creds
 
     client_config = find_client_config(creds_dir)
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_config), SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_config), required)
     creds = flow.run_local_server(port=0)
     token_file.write_text(creds.to_json())
     return creds
