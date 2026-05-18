@@ -28,18 +28,26 @@ pytestmark = pytest.mark.live
 
 def test_doc_is_owned_by_authorizing_account(live_creds, created_docs):
     """A doc created via the loaded creds is owned by THAT user's email,
-    not by any app service account or hardcoded operator."""
+    not by any app service account or hardcoded operator.
+
+    Uses drive.about().get() (not oauth2.userinfo) to identify the
+    authenticated user — the former works on Drive scope alone, the
+    latter requires userinfo.email which our runtime SCOPES don't
+    include by default.
+    """
     from googleapiclient.discovery import build
 
     from google_docs_mcp.docs_api import make_doc_with_tabs
 
-    # Step 1: identify who the loaded creds belong to.
-    oauth2 = build("oauth2", "v2", credentials=live_creds)
-    me = oauth2.userinfo().get().execute()
-    my_email = me.get("email")
-    assert my_email, f"oauth2.userinfo returned no email: {me!r}"
+    drive = build("drive", "v3", credentials=live_creds)
 
-    # Step 2: create a doc.
+    # Step 1: identify who the loaded creds belong to via Drive's
+    # own "about" endpoint (no extra scopes needed).
+    about = drive.about().get(fields="user(emailAddress,displayName)").execute()
+    my_email = (about.get("user") or {}).get("emailAddress")
+    assert my_email, f"drive.about returned no user.emailAddress: {about!r}"
+
+    # Step 2: create a doc with the same creds.
     created = make_doc_with_tabs(
         live_creds, "test_multi_tenant_ownership",
         [{"title": "x", "content": "x"}],
@@ -47,8 +55,7 @@ def test_doc_is_owned_by_authorizing_account(live_creds, created_docs):
     doc_id = created["doc_id"]
     created_docs.append(doc_id)
 
-    # Step 3: fetch its Drive metadata and confirm ownership.
-    drive = build("drive", "v3", credentials=live_creds)
+    # Step 3: fetch the doc's Drive metadata and confirm ownership.
     meta = drive.files().get(
         fileId=doc_id, fields="id,name,owners(emailAddress,displayName)",
     ).execute()
@@ -58,8 +65,8 @@ def test_doc_is_owned_by_authorizing_account(live_creds, created_docs):
 
     assert my_email in owner_emails, (
         f"Doc {doc_id} is NOT owned by the authorizing account.\n"
-        f"  Authorizing user (from oauth2.userinfo): {my_email}\n"
-        f"  Doc owners (from drive.files.get):       {owner_emails}\n"
+        f"  Authorizing user (from drive.about):  {my_email}\n"
+        f"  Doc owners (from drive.files.get):   {owner_emails}\n"
         "This is the v1.1 multi-tenancy guarantee: docs created via "
         "a user's creds belong to THAT user, not to a shared operator "
         "or service account. If this fails, the per-user creds "
