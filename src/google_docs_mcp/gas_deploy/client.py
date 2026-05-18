@@ -136,25 +136,23 @@ class AppsScriptClient:
         version: int,
         *,
         description: str = "",
-        execute_as: str = "USER_DEPLOYING",
-        access: str = "MYSELF",
     ) -> WebAppDeployment:
         """Create a Web App deployment of an existing version.
 
-        ``execute_as``:
-          - ``USER_DEPLOYING`` (default) — runs as the OAuth user who
-            deployed; no per-invocation consent needed
-          - ``USER_ACCESSING`` — runs as each invoking user; requires
-            them to consent in a browser first
+        The web-app entry-point configuration (``executeAs``, ``access``)
+        is declared in the project's ``appsscript.json`` manifest pushed
+        via ``push_files``. The deployment body MUST NOT include
+        ``entryPoints`` — Apps Script API rejects:
 
-        ``access``:
-          - ``MYSELF`` (default) — only the deploying user can invoke
-          - ``DOMAIN`` — anyone in their Workspace domain
-          - ``ANYONE`` / ``ANYONE_ANONYMOUS`` — fully open
+            HttpError 400: Invalid JSON payload received.
+            Unknown name "entryPoints": Cannot find field.
 
-        For our restructure-script use case, ``USER_DEPLOYING`` +
-        ``MYSELF`` is the right combo: the script acts on the user's
-        own docs and only they should invoke it.
+        on ``projects.deployments.create`` when the body carries that
+        field. This was the v1.0.x bug fixed in v1.1.1.
+
+        The deployment response DOES contain ``entryPoints`` populated
+        from the manifest — that's where we extract the live ``/exec``
+        URL.
         """
         resp = (
             self._svc.projects()
@@ -165,16 +163,6 @@ class AppsScriptClient:
                     "versionNumber": version,
                     "manifestFileName": _MANIFEST_FILENAME,
                     "description": description,
-                    "entryPoints": [
-                        {
-                            "entryPointType": "WEB_APP",
-                            "webApp": {
-                                "entryPointConfig": {},
-                                "access": access,
-                                "executeAs": execute_as,
-                            },
-                        }
-                    ],
                 },
             )
             .execute()

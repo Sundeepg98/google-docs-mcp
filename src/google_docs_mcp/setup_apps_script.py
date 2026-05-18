@@ -54,8 +54,17 @@ _MANIFEST = {
     "exceptionLogging": "STACKDRIVER",
     "runtimeVersion": "V8",
     "webapp": {
+        # USER_DEPLOYING: the script runs as the OAuth user who deployed
+        # it (the chat user in cloud mode, the operator in stdio mode) —
+        # so it can only touch docs THAT USER owns. ANYONE_ANONYMOUS:
+        # required so our server (which calls _call_webapp with no auth
+        # headers) can actually reach the /exec endpoint. The "anyone"
+        # surface area is bounded by the script's logic — it only acts
+        # on doc IDs passed in the request, and only on docs the
+        # deployer owns. v1.2 plan: add HMAC token validation in the
+        # script for defense in depth.
         "executeAs": "USER_DEPLOYING",
-        "access": "MYSELF",
+        "access": "ANYONE_ANONYMOUS",
     },
 }
 
@@ -120,12 +129,13 @@ def _execute_setup_with_ledger(
         save_state_partial({"version_number": state["version_number"]})
 
     # --- Step 4: projects.deployments.create ---
+    # Entry-point config (executeAs, access) is declared in _MANIFEST
+    # and pushed via push_files; the deployment body must NOT include
+    # entryPoints (Apps Script API rejects it).
     if "deployment_id" not in state:
         deployment = client.deploy_webapp(
             state["script_id"], state["version_number"],
             description="google-docs-mcp restructure webapp",
-            execute_as="USER_DEPLOYING",
-            access="MYSELF",
         )
         save_state_partial({
             "deployment_id": deployment.deployment_id,

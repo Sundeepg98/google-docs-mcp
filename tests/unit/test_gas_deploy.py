@@ -111,18 +111,35 @@ def test_deploy_webapp_raises_when_url_missing(mock_script_svc):
         client.deploy_webapp("SCRIPT_ID", 1)
 
 
-def test_deploy_webapp_passes_executeAs_and_access(mock_script_svc):
+def test_deploy_webapp_body_does_not_include_entryPoints(mock_script_svc):
+    """v1.1.1 regression guard. Apps Script API rejects entryPoints in
+    the deployments.create body:
+
+        HttpError 400: Invalid JSON payload received.
+        Unknown name "entryPoints": Cannot find field.
+
+    entryPoints belong in the manifest (appsscript.json), pushed via
+    push_files. The deployment body must carry ONLY versionNumber,
+    manifestFileName, and description.
+    """
     from google_docs_mcp.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().deployments().create().execute.return_value = {
         "deploymentId": "D", "entryPoints": [{"webApp": {"url": "u"}}],
     }
     client = AppsScriptClient(MagicMock())
-    client.deploy_webapp("S", 1, execute_as="USER_ACCESSING", access="DOMAIN")
+    client.deploy_webapp("S", 1, description="test")
     body = mock_script_svc.projects().deployments().create.call_args.kwargs["body"]
-    web_cfg = body["entryPoints"][0]["webApp"]
-    assert web_cfg["executeAs"] == "USER_ACCESSING"
-    assert web_cfg["access"] == "DOMAIN"
+
+    assert "entryPoints" not in body, (
+        "deployments.create body includes entryPoints — "
+        "Apps Script API will reject with 400 'Unknown name entryPoints'"
+    )
+    assert body == {
+        "versionNumber": 1,
+        "manifestFileName": "appsscript",
+        "description": "test",
+    }
 
 
 def test_gas_deploy_scopes_constant_lists_required_scopes():
