@@ -207,10 +207,22 @@ async def oauth_google_api_callback(request: Request) -> Response:
 
     base_url = _resolve_base_url(request)
 
+    # Fly terminates TLS at the edge; inside the container the proxied
+    # request shows scheme=http even though the public URL is HTTPS.
+    # oauthlib's Flow.fetch_token validates the authorization_response
+    # URL and rejects any http://, raising InsecureTransportError. Since
+    # we KNOW we're behind Fly's HTTPS edge (base_url begins with
+    # https://), rewrite the scheme on the URL we hand to oauthlib. Do
+    # NOT set OAUTHLIB_INSECURE_TRANSPORT=1 — that disables transport
+    # security checks globally; we only want to lie about THIS one URL.
+    authorization_response_url = str(request.url)
+    if base_url.startswith("https://") and authorization_response_url.startswith("http://"):
+        authorization_response_url = "https://" + authorization_response_url[len("http://"):]
+
     try:
         user_id, creds_json = exchange_code_for_credentials(
             state=qp["state"],
-            authorization_response_url=str(request.url),
+            authorization_response_url=authorization_response_url,
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key,
