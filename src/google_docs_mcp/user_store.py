@@ -198,3 +198,24 @@ def google_creds_dict(state: UserState) -> dict | None:
     if raw is None:
         return None
     return json.loads(raw)
+
+
+def save_credentials_json(user_id: str, creds_to_json_output: str) -> UserState:
+    """Persist Google Credentials JSON safely (strips operator secrets).
+
+    Defense in depth: ``Credentials.to_json()`` includes ``client_id``
+    and ``client_secret`` — but those are operator-level OAuth app
+    secrets, not user-specific. Storing them in every user row means
+    a user_state.db leak hands an attacker the credentials to
+    impersonate the entire OAuth app to Google. Strip before persist;
+    re-inject from runtime config at load time
+    (see ``credentials._credentials_from_state``).
+
+    Use this instead of ``save_state(uid, {"google_creds_json": ...})``
+    when the JSON came from ``Credentials.to_json()``. Pure pass-through
+    save_state is fine for tests / fixtures that don't carry secrets.
+    """
+    raw = json.loads(creds_to_json_output)
+    raw.pop("client_id", None)
+    raw.pop("client_secret", None)
+    return save_state(user_id, {"google_creds_json": json.dumps(raw)})
