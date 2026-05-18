@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,6 +31,15 @@ from typing import Any, Iterator
 from typing_extensions import TypedDict
 
 from .auth import default_data_dir
+
+# Per-path init guard. ``PRAGMA journal_mode=WAL`` requires an exclusive
+# lock to transition into WAL mode — and ``busy_timeout`` doesn't help
+# here, the call fails fast under contention. We serialize first-time
+# init under a Python-level lock; once a path is in ``_initialized_paths``,
+# subsequent connections skip the init and just open normally (WAL mode
+# is persistent in the DB file).
+_initialized_paths: set[Path] = set()
+_init_lock = threading.Lock()
 
 
 class UserState(TypedDict, total=False):
@@ -72,35 +82,57 @@ def db_path() -> Path:
     return default_data_dir() / "user_state.db"
 
 
+def _ensure_initialized(path: Path) -> None:
+    """First-time init for ``path``: set WAL mode + create schema.
+
+    Serialized under ``_init_lock`` so concurrent callers don't race
+    on the PRAGMA. Idempotent — subsequent calls fast-path through
+    the set-membership check without grabbing the lock.
+    """
+    if path in _initialized_paths:
+        return
+    with _init_lock:
+        if path in _initialized_paths:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, isolation_level=None, timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_state (
+                    user_id                      TEXT PRIMARY KEY,
+                    google_creds_json            TEXT,
+                    apps_script_url              TEXT,
+                    apps_script_script_id        TEXT,
+                    apps_script_deployment_id    TEXT,
+                    apps_script_version_number   INTEGER,
+                    apps_script_content_hash     TEXT,
+                    created_at                   INTEGER NOT NULL,
+                    updated_at                   INTEGER NOT NULL
+                )
+                """
+            )
+        finally:
+            conn.close()
+        _initialized_paths.add(path)
+
+
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
-    """Yield a connection with the schema ensured and WAL enabled.
+    """Yield a connection to the (already-initialized) DB.
 
-    Lazy init: the first call from a fresh deployment creates the
-    table; subsequent calls are no-ops. WAL mode lets concurrent
-    readers (tool calls) not block the writer (OAuth callback).
+    WAL mode is persistent in the DB file — once
+    ``_ensure_initialized`` has set it, every subsequent open uses
+    WAL automatically. ``busy_timeout=5000ms`` lets concurrent
+    writers WAIT for the row-level lock rather than failing fast.
     """
     path = db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, isolation_level=None)
+    _ensure_initialized(path)
+    conn = sqlite3.connect(path, isolation_level=None, timeout=30)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_state (
-                user_id                      TEXT PRIMARY KEY,
-                google_creds_json            TEXT,
-                apps_script_url              TEXT,
-                apps_script_script_id        TEXT,
-                apps_script_deployment_id    TEXT,
-                apps_script_version_number   INTEGER,
-                apps_script_content_hash     TEXT,
-                created_at                   INTEGER NOT NULL,
-                updated_at                   INTEGER NOT NULL
-            )
-            """
-        )
         conn.row_factory = sqlite3.Row
         yield conn
     finally:

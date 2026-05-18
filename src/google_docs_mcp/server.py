@@ -46,7 +46,11 @@ from .preview import preview_tab_split as _preview_tab_split
 from .retrofit import retrofit_existing_docx as _retrofit_existing_docx
 # v1.1+ multi-tenant cloud auth — imported lazily-via-function so stdio
 # users without the OAuth env vars don't trip import-time errors.
-from .credentials import NeedsReauthError, get_credentials_for_user
+from .credentials import (
+    NeedsReauthError,
+    current_user_id_or_none,
+    get_credentials_for_user,
+)
 from .gas_deploy import GAS_DEPLOY_SCOPES
 from .oauth_google import resolve_runtime_oauth_config
 from .setup_apps_script import (
@@ -102,18 +106,54 @@ sections", use gdocs_make_tabbed_doc and nothing else.
 """
 
 mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
+# auth=None at construction so stdio (Claude Desktop / Code) runs
+# without auth middleware. HTTP transport sets mcp.auth = GoogleProvider
+# at startup via configure_auth_for_http() — see main() and Phase 7.
 
-# Lazy module-level cache so the OAuth flow / discovery client setup
-# happens on the first tool call rather than at import time. Subsequent
-# tool calls reuse the cached credentials.
+# Lazy module-level cache for the stdio/no-auth-context path. HTTP
+# mode bypasses this entirely — see _get_credentials() below.
 _creds_cache = None
 
 
 def _get_credentials():
-    global _creds_cache
-    if _creds_cache is None or not _creds_cache.valid:
-        _creds_cache = load_credentials(default_data_dir())
-    return _creds_cache
+    """Return valid Google API Credentials for the caller.
+
+    Two modes, transparently:
+
+    - **HTTP / multi-tenant** (FastMCP has an auth provider, calling
+      user identified by ``get_access_token().claims["sub"]``):
+      resolve via ``credentials.get_credentials_for_user``. Refreshes
+      per-user, persists back to user_store. On NeedsReauthError,
+      raises ToolError with a Markdown link to the consent URL — the
+      Claude client renders the URL as clickable.
+
+    - **Stdio / single-tenant** (no auth context, local trust model):
+      operator's cached OAuth token at ``~/.google-docs-mcp/token.json``,
+      lazy-loaded and cached in-process. Preserves the v1.0 stdio
+      experience bit-for-bit.
+
+    The mode branch is observable via ``current_user_id_or_none()``
+    returning a value vs None. Until Phase 7 wires GoogleProvider, the
+    HTTP path is dormant and all callers fall into the stdio branch.
+    """
+    user_id = current_user_id_or_none()
+
+    if user_id is None:
+        global _creds_cache
+        if _creds_cache is None or not _creds_cache.valid:
+            _creds_cache = load_credentials(default_data_dir())
+        return _creds_cache
+
+    try:
+        return get_credentials_for_user(
+            user_id, **resolve_runtime_oauth_config(),
+        )
+    except NeedsReauthError as e:
+        raise ToolError(
+            f"Google API access required.\n\n"
+            f"**[Click here to authorize]({e.auth_url})**\n\n"
+            f"After granting access, re-run this tool."
+        ) from e
 
 
 @mcp.tool()
@@ -1019,30 +1059,8 @@ def gdocs_get_signed_upload_url(
     return minted
 
 
-def _current_user_id_or_none() -> str | None:
-    """Return the Google ``sub`` of the calling user, or None for stdio.
-
-    HTTP mode (v1.1+ with GoogleProvider wired): returns the ``sub``
-    from the FastMCP-issued JWT. Stdio mode (Claude Desktop / Code on
-    a developer's laptop): no auth context, returns None — caller
-    falls back to single-user local creds.
-
-    Defensive about FastMCP version drift — the dependency surface
-    for ``get_access_token`` has moved in 2.x; if the import fails
-    or the call raises, treat it the same as "no auth context."
-    """
-    try:
-        from fastmcp.server.dependencies import get_access_token
-    except ImportError:
-        return None
-    try:
-        token = get_access_token()
-    except Exception:  # noqa: BLE001 — defensive against version drift
-        return None
-    if token is None:
-        return None
-    claims = getattr(token, "claims", None) or {}
-    return claims.get("sub")
+# current_user_id_or_none lives in credentials.py so docx_import et al
+# can share it without circular imports.
 
 
 @mcp.tool()
@@ -1068,7 +1086,7 @@ def gdocs_setup_apps_script() -> dict:
     ``{status: "needs_authorization", auth_url, message}`` — emit
     the message verbatim so Claude renders the URL as a clickable link.
     """
-    user_id = _current_user_id_or_none()
+    user_id = current_user_id_or_none()
 
     if user_id is None:
         # Stdio / no-auth-context mode: local CLI behavior.

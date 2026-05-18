@@ -24,7 +24,9 @@ from urllib import request as urlrequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+from . import user_store
 from .config import get_webapp_url
+from .credentials import current_user_id_or_none
 from .docs_api import (
     MAX_NESTING_DEPTH,
     TabSpec,
@@ -116,8 +118,17 @@ def convert_docx_to_tabbed_doc(
             "(got both, or neither)."
         )
 
-    webapp_url = get_webapp_url()
+    webapp_url = _resolve_webapp_url()
     if not webapp_url:
+        # Mode-specific guidance — telling a cloud chat user to "run the
+        # CLI" is useless, and telling a stdio user to "run the MCP tool"
+        # is the wrong setup path.
+        if current_user_id_or_none() is not None:
+            raise RuntimeError(
+                "Apps Script Web App not yet set up for your account. "
+                "Run the gdocs_setup_apps_script tool first; it deploys "
+                "a Web App into your Drive and remembers the URL."
+            )
         raise RuntimeError(
             "Apps Script Web App URL not configured. "
             "Run `google-docs-mcp setup-apps-script` for setup instructions, "
@@ -314,6 +325,26 @@ def convert_docx_to_tabbed_doc(
     if replaced_note:
         result["replaced_doc_id"] = replace_doc_id
     return result
+
+
+def _resolve_webapp_url() -> str | None:
+    """HTTP mode: per-user URL from user_store. Stdio mode: local config.
+
+    The HTTP path (multi-tenant cloud) reads the calling user's row
+    from user_store, populated by ``gdocs_setup_apps_script``. The
+    stdio path (single-tenant local) reads the operator's URL from
+    ``~/.google-docs-mcp/config.json``, populated by the CLI
+    ``setup-apps-script`` command.
+
+    REST endpoint callers (bearer-token-authed, not MCP) land here
+    too — and fall through to the stdio path. That's intentional for
+    v1.1: the REST endpoint stays operator-only. Multi-tenant REST
+    is a future concern.
+    """
+    user_id = current_user_id_or_none()
+    if user_id is not None:
+        return user_store.get_state(user_id).get("apps_script_url")
+    return get_webapp_url()
 
 
 def _detect_splits(

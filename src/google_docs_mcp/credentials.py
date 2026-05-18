@@ -46,6 +46,35 @@ from .oauth_google import GOOGLE_API_SCOPES, build_authorization_url
 log = logging.getLogger("google_docs_mcp.credentials")
 
 
+def current_user_id_or_none() -> str | None:
+    """Return Google ``sub`` of calling user, or None outside auth context.
+
+    HTTP mode (FastMCP has an auth provider set): returns ``sub`` from
+    the FastMCP-issued JWT's claims. Stdio mode (no auth provider) or
+    REST endpoint (bearer-token-authed, not MCP): returns None.
+
+    Used as the mode discriminator across the codebase — caller branches
+    into per-user (HTTP) vs operator-cached (stdio) credential and
+    Apps-Script-URL lookup paths.
+
+    Defensive about fastmcp version drift — the dependency surface for
+    ``get_access_token`` has moved across 2.x; if import fails or the
+    call raises, treat it as "no auth context" rather than crashing.
+    """
+    try:
+        from fastmcp.server.dependencies import get_access_token
+    except ImportError:
+        return None
+    try:
+        token = get_access_token()
+    except Exception:  # noqa: BLE001 — defensive against version drift
+        return None
+    if token is None:
+        return None
+    claims = getattr(token, "claims", None) or {}
+    return claims.get("sub")
+
+
 class NeedsReauthError(Exception):
     """Raised when a user must (re-)authorize before we can call Google.
 
