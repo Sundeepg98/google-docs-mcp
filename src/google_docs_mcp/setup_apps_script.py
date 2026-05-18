@@ -14,7 +14,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import config
-from .auth import default_data_dir, load_credentials
+from .auth import (
+    default_data_dir,
+    load_credentials,
+    load_service_account_credentials,
+)
 from .gas_deploy import AppsScriptClient, GAS_DEPLOY_SCOPES
 from .gas_deploy.client import WebAppDeployment
 
@@ -37,12 +41,27 @@ _MANIFEST = {
 }
 
 
-def setup_apps_script_auto(data_dir: Path | None = None) -> WebAppDeployment:
+def setup_apps_script_auto(
+    data_dir: Path | None = None,
+    *,
+    service_account_key: Path | None = None,
+    impersonate_user: str | None = None,
+) -> WebAppDeployment:
     """End-to-end: create project, push restructure.gs, deploy, save URL.
 
-    Triggers an OAuth consent flow on first run if the cached token
-    doesn't cover the Apps Script scopes (the additional 2 scopes
-    over our runtime set). Subsequent calls reuse the refreshed token.
+    Two auth modes:
+
+    - **OAuth (default)**: triggers a one-time browser consent on first
+      run if the cached token doesn't already cover Apps Script scopes.
+      Subsequent runs are headless. Right for individual developers
+      using the MCP on their own machine.
+
+    - **Service Account + DWD** (opt-in): pass ``service_account_key``
+      + ``impersonate_user``. Truly headless from the first call.
+      Requires Google Workspace + admin who's enabled DWD for the SA's
+      Client ID against the GAS_DEPLOY_SCOPES. Right for CI, server-
+      side batch processing, IT-managed multi-user provisioning. NOT
+      usable for personal @gmail.com (no Admin Console = no DWD).
 
     Returns the ``WebAppDeployment`` (scriptId, deploymentId, version,
     /exec URL). The URL is also persisted to the local config so
@@ -50,10 +69,20 @@ def setup_apps_script_auto(data_dir: Path | None = None) -> WebAppDeployment:
     """
     data_dir = data_dir or default_data_dir()
 
-    # Load creds with the EXTENDED scope set (runtime + apps script).
-    # This may trigger a one-time re-consent if the existing token only
-    # has runtime scopes.
-    creds = load_credentials(data_dir, extra_scopes=GAS_DEPLOY_SCOPES)
+    if service_account_key is not None:
+        if not impersonate_user:
+            raise ValueError(
+                "service_account_key requires impersonate_user — the "
+                "Workspace user the SA acts as (and who'll own the "
+                "resulting Apps Script project)."
+            )
+        creds = load_service_account_credentials(
+            service_account_key, impersonate_user, GAS_DEPLOY_SCOPES,
+        )
+    else:
+        # OAuth path: load runtime creds + extended scopes. Re-consents
+        # if cached token doesn't cover Apps Script scopes.
+        creds = load_credentials(data_dir, extra_scopes=GAS_DEPLOY_SCOPES)
 
     client = AppsScriptClient(creds)
 

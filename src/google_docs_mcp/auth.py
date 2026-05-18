@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -108,6 +109,55 @@ def load_credentials(
     creds = flow.run_local_server(port=0)
     token_file.write_text(creds.to_json())
     return creds
+
+
+def load_service_account_credentials(
+    key_path: Path,
+    impersonate_user: str,
+    scopes: list[str],
+):
+    """Load Service Account credentials + impersonate a Workspace user via DWD.
+
+    Used by the opt-in headless setup path (``setup-apps-script-auto
+    --auth-mode=service-account``) for environments where no human can
+    click OAuth consent — CI, server-side batch document processing,
+    multi-user IT provisioning. For interactive desktop use, the
+    regular OAuth flow (``load_credentials``) is the right call.
+
+    Empirically confirmed against the Apps Script REST API (e.g.
+    shiftavenue/gas-action does this in CI). Apps Script API rejects
+    raw SA tokens but accepts SA-impersonating-user tokens because, to
+    the API, the token looks like a user token for the subject email.
+
+    Prerequisites (one-time, on the Workspace admin's side):
+      1. Service Account created in GCP project, JSON key downloaded
+      2. SA's numeric Client ID added to:
+         Admin Console → Security → Access and data control →
+         API controls → Manage Domain Wide Delegation → Add new
+      3. Scopes authorized in that DWD entry (must include all of
+         ``scopes`` here — typically GAS_DEPLOY_SCOPES)
+      4. Up to 24h propagation (usually minutes)
+
+    Args:
+        key_path: path to the SA's JSON key file.
+        impersonate_user: email of the Workspace user the SA acts as.
+            The resulting Apps Script project will be owned by them.
+        scopes: full scope list the SA needs (must match what the
+            admin authorized in the DWD console).
+
+    Personal @gmail.com accounts have no Admin Console and can NOT use
+    this path — they must use the OAuth flow.
+    """
+    if not key_path.exists():
+        raise FileNotFoundError(
+            f"Service account key file not found: {key_path}. "
+            "Download it from GCP Console → IAM & Admin → Service Accounts "
+            "→ <your SA> → Keys → Add Key → JSON."
+        )
+    sa_creds = service_account.Credentials.from_service_account_file(
+        str(key_path), scopes=scopes,
+    )
+    return sa_creds.with_subject(impersonate_user)
 
 
 def _token_has_all_scopes(token_file: Path, required: list[str]) -> bool:

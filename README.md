@@ -135,6 +135,32 @@ google-docs-mcp setup-apps-script    # prints step-by-step UI instructions
 google-docs-mcp configure-webapp https://script.google.com/macros/s/.../exec
 ```
 
+### Advanced: headless via Service Account + Domain-Wide Delegation
+
+For CI pipelines, server-side batch document processing, or IT-managed multi-user provisioning — anywhere no human can click an OAuth consent. **Google Workspace only** (personal `@gmail.com` accounts have no Admin Console and cannot use DWD).
+
+One-time admin setup:
+1. Create a Service Account in GCP, download its JSON key
+2. Admin Console → Security → Access and data control → API controls → **Manage Domain Wide Delegation** → Add new → paste the SA's numeric Client ID
+3. Authorize these scopes for that DWD entry (comma-separated):
+   ```
+   https://www.googleapis.com/auth/script.projects,
+   https://www.googleapis.com/auth/script.deployments,
+   https://www.googleapis.com/auth/drive.file
+   ```
+4. Wait for propagation (usually minutes, up to 24h)
+
+Then anyone with the SA key + permission to impersonate a Workspace user runs:
+
+```bash
+google-docs-mcp setup-apps-script-auto \
+  --auth-mode=service-account \
+  --sa-key=/path/to/sa-key.json \
+  --impersonate-user=operator@yourdomain.com
+```
+
+The resulting Apps Script project is owned by the impersonated user (appears in their Drive). Truly zero-browser from the first call. Trade-off: 10-ish admin-gated setup steps replacing one OAuth tap — only worth it when "no human can click" is a hard constraint.
+
 ### Check status
 
 ```bash

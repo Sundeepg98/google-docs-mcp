@@ -46,16 +46,70 @@ def cli_main(argv: list[str]) -> int:
     return 2
 
 
-def _cmd_setup_auto(_rest: list[str]) -> int:
-    """Automated path: create + push + deploy in one shot via Apps Script API."""
+def _cmd_setup_auto(rest: list[str]) -> int:
+    """Automated path: create + push + deploy in one shot via Apps Script API.
+
+    Default: OAuth flow (opens browser once for consent).
+    With --auth-mode=service-account --sa-key=PATH --impersonate-user=EMAIL:
+    use Service Account + Domain-Wide Delegation. Truly headless. Requires
+    Google Workspace + admin who's enabled DWD for the SA.
+    """
     from .setup_apps_script import setup_apps_script_auto
-    print(
-        "Setting up Apps Script Web App automatically.\n"
-        "If this is your first run, a browser window will open for\n"
-        "OAuth consent — grant the Apps Script + Drive scopes shown.\n"
-    )
+
+    sa_key: Path | None = None
+    impersonate: str | None = None
+    auth_mode = "oauth"
+    args = list(rest)
+    while args:
+        a = args.pop(0)
+        if a.startswith("--auth-mode="):
+            auth_mode = a.split("=", 1)[1]
+        elif a == "--auth-mode" and args:
+            auth_mode = args.pop(0)
+        elif a.startswith("--sa-key="):
+            sa_key = Path(a.split("=", 1)[1]).expanduser()
+        elif a == "--sa-key" and args:
+            sa_key = Path(args.pop(0)).expanduser()
+        elif a.startswith("--impersonate-user="):
+            impersonate = a.split("=", 1)[1]
+        elif a == "--impersonate-user" and args:
+            impersonate = args.pop(0)
+        else:
+            print(f"Unknown flag for setup-apps-script-auto: {a}", file=sys.stderr)
+            return 2
+
+    if auth_mode not in ("oauth", "service-account"):
+        print(
+            f"Invalid --auth-mode: {auth_mode!r}. Use 'oauth' or 'service-account'.",
+            file=sys.stderr,
+        )
+        return 2
+    if auth_mode == "service-account":
+        if not sa_key or not impersonate:
+            print(
+                "service-account mode requires both --sa-key=PATH and "
+                "--impersonate-user=EMAIL. See README 'Apps Script setup → "
+                "Advanced: headless via Service Account + DWD'.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"Setting up Apps Script Web App via Service Account.\n"
+            f"  SA key:        {sa_key}\n"
+            f"  Impersonating: {impersonate}\n"
+        )
+    else:
+        print(
+            "Setting up Apps Script Web App automatically.\n"
+            "If this is your first run, a browser window will open for\n"
+            "OAuth consent — grant the Apps Script + Drive scopes shown.\n"
+        )
+
     try:
-        deployment = setup_apps_script_auto()
+        deployment = setup_apps_script_auto(
+            service_account_key=sa_key if auth_mode == "service-account" else None,
+            impersonate_user=impersonate if auth_mode == "service-account" else None,
+        )
     except Exception as e:  # noqa: BLE001
         print(f"\nSetup failed: {e}", file=sys.stderr)
         print(
