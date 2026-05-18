@@ -13,64 +13,83 @@ import pytest
 pytestmark = pytest.mark.live
 
 
-def _build_live_test_docx() -> bytes:
-    """A .docx with NO Heading 1 paragraphs but plain marker text Drive can convert.
+def _build_pathological_docx() -> bytes:
+    """A .docx with NO Heading 1s and the SAME pathologies real Word writes.
 
-    Pathological-content coverage (fragmented runs, NBSP, smart quotes,
-    em-dash, typographic folding) is exercised in-process via
-    ``tests/unit/test_retrofit_text_normalization.py`` instead — Drive's
-    converter 500s on .docx files that mix w:sym + smart-quote +
-    fragmented-run constructs in one document, even though python-docx
-    writes them as syntactically valid XML. We confirmed this isn't a
-    retrofit bug (the unit test passes 14/14 pathological cases) but a
-    Drive-side limitation, so live coverage uses normal content.
+    Covers (in one document, end-to-end through Drive's convert):
+      - Fragmented runs (multiple <w:r> mid-phrase — Word does this
+        for spell-check tags, language tags, rPr changes)
+      - NBSP as the literal U+00A0 character inside <w:t> (how Word
+        actually writes it; the ``<w:sym w:char="00A0"/>`` form is
+        rarely used in practice AND triggers a Drive convert 500, so
+        we don't use it here — that case is covered by the in-process
+        unit test instead)
+      - Smart quotes (Word's autocorrect output)
+      - Em-dash (also autocorrect)
     """
     from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def add_fragmented(doc, parts):
+        p = OxmlElement("w:p")
+        for part in parts:
+            r = OxmlElement("w:r")
+            t = OxmlElement("w:t")
+            t.text = part
+            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            r.append(t)
+            p.append(r)
+        doc.element.body.insert(-1, p)
 
     doc = Document()
-    # Sections marked only by their banner text — no Heading 1 style.
-    # Plain paragraphs Drive's converter handles cleanly.
-    doc.add_paragraph("SECTION ONE BANNER")
+    add_fragmented(doc, ["Sec", "tion", " ", "One"])           # fragmented runs
     doc.add_paragraph("body of section one")
-    doc.add_paragraph("SECTION TWO BANNER")
+    add_fragmented(doc, ["Section", " ", "Two"])          # NBSP as U+00A0 literal
     doc.add_paragraph("body of section two")
-    doc.add_paragraph("SECTION THREE BANNER")
+    add_fragmented(doc, ["Smart “Quotes” Three"])    # smart quotes
     doc.add_paragraph("body of section three")
+    add_fragmented(doc, ["Em—dash Section Four"])         # em-dash
+    doc.add_paragraph("body of section four")
 
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-def test_retrofit_e2e(live_creds, tmp_path):
-    """All markers match end-to-end through upload+convert+restructure."""
+def test_retrofit_pathological_e2e(live_creds, tmp_path):
+    """All 4 pathological markers match end-to-end through upload+convert+restructure."""
     from google_docs_mcp.drive_api import trash_drive_file
     from google_docs_mcp.retrofit import retrofit_existing_docx
 
     docx_path = tmp_path / "retrofit_live.docx"
-    docx_path.write_bytes(_build_live_test_docx())
+    docx_path.write_bytes(_build_pathological_docx())
 
+    # Caller types plain ASCII for the smart-quote / em-dash markers —
+    # the normalization layer must reconcile.
     markers = [
-        {"marker_text": "SECTION ONE BANNER",   "tab_title": "One"},
-        {"marker_text": "SECTION TWO BANNER",   "tab_title": "Two"},
-        {"marker_text": "SECTION THREE BANNER", "tab_title": "Three"},
+        {"marker_text": "Section One",            "tab_title": "One"},
+        {"marker_text": "Section Two",            "tab_title": "Two"},
+        {"marker_text": 'Smart "Quotes" Three',   "tab_title": "Three"},
+        {"marker_text": "Em-dash Section Four",   "tab_title": "Four"},
     ]
 
     result = retrofit_existing_docx(
         live_creds, markers=markers, docx_path=docx_path,
-        title="retrofit_e2e_test",
+        title="retrofit_e2e_pathological",
     )
     try:
         info = result.get("retrofit") or {}
         matched = info.get("markers_matched")
         missed = info.get("markers_missed") or []
-        assert matched == 3, (
-            f"expected 3 markers matched, got {matched}; missed={missed!r}."
+        assert matched == 4, (
+            f"expected all 4 markers matched, got {matched}; missed={missed!r}. "
+            "Likely run-fragmentation, NBSP-literal, smart-quote, or em-dash "
+            "normalization regression."
         )
         assert missed == [], f"unexpected misses: {missed}"
-        # Sanity: result also has a real doc_id and tabs
         assert result.get("doc_id")
-        assert len(result.get("tabs") or []) >= 3
+        assert len(result.get("tabs") or []) >= 4
     finally:
         if result.get("doc_id"):
             try:
