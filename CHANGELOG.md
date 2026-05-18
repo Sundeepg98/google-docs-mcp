@@ -4,6 +4,121 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-05-18
+
+Post-1.1.0 hot-fixes from the first real cloud-chat user testing.
+Each was caught in production by the user noticing mid-use; v1.1.1
+adds named unit-test regression guards for every one so the next
+cycle catches them in CI.
+
+### Fixed
+
+- **Apps Script `deployments.create` rejected the `entryPoints` field.**
+  Google's API returns `Invalid JSON payload received. Unknown name
+  "entryPoints": Cannot find field.` Web-app entry-point configuration
+  belongs in the `appsscript.json` manifest, NOT the deployment body.
+  Removed `entryPoints` from `deploy_webapp`'s request body; removed
+  the now-unused `execute_as` / `access` parameters from its signature.
+  Guard: `test_gas_deploy.py::test_deploy_webapp_body_does_not_include_entryPoints`.
+
+- **Apps Script Web App manifest changed `access: MYSELF` →
+  `ANYONE_ANONYMOUS`.** In single-tenant v1.0 the operator was both
+  deployer and runtime caller, so `MYSELF` worked via session magic.
+  In v1.1 multi-tenant cloud, the USER deploys the Web App but the
+  SERVER calls it — unauthenticated. `MYSELF` would 401 every call.
+  `ANYONE_ANONYMOUS` is the right setting for the v1.1 architecture.
+  Surface is bounded by the script's logic (only acts on doc IDs in
+  the request, only on docs the deployer owns); v1.2 will add HMAC
+  request validation for defense in depth.
+
+- **OAuth callback failed on Fly with `OAuth 2 MUST utilize https`.**
+  Fly terminates TLS at the edge; inside the container `request.url`
+  has scheme `http://` even though the public URL is HTTPS.
+  `oauthlib.Flow.fetch_token` validates the URL and rejected any
+  http://. Fixed by rewriting the scheme on the URL we hand to oauthlib
+  when `base_url` begins with `https://`. Did NOT set
+  `OAUTHLIB_INSECURE_TRANSPORT=1` (that disables transport security
+  globally).
+
+- **PKCE handling was non-deterministic; callback failed with
+  `Missing code verifier`.** Auth URLs sometimes included
+  `code_challenge` and sometimes didn't, depending on which Flow code
+  path generated them. v1.1.1 makes PKCE always-on: every
+  `build_authorization_url` call generates a `code_verifier` via
+  `secrets.token_urlsafe(48)`, persists it server-side keyed by the
+  state token's nonce (see `oauth_state._pending_verifiers`), and
+  retrieves it on callback so `Flow.fetch_token` can complete the
+  exchange. Guard:
+  `test_oauth_google.py::test_auth_pkce_consistency_every_url`.
+
+- **Doc-string overpromise: tools claimed to work "without setup".**
+  `gdocs_setup_apps_script`'s description conflated two prerequisites:
+  (a) the Apps Script Web App setup itself, (b) the base Google OAuth
+  grant. Other tools don't need (a) but ALL tools need (b). Saying
+  "works without setup" unqualified misled the model into trying calls
+  that returned `needs_authorization`. Rewrote to distinguish the two
+  grant types explicitly. Guard:
+  `test_tool_schemas.py::test_tool_descriptions_truthful`.
+
+- **`gdocs_reset_authorization` was registered but undiscoverable via
+  `tool_search`.** Tool was visible in `gdocs_server_info.tools` (count
+  20) but search ranker couldn't surface its schema for keywords like
+  "reset authorization" / "revoke grant" / "sign out". Root cause:
+  bland leading description sentence. Rewrote to embed the synonym
+  set ("reset / revoke / clear stored Google OAuth credentials. Force
+  re-consent.") in the first 200 chars where the ranker weighs most.
+  Guard: `test_tool_schemas.py::test_tool_discoverability_via_server_info`.
+
+### Added
+
+- **`gdocs_reset_authorization` MCP tool.** Clears the user's stored
+  Google OAuth credentials and (optionally with `full=True`) Apps
+  Script setup state. Forces the next tool call back into the
+  `needs_authorization` flow. Required as a recovery path AND as the
+  only way to re-trigger consent for testing PKCE / scope changes /
+  account switches. Per-user in cloud mode (via user_store); per-
+  machine in stdio mode (deletes `~/.google-docs-mcp/token.json`).
+
+- **Version string now embeds the git commit SHA as semver build
+  metadata.** `gdocs_server_info` reports `version` as
+  `f"{__version__}+{GIT_COMMIT}"` (e.g. `1.1.1+abc1234`) when
+  `GIT_COMMIT` env var is set. Every deploy from a distinct commit
+  reports a unique version string without requiring a manual
+  `pyproject.toml` bump on every hot-fix. Per semver §10 the build-
+  metadata segment is informational only and doesn't affect sort.
+
+### Tests
+
++ ~40 new test cases (parametrized over 20 tools):
+- `test_tool_discoverability_via_server_info` — server_info.tools
+  matches mcp.list_tools() exactly.
+- `test_tool_descriptions_truthful` (parametrized over 19 OAuth-needing
+  tools) — no description contains "without setup" / "without
+  authorization" unqualified.
+- `test_tool_input_schema_non_empty` (parametrized over all 20 tools)
+  — every tool's schema has properties or is on the no-args allowlist.
+- `test_tab_nesting_depth_cap_enforced` — 4-level nesting raises
+  ValueError before any Google API call.
+- `test_auth_pkce_consistency_every_url` — 5 sequential calls all
+  return URLs with code_challenge + code_challenge_method=S256, all
+  with unique challenges (verifier regenerated per call).
+- `test_pkce_verifier_roundtrip` (+ 2 related) — sign_state with
+  code_verifier → verify_state returns it on consume; single-use;
+  no-PKCE returns None for backward compat.
+
+Total: ~200 unit + 4 live tests. CI gates deploys on unit pass via
+`deploy.sh`.
+
+### Internal
+
+- Auto version-bump-on-deploy wired via the GIT_COMMIT build arg in
+  `deploy.sh`. Every push to Fly carries a unique build identifier.
+- GitHub Actions runs the full unit suite across Python 3.10–3.13 on
+  every push/PR.
+- `deploy.sh` runs `pytest tests/unit -q` before `flyctl deploy`;
+  refuses to deploy on test failure (bypassable with `SKIP_TESTS=1`
+  for emergency hot-fixes).
+
 ## [1.1.0] — 2026-05-18
 
 **Multi-tenant cloud auth.** The remote HTTP MCP (claude.ai connector

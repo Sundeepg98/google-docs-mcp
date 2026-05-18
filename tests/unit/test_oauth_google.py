@@ -98,6 +98,52 @@ def test_build_authorization_url_contains_signed_state(
     assert state.count(".") == 3
 
 
+def test_auth_pkce_consistency_every_url(
+    client_config, signing_key, base_url
+):
+    """v1.1.1 regression guard (Issue B). Every auth_url from
+    build_authorization_url MUST deterministically include
+    code_challenge + code_challenge_method=S256. Pre-v1.1.1, PKCE
+    behavior varied across calls (some URLs had it, some didn't)
+    because flow.autogenerate_code_verifier was toggled in an
+    earlier hot-fix. v1.1.1 made PKCE always-on via explicit
+    code_verifier generation; this guard ensures it stays that way.
+
+    Also asserts: code_challenge values are unique per call (no
+    verifier reuse). Same user_id → different URLs → different
+    challenges (each call generates fresh verifier).
+    """
+    from google_docs_mcp.oauth_google import build_authorization_url
+
+    challenges_seen = set()
+    for _ in range(5):
+        url = build_authorization_url(
+            "user-pkce-test",
+            base_url=base_url,
+            client_config=client_config,
+            signing_key=signing_key,
+        )
+        qs = parse_qs(urlparse(url).query)
+
+        assert "code_challenge" in qs, (
+            "auth_url MUST include code_challenge — PKCE is not optional. "
+            f"qs keys: {list(qs.keys())}"
+        )
+        assert qs["code_challenge_method"][0] == "S256", (
+            f"code_challenge_method MUST be S256, got: "
+            f"{qs.get('code_challenge_method')}"
+        )
+
+        challenges_seen.add(qs["code_challenge"][0])
+
+    assert len(challenges_seen) == 5, (
+        "code_challenge values MUST be unique per call (each call "
+        "generates a fresh code_verifier). Reuse means an attacker "
+        "who captures one verifier can reuse it. "
+        f"Got {len(challenges_seen)} unique challenges across 5 calls."
+    )
+
+
 def test_build_authorization_url_uses_correct_redirect(
     client_config, signing_key, base_url
 ):
