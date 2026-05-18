@@ -4,6 +4,47 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] — 2026-05-18
+
+### Added
+
+- **`gdocs_server_info.test_suite` block** — surfaces CI status of
+  the running build over the MCP interface. Before this, the
+  CI-gated test suite existed in the repo but its pass/fail state
+  was invisible to anyone using the deployed server; the only way
+  to confirm "the running build was actually tested" was to re-run
+  behaviors by hand — the exact toil the suite was built to
+  eliminate.
+
+  Wire-up:
+  - `deploy.sh` runs `pytest tests/unit --json-report --json-report-file=test-results.json`
+    via `pytest-json-report`, then injects `_git_commit` into the JSON.
+  - `Dockerfile` COPIes `test-results.json` into the image (uses
+    the `test-results.jso[n]` glob trick so vanilla `docker build`
+    without deploy.sh doesn't fail).
+  - `gdocs_server_info` reads + returns:
+    ```
+    test_suite: {
+        last_run: ISO 8601 UTC,
+        commit:   git SHA the suite ran against,
+        passed:   int,
+        failed:   int,
+        skipped:  int,
+        status:   "passed" | "failed" | "unknown",
+    }
+    ```
+  - If the file's missing or unparseable (vanilla docker build,
+    SKIP_TESTS=1, malformed JSON), returns `{"status": "unknown"}`
+    per the documented contract — the field is always present.
+  - `test_suite.commit` should equal the top-level `git_commit`;
+    divergence means the image shipped without a matching test
+    run, a red flag worth surfacing.
+
+  Test dependency added: `pytest-json-report>=1.5` (optional;
+  only used at deploy time).
+
+  Guard: `test_server_info.py::test_server_info_includes_test_suite_block`.
+
 ## [1.1.1] — 2026-05-18
 
 Post-1.1.0 hot-fixes from the first real cloud-chat user testing.

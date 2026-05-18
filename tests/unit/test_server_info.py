@@ -52,3 +52,36 @@ def test_server_info_includes_build_provenance_keys():
     info = asyncio.run(gdocs_server_info())
     assert "build_time" in info
     assert "git_commit" in info
+
+
+def test_server_info_includes_test_suite_block():
+    """v1.1.2+ contract: test_suite block surfaces CI status.
+
+    Must always be present — even when the test-results.json file is
+    missing (vanilla docker build without deploy.sh) the block returns
+    {"status": "unknown"} per the documented contract. Omitting the
+    field entirely would break the agreement that a single shape can
+    be relied on.
+    """
+    from google_docs_mcp.server import gdocs_server_info
+
+    info = asyncio.run(gdocs_server_info())
+    assert "test_suite" in info, (
+        "test_suite block missing from gdocs_server_info — "
+        "the v1.1.2+ contract requires it always be present"
+    )
+    suite = info["test_suite"]
+    assert isinstance(suite, dict)
+    assert "status" in suite
+    assert suite["status"] in ("passed", "failed", "unknown")
+
+    # When status is "passed" the full shape applies.
+    if suite["status"] == "passed":
+        for key in ("last_run", "commit", "passed", "failed", "skipped"):
+            assert key in suite, (
+                f"test_suite.{key} missing when status='passed'; "
+                f"got: {suite!r}"
+            )
+        assert suite["failed"] == 0, (
+            f"status='passed' but failed={suite['failed']} — contradiction"
+        )

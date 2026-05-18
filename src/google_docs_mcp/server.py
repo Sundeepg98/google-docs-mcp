@@ -632,6 +632,81 @@ async def gdocs_server_info() -> dict:
         "git_commit": git_commit,
         "tool_count": len(tool_names),
         "tools": tool_names,
+        "test_suite": _read_test_suite_status(git_commit),
+    }
+
+
+def _read_test_suite_status(deployed_commit: str) -> dict:
+    """Surface the CI test-suite status baked into the build.
+
+    deploy.sh writes ``test-results.json`` via pytest-json-report
+    and the Dockerfile COPIes it into the image. If the file's
+    absent or unparseable (vanilla `docker build` skips it; SKIP_TESTS
+    writes a stub), return ``{"status": "unknown"}`` per the
+    documented contract.
+
+    ``test_suite.commit`` should equal the running build's
+    ``git_commit``; divergence means the image shipped without a
+    matching test run — itself a red flag worth surfacing.
+    """
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    # Container path is /app/test-results.json (Dockerfile COPY).
+    # Local-dev fallback: CWD (useful for `python -m google_docs_mcp`
+    # from the repo root after running deploy.sh's pytest step).
+    candidates = [
+        Path("/app/test-results.json"),
+        Path.cwd() / "test-results.json",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        return {"status": "unknown"}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"status": "unknown"}
+
+    summary = data.get("summary") or {}
+    passed = int(summary.get("passed", 0))
+    failed = int(summary.get("failed", 0))
+    skipped = int(summary.get("skipped", 0))
+
+    # pytest-json-report's "created" is a unix timestamp; convert to
+    # ISO 8601 UTC. SKIP_TESTS stub doesn't include "created" — fall
+    # back to "unknown".
+    created_ts = data.get("created")
+    if isinstance(created_ts, (int, float)):
+        last_run = datetime.fromtimestamp(
+            created_ts, tz=timezone.utc,
+        ).isoformat().replace("+00:00", "Z")
+    else:
+        last_run = "unknown"
+
+    # Test-suite commit is the one deploy.sh injected when it ran
+    # pytest. If absent → unknown. If present but differs from the
+    # deployed git_commit → still report what we have; the caller
+    # can compare and notice divergence themselves.
+    test_commit = data.get("_git_commit", "unknown")
+
+    # Status logic: must have a populated summary AND zero failures.
+    # SKIP_TESTS stub has empty summary → status="unknown" naturally.
+    if not summary:
+        status = "unknown"
+    elif failed == 0 and passed > 0:
+        status = "passed"
+    else:
+        status = "failed"
+
+    return {
+        "last_run": last_run,
+        "commit": test_commit,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "status": status,
     }
 
 

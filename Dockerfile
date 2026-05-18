@@ -17,6 +17,15 @@ ARG BUILD_TIME=unknown
 ENV GIT_COMMIT=${GIT_COMMIT}
 ENV BUILD_TIME=${BUILD_TIME}
 
+# Bake the pytest results from this build into the image so
+# gdocs_server_info's test_suite block reflects what was tested
+# at build time. Written by deploy.sh; if absent (vanilla
+# `docker build`), the runtime reports status="unknown".
+# Glob trick: `test-results.jso[n]` matches `test-results.json`
+# if present and silently skips otherwise — no build error when
+# the file is missing.
+COPY test-results.jso[n] /app/test-results.json
+
 # Persistent data dir for OAuth token + Apps Script config.
 # In production, mount a Fly Volume here so token.json survives restarts.
 RUN mkdir -p /data/google-docs-mcp
