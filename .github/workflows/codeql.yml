@@ -1,0 +1,61 @@
+# CodeQL static analysis (v2.x).
+#
+# Free unlimited scanning for public repos under GitHub's CodeQL terms —
+# costs nothing to run, no minute budget to manage. Per auth-auditor cost
+# sweep: the repo is public + MIT, CodeQL's free tier covers all our runs.
+#
+# Triggers:
+#   - push to main          — catch anything that slipped through PR review
+#   - pull_request to main  — block-on-finding for new code under review
+#   - weekly cron (Mon 06:00 UTC) — catch findings from new CodeQL rules
+#                                   that ship after a piece of code already
+#                                   merged (rules update faster than code)
+#
+# Findings land in the repo's Security tab (Code scanning alerts). The
+# upload happens automatically inside github/codeql-action/analyze when
+# the workflow runs with `security-events: write` permission.
+#
+# Query suite: `security-extended` — broader than the default `security`
+# pack, picks up additional injection / hardcoded-secret / weak-crypto
+# patterns. Appropriate here because oauth_google.py / crypto.py / keys.py
+# are the kind of security-sensitive surface those extra rules target.
+#
+# Language: python only. This repo's only first-party source is Python;
+# the bundled restructure.gs Apps Script is operator-controlled deployed
+# code, out of CodeQL's threat model for THIS workflow.
+#
+# Debug a failing scan locally: install the CodeQL CLI, run
+# `codeql database create db --language=python --source-root=.` then
+# `codeql database analyze db codeql/python-queries:codeql-suites/python-security-extended.qls`.
+
+name: CodeQL
+
+# Quoted "on" key prevents YAML 1.1 parsers from coercing it to the
+# boolean True (matches e2e.yml convention; GitHub Actions itself
+# parses correctly either way).
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC
+
+permissions:
+  security-events: write  # required to upload SARIF to Security tab
+  contents: read          # checkout needs read access; nothing more
+
+jobs:
+  analyze:
+    name: Analyze (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
