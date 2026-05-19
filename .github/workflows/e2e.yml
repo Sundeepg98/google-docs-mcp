@@ -160,7 +160,12 @@ jobs:
         run: pip install pip-audit
 
       - name: export locked requirements
-        run: uv export --format requirements-txt --no-hashes --no-emit-project > requirements-locked.txt
+        # --frozen matches the other jobs' uv sync --frozen: use uv.lock
+        # verbatim, do NOT re-resolve from pyproject.toml. Without this,
+        # a pyproject vs lockfile drift would cause uv export to audit
+        # a DIFFERENT dep graph than e2e-test / lint saw, defeating
+        # this workflow's load-bearing R20 attack #4 mitigation.
+        run: uv export --frozen --format requirements-txt --no-hashes --no-emit-project > requirements-locked.txt
 
       - name: pip-audit against lockfile (HIGH/CRITICAL fail build)
         run: |
