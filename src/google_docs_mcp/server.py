@@ -1979,5 +1979,94 @@ def main() -> None:
         mcp.run()
 
 
+# ---------------------------------------------------------------------
+# v2.2b: LLM_RECOVERY artifacts — additive block, kept at file end to
+# minimize merge conflicts with other parallel v2.2 PRs. The import
+# below triggers registration of the gdocs://error-recovery resources
+# (resources.py decorates module-level functions with @mcp.resource).
+# ---------------------------------------------------------------------
+from . import resources as _llm_recovery_resources  # noqa: E402,F401
+from .resources import _RECOVERY_TABLE  # noqa: E402
+
+
+@mcp.tool()
+def gdocs_help(error_message: str) -> dict:
+    """Look up recovery guidance for a server error string.
+
+    USE WHEN: a previous gdocs_* tool call returned an error / warning
+    payload and you (the LLM) are not sure how to proceed. Pass the
+    raw error text and gdocs_help returns the structured recovery
+    entry (what to do, what to tell the user, whether to retry, etc.).
+
+    Pure lookup. No Google API calls. No OAuth required. Cheap to
+    call as a debugging / recovery shortcut. Backed by the same
+    table exposed at the MCP resource ``gdocs://error-recovery``
+    and documented in ``docs/LLM_RECOVERY.md``.
+
+    Args:
+        error_message: The error string / warning text you want to
+            decode. Substring-matched (case-sensitive) against every
+            registered pattern; first hit wins.
+
+    Returns:
+        On match::
+
+            {
+              "matched": true,
+              "matched_pattern": "<the pattern that hit>",
+              "key": "<recovery_key>",
+              "pattern": "<same as matched_pattern>",
+              "severity": "info" | "warning" | "error",
+              "retriable": bool,
+              "wait_seconds": int | null,
+              "do": "<imperative recovery action>",
+              "user_message": "<what to tell the user>",
+              "related_tool": "<gdocs_xxx>" | null
+            }
+
+        On miss::
+
+            {
+              "matched": false,
+              "available_patterns": [<all registered patterns>],
+              "suggestion": "<hint to use server_info or file an issue>"
+            }
+
+    Choreography: typically called RIGHT AFTER a failing tool call,
+    before deciding whether to retry, surface to the user, or pivot
+    to a different tool. Pairs with gdocs_server_info() when filing
+    bug reports for the unexpected_exception case.
+    """
+    for key, entry in _RECOVERY_TABLE.items():
+        if entry["pattern"] in error_message:
+            return {
+                "matched": True,
+                "matched_pattern": entry["pattern"],
+                "key": key,
+                "pattern": entry["pattern"],
+                "severity": entry["severity"],
+                "retriable": entry["retriable"],
+                "wait_seconds": entry.get("wait_seconds"),
+                "do": entry["do"],
+                "user_message": entry["user_message"],
+                "related_tool": entry.get("related_tool"),
+            }
+
+    return {
+        "matched": False,
+        "available_patterns": [
+            e["pattern"] for e in _RECOVERY_TABLE.values()
+        ],
+        "suggestion": (
+            "No registered recovery pattern matched the error text. "
+            "Fetch the resource gdocs://error-recovery for the full "
+            "table, call gdocs_server_info() to capture version + "
+            "commit, and consider filing an issue at the project "
+            "repo with the raw error string so a new entry can be "
+            "added."
+        ),
+    }
+
+
 if __name__ == "__main__":
     main()
