@@ -114,12 +114,8 @@ def test_body_size_400_on_invalid_content_length():
         "/echo", content=b"hi",
         headers={"content-length": "not-a-number"},
     )
-    # TestClient may not let us override Content-Length cleanly; the
-    # middleware path catches int() failures and returns 400. If
-    # TestClient computes a valid CL, this test is a no-op assertion
-    # on success — acceptable since the real path is exercised via
-    # 413 test above.
-    assert resp.status_code in (200, 400)
+    assert resp.status_code == 400
+    assert "invalid Content-Length" in resp.text
 
 
 def test_body_size_passes_small_payload():
