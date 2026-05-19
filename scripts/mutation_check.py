@@ -136,29 +136,36 @@ MUTATIONS: list[Mutation] = [
 ]
 
 
-def apply_mutation(m: Mutation) -> bool:
-    """Apply the mutation's find/replace. Returns False if the find
-    pattern isn't uniquely present — the patch has rotted (stale_patch)."""
+def apply_mutation(m: Mutation) -> str | None:
+    """Apply the mutation's find/replace. Return the ORIGINAL file
+    contents on success so the caller can revert from memory; return
+    None when the find pattern isn't uniquely present (stale_patch).
+
+    Returning the original bytes (instead of relying on `git checkout`)
+    keeps the gate safe to run against an unclean working tree —
+    uncommitted edits in mutated source files (which v1.2.2 hit
+    locally) would otherwise be silently wiped on revert.
+    """
     path = Path(m.file)
     original = path.read_text(encoding="utf-8")
     if m.find not in original:
         print(f"  !!! find pattern NOT present in {m.file}")
         print(f"      pattern: {m.find!r}")
-        return False
+        return None
     count = original.count(m.find)
     if count > 1:
         print(f"  !!! find pattern matches {count} times — must be unique")
-        return False
+        return None
     path.write_text(original.replace(m.find, m.replace, 1), encoding="utf-8")
-    return True
+    return original
 
 
-def revert(m: Mutation) -> None:
-    """Restore the original via git checkout — bullet-proof."""
-    subprocess.run(
-        ["git", "checkout", "--", m.file],
-        check=True, capture_output=True,
-    )
+def revert(m: Mutation, original: str | None) -> None:
+    """Restore the original file contents from memory. Safe to call
+    even when nothing was mutated (original is None → no-op)."""
+    if original is None:
+        return
+    Path(m.file).write_text(original, encoding="utf-8")
 
 
 def run_full_unit_suite() -> tuple[int, list[str]]:
@@ -292,7 +299,8 @@ def run_mutations(mutations: list[Mutation]) -> dict:
         print(f"\n=== mutating: {m.guard} ===")
         print(f"    {m.description}")
         t0 = time.monotonic()
-        applied = apply_mutation(m)
+        original = apply_mutation(m)
+        applied = original is not None
         failed_tests: list[str] = []
         try:
             if applied:
@@ -325,7 +333,7 @@ def run_mutations(mutations: list[Mutation]) -> dict:
                     entry[k] = outcome[k]
             results.append(entry)
         finally:
-            revert(m)
+            revert(m, original)
     return aggregate(results)
 
 

@@ -4,6 +4,49 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.3] — 2026-05-19
+
+Hot-fix: v1.2.2 shipped with the CHANGELOG / mutation_check.py /
+test changes but `_read_mutation_check()` in `src/google_docs_mcp/
+server.py` still had the v1.2.1 four-field return shape. Live
+`gdocs_server_info.test_suite.mutation_check` was missing
+`stale_patches` and `imprecise_patches` — making v1.2.2's headline
+acceptance criterion non-verifiable from cloud chat.
+
+### Root cause
+
+`scripts/mutation_check.py`'s `revert()` used `git checkout --
+<file>` to restore mutated sources. That works against a clean
+working tree but **wipes uncommitted edits** in any file that
+mutation_check also mutates. Three of the eight mutations target
+`server.py`. The v1.2.2 edit to `_read_mutation_check` was applied
+in the working tree, then locally-run `mutation_check.py` mutated
+`server.py` for `test_trash_file_id_accepts_str_or_list` and
+reverted via git checkout — silently restoring `server.py` to HEAD
+and wiping the new return shape. The commit captured the wiped
+state; CI built that; live runtime served the old shape.
+
+### Fix
+
+- `_read_mutation_check()` now actually returns `stale_patches` and
+  `imprecise_patches` (the v1.2.2 intent, restored).
+- `apply_mutation()` returns the **original file bytes** on success
+  (was: `bool`). `revert()` writes those bytes back from memory —
+  never touches git. Uncommitted edits in mutated source files now
+  survive `mutation_check.py` runs.
+
+### Tests
+
+Two new tests in `tests/unit/test_mutation_check.py`:
+- `test_revert_restores_original_bytes_not_via_git` — direct check
+  that `revert` writes the saved bytes, not whatever git would have.
+- `test_revert_is_noop_when_original_is_none` — covers the
+  stale-patch branch where nothing was mutated.
+
+19/19 unit tests pass. Local `mutation_check.py` reports 8/8 caught
+cleanly with the new revert path, and the uncommitted
+`_read_mutation_check` edit survives the run.
+
 ## [1.2.2] — 2026-05-19
 
 Preventive maintenance for the mutation gate itself: detect when an

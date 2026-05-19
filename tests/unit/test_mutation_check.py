@@ -26,9 +26,9 @@ import mutation_check as mc  # noqa: E402  # pyright: ignore[reportMissingImport
 
 # ---------- apply_mutation: the apply-cleanly check ---------------
 
-def test_apply_mutation_returns_false_when_find_text_absent(tmp_path):
+def test_apply_mutation_returns_none_when_find_text_absent(tmp_path):
     """Acceptance: a patch whose `find` text isn't in the file must
-    not silently no-op. apply_mutation returns False so the caller
+    not silently no-op. apply_mutation returns None so the caller
     can classify it as stale_patch."""
     src = tmp_path / "src.py"
     src.write_text("def foo(): return 1\n", encoding="utf-8")
@@ -40,12 +40,12 @@ def test_apply_mutation_returns_false_when_find_text_absent(tmp_path):
         find="THIS TEXT DEFINITELY DOES NOT EXIST IN THE FILE xyz123",
         replace="something",
     )
-    assert mc.apply_mutation(m) is False
+    assert mc.apply_mutation(m) is None
     # File untouched.
     assert src.read_text(encoding="utf-8") == "def foo(): return 1\n"
 
 
-def test_apply_mutation_returns_false_when_find_text_ambiguous(tmp_path):
+def test_apply_mutation_returns_none_when_find_text_ambiguous(tmp_path):
     """A `find` that matches multiple times is also rotted: we can't
     trust which occurrence got patched. Treat as stale_patch."""
     src = tmp_path / "src.py"
@@ -58,10 +58,13 @@ def test_apply_mutation_returns_false_when_find_text_ambiguous(tmp_path):
         find="x = 1",
         replace="x = 2",
     )
-    assert mc.apply_mutation(m) is False
+    assert mc.apply_mutation(m) is None
 
 
-def test_apply_mutation_succeeds_when_find_uniquely_present(tmp_path):
+def test_apply_mutation_returns_original_bytes_on_success(tmp_path):
+    """On success, apply_mutation returns the ORIGINAL contents so the
+    caller can revert from memory — not from git (which would wipe
+    uncommitted edits in the same file)."""
     src = tmp_path / "src.py"
     src.write_text("def foo(): return 1\n", encoding="utf-8")
     m = mc.Mutation(
@@ -72,8 +75,43 @@ def test_apply_mutation_succeeds_when_find_uniquely_present(tmp_path):
         find="return 1",
         replace="return 2",
     )
-    assert mc.apply_mutation(m) is True
+    original = mc.apply_mutation(m)
+    assert original == "def foo(): return 1\n"
     assert src.read_text(encoding="utf-8") == "def foo(): return 2\n"
+
+
+def test_revert_restores_original_bytes_not_via_git(tmp_path):
+    """revert() restores from the bytes the caller saved, not via
+    `git checkout` — which is the v1.2.2 regression: when server.py
+    had uncommitted edits AND was mutated, git checkout wiped both
+    the mutation AND the uncommitted edit."""
+    src = tmp_path / "src.py"
+    src.write_text("ORIGINAL\n", encoding="utf-8")
+    m = mc.Mutation(
+        guard="g",
+        test_path="t",
+        description="d",
+        file=str(src),
+        find="ORIGINAL",
+        replace="MUTATED",
+    )
+    saved = mc.apply_mutation(m)
+    assert src.read_text(encoding="utf-8") == "MUTATED\n"
+    mc.revert(m, saved)
+    assert src.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+def test_revert_is_noop_when_original_is_none(tmp_path):
+    """If apply_mutation returned None (stale_patch), revert with
+    original=None should be a no-op — never touch the file."""
+    src = tmp_path / "src.py"
+    src.write_text("UNCHANGED\n", encoding="utf-8")
+    m = mc.Mutation(
+        guard="g", test_path="t", description="d",
+        file=str(src), find="any", replace="any",
+    )
+    mc.revert(m, None)
+    assert src.read_text(encoding="utf-8") == "UNCHANGED\n"
 
 
 # ---------- classify_outcome: the four-way decision ---------------

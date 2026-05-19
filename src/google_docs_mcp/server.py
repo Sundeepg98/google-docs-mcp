@@ -759,13 +759,21 @@ def _read_mutation_check() -> dict:
     """Surface mutation-test results baked into the build.
 
     Reads /app/mutation-check.json (CWD fallback for local dev),
-    produced by scripts/mutation_check.py in CI. Each entry there is
-    a {guard, caught, duration_ms} dict; we summarize to
-    {ran, caught, status, asleep_guards}. Missing file → unknown.
+    produced by scripts/mutation_check.py in CI. Summarizes to
+    {ran, caught, status, asleep_guards, stale_patches,
+    imprecise_patches}. Missing file → unknown.
 
-    A guard is "asleep" if applying a known bug-injecting patch does
-    NOT turn it red — which means the guard couldn't catch its bug
-    today, and we can't trust it to catch the bug in production.
+    Failure modes the gate distinguishes (v1.2.2+):
+      asleep_guards     — patch applied but the named guard didn't
+                          notice the bug (test rot).
+      stale_patches     — patch's `find` text is gone, or applied
+                          without tripping anything (mutation rot).
+      imprecise_patches — patch broke the target AND unrelated tests
+                          (over-broad mutation).
+
+    Status "passed" only when caught == ran AND all three buckets are
+    empty. Pre-1.2.2 artifacts (no stale/imprecise fields) default
+    the new fields to [] for back-compat.
     """
     import json
 
@@ -787,6 +795,8 @@ def _read_mutation_check() -> dict:
         "caught": int(data.get("caught", 0)),
         "status": data.get("status", "unknown"),
         "asleep_guards": list(data.get("asleep_guards", [])),
+        "stale_patches": list(data.get("stale_patches", [])),
+        "imprecise_patches": list(data.get("imprecise_patches", [])),
     }
 
 
