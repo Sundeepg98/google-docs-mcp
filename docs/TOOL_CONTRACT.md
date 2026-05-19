@@ -54,13 +54,12 @@ Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference `src/go
 
 (NOTE: this is the abbreviated version of the full doc. The full per-tool table is documented inline in `server.py` and queryable via `gdocs_guide()`. Future PRs will expand this doc with full per-tool entries for each.)
 
-### Planned tools (v2.0 — not yet shipping)
+### Previously planned, now deferred indefinitely
 
-- `gdocs_update_tabs(doc_id, updates)` — supersedes `gdocs_rename_tab` + `gdocs_set_tab_icons`. Target shapes: `{by_id: tab_id}` or `{title_contains: substr}`.
-- `gdocs_set_trashed(file_id, trashed: bool)` — supersedes `gdocs_trash_file` + `gdocs_untrash_file`.
-- `gdocs_help(error_message)` — LLM-callable error-recovery lookup. Wraps the table in `LLM_RECOVERY.md` (shipping v2.2). Pure lookup; no creds required.
+- `gdocs_update_tabs(doc_id, updates)` — earlier roadmap considered this as a successor to `gdocs_rename_tab` + `gdocs_set_tab_icons`. **Deferred indefinitely**: YAGNI at current scale, and the existing pair works fine for the patterns in production use.
+- `gdocs_set_trashed(file_id, trashed: bool)` — earlier roadmap considered this as a successor to `gdocs_trash_file` + `gdocs_untrash_file`. **Deferred indefinitely**: same rationale; the existing pair is clearer at call sites and has no observed pain point.
 
-The four superseded tools (`gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_trash_file`, `gdocs_untrash_file`) become DEPRECATED shims in v2.0 and are REMOVED in v2.2.
+`gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_trash_file`, and `gdocs_untrash_file` are therefore first-class tools with no successor — they will not be deprecated by this roadmap.
 
 ## 4. Migration notes
 

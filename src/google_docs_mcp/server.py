@@ -1601,7 +1601,9 @@ def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     Choreography: get the current tab titles from
     ``gdocs_get_doc_outline`` first so your keys actually match.
     Often paired right after ``gdocs_tab_existing_doc`` to decorate
-    the auto-named tabs.
+    the auto-named tabs. For a SINGLE tab where you have the
+    ``tab_id`` (and might also want to change the title), use
+    ``gdocs_rename_tab`` instead — it edits both fields in one call.
     """
     if not icons_by_title:
         raise ToolError("icons_by_title cannot be empty")
