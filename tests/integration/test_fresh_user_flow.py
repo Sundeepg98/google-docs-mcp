@@ -13,14 +13,13 @@ on first contact with our cloud MCP:
   4. The next ``get_credentials_for_user`` call returns a fresh,
      refresh-token-bearing ``Credentials`` object.
 
-Google's token endpoint is mocked via ``respx``. The
-``google_auth_oauthlib.flow.Flow.fetch_token`` call is patched
-because the underlying ``requests_oauthlib`` machinery uses a
-synchronous ``requests`` transport — respx only catches ``httpx``
-traffic. We test the same boundary the existing
-``test_oauth_google.py`` tests do, but stitched together with
-``user_store`` + ``credentials.get_credentials_for_user`` so a
-regression in any one link surfaces here.
+Google's token endpoint is mocked at the ``Flow.from_client_config``
+boundary (same approach as ``test_oauth_google.py``) — the underlying
+``requests_oauthlib`` machinery uses a synchronous ``requests``
+transport, so an httpx-level mock wouldn't catch it. We test the same
+boundary the unit tests do, but stitched together with ``user_store``
++ ``credentials.get_credentials_for_user`` so a regression in any one
+link surfaces here.
 
 Why integration-grade vs unit: each link has its own unit test, but
 the unit tests don't notice when the SHAPE of the data passed
@@ -157,17 +156,17 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
     """The big one: drive a fresh user from no-creds to usable creds via
     the same code paths the production HTTP server calls.
 
-    Mocks Google's token endpoint at the Flow.fetch_token boundary
-    (same approach as test_oauth_google.py — the lower-level oauthlib
-    machinery uses requests, not httpx, so respx can't catch it).
+    Mocks Google's token endpoint at the Flow.from_client_config
+    boundary (same approach as test_oauth_google.py — the lower-level
+    oauthlib machinery uses the synchronous requests transport, so
+    we patch one layer up).
     """
     from google_docs_mcp import user_store
     from google_docs_mcp.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
     from google_docs_mcp.oauth_google import (
-        GOOGLE_API_SCOPES, build_authorization_url,
-        exchange_code_for_credentials,
+        GOOGLE_API_SCOPES, exchange_code_for_credentials,
     )
 
     user_id = "fresh-user-sub-002"
