@@ -21,7 +21,7 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 22 tools
+wraps that flow + the supporting Drive operations into 23 tools
 (`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
 find, retrofit, trash/untrash, convert existing docs, one-shot
 per-user Apps Script Web App setup, plus introspection tools that
@@ -60,6 +60,7 @@ on a live server to get the authoritative list with descriptions.
 | **Server identity + CI test status** | `gdocs_server_info()` |
 | **CI test inventory + per-test outcomes** | `gdocs_test_manifest()` |
 | **Orientation: workflows + rules + tool groups** (v1.3.0+) | `gdocs_guide()` |
+| **LLM error-recovery lookup** (v2.2b+) | `gdocs_help(error_message)` |
 
 ## Self-evidencing CI gate (v1.2+)
 
@@ -132,7 +133,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 
 For dev installs, point at the venv entry-point: `/abs/path/google-docs-mcp/.venv/bin/google-docs-mcp` (or `.venv\Scripts\google-docs-mcp.exe` on Windows).
 
-Restart Claude Desktop. The 18 `gdocs_*` tools should appear.
+Restart Claude Desktop. The 23 `gdocs_*` tools should appear.
 
 ### Wire to Claude Code
 
@@ -242,7 +243,7 @@ Verify: `curl https://<your-app>.fly.dev/health` returns `{"ok":true,...}`.
 1. Settings → Connectors → **Add custom connector**
 2. URL: `https://<your-app>.fly.dev/mcp`
 3. (No OAuth fields needed — the `/mcp` endpoint is open by convention; auth lives at `/api/*` and is bypassed by signed URLs)
-4. Save → start a new chat. The 18 `gdocs_*` tools appear.
+4. Save → start a new chat. The 23 `gdocs_*` tools appear.
 
 **Also add `<your-app>.fly.dev` to Settings → Capabilities → Additional allowed domains** so cloud chat's Python sandbox can POST to `/api/convert`.
 
@@ -290,8 +291,8 @@ Claude shapes the request into `gdocs_make_tabbed_doc(title, tabs)` and returns 
 
 ```bash
 pip install -e ".[test]"
-pytest tests/unit -v              # 62 unit tests, no network
-pytest tests/integration --live   # 4 live tests, real Drive + OAuth
+pytest tests/unit -v              # 340 unit tests, no network
+pytest tests/integration --live   # 13 live tests, real Drive + OAuth
 ```
 
 Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). `deploy.sh` runs them locally before any Fly deploy; override with `SKIP_TESTS=1` for emergency hotfixes only.
@@ -320,7 +321,7 @@ Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). 
 ## Caveats
 
 - Tokens are stored unencrypted at `~/.google-docs-mcp/token.json`. Don't sync that path to a shared drive.
-- This is a single-user server (one OAuth identity). For multi-tenant use, refactor to per-user OAuth at the connector layer.
+- **Stdio mode is single-user** (one OAuth identity per machine). HTTP mode (Fly deploy + claude.ai connector) is multi-tenant — each user's state is keyed by their Google `sub` claim in `user_state.db` (see `src/google_docs_mcp/user_store.py`).
 - Drive's `drive.file` scope restricts writes to files this app created. Trash/untrash/move on externally-uploaded files returns `reason: "app_not_authorized"` (soft-failure, not raised — see `gdocs_find_doc_by_title`'s `owned_by_app` flag).
 - Apps Script Web App is a hard prerequisite for `gdocs_tab_existing_doc` and retrofit — the script does what REST can't (preserve drawings/equations/cell shading during content moves).
 
