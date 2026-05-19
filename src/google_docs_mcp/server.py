@@ -52,6 +52,7 @@ from .credentials import (
     get_credentials_for_user,
 )
 from .gas_deploy import GAS_DEPLOY_SCOPES
+from .keys import get_shim_hit_counters
 from .oauth_google import resolve_runtime_oauth_config
 from .setup_apps_script import (
     setup_apps_script_auto,
@@ -774,6 +775,13 @@ async def gdocs_server_info() -> dict:
         "tool_count": len(tool_names),
         "tools": tool_names,
         "test_suite": _read_test_suite_status(git_commit),
+        # v1.5: per-purpose shim-path hit counters so operators can
+        # soak-test (deploy v1.5, wait 3+ days, check that this stays
+        # at zero for the trailing 24h) before shipping v2.0b's
+        # strict-flip, which would invalidate any key minted via the
+        # shim. Process-local counter — aggregate across replicas at
+        # read time.
+        "key_back_compat_shim_active_hits": get_shim_hit_counters(),
     }
 
 

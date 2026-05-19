@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 from dataclasses import dataclass
 from typing import Literal
 
@@ -39,6 +40,24 @@ from typing import Literal
 _BACK_COMPAT_RAW_MASTER: frozenset[str] = frozenset(
     {"api_bearer", "oauth_state", "signed_url"}
 )
+
+# v1.5 observability: per-purpose hit counter for the shim path. Surfaced
+# via gdocs_server_info().key_back_compat_shim_active_hits so operators
+# can soak-test (deploy v1.5, wait 3+ days, verify counters are 0 for
+# the last 24h) before shipping v2.0b's strict-flip. The shim removal
+# would invalidate every key minted via the shim — this counter is the
+# evidence that no such keys are actively in use.
+#
+# Process-local (intentionally — each replica reports its own count;
+# the operator aggregates across replicas at read time). A threading
+# Lock guards increments because Starlette+uvicorn can call into this
+# from multiple worker threads.
+_shim_hit_counter: dict[str, int] = {
+    "api_bearer": 0,
+    "oauth_state": 0,
+    "signed_url": 0,
+}
+_shim_hit_counter_lock = threading.Lock()
 
 # HKDF info-context per purpose. Changing any string here invalidates
 # the derived key for that purpose — same blast radius as rotating
@@ -122,6 +141,10 @@ def get_key(purpose: Purpose) -> bytes:
 
     if purpose in _BACK_COMPAT_RAW_MASTER:
         # Shim: return raw master bytes. No length check.
+        # v1.5: instrument every shim-path hit so operators can confirm
+        # zero active usage before v2.0b's strict-flip ships.
+        with _shim_hit_counter_lock:
+            _shim_hit_counter[purpose] = _shim_hit_counter.get(purpose, 0) + 1
         return master.encode("utf-8")
 
     # Derived path: enforce master length first.
@@ -158,3 +181,31 @@ def is_shim_active() -> bool:
     entries from ``_BACK_COMPAT_RAW_MASTER``.
     """
     return bool(_BACK_COMPAT_RAW_MASTER)
+
+
+def get_shim_hit_counters() -> dict[str, int]:
+    """Snapshot of per-purpose shim-path hit counters (v1.5+).
+
+    Returns a copy so callers can't mutate the live counter dict.
+    Surfaced via ``gdocs_server_info().key_back_compat_shim_active_hits``
+    — operators verify zero active usage in the last soak window before
+    v2.0b's strict-flip ships, which would invalidate any in-flight key
+    minted via the shim.
+
+    Process-local: each replica reports its own count. Aggregate across
+    replicas at read time.
+    """
+    with _shim_hit_counter_lock:
+        return dict(_shim_hit_counter)
+
+
+def _reset_shim_hit_counters_for_tests() -> None:
+    """For tests only — reset all per-purpose shim hit counters to zero.
+
+    Underscore-prefixed and named ``_for_tests`` because production
+    code must never reset the counter (doing so would lie to operators
+    about shim usage during the v2.0b soak window).
+    """
+    with _shim_hit_counter_lock:
+        for purpose in _shim_hit_counter:
+            _shim_hit_counter[purpose] = 0

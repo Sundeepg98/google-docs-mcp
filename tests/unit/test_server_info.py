@@ -54,6 +54,36 @@ def test_server_info_includes_build_provenance_keys():
     assert "git_commit" in info
 
 
+def test_server_info_includes_shim_hit_counters(monkeypatch):
+    """v1.5+ contract: key_back_compat_shim_active_hits surfaces the
+    per-purpose shim-path hit counters so operators can verify zero
+    active usage before v2.0b's strict-flip ships.
+
+    The block MUST be present with all 3 known purpose keys, even when
+    the shim has not been hit (values may be 0).
+    """
+    # A long master so the shim path is callable (not required for this
+    # assertion since we only read counters, but keeps the env sane).
+    monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
+
+    from google_docs_mcp.server import gdocs_server_info
+
+    info = asyncio.run(gdocs_server_info())
+    assert "key_back_compat_shim_active_hits" in info, (
+        "key_back_compat_shim_active_hits missing from gdocs_server_info — "
+        "the v1.5+ contract requires it always be present"
+    )
+    hits = info["key_back_compat_shim_active_hits"]
+    assert isinstance(hits, dict)
+    for purpose in ("api_bearer", "oauth_state", "signed_url"):
+        assert purpose in hits, (
+            f"key_back_compat_shim_active_hits[{purpose!r}] missing; "
+            f"got: {hits!r}"
+        )
+        assert isinstance(hits[purpose], int)
+        assert hits[purpose] >= 0
+
+
 def test_canonical_digest_excludes_meta_block_and_is_stable():
     """The digest computed at deploy time must be reproducible at read
     time with the same canonicalization rules. Tests the hashing
