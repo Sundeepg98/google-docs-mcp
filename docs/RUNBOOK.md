@@ -180,6 +180,45 @@ Tell user: run `gdocs_reset_authorization(full=True)` then `gdocs_setup_apps_scr
 - **Single derived key rotation** (one of `MCP_API_BEARER_KEY` / `OAUTH_STATE_SIGNING_KEY` / `SIGNED_URL_SIGNING_KEY`): rotate that one only. Invalidates only that purpose's in-flight tokens.
 - **`GOOGLE_OAUTH_CLIENT_SECRETS_JSON`**: see §2.5. ALL users must re-consent (Google ties refresh_token to client_id).
 
+### 3.5 Strict-flip recovery (post-v2.0b regression)
+
+**Symptom:** within minutes of a v2.0b deploy, surge of:
+- `NeedsReauthError` on tool calls (api_bearer keys no longer validate)
+- `oauth: callback rejected: OAuth state could not be validated` (OAuth state HMAC mismatch)
+- HTTP 401 on signed upload URLs that worked seconds ago
+
+**Diagnosis:** call `gdocs_server_info()` and read `key_back_compat_shim_active_hits`. If any purpose is non-zero **after** the v2.0b flip, the preflight check (§3.6) was skipped or wrong: real users had in-flight tokens minted under the shim and the strict-flip invalidated them en-masse (R20 risk).
+
+**Recovery:**
+1. **Roll back to v1.5.x immediately** — re-enables the shim, in-flight tokens re-validate. See §2.6 for the rollback command.
+2. After rollback, watch `gdocs_server_info().key_back_compat_shim_active_hits` for 24h. The rate of shim hits indicates how many users still have in-flight pre-v2.0b tokens.
+3. Re-run the §3.6 preflight check. Only attempt v2.0b again once it passes (shim hits in a trailing 24h window are 0, totals show real traffic).
+4. **Worst case:** if shim-hit-rate doesn't drop to 0 within a reasonable window (because users keep pinning long-lived signed URLs, for example), v2.0b stays unmerged. The shim is permanent for v1.x; the strict-flip is optional. There is no business reason to force the breaking change.
+
+The trip-wire here is `_BACK_COMPAT_RAW_MASTER` in `keys.py`: it's the single source of truth for "which purposes still route through the shim." A partial flip (remove some purposes, leave others) is also fine — it shrinks the soak target.
+
+### 3.6 Pre-strict-flip preflight check
+
+**Before merging v2.0b** (or any future PR that removes entries from `_BACK_COMPAT_RAW_MASTER`), run:
+
+```bash
+./scripts/preflight_strict_flip.sh https://sundeepg98-docs-mcp.fly.dev "$MCP_BEARER_TOKEN"
+```
+
+The script queries production's `gdocs_server_info` and asserts:
+- `sum(key_back_compat_shim_active_hits.values()) == 0` — nobody hit the shim path in this replica's lifetime
+- `sum(key_call_totals.values()) >= 100` — the counter is sensitive enough to be trusted (no traffic = no signal)
+
+**Exit codes:**
+- `0` — green-light, safe to merge v2.0b
+- `2` — could not reach `/mcp/v1/info` (check URL, token, network)
+- `3` — total call count < 100 (let the soak run longer or generate traffic)
+- `4` — shim hits > 0 (DO NOT flip; wait for in-flight tokens to expire, see §3.5 recovery)
+
+The 100-call floor is a heuristic for "telemetry is meaningful, not noise." Tune up for higher confidence; never tune down without good reason.
+
+**Multi-replica caveat:** counters are process-local. If Fly ever lifts the single-machine constraint (see §4 footguns), the preflight must aggregate across replicas — currently the operator runs it against ONE machine and trusts the single-machine invariant. Document the rollout cadence (replica restarts reset counters) in the deploy notes for v2.0b.
+
 ## 4. What NOT to do (footguns)
 
 - **DO NOT** rotate `MCP_BEARER_TOKEN` without first setting all three `*_KEY` overrides. See §3.4.

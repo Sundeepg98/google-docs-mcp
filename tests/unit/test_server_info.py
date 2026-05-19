@@ -55,12 +55,12 @@ def test_server_info_includes_build_provenance_keys():
 
 
 def test_server_info_includes_shim_hit_counters(monkeypatch):
-    """v1.5+ contract: key_back_compat_shim_active_hits surfaces the
-    per-purpose shim-path hit counters so operators can verify zero
-    active usage before v2.0b's strict-flip ships.
+    """v1.5+ contract: key_back_compat_shim_active_hits AND (v1.5.1+)
+    key_call_totals surface the per-purpose telemetry so operators
+    can verify it's safe to ship v2.0b's strict-flip.
 
-    The block MUST be present with all 3 known purpose keys, even when
-    the shim has not been hit (values may be 0).
+    Both blocks MUST be present with all 3 known purpose keys, even
+    when the shim has not been hit (values may be 0).
     """
     # A long master so the shim path is callable (not required for this
     # assertion since we only read counters, but keeps the env sane).
@@ -82,6 +82,27 @@ def test_server_info_includes_shim_hit_counters(monkeypatch):
         )
         assert isinstance(hits[purpose], int)
         assert hits[purpose] >= 0
+
+    # v1.5.1 (#28): denominator must accompany the shim-hit numerator.
+    assert "key_call_totals" in info, (
+        "key_call_totals missing from gdocs_server_info — the v1.5.1+ "
+        "contract requires it as the denominator for the preflight check"
+    )
+    totals = info["key_call_totals"]
+    assert isinstance(totals, dict)
+    for purpose in ("api_bearer", "oauth_state", "signed_url"):
+        assert purpose in totals, (
+            f"key_call_totals[{purpose!r}] missing; got: {totals!r}"
+        )
+        assert isinstance(totals[purpose], int)
+        assert totals[purpose] >= 0
+        # Invariant: totals must always be ≥ shim hits (every shim hit
+        # is also a successful call counted in the denominator).
+        assert totals[purpose] >= hits[purpose], (
+            f"invariant broken: totals[{purpose}]={totals[purpose]} < "
+            f"hits[{purpose}]={hits[purpose]} — denominator must include "
+            f"shim hits"
+        )
 
 
 def test_canonical_digest_excludes_meta_block_and_is_stable():

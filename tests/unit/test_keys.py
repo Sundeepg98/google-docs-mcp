@@ -285,3 +285,221 @@ def test_shim_hit_counter_unaffected_by_unknown_purpose(long_master, reset_shim_
     assert counters["api_bearer"] == 0
     assert counters["oauth_state"] == 0
     assert counters["signed_url"] == 0
+
+
+# ---------------------------------------------------------------------
+# v1.5.1: per-purpose env-var overrides
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def reset_all_counters():
+    """Zero BOTH the shim hit counter AND the total-call counter
+    before/after each test. Used by tests that touch get_key() and
+    need a clean denominator."""
+    from google_docs_mcp.keys import (
+        _reset_shim_hit_counters_for_tests,
+        _reset_total_call_counters_for_tests,
+    )
+
+    _reset_shim_hit_counters_for_tests()
+    _reset_total_call_counters_for_tests()
+    yield
+    _reset_shim_hit_counters_for_tests()
+    _reset_total_call_counters_for_tests()
+
+
+def test_env_override_returns_override_bytes_not_shim(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """When MCP_API_BEARER_KEY is set ≥32 chars, get_key('api_bearer')
+    must return THOSE bytes — not the master, not an HKDF-derived value."""
+    from google_docs_mcp.keys import get_key
+
+    override = "Z" * 40  # distinct from long_master ('x' * 32)
+    monkeypatch.setenv("MCP_API_BEARER_KEY", override)
+
+    result = get_key("api_bearer")
+    assert result == override.encode("utf-8")
+    # Sanity: definitely NOT the master.
+    assert result != long_master.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "purpose,env_var",
+    [
+        ("api_bearer", "MCP_API_BEARER_KEY"),
+        ("oauth_state", "OAUTH_STATE_SIGNING_KEY"),
+        ("signed_url", "SIGNED_URL_SIGNING_KEY"),
+    ],
+)
+def test_env_override_works_for_all_three_purposes(
+    long_master, monkeypatch, reset_all_counters, purpose, env_var,
+):
+    """All 3 purposes must honor their respective override env vars."""
+    from google_docs_mcp.keys import get_key
+
+    override = ("Q" * 32) + purpose  # purpose-specific to confirm routing
+    monkeypatch.setenv(env_var, override)
+
+    assert get_key(purpose) == override.encode("utf-8")  # type: ignore[arg-type]
+
+
+def test_env_override_rejects_short_value(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """A short override (<32 chars) must fail loud — operator intent was
+    explicit; silent fallback would hide a misconfiguration."""
+    from google_docs_mcp.keys import get_key
+
+    monkeypatch.setenv("MCP_API_BEARER_KEY", "too-short")
+
+    with pytest.raises(RuntimeError, match="MCP_API_BEARER_KEY.*≥32 chars"):
+        get_key("api_bearer")
+
+
+def test_env_override_bypasses_shim_counter(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """Override hits are NOT shim hits — the shim counter must stay 0
+    when the override path is taken. Conflating them would lie to
+    operators reading the preflight telemetry."""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    monkeypatch.setenv("MCP_API_BEARER_KEY", "Z" * 40)
+    for _ in range(10):
+        get_key("api_bearer")
+
+    counters = get_shim_hit_counters()
+    assert counters["api_bearer"] == 0, (
+        "override path leaked into the shim counter — that breaks the "
+        "v2.0b preflight signal"
+    )
+    # Other purposes unchanged either way.
+    assert counters["oauth_state"] == 0
+    assert counters["signed_url"] == 0
+
+
+def test_env_override_empty_string_falls_through_to_shim(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """An empty-string override is treated as 'not set' so an operator
+    can effectively un-set an override without restarting just to
+    clear the env. (Matches the ``if override:`` truthiness check.)"""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    monkeypatch.setenv("MCP_API_BEARER_KEY", "")
+    result = get_key("api_bearer")
+
+    # Falls through to the shim, returning the master.
+    assert result == long_master.encode("utf-8")
+    assert get_shim_hit_counters()["api_bearer"] == 1
+
+
+# ---------------------------------------------------------------------
+# v1.5.1 (#28): total-call denominator counter
+# ---------------------------------------------------------------------
+
+
+def test_total_call_counter_increments_on_shim_path(
+    long_master, reset_all_counters,
+):
+    """Every successful get_key() call through the shim must bump the
+    total-call counter for that purpose."""
+    from google_docs_mcp.keys import get_key, get_total_call_counters
+
+    for _ in range(7):
+        get_key("api_bearer")
+
+    totals = get_total_call_counters()
+    assert totals["api_bearer"] == 7
+    assert totals["oauth_state"] == 0
+    assert totals["signed_url"] == 0
+
+
+def test_total_call_counter_increments_on_override_path(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """Override path must also count toward totals — the denominator
+    spans ALL paths, not just shim."""
+    from google_docs_mcp.keys import (
+        get_key, get_total_call_counters, get_shim_hit_counters,
+    )
+
+    monkeypatch.setenv("MCP_API_BEARER_KEY", "Z" * 40)
+    for _ in range(5):
+        get_key("api_bearer")
+
+    totals = get_total_call_counters()
+    assert totals["api_bearer"] == 5
+    # Shim counter unaffected, totals counter bumped — exactly the
+    # signal the preflight script needs.
+    assert get_shim_hit_counters()["api_bearer"] == 0
+
+
+def test_total_call_counter_increments_on_derived_path(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """Even for the (currently unreached) HKDF derived path, totals
+    must increment. Future-proofs the preflight signal post-v2.0b
+    when shim entries start coming out of _BACK_COMPAT_RAW_MASTER."""
+    from google_docs_mcp import keys as keys_mod
+    from google_docs_mcp.keys import get_key, get_total_call_counters
+
+    # Temporarily empty the shim set so 'api_bearer' takes the
+    # derived path. Restore after.
+    original = keys_mod._BACK_COMPAT_RAW_MASTER
+    monkeypatch.setattr(keys_mod, "_BACK_COMPAT_RAW_MASTER", frozenset())
+    try:
+        for _ in range(4):
+            get_key("api_bearer")
+    finally:
+        monkeypatch.setattr(keys_mod, "_BACK_COMPAT_RAW_MASTER", original)
+
+    totals = get_total_call_counters()
+    assert totals["api_bearer"] == 4
+
+
+def test_total_call_counter_unaffected_by_unknown_purpose(
+    long_master, reset_all_counters,
+):
+    """ValueError-raising calls must NOT touch the total-call counter
+    either — same invariant as the shim counter."""
+    from google_docs_mcp.keys import get_key, get_total_call_counters
+
+    with pytest.raises(ValueError):
+        get_key("not_a_real_purpose")  # type: ignore[arg-type]
+
+    totals = get_total_call_counters()
+    assert totals["api_bearer"] == 0
+    assert totals["oauth_state"] == 0
+    assert totals["signed_url"] == 0
+
+
+def test_total_call_counter_unaffected_by_short_override(
+    long_master, monkeypatch, reset_all_counters,
+):
+    """An override that fails the length check must NOT count as a
+    successful call — the failure is a misconfiguration, not traffic."""
+    from google_docs_mcp.keys import get_key, get_total_call_counters
+
+    monkeypatch.setenv("MCP_API_BEARER_KEY", "too-short")
+
+    with pytest.raises(RuntimeError):
+        get_key("api_bearer")
+
+    totals = get_total_call_counters()
+    assert totals["api_bearer"] == 0
+
+
+def test_get_total_call_counters_returns_copy(
+    long_master, reset_all_counters,
+):
+    """Mutating the returned dict must not corrupt the live counter."""
+    from google_docs_mcp.keys import get_key, get_total_call_counters
+
+    get_key("api_bearer")
+    snapshot = get_total_call_counters()
+    snapshot["api_bearer"] = 999_999
+
+    assert get_total_call_counters()["api_bearer"] == 1

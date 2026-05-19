@@ -52,7 +52,7 @@ from .credentials import (
     get_credentials_for_user,
 )
 from .gas_deploy import GAS_DEPLOY_SCOPES
-from .keys import get_shim_hit_counters
+from .keys import get_shim_hit_counters, get_total_call_counters
 from .oauth_google import resolve_runtime_oauth_config
 from .setup_apps_script import (
     setup_apps_script_auto,
@@ -782,6 +782,12 @@ async def gdocs_server_info() -> dict:
         # shim. Process-local counter — aggregate across replicas at
         # read time.
         "key_back_compat_shim_active_hits": get_shim_hit_counters(),
+        # v1.5.1 (#28): denominator for the shim-hit telemetry above.
+        # Counts every successful get_key() call regardless of which
+        # path served the key. Preflight asserts shim==0 AND total>=N
+        # so "0 shim hits" can't mean "0 calls". Process-local; same
+        # aggregation caveat as the shim counter.
+        "key_call_totals": get_total_call_counters(),
     }
 
 
