@@ -1,0 +1,45 @@
+# Auto-drafts release notes from merged PRs (v2.x).
+#
+# Free for public repos. Updates the draft release on every push to main
+# and on PR-target events so the draft stays current as PRs land. The
+# release-drafter action groups entries by PR label (feature, fix,
+# breaking, chore, docs) per the categories in .github/release-drafter.yml.
+# Operator publishes the draft when ready to tag a real release.
+#
+# Why pull_request_target (not pull_request): release-drafter needs
+# write access to update the draft release; pull_request from forks
+# runs in a read-only token context and would silently skip the write.
+# pull_request_target runs in the BASE-repo's token context so the
+# draft update succeeds for fork PRs too. We only call the action
+# with the PR metadata (title, labels) — no fork code is executed —
+# so the standard pull_request_target footgun (running untrusted code
+# with elevated perms) does not apply here.
+#
+# Setup hygiene: the repo's labels (feature, fix, breaking, chore, docs)
+# must exist. PRs without one of those labels land in the default
+# "Other Changes" bucket per .github/release-drafter.yml.
+
+name: release-drafter
+
+# Quoted "on" key prevents YAML 1.1 parsers from coercing it to the
+# boolean True (matches codeql.yml / e2e.yml convention).
+"on":
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write       # required to create/update the draft release
+  pull-requests: read   # required to read PR labels for categorization
+
+jobs:
+  update_release_draft:
+    name: Update release draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
