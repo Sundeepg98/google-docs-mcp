@@ -12,6 +12,7 @@ Companion in-flight items — distinct version targets, called out individually 
 
 - **A1 `/api/convert` multi-tenancy** (#60, targets **v2.1.0**) — signed-URL canonical string bound to user_id; per-user creds resolution at the endpoint. The version bump (v2.0.x → v2.1.0) reflects the contract-level change to the signed-URL format.
 - **B1 v14 keys.get_key() wire-up** (#57, targets **v2.6** — separate version target) — closes the long-standing keys.get_key() bypass class flagged by R7→R20. Unblocks PR #34 (v2.0b HKDF strict-flip). Stranded by an earlier coding session; R20 ground-truth caught the un-pushed branch.
+- **v2.0b HKDF strict-flip** (#34, targets **v2.0.0 (post-soak)** — see the named-version block below) — removes the `_BACK_COMPAT_RAW_MASTER` shim. Ships after operator preflight-soak passes.
 
 ### Security
 
@@ -52,6 +53,27 @@ Backlog rationalization across R17–R29 trimmed the candidate set down to what 
 - **R23–R26** fresh-eyes audits on `retrofit.py`, `cli.py`, `setup_state.py`, and `resources.py` confirmed no missed HIGH-severity findings in those modules.
 - **R28** peer-review of PR #53 tightened the CI guard from a 500-char byte window to atomic-unit (table-row / prose-paragraph) coupling + a HMAC+AppsScript co-occurrence catch-all; also folded in `docs/PRIVACY.md` for auto-activation when PR #44 merges.
 - **R29** peer-review of this CHANGELOG block surfaced 4 items: 2 valid (this commit addresses Item 1: B1 explicit naming + v2.0.6 vs v2.6 disambiguation; Item 4: header date-format is correct for `[Unreleased]` and gets the date at release-cut), 2 dismissed after orchestrator cross-check against current main (Item 2: B4 already-shipped claim is accurate per re-verification above; Item 3: SHA pin `ed8efb3` matches the post-#51-merge `deploy.yml`).
+- **R30** verified PR #34 (v2.0b strict-flip) is READY pending operator soak — code change is 1 substantive line (`_BACK_COMPAT_RAW_MASTER = frozenset()`); CHANGELOG block for `[2.0.0] — TBD (post-soak)` sits below this `[Unreleased]` block as a separate named-future-version entry per Keep a Changelog ordering.
+
+## [2.0.0] — TBD (post-soak)
+
+### BREAKING
+
+- Removed `_BACK_COMPAT_RAW_MASTER` shim from `keys.py`. All 3 derived
+  keys (`api_bearer`, `oauth_state`, `signed_url`) now use HKDF-SHA256
+  derivation by default. Operators can still pin individual purposes
+  via `MCP_API_BEARER_KEY` / `OAUTH_STATE_SIGNING_KEY` /
+  `SIGNED_URL_SIGNING_KEY` env vars (per v1.5.1).
+
+  **Impact:** every in-flight signed URL + OAuth state token minted
+  under v1.x simultaneously invalidates at deploy. Mitigated by:
+  - Pre-flight script (`scripts/preflight_strict_flip.sh`) verifies
+    zero shim hits before flip
+  - In-flight tokens have hard 1-hour TTL ceiling — wait 1h30min-2h
+    post-deploy of v1.5.x before running v2.0b deploy
+
+  See `docs/RUNBOOK.md` §3.5 (recovery if symptoms surface) + §3.6
+  (preflight procedure).
 
 ## [1.5.0] — 2026-05-19
 
