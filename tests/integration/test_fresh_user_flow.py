@@ -288,6 +288,117 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
     assert persisted["token"] == "A"
 
 
+def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
+    client_config, signing_key, base_url, monkeypatch,
+):
+    """End-to-end guard against the v2.0.3 regression.
+
+    The existing ``test_fresh_user_persisted_state_strips_operator_secrets``
+    above exercises ``save_credentials_json`` in isolation -- but the
+    production OAuth callback in ``http_server.py`` could (and did,
+    until v2.0.3) call ``save_state`` directly, bypassing the wrapper
+    that strips operator ``client_id`` / ``client_secret``. The isolated
+    test still passed while operator OAuth-app secrets leaked into every
+    user row.
+
+    This test drives the ACTUAL Starlette callback route via TestClient:
+    sign a state token, mock ``Flow.from_client_config`` so the
+    code-for-token exchange returns a creds JSON with operator secrets
+    populated, GET the callback endpoint, then read the persisted row
+    directly from the SQLite store. If the route ever again calls
+    ``save_state`` instead of ``save_credentials_json``, this test
+    fails -- ``client_id`` / ``client_secret`` will be in the persisted
+    JSON.
+    """
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from google_docs_mcp import user_store
+    from google_docs_mcp.http_server import (
+        _NONCE_STORE, oauth_google_api_callback,
+    )
+    from google_docs_mcp.oauth_google import CALLBACK_PATH, GOOGLE_API_SCOPES
+    from google_docs_mcp.oauth_state import sign_state
+
+    user_id = "callback-e2e-user"
+
+    # The handler reads MCP_BEARER_TOKEN (as the state signing key) and
+    # GOOGLE_OAUTH_CLIENT_SECRETS_JSON (as the operator OAuth client
+    # config) from env. Match the values our handcrafted state and the
+    # mocked Flow expect.
+    monkeypatch.setenv("MCP_BEARER_TOKEN", signing_key)
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRETS_JSON", json.dumps(client_config))
+    monkeypatch.setenv("GOOGLE_OAUTH_BASE_URL", base_url)
+
+    # Sign a state token directly so we control both nonce + user_id.
+    # The handler's _NONCE_STORE is module-level; it has not seen this
+    # nonce, so consume() will succeed on first call. No PKCE verifier
+    # for this test -- the mocked Flow does not exercise PKCE.
+    state = sign_state(user_id, signing_key)
+
+    # Build a minimal Starlette app with ONLY the callback route. Avoids
+    # spinning up FastMCP + bearer middleware + trusted-host middleware
+    # for a single-route test.
+    app = Starlette(
+        routes=[Route(CALLBACK_PATH, oauth_google_api_callback, methods=["GET"])],
+    )
+
+    with patch(
+        "google_docs_mcp.oauth_google.Flow.from_client_config"
+    ) as mk_flow:
+        # The mock returns creds whose to_json() carries the operator's
+        # client_id / client_secret -- exactly what Google's real
+        # google_auth_oauthlib returns. If the production callback
+        # persists this verbatim, those operator secrets land in
+        # user_state.db.
+        mk_flow.return_value = _mock_flow_returning(
+            refresh_token="CALLBACK_R",
+            access_token="CALLBACK_A",
+            scopes=GOOGLE_API_SCOPES,
+        )
+
+        with TestClient(app) as client:
+            response = client.get(
+                CALLBACK_PATH,
+                params={"state": state, "code": "FAKE_AUTH_CODE"},
+            )
+
+    # The handler renders an HTML success page on the happy path.
+    assert response.status_code == 200, (
+        f"callback returned {response.status_code}; body: {response.text[:500]!r}"
+    )
+
+    # Read the persisted row directly via the user_store facade. The
+    # invariant under test is purely about the SHAPE of the persisted
+    # google_creds_json blob -- operator secrets MUST be absent.
+    persisted_state = user_store.get_state(user_id)
+    assert "google_creds_json" in persisted_state, (
+        "callback did not persist any creds for the user -- the route "
+        "must have errored silently before the save"
+    )
+    persisted_creds = json.loads(persisted_state["google_creds_json"])
+
+    assert "client_secret" not in persisted_creds, (
+        "operator client_secret leaked into user_state.db via the OAuth "
+        "callback route. The handler in http_server.py must call "
+        "user_store.save_credentials_json (which strips operator secrets) "
+        "and NOT user_store.save_state directly. Without this, a "
+        "user_state.db leak also hands the attacker the credentials to "
+        "impersonate the entire OAuth app to Google."
+    )
+    assert "client_id" not in persisted_creds, (
+        "operator client_id leaked into user_state.db via the OAuth "
+        "callback route -- same root cause as the client_secret leak above"
+    )
+
+    # The per-user credentials -- token + refresh_token -- MUST still be
+    # there (we are stripping the OPERATOR secrets, not the user's
+    # tokens).
+    assert persisted_creds["refresh_token"] == "CALLBACK_R"
+    assert persisted_creds["token"] == "CALLBACK_A"
+
+
 def test_replayed_callback_state_cannot_overwrite_existing_creds(
     client_config, signing_key, base_url, nonce_store
 ):
