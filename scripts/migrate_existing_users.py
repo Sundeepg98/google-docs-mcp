@@ -17,6 +17,14 @@ server is live, OAuth callbacks or token-refresh writes will bump
 live server is out of scope — graceful-shutdown then migrate is the
 supported path. (See issue #13 for the rollout playbook.)
 
+**Default is dry-run.** Invocations without ``--apply`` are read-only:
+no schema mutation, no row writes, no ``updated_at`` bumps. This is
+the safety default — operators have to opt in with ``--apply`` to
+actually mutate the DB. The ``--force`` flag skips the heartbeat
+check; use it only when you've confirmed the server is down some
+other way (process check, Fly machine state) and you trust your
+out-of-band evidence more than the in-DB heartbeat signal.
+
 Users with ``apps_script_url`` set but no ``apps_script_hmac_key`` (i.e.
 they had a v1.x deployment) must re-run ``gdocs_setup_apps_script`` after
 this script completes — the freshly minted HMAC key needs to land in
@@ -26,17 +34,22 @@ operator follow-up (email blast / status page / etc.).
 
 Usage::
 
-    # Dry run — report what would change, write nothing.
-    python scripts/migrate_existing_users.py --dry-run
-
-    # Migrate every row in the default data dir's DB.
+    # Default = dry-run: report what would change, write nothing.
     python scripts/migrate_existing_users.py
 
-    # Migrate a single user only (debugging, re-runs).
-    python scripts/migrate_existing_users.py --user-id 1234567890
+    # Apply: actually mutate the DB (writes the keys).
+    python scripts/migrate_existing_users.py --apply
+
+    # Migrate a single user only (debugging, re-runs). Still dry-run
+    # without --apply.
+    python scripts/migrate_existing_users.py --user-id 1234567890 --apply
 
     # Point at a different DB (e.g. a Fly volume snapshot).
     python scripts/migrate_existing_users.py --data-dir /mnt/fly-backup
+
+    # Skip heartbeat check (use only when you've otherwise confirmed
+    # the server is down; logs a loud WARNING).
+    python scripts/migrate_existing_users.py --apply --force
 
     # Verbose — per-row decisions logged to stderr.
     python scripts/migrate_existing_users.py -v
@@ -91,7 +104,11 @@ def _assert_no_recent_heartbeat(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT MAX(updated_at) FROM user_state").fetchone()
     max_updated = row[0] if row else None
     if max_updated is None:
-        # Empty DB. Safe to proceed — nothing to race on.
+        # Empty DB — no rows, no heartbeat to check. Safe to proceed.
+        # Log so operators wondering whether the check ran see a trail.
+        _log.info(
+            "heartbeat check: no rows in user_state, nothing to race on",
+        )
         return
 
     age = int(time.time()) - int(max_updated)
@@ -101,6 +118,8 @@ def _assert_no_recent_heartbeat(conn: sqlite3.Connection) -> None:
             f"(< {_HEARTBEAT_WINDOW_SECONDS}s window). The server appears "
             f"to be live. Stop the server, wait at least "
             f"{_HEARTBEAT_WINDOW_SECONDS}s, then re-run this script. "
+            f"(Override with --force only if you've otherwise confirmed "
+            f"the server is down.) "
             f"See scripts/migrate_existing_users.py docstring."
         )
 
@@ -185,13 +204,15 @@ def _migrate_all(
 ) -> dict[str, list[str]]:
     """Iterate rows, take per-user lock, run migration, collect outcomes.
 
-    Per-user lock acquired via ``credentials._user_lock`` — defensive
-    against the (unsupported) "server is live and you ignored the
-    heartbeat refusal somehow" case. If the lock is in our process
-    (typical), it's a near-no-op; if another process holds the row,
-    SQLite's busy_timeout in the connection serializes the actual write.
+    The per-user lock from ``credentials._user_lock`` is an in-process
+    ``dict[str, threading.Lock]`` — it serializes only between threads
+    inside THIS Python process. It does NOT coordinate across processes
+    (a live server runs its own dict). Cross-process protection comes
+    from the heartbeat check + the operator stopping the server before
+    running. We take the lock anyway as defense-in-depth against a
+    hypothetical multi-threaded migrate (none currently exists).
     """
-    # Defer the import — keeps argparse --help / --dry-run with empty DB
+    # Defer the import — keeps argparse --help / dry-run with empty DB
     # fast and lets the script stay runnable in stripped-down envs.
     from google_docs_mcp.credentials import _user_lock
 
@@ -252,13 +273,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="migrate_existing_users",
         description=(
             "Backfill apps_script_hmac_key for legacy user_state rows "
-            "(v1.x -> v2.0). Stop the server before running."
+            "(v1.x -> v2.0). Default is DRY-RUN; pass --apply to write. "
+            "Stop the server before running."
         ),
     )
     parser.add_argument(
-        "--dry-run",
+        "--apply",
         action="store_true",
-        help="Report what would change; write nothing.",
+        help=(
+            "Actually mutate the DB (write keys, bump updated_at, run "
+            "the schema ALTER TABLE if needed). Without this flag the "
+            "script is read-only — touches nothing."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Skip the heartbeat check (which refuses to run if any row "
+            "was updated in the last 60s). Use only when you've "
+            "otherwise confirmed the server is down. Logs a loud "
+            "WARNING when set."
+        ),
     )
     parser.add_argument(
         "--user-id",
@@ -291,6 +327,19 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
+    # ``--apply`` opts INTO writes. Default is dry-run — the safe default
+    # for a one-shot migration script (operator must explicitly take
+    # responsibility for mutating production state).
+    dry_run = not args.apply
+
+    if args.force:
+        _log.warning(
+            "--force passed: skipping the heartbeat check. Make sure "
+            "the server is actually down — the check exists for a "
+            "reason (refresh writes from a live server race the "
+            "migration's UPDATE).",
+        )
+
     db_path = _resolve_db_path(args.data_dir)
     if not db_path.exists():
         # No DB = no rows to migrate. Treat as success (idempotent in
@@ -302,19 +351,30 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Force the package's schema-init path to run so the column exists
-    # before we try to UPDATE it. Imports happen here (not at top) so
-    # --help works without the package installed.
-    from google_docs_mcp import user_store
-    user_store._ensure_initialized(db_path)
-
+    # Order matters here: we open SQLite raw and run the heartbeat
+    # check FIRST, before any schema-mutating code. That way a dry-run
+    # is genuinely read-only (no ALTER TABLE, no _ensure_initialized
+    # side-effects) and a heartbeat-refused run aborts without having
+    # touched the DB. ``_ensure_initialized`` runs only if we've
+    # decided to actually write (apply mode, past the heartbeat check).
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=30)
     try:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
 
-        _assert_no_recent_heartbeat(conn)
+        if not args.force:
+            _assert_no_recent_heartbeat(conn)
+
+        # In apply mode, schema-init NOW (after heartbeat clearance).
+        # Done after opening our own conn — _ensure_initialized opens
+        # its own short-lived connection internally and that's fine
+        # under WAL with busy_timeout.
+        if not dry_run:
+            # Defer the import — keeps argparse --help fast and lets
+            # the script stay runnable in stripped-down envs.
+            from google_docs_mcp import user_store
+            user_store._ensure_initialized(db_path)
 
         rows = _select_target_rows(conn, args.user_id)
         if not rows:
@@ -325,8 +385,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
-        outcomes = _migrate_all(rows, conn=conn, dry_run=args.dry_run)
-        _report(outcomes, dry_run=args.dry_run)
+        outcomes = _migrate_all(rows, conn=conn, dry_run=dry_run)
+        _report(outcomes, dry_run=dry_run)
     finally:
         conn.close()
 

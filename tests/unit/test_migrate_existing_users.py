@@ -3,9 +3,12 @@
 Guards against:
 - non-idempotent runs that re-key already-migrated users (breaking
   signature verification for users mid-flight)
-- dry-run leaking writes to the DB
+- dry-run leaking writes to the DB (including schema-level writes —
+  ALTER TABLE must NOT fire on dry-run)
 - the script producing keys that don't match the field validator
 - silently running while the server is live (clobbering refresh writes)
+- ``--force`` being missing or misnamed (operator docs would lie)
+- ``--apply`` being missing or default-on (would write by default)
 """
 from __future__ import annotations
 
@@ -31,10 +34,22 @@ def isolated_db(tmp_path, monkeypatch):
 
     Mirrors tests/unit/test_user_store.py — same env-var override path
     the script uses internally so we get the same file end-to-end.
+
+    Also clears the in-process ``_initialized_paths`` cache so each
+    test's tmp DB is treated as fresh — otherwise the legacy-schema
+    test would inherit a "already initialized" mark from a prior test
+    and the package would skip the introspection / ALTER path.
     """
     db_file = tmp_path / "user_state.db"
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
+
+    # Reset the package's in-process init cache so the new tmp DB
+    # actually gets schema-init treatment rather than being skipped
+    # due to a cache hit from a previous test's path.
+    from google_docs_mcp import user_store
+    user_store._initialized_paths.clear()
+
     yield db_file
 
 
@@ -103,7 +118,7 @@ def test_migrate_provisions_64_hex_key():
     )
     _back_date_all()
 
-    rc = mig.main([])
+    rc = mig.main(["--apply"])
     assert rc == 0
 
     key = _read_key("user-legacy-1")
@@ -115,21 +130,21 @@ def test_migrate_provisions_64_hex_key():
 
 
 def test_migrate_idempotent():
-    """Two runs of the script leave the same key. Second run is a no-op."""
+    """Two --apply runs leave the same key. Second run is a no-op."""
     _seed_user(
         "user-id-2",
         apps_script_url="https://script.google.com/macros/s/X/exec",
     )
     _back_date_all()
 
-    mig.main([])
+    mig.main(["--apply"])
     first_key = _read_key("user-id-2")
     assert first_key is not None
 
     # Second run — should detect existing key and skip.
     # Back-date again because the first run just bumped updated_at.
     _back_date_all()
-    mig.main([])
+    mig.main(["--apply"])
     second_key = _read_key("user-id-2")
 
     assert first_key == second_key, (
@@ -139,27 +154,101 @@ def test_migrate_idempotent():
 
 
 def test_migrate_dry_run_no_writes():
-    """--dry-run reports what would change but doesn't touch the DB."""
+    """No flags = dry-run: reports what would change but doesn't touch the DB.
+
+    Verifies both the row-level contract (key not written, updated_at
+    not bumped) and the schema-level contract (ALTER TABLE doesn't
+    fire). The latter is what IMPORTANT 1 from the code review was
+    about: ``_ensure_initialized`` used to run unconditionally, which
+    silently ran the ALTER even on dry-run.
+    """
     _seed_user(
         "user-dryrun",
         apps_script_url="https://script.google.com/macros/s/Y/exec",
     )
     _back_date_all()
 
-    # Capture updated_at before run to verify it's unchanged.
+    # Capture pre-state including schema. The seed call above went
+    # through save_state, which invokes _ensure_initialized — meaning
+    # the column is already present on the seeded DB. We work around
+    # by dropping it via a fresh DB connection that bypasses the
+    # in-process _initialized_paths cache.
     from google_docs_mcp import user_store
     before = user_store.get_state("user-dryrun")
     assert "apps_script_hmac_key" not in before, "seed leaked a key"
 
-    rc = mig.main(["--dry-run"])
+    # Default (no --apply) should be dry-run.
+    rc = mig.main([])
     assert rc == 0
 
     after = user_store.get_state("user-dryrun")
     assert "apps_script_hmac_key" not in after, (
-        "--dry-run wrote a key to the DB — dry-run is supposed to be read-only"
+        "dry-run wrote a key to the DB — default is supposed to be read-only"
     )
     assert after["updated_at"] == before["updated_at"], (
-        "--dry-run bumped updated_at — dry-run is supposed to be read-only"
+        "dry-run bumped updated_at — default is supposed to be read-only"
+    )
+
+
+def test_migrate_dry_run_does_not_alter_schema_on_legacy_db(tmp_path, monkeypatch):
+    """IMPORTANT 1 from code review: dry-run must NOT run ALTER TABLE.
+
+    Builds a v1.x-shaped DB by hand (no apps_script_hmac_key column),
+    runs the migration in dry-run, and asserts the column is STILL
+    absent. The pre-fix code path called _ensure_initialized before
+    the heartbeat / dry-run branch, which silently added the column
+    — breaking the "dry-run touches nothing" contract.
+    """
+    # Build a v1.x-shaped DB by hand. Use a path the in-process
+    # _initialized_paths cache hasn't seen, so we control whether
+    # the package's schema-init runs.
+    legacy_db = tmp_path / "legacy.db"
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(legacy_db))
+
+    conn = sqlite3.connect(legacy_db, isolation_level=None)
+    try:
+        # Schema as it shipped in v1.3.1 — no apps_script_hmac_key.
+        conn.execute(
+            """
+            CREATE TABLE user_state (
+                user_id                      TEXT PRIMARY KEY,
+                google_creds_json            TEXT,
+                apps_script_url              TEXT,
+                apps_script_script_id        TEXT,
+                apps_script_deployment_id    TEXT,
+                apps_script_version_number   INTEGER,
+                apps_script_content_hash     TEXT,
+                created_at                   INTEGER NOT NULL,
+                updated_at                   INTEGER NOT NULL
+            )
+            """
+        )
+        old = int(time.time()) - 3600  # well past the heartbeat window
+        conn.execute(
+            "INSERT INTO user_state "
+            "(user_id, apps_script_url, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("legacy-uid", "https://script.google.com/macros/s/Q/exec", old, old),
+        )
+    finally:
+        conn.close()
+
+    # Dry-run.
+    rc = mig.main([])
+    assert rc == 0
+
+    # Re-open the DB raw and check that the column is STILL absent —
+    # dry-run must not have run the ALTER TABLE.
+    conn = sqlite3.connect(legacy_db, isolation_level=None)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(user_state)")}
+    finally:
+        conn.close()
+
+    assert "apps_script_hmac_key" not in cols, (
+        "dry-run added the apps_script_hmac_key column to a legacy DB — "
+        "schema mutation leaked from --apply path into the default "
+        "dry-run path. See IMPORTANT 1 in the v2.0a review."
     )
 
 
@@ -174,7 +263,7 @@ def test_migrate_skips_already_migrated():
     )
     _back_date_all()
 
-    rc = mig.main([])
+    rc = mig.main(["--apply"])
     assert rc == 0
 
     after = _read_key("user-already")
@@ -185,7 +274,7 @@ def test_migrate_skips_already_migrated():
 
 
 def test_migrate_fails_loud_on_recent_heartbeat():
-    """If a row was updated in the last 60s, refuse to run."""
+    """If a row was updated in the last 60s, refuse to run (even with --apply)."""
     _seed_user(
         "user-live",
         apps_script_url="https://script.google.com/macros/s/L/exec",
@@ -194,7 +283,7 @@ def test_migrate_fails_loud_on_recent_heartbeat():
     # heartbeat check should refuse.
 
     with pytest.raises(SystemExit) as exc_info:
-        mig.main([])
+        mig.main(["--apply"])
 
     # SystemExit.code is the message string here (we raise SystemExit(msg)).
     msg = str(exc_info.value)
@@ -210,6 +299,41 @@ def test_migrate_fails_loud_on_recent_heartbeat():
     assert _read_key("user-live") is None
 
 
+def test_migrate_force_skips_heartbeat(caplog):
+    """``--force`` bypasses the heartbeat check and lets the migration run.
+
+    Operators use this when they have out-of-band evidence the server
+    is down (e.g. checked fly machine state) and they don't want to
+    wait 60s for the heartbeat to clear. The script must log a loud
+    WARNING when --force is set so it's obvious in the deploy log.
+    """
+    _seed_user(
+        "user-force",
+        apps_script_url="https://script.google.com/macros/s/F/exec",
+    )
+    # Do NOT back-date — without --force the heartbeat check would
+    # refuse. With --force it should proceed.
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        rc = mig.main(["--apply", "--force"])
+    assert rc == 0
+
+    # Key should have been written.
+    assert _read_key("user-force") is not None, (
+        "--force with --apply should let the migration write the key"
+    )
+
+    # And there should be a loud WARNING about --force.
+    warning_messages = [
+        rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"
+    ]
+    assert any("--force" in m for m in warning_messages), (
+        "expected a WARNING-level log about --force usage; got: "
+        f"{warning_messages!r}"
+    )
+
+
 def test_migrate_user_id_filter_only_migrates_one():
     """--user-id X migrates only that user, leaves others alone."""
     _seed_user(
@@ -222,7 +346,7 @@ def test_migrate_user_id_filter_only_migrates_one():
     )
     _back_date_all()
 
-    rc = mig.main(["--user-id", "alice"])
+    rc = mig.main(["--user-id", "alice", "--apply"])
     assert rc == 0
 
     assert _read_key("alice") is not None, "alice was supposed to be migrated"
@@ -243,7 +367,7 @@ def test_migrate_reports_needs_redeploy(capsys):
     )
     _back_date_all()
 
-    mig.main([])
+    mig.main(["--apply"])
     out = capsys.readouterr().out
 
     assert "needs_redeploy" in out.lower() or "re-deploy" in out.lower(), (
@@ -270,5 +394,5 @@ def test_migrate_empty_db_returns_zero():
     from google_docs_mcp import user_store
     user_store.get_state("triggers-init")
 
-    rc = mig.main([])
+    rc = mig.main(["--apply"])
     assert rc == 0

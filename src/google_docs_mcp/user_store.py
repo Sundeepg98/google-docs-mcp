@@ -180,15 +180,23 @@ def _ensure_initialized(path: Path) -> None:
             # without the new column. Add it idempotently. ALTER TABLE
             # ADD COLUMN with no DEFAULT is fast (no row rewrite) and
             # leaves existing rows with NULL — which migrate_existing_users
-            # then backfills. Wrapped in try/except so re-runs on a
-            # post-migration DB stay idempotent (duplicate column error).
-            try:
+            # then backfills.
+            #
+            # Use PRAGMA table_info to decide whether to ALTER rather
+            # than catching OperationalError on the ALTER itself —
+            # SQLite's "duplicate column name" error is reported as
+            # generic SQLITE_ERROR (no specific extended code), so
+            # string-matching the message is fragile across versions
+            # and locales. table_info is the official introspection
+            # surface and gives an unambiguous answer.
+            existing_cols = {
+                row[1]  # row = (cid, name, type, notnull, dflt, pk)
+                for row in conn.execute("PRAGMA table_info(user_state)")
+            }
+            if "apps_script_hmac_key" not in existing_cols:
                 conn.execute(
                     "ALTER TABLE user_state ADD COLUMN apps_script_hmac_key TEXT"
                 )
-            except sqlite3.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
         finally:
             conn.close()
         _initialized_paths.add(path)
