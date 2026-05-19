@@ -176,3 +176,82 @@ def test_gdocs_test_manifest_exists_and_returns_required_shape():
     guards = result["named_regression_guards"]
     assert "present" in guards and isinstance(guards["present"], list)
     assert "missing" in guards and isinstance(guards["missing"], list)
+
+
+def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
+    """v1.3.0 self-documenting contract: gdocs_guide must return a
+    structured payload an agent can use INSTEAD of any external doc.
+
+    The 5 workflows by name (the acceptance criterion: an agent can
+    correctly choose and sequence tools for these without any
+    external file) and the 5 operating rules (the failure modes that
+    used to require trial-and-error to discover).
+    """
+    from google_docs_mcp.server import gdocs_guide
+
+    guide = gdocs_guide()
+
+    # Top-level keys are the contract.
+    for key in ("server", "workflows", "operating_rules", "tool_groups"):
+        assert key in guide, f"gdocs_guide missing top-level key: {key}"
+
+    # server block identifies the build so callers can correlate
+    # with gdocs_server_info.
+    for key in ("name", "version", "what_it_does",
+                "all_tools_prefixed", "more_info"):
+        assert key in guide["server"], f"guide.server missing {key}"
+    assert guide["server"]["all_tools_prefixed"] == "gdocs_"
+
+    # All 5 named workflows present. If any of these names changes
+    # the external doc is no longer the canonical source — update
+    # this list deliberately.
+    expected_workflow_names = {
+        "new_doc",
+        "convert_doc_with_headings",
+        "retrofit_styled_doc",
+        "convert_sandbox_docx",
+        "cleanup",
+    }
+    actual_workflow_names = {w["name"] for w in guide["workflows"]}
+    assert actual_workflow_names == expected_workflow_names, (
+        f"workflow names drifted: expected {expected_workflow_names}, "
+        f"got {actual_workflow_names}"
+    )
+
+    # Each workflow has the choreography fields.
+    for w in guide["workflows"]:
+        for key in ("name", "goal", "tool_sequence", "notes"):
+            assert key in w, f"workflow {w.get('name')} missing {key}"
+        assert isinstance(w["tool_sequence"], list)
+        assert w["tool_sequence"], (
+            f"workflow {w['name']} has empty tool_sequence"
+        )
+
+    # All 5 operating rules present. We check by topic keyword rather
+    # than exact text so wording can evolve without breaking the test.
+    rules_blob = " ".join(guide["operating_rules"]).lower()
+    for topic in (
+        "retrofit",        # never rebuild styled .docx
+        "docx_path",       # cloud-chat filesystem rule
+        "placeholder",     # placeholder_behavior="rename" rule
+        "trash",           # only own files
+        "oauth",           # interactive consent
+    ):
+        assert topic in rules_blob, (
+            f"operating_rules missing the '{topic}' rule. "
+            f"Got: {guide['operating_rules']}"
+        )
+
+    # tool_groups partition the tool list — each registered tool
+    # should appear in exactly one group (so the guide really is a
+    # map). Skip the registry assertion here (covered by
+    # test_tool_schemas.py) and just verify the buckets exist.
+    for bucket in ("build_new", "convert_existing", "edit_tabs",
+                   "read", "drive_management", "setup_and_auth",
+                   "introspection"):
+        assert bucket in guide["tool_groups"], (
+            f"tool_groups missing {bucket}"
+        )
+        assert guide["tool_groups"][bucket], (
+            f"tool_groups[{bucket}] is empty — should list its tools"
+        )

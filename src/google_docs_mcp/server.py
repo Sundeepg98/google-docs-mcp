@@ -59,50 +59,96 @@ from .setup_apps_script import (
 )
 
 _SERVER_INSTRUCTIONS = """\
-This server creates and edits Google Docs with the native Tabs feature
-(October 2024+ sidebar tabs). All tools are prefixed ``gdocs_``.
+google-docs-fly — create, edit, read, and manage Google Docs with
+native sidebar Tabs (October 2024+ feature). All tools prefixed gdocs_.
 
-TOOL SELECTION — pick the right tool for what the user is asking:
+START HERE: call ``gdocs_guide()`` for the orientation as a structured
+payload, or ``gdocs_server_info()`` for build version + verified CI
+test status.
 
-1. NEW content you are composing in the conversation (you have the
-   section titles and the text — no source file):
-   -> gdocs_make_tabbed_doc(title, tabs=[{title, content (markdown),
-      icon_emoji?, children?}])
-   No file. No upload. One MCP call. This is the DEFAULT for any
-   request like "make me a tabbed doc with these sections".
+THE 5 CORE WORKFLOWS
+====================
 
-2. EXISTING .docx or Google Doc already on Drive — convert its
-   heading structure into tabs:
-   -> gdocs_tab_existing_doc(drive_file_id=..., split_by="heading_1")
-   NEVER use this for content composed in chat — that is
-   gdocs_make_tabbed_doc's job.
+1. NEW DOC from content composed in chat
+   Goal: build a tabbed doc from text you have in the conversation.
+   Tools: gdocs_make_tabbed_doc(title, tabs=[{title, content, ...}])
+   Notes: ONE call. No file. No upload. DEFAULT for any request like
+   "make me a doc with sections X, Y, Z".
 
-3. EXISTING styled doc on Drive with NO Heading 1 paragraphs (e.g.
-   section banners are inside tables):
-   -> gdocs_tab_existing_doc(drive_file_id=..., markers=[
-        {marker_text, tab_title}, ...])
-   Same tool as #2; passing ``markers`` triggers retrofit (injects
-   synthetic Heading 1s before each marker block, then converts).
+2. CONVERT EXISTING DOC with Heading 1 paragraphs
+   Goal: take a Google Doc / .docx on Drive that already has H1s and
+   turn each H1 section into its own native tab.
+   Tools: gdocs_preview_tab_split(drive_file_id=..., split_by="heading_1")
+          -> gdocs_tab_existing_doc(drive_file_id=..., split_by="heading_1")
+          -> gdocs_get_doc_outline(doc_id=...)   # verify the result
+   Notes: Preview first — destructive conversion is one-way.
 
-4. EDIT existing tabs in an existing doc:
-   -> gdocs_rename_tab, gdocs_delete_tab, gdocs_set_tab_icons,
-      gdocs_replace_all_text, gdocs_add_tabs, gdocs_append_to_tab
+3. RETROFIT STYLED DOC with NO Heading 1s
+   Goal: a styled doc where section breaks aren't H1s (banners in
+   styled tables, shaded paragraphs, etc.).
+   Tools: gdocs_tab_existing_doc(drive_file_id=...,
+              markers=[{marker_text, tab_title}, ...])
+   Notes: Same tool as #2; passing ``markers`` triggers RETROFIT mode
+   (injects synthetic H1s before each marker block, then converts).
+   NEVER rebuild a styled .docx from text — formatting would be lost.
+   Use retrofit instead.
 
-5. READ what is in a doc:
-   -> gdocs_get_doc_outline (structure + icons, no body text)
-   -> gdocs_read_doc(doc_id, tab_id?) (body text — one tab or all)
+4. CONVERT SANDBOX .docx (bytes only, no Drive file)
+   Goal: convert a .docx the model has built / has as raw bytes in
+   its sandbox (cloud chat scenario).
+   Tools: gdocs_get_signed_upload_url(...) -> POST {url} with the
+          .docx bytes as multipart upload
+   Notes: ``docx_path`` arguments DO NOT WORK from cloud chat — the
+   server cannot see the caller's filesystem. Signed-URL upload is
+   the only sandbox-bytes path. The POST is equivalent to
+   gdocs_tab_existing_doc; use this when the .docx lives in your
+   sandbox rather than on Drive.
 
-6. PREVIEW what a conversion would produce before committing:
-   -> gdocs_preview_tab_split(docx_path or drive_file_id, split_by)
+5. CLEANUP — trash / restore Drive files
+   Tools: gdocs_trash_file(file_id), gdocs_untrash_file(file_id)
+   Notes: ONLY acts on files this app created. Files created
+   elsewhere return app_not_authorized (no recovery — the file
+   belongs to its owner). file_id accepts a string or list (batch).
 
-7. SANDBOX-built .docx that absolutely must ship raw bytes over HTTP
-   (the file already exists as bytes in your sandbox and rebuilding
-   from text would lose formatting):
-   -> gdocs_get_signed_upload_url, then POST. Almost never right for
-   new content from chat — prefer gdocs_make_tabbed_doc.
+NON-OBVIOUS OPERATING RULES
+===========================
+- Never rebuild a styled .docx from text. Retrofit (workflow #3)
+  preserves formatting; rebuilding loses it.
+- ``docx_path`` arguments do NOT work from cloud chat — the server
+  cannot see the caller's filesystem. Use signed-URL upload
+  (workflow #4) or drive_file_id.
+- ``placeholder_behavior="rename"`` preserves a title / index page;
+  the default "remove" deletes it. Use "rename" when the source has
+  a meaningful cover page worth keeping.
+- This app can only trash files IT created. Drive returns
+  appNotAuthorizedToFile (403) on others; the file belongs to its
+  owner and only they can trash it.
+- First use requires interactive Google OAuth consent. The client
+  must open the consent URL in a browser — it cannot be automated.
+  Subsequent calls reuse the cached token until it expires.
 
-In doubt: if the request reads like "build me a doc with these
-sections", use gdocs_make_tabbed_doc and nothing else.
+EDIT TOOLS (after creating / converting)
+========================================
+gdocs_rename_tab, gdocs_delete_tab, gdocs_set_tab_icons,
+gdocs_replace_all_text, gdocs_add_tabs, gdocs_append_to_tab
+
+READ TOOLS
+==========
+gdocs_get_doc_outline — structure + icons, no body text (cheap)
+gdocs_read_doc(doc_id, tab_id?) — body text, one tab or all
+gdocs_get_tab_url(doc_id, tab_id) — direct deep-link to a tab
+
+DRIVE MANAGEMENT
+================
+gdocs_find_doc_by_title, gdocs_move_to_folder,
+gdocs_trash_file, gdocs_untrash_file
+
+INTROSPECTION
+=============
+gdocs_guide() — this orientation as a structured payload
+gdocs_server_info() — version + verified CI test status (digest,
+  ci_run_url, mutation_check with stale_patches / imprecise_patches)
+gdocs_test_manifest() — full test inventory + per-test outcomes
 """
 
 mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
@@ -208,6 +254,11 @@ def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
         ``{"doc_id": str, "url": str, "tabs": [{"title", "tab_id",
         "depth", "parent_tab_id"}, ...]}``. The ``tabs`` list is in
         pre-order traversal so callers can reconstruct the tree.
+
+    Choreography: typically the FIRST tool in the `new_doc` workflow.
+    Follow with ``gdocs_get_tab_url`` (deep-link any tab) or
+    ``gdocs_get_doc_outline`` (verify). For existing files use
+    ``gdocs_tab_existing_doc`` instead — not this tool.
     """
     if not tabs:
         raise ToolError("Must provide at least one tab")
@@ -251,6 +302,11 @@ def gdocs_add_tabs(
     Returns:
         ``{"tabs": [{"title", "tab_id", "depth", "parent_tab_id"}, ...]}``
         for the newly created tabs only.
+
+    Choreography: typically preceded by ``gdocs_get_doc_outline`` to
+    know the existing structure (and pick a ``parent_tab_id`` if
+    nesting). For a brand-new doc use ``gdocs_make_tabbed_doc`` —
+    don't create an empty doc then add tabs.
     """
     if not tabs:
         raise ToolError("Must provide at least one tab")
@@ -294,6 +350,14 @@ def gdocs_get_doc_outline(doc_id: str) -> dict:
         but API calls (including this one) still work. Surface this
         to the user before doing further edits — they probably didn't
         mean to keep editing a hidden file.
+
+    Choreography: the universal discovery step. Typical patterns:
+    (a) after ``gdocs_tab_existing_doc`` to verify the resulting
+        structure;
+    (b) before edit tools (``gdocs_rename_tab``, ``gdocs_delete_tab``,
+        ``gdocs_set_tab_icons``, ``gdocs_append_to_tab``) to obtain
+        the ``tab_id`` they need;
+    (c) before ``gdocs_get_tab_url`` to compose a deep-link.
     """
     try:
         creds = _get_credentials()
@@ -330,6 +394,10 @@ def gdocs_read_doc(
     ``NORMAL_TEXT``, etc.) or ``"TABLE"`` / ``"TOC"`` placeholders.
     ``text`` has trailing newlines stripped; inline images appear as
     ``[image]`` markers.
+
+    Choreography: typically preceded by ``gdocs_get_doc_outline`` to
+    pick the tab_id (single-tab mode). For tab structure WITHOUT body
+    text use ``gdocs_get_doc_outline`` (faster, smaller).
     """
     try:
         creds = _get_credentials()
@@ -366,6 +434,10 @@ def gdocs_append_to_tab(
 
     Returns:
         ``{"tab_id": str, "appended_chars": int}``.
+
+    Choreography: get the tab_id from ``gdocs_get_doc_outline`` first
+    (or from a prior create/add call). To create new tabs (not append
+    to existing) use ``gdocs_add_tabs`` instead.
     """
     try:
         creds = _get_credentials()
@@ -486,6 +558,16 @@ def gdocs_tab_existing_doc(
         provided, also includes ``"retrofit": {"markers_matched",
         "markers_missed": [...]}``. If zero markers matched, returns
         an ``error`` field plus candidate_blocks for debugging.
+
+    Choreography:
+    - Typically preceded by ``gdocs_preview_tab_split`` to validate
+      the split before this (destructive, one-way) conversion call.
+    - Follow with ``gdocs_get_doc_outline`` to verify the resulting
+      tab structure.
+
+    NOTE: ``docx_path`` does NOT work from cloud chat — the server
+    cannot see the caller's filesystem. For sandbox .docx bytes, use
+    ``gdocs_get_signed_upload_url`` and POST instead.
     """
     if docx_drive_file_id is not None and drive_file_id is None:
         drive_file_id = docx_drive_file_id
@@ -558,6 +640,10 @@ def gdocs_rename_tab(
 
     Returns:
         ``{"doc_id", "tab_id", "updated_fields": ["title", "iconEmoji"]}``.
+
+    Choreography: get the tab_id from ``gdocs_get_doc_outline`` first.
+    For multi-tab icon edits use ``gdocs_set_tab_icons`` (title-keyed
+    batch).
     """
     if title is None and icon_emoji is None:
         raise ToolError("Provide at least one of title or icon_emoji")
@@ -596,6 +682,11 @@ async def gdocs_server_info() -> dict:
         ``build_time`` and ``git_commit`` are baked in at Docker build
         time via --build-arg; if the deploy script didn't pass them
         they show as ``"unknown"``.
+
+    Choreography: typical introspection trio — pair with
+    ``gdocs_guide()`` (workflows + rules + tool groupings) and
+    ``gdocs_test_manifest()`` (full per-test inventory). Cheap; no
+    Google API call required.
     """
     # FastMCP's tool registry is async-accessed via list_tools().
     # Making this whole tool async lets us await it directly without
@@ -825,6 +916,10 @@ def gdocs_test_manifest() -> dict:
     "tampered" when the report_digest doesn't match the canonicalized
     payload (same logic as gdocs_server_info.test_suite); "ok"
     otherwise.
+
+    Choreography: pairs with ``gdocs_server_info.test_suite``. The
+    summary is in server_info; this tool gives the full per-test
+    breakdown. No Google API call.
     """
     import json
 
@@ -909,9 +1004,199 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
 
     Returns:
         ``{"doc_id", "tab_id", "url"}`` — ``url`` is the deep link.
+
+    Choreography: get the tab_id from ``gdocs_get_doc_outline`` first.
+    Often called as the FINAL step of new-doc / convert workflows to
+    hand the user a direct link to the right tab. No API call.
     """
     url = f"https://docs.google.com/document/d/{doc_id}/edit?tab={tab_id}"
     return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
+
+
+@mcp.tool()
+def gdocs_guide() -> dict:
+    """Orientation payload — the "start here" / --help for this server.
+
+    Returns the same content as the connect-time server ``instructions``
+    string, as a structured dict so it is machine-readable and always
+    callable. Use when:
+
+    - the client truncated or ignored connect-time instructions
+    - you want machine-readable workflow choreography / tool groupings
+    - you need to confirm which tools belong to which workflow before
+      sequencing a multi-tool plan
+
+    No arguments. No side effects. Cheap (no API calls). Typically the
+    first call an agent makes after connecting — pairs naturally with
+    ``gdocs_server_info()`` (version + verified CI test status).
+
+    Returned shape:
+        {
+          server: {name, version, what_it_does, all_tools_prefixed,
+                   more_info},
+          workflows: [{name, goal, tool_sequence, notes}, ...],
+          operating_rules: [str, ...],
+          tool_groups: {build_new: [...], convert_existing: [...],
+                        edit_tabs: [...], read: [...],
+                        drive_management: [...], setup_and_auth: [...],
+                        introspection: [...]},
+        }
+    """
+    from . import __version__
+
+    return {
+        "server": {
+            "name": "google-docs-fly",
+            "version": __version__,
+            "what_it_does": (
+                "Create, edit, read, and manage Google Docs with native "
+                "sidebar Tabs (October 2024+ feature)."
+            ),
+            "all_tools_prefixed": "gdocs_",
+            "more_info": (
+                "Call gdocs_server_info for build version + verified CI "
+                "test status (digest, ci_run_url, mutation_check)."
+            ),
+        },
+        "workflows": [
+            {
+                "name": "new_doc",
+                "goal": "Build a tabbed doc from content composed in chat",
+                "tool_sequence": ["gdocs_make_tabbed_doc"],
+                "notes": (
+                    "ONE call. No file. No upload. DEFAULT for any 'make "
+                    "me a doc with sections X, Y, Z' request."
+                ),
+            },
+            {
+                "name": "convert_doc_with_headings",
+                "goal": (
+                    "Convert an existing Drive doc that already has "
+                    "Heading 1 paragraphs into tabs"
+                ),
+                "tool_sequence": [
+                    "gdocs_preview_tab_split",
+                    "gdocs_tab_existing_doc",
+                    "gdocs_get_doc_outline",
+                ],
+                "notes": (
+                    "Preview first to validate the split; convert; then "
+                    "outline to verify the result. Conversion is one-way."
+                ),
+            },
+            {
+                "name": "retrofit_styled_doc",
+                "goal": (
+                    "Retrofit a styled doc that has NO Heading 1 "
+                    "paragraphs (e.g. banners inside styled tables)"
+                ),
+                "tool_sequence": [
+                    "gdocs_tab_existing_doc(markers=[...])",
+                ],
+                "notes": (
+                    "Same tool as convert_doc_with_headings; passing "
+                    "`markers` triggers retrofit mode (injects synthetic "
+                    "H1s before each marker block, then converts). NEVER "
+                    "rebuild a styled .docx from text — formatting would "
+                    "be lost."
+                ),
+            },
+            {
+                "name": "convert_sandbox_docx",
+                "goal": (
+                    "Convert a .docx that exists only as bytes in the "
+                    "caller's sandbox (cloud chat scenario)"
+                ),
+                "tool_sequence": [
+                    "gdocs_get_signed_upload_url",
+                    "POST {url}",
+                ],
+                "notes": (
+                    "`docx_path` does NOT work from cloud chat — the "
+                    "server cannot see the caller's filesystem. The POST "
+                    "is equivalent to gdocs_tab_existing_doc; use this "
+                    "route when the .docx is in your sandbox."
+                ),
+            },
+            {
+                "name": "cleanup",
+                "goal": "Trash / restore Drive files this app created",
+                "tool_sequence": [
+                    "gdocs_trash_file",
+                    "gdocs_untrash_file",
+                ],
+                "notes": (
+                    "ONLY acts on files this app created; others return "
+                    "app_not_authorized. file_id accepts a string or "
+                    "list (batch)."
+                ),
+            },
+        ],
+        "operating_rules": [
+            (
+                "Never rebuild a styled .docx from text. Use retrofit "
+                "(workflow `retrofit_styled_doc`) to preserve formatting."
+            ),
+            (
+                "`docx_path` arguments do NOT work from cloud chat — the "
+                "server cannot see the caller's filesystem. Use "
+                "signed-URL upload (workflow `convert_sandbox_docx`) or "
+                "drive_file_id."
+            ),
+            (
+                "`placeholder_behavior='rename'` preserves a title / "
+                "index page; the default 'remove' deletes it. Use "
+                "'rename' when the source has a meaningful cover page."
+            ),
+            (
+                "Trash tools only act on files THIS app created. Drive "
+                "returns appNotAuthorizedToFile (403) on others; the "
+                "file belongs to its owner and only they can trash it."
+            ),
+            (
+                "First use requires interactive Google OAuth consent. "
+                "The client must open the consent URL in a browser — "
+                "this cannot be automated. Subsequent calls reuse the "
+                "cached token until it expires."
+            ),
+        ],
+        "tool_groups": {
+            "build_new": ["gdocs_make_tabbed_doc"],
+            "convert_existing": [
+                "gdocs_preview_tab_split",
+                "gdocs_tab_existing_doc",
+                "gdocs_get_signed_upload_url",
+            ],
+            "edit_tabs": [
+                "gdocs_rename_tab",
+                "gdocs_delete_tab",
+                "gdocs_set_tab_icons",
+                "gdocs_replace_all_text",
+                "gdocs_add_tabs",
+                "gdocs_append_to_tab",
+            ],
+            "read": [
+                "gdocs_get_doc_outline",
+                "gdocs_read_doc",
+                "gdocs_get_tab_url",
+            ],
+            "drive_management": [
+                "gdocs_find_doc_by_title",
+                "gdocs_move_to_folder",
+                "gdocs_trash_file",
+                "gdocs_untrash_file",
+            ],
+            "setup_and_auth": [
+                "gdocs_setup_apps_script",
+                "gdocs_reset_authorization",
+            ],
+            "introspection": [
+                "gdocs_server_info",
+                "gdocs_test_manifest",
+                "gdocs_guide",
+            ],
+        },
+    }
 
 
 def _run_batch(
@@ -1000,6 +1285,12 @@ def gdocs_find_doc_by_title(
         trashed, owned_by_app}, ...], "count": int}``.
         ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
         ``verify_writable=False``.
+
+    Choreography: returns a ``file_id`` that feeds straight into
+    ``gdocs_tab_existing_doc`` (drive_file_id), ``gdocs_move_to_folder``,
+    ``gdocs_trash_file``, ``gdocs_read_doc`` (as doc_id for Google
+    Docs), and ``gdocs_get_doc_outline``. Check ``owned_by_app``
+    before any write — others fail with app_not_authorized.
     """
     if not query.strip():
         raise ToolError("query cannot be empty")
@@ -1042,6 +1333,14 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
         Success: ``{file_id, name, mimeType, parents: [folder_id, ...]}``.
         No-op (already there): same shape plus ``note`` explaining.
         Soft-failure: ``{file_id, reason, message, ...}``.
+
+    Choreography: file_id typically from ``gdocs_find_doc_by_title`` or
+    from a prior create call. ``folder_id`` from the user (URL) or
+    ``gdocs_find_doc_by_title`` with mimeType filter — Drive folder
+    IDs look identical to file IDs.
+
+    NOTE: same app-ownership constraint as the trash tools — moving a
+    file this app didn't create returns ``reason: "app_not_authorized"``.
     """
     try:
         creds = _get_credentials()
@@ -1076,6 +1375,12 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
         Soft-failure: ``{"file_id", "trashed": <current>, "reason",
         "message"}`` with ``reason`` in {``"not_found"``,
         ``"app_not_authorized"``}.
+
+    Choreography: pairs with ``gdocs_trash_file`` for recovery.
+
+    NOTE: only works on files THIS app created. Files created by
+    other apps / users return ``reason: "app_not_authorized"`` — the
+    file belongs to its owner and only they can restore it.
     """
     if isinstance(file_id, list):
         return _run_batch(file_id, _untrash_drive_file, "active")
@@ -1113,6 +1418,16 @@ def gdocs_trash_file(file_id: str | list[str]) -> dict:
         ``{"file_id", "name", "mimeType", "trashed": True,
         "was_already_trashed": bool}``. ``name`` lets the caller confirm
         the right file was touched.
+
+    Choreography: pair with ``gdocs_untrash_file`` for recovery within
+    Drive's 30-day trash window. file_id often comes from
+    ``gdocs_find_doc_by_title`` or from a prior create call.
+
+    NOTE: only works on files THIS app created. Files created by
+    other apps / users return ``reason: "app_not_authorized"`` (HTTP
+    403 appNotAuthorizedToFile) — the file belongs to its owner and
+    only they can trash it. The agent has no recovery; surface to
+    the user.
     """
     if isinstance(file_id, list):
         return _run_batch(file_id, _trash_drive_file, "trashed")
@@ -1137,6 +1452,10 @@ def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
 
     Returns:
         ``{"doc_id", "deleted_tab_id"}``.
+
+    Choreography: get the tab_id from ``gdocs_get_doc_outline`` first.
+    To delete an entire DOCUMENT (not just one tab) use
+    ``gdocs_trash_file`` instead.
     """
     try:
         creds = _get_credentials()
@@ -1170,6 +1489,10 @@ def gdocs_replace_all_text(
 
     Returns:
         ``{"occurrences_changed": int, "scope": "all_tabs" | [tab_ids]}``.
+
+    Choreography: globally scoped by default — no tab_id needed for
+    whole-doc find/replace. For per-tab scope, get tab_ids from
+    ``gdocs_get_doc_outline`` first.
     """
     try:
         creds = _get_credentials()
@@ -1207,6 +1530,11 @@ def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
         ``{"updated_count": int,
            "matched": {requested_title: tab_id, ...},
            "unmatched_titles": [...]}``.
+
+    Choreography: get the current tab titles from
+    ``gdocs_get_doc_outline`` first so your keys actually match.
+    Often paired right after ``gdocs_tab_existing_doc`` to decorate
+    the auto-named tabs.
     """
     if not icons_by_title:
         raise ToolError("icons_by_title cannot be empty")
@@ -1248,6 +1576,15 @@ def gdocs_preview_tab_split(
         ``{"split_strategy_used", "tab_count", "tabs":
         [{title, raw_title, warnings}, ...], "problems": [...]}``.
         Empty ``problems`` means the convert would proceed cleanly.
+
+    Choreography: typically called BEFORE ``gdocs_tab_existing_doc``
+    to validate the split — conversion is one-way and destructive,
+    so the preview lets you confirm titles / catch zero-boundary
+    cases before committing.
+
+    NOTE: ``docx_path`` does NOT work from cloud chat — the server
+    cannot see the caller's filesystem. Use ``drive_file_id`` (or
+    upload via ``gdocs_get_signed_upload_url`` first then convert).
     """
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
@@ -1298,6 +1635,16 @@ def gdocs_get_signed_upload_url(
         ``{"url", "expires_at", "max_bytes", "nonce", "usage_hint"}``.
         ``usage_hint`` is a one-line Python snippet showing how to use
         the URL — the model copies it into the sandbox.
+
+    Choreography: this is the FIRST step of the `convert_sandbox_docx`
+    workflow. Mint the URL here, then POST the .docx bytes to that URL
+    from the sandbox. The POST is equivalent to
+    ``gdocs_tab_existing_doc`` — use this route when the .docx lives
+    only as bytes in the sandbox rather than on Drive.
+
+    NOTE: ``docx_path`` arguments on other tools do NOT work from
+    cloud chat (server can't see the caller's filesystem); this
+    signed-URL upload flow is the sandbox-bytes path.
     """
     base = os.environ.get("PUBLIC_BASE_URL", "https://sundeepg98-docs-mcp.fly.dev")
     signing_key = os.environ.get("MCP_BEARER_TOKEN")
@@ -1359,6 +1706,16 @@ def gdocs_setup_apps_script() -> dict:
     success. On cloud-mode auth failure, returns
     ``{status: "needs_authorization", auth_url, message}`` — emit
     the message verbatim so Claude renders the URL as a clickable link.
+
+    Choreography: required ONCE before
+    ``gdocs_tab_existing_doc(markers=[...])`` (retrofit path) and the
+    Apps-Script-backed retrofit pipeline in general. After successful
+    setup, run any retrofit conversion freely.
+
+    NOTE: First call typically returns ``needs_authorization`` with a
+    URL the user MUST open in a browser — Google OAuth consent
+    cannot be automated. After consent, re-run this tool to complete
+    the Web App deploy.
     """
     user_id = current_user_id_or_none()
 
@@ -1467,6 +1824,11 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
     Returns:
         ``{status: "reset", message: str, cleared: [list of what
         was cleared]}``.
+
+    Choreography: after reset, the very next tool call that needs
+    creds will return ``needs_authorization`` with a fresh consent
+    URL. Re-running ``gdocs_setup_apps_script`` afterwards is
+    typical if you also passed ``full=True``.
     """
     user_id = current_user_id_or_none()
     cleared: list[str] = []

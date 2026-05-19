@@ -21,13 +21,16 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 21 tools
+wraps that flow + the supporting Drive operations into 22 tools
 (`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
 find, retrofit, trash/untrash, convert existing docs, one-shot
 per-user Apps Script Web App setup, plus introspection tools that
 surface the server's CI test status over the MCP interface (so an
 agent can verify the running build was actually tested, not just
-trust a green badge).
+trust a green badge). v1.3.0+: the server is **self-documenting** —
+connect-time `instructions` carry workflow choreography, and
+`gdocs_guide()` returns the same content as a structured payload.
+No external reference file required.
 
 ## Tool index
 
@@ -56,6 +59,7 @@ on a live server to get the authoritative list with descriptions.
 | **Reset / revoke OAuth credentials** (force re-consent) | `gdocs_reset_authorization(full?)` |
 | **Server identity + CI test status** | `gdocs_server_info()` |
 | **CI test inventory + per-test outcomes** | `gdocs_test_manifest()` |
+| **Orientation: workflows + rules + tool groups** (v1.3.0+) | `gdocs_guide()` |
 
 ## Self-evidencing CI gate (v1.2+)
 

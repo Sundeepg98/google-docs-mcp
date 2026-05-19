@@ -4,6 +4,99 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-05-19
+
+Make the MCP self-documenting — the external
+`google-docs-fly_MCP_Reference.md` becomes redundant by design.
+
+### Why
+
+Using this server previously required out-of-band documentation: a
+hand-written reference file. That's a design smell. An agent
+connecting to the server got 21 isolated tool descriptions and no
+orientation — no statement of what the server does, no workflow
+choreography, no surfacing of the operating rules that were only
+learned by hitting errors. v1.3.0 moves that knowledge into the
+MCP so it travels with the server.
+
+### Added: connect-time orientation
+
+`_SERVER_INSTRUCTIONS` (the protocol-level instructions string) now
+contains:
+
+- One sentence on what the server does.
+- The **5 named workflows** as goal → tool sequence:
+  `new_doc`, `convert_doc_with_headings`, `retrofit_styled_doc`,
+  `convert_sandbox_docx`, `cleanup`.
+- The **5 non-obvious operating rules** (never rebuild a styled
+  .docx; `docx_path` doesn't work from cloud chat; `placeholder_
+  behavior="rename"` preserves a title page; trash tools only act
+  on files this app created; first use needs interactive OAuth
+  consent).
+- Pointer to `gdocs_server_info` for build + verified test status.
+
+### Added: gdocs_guide tool
+
+Zero-argument tool that returns the same orientation as a structured
+payload (workflows, rules, tool_groups). Rationale: server
+instructions is seen only at connect time and some clients truncate
+or ignore it. `gdocs_guide` is always reachable as the "start here"
+/ `--help` entry point.
+
+Shape:
+```
+{
+  server: {name, version, what_it_does, all_tools_prefixed, more_info},
+  workflows: [{name, goal, tool_sequence, notes}, ...],
+  operating_rules: [str, ...],
+  tool_groups: {build_new, convert_existing, edit_tabs, read,
+                drive_management, setup_and_auth, introspection},
+}
+```
+
+### Changed: tool descriptions are now workflow-aware
+
+Every tool description now ends with a `Choreography:` line stating
+what typically comes before / after it, and (where applicable) a
+`NOTE:` block for known failure modes an agent would otherwise
+discover by hitting an error:
+
+- `gdocs_preview_tab_split` — Typically called before
+  `gdocs_tab_existing_doc`. NOTE: `docx_path` doesn't work from
+  cloud chat.
+- `gdocs_tab_existing_doc` — Typically preceded by
+  `gdocs_preview_tab_split`; follow with `gdocs_get_doc_outline`.
+  NOTE: `docx_path` doesn't work from cloud chat.
+- `gdocs_get_signed_upload_url` — POST is equivalent to
+  `gdocs_tab_existing_doc`; sandbox-bytes route only. NOTE:
+  `docx_path` arguments don't work from cloud chat.
+- `gdocs_trash_file` / `gdocs_untrash_file` — NOTE: only works on
+  files this app created; others return `app_not_authorized`.
+- `gdocs_setup_apps_script` — NOTE: First call returns
+  `needs_authorization` with a URL the user must open — consent
+  cannot be automated.
+
+All 21 existing tools touched; the new `gdocs_guide` makes 22.
+
+### Tests
+
+- `test_tool_schemas.py::EXPECTED_TOOLS` updated with `gdocs_guide`
+  (22 tools); `no_arg_tools` extended.
+- New `test_server_info.py::test_gdocs_guide_shape_includes_all_5_
+  workflows_and_rules` — asserts gdocs_guide returns the 5 named
+  workflows, 5 operating-rule topics, all 7 tool_group buckets.
+
+### Acceptance
+
+A fresh agent that has only (a) the server instructions and (b) the
+tool list — with no external reference file — can correctly choose
+and sequence tools for all 5 core workflows, and avoids the known
+failure modes without first triggering them. `gdocs_guide` returns
+the orientation as a callable fallback.
+
+The external `google-docs-fly_MCP_Reference.md` is now redundant by
+design.
+
 ## [1.2.3] — 2026-05-19
 
 Hot-fix: v1.2.2 shipped with the CHANGELOG / mutation_check.py /

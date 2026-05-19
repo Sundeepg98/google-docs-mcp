@@ -25,6 +25,7 @@ EXPECTED_TOOLS = {
     "gdocs_get_doc_outline",
     "gdocs_get_signed_upload_url",
     "gdocs_get_tab_url",
+    "gdocs_guide",  # v1.3.0+: self-documenting orientation payload
     "gdocs_make_tabbed_doc",
     "gdocs_move_to_folder",
     "gdocs_preview_tab_split",
@@ -255,7 +256,12 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
     # introspection. setup_apps_script identifies the calling user
     # via OAuth context (get_access_token claims) so needs no kwargs;
     # the deploy is parameter-less by design.
-    no_arg_tools = {"gdocs_server_info", "gdocs_setup_apps_script", "gdocs_test_manifest"}
+    no_arg_tools = {
+        "gdocs_server_info",
+        "gdocs_setup_apps_script",
+        "gdocs_test_manifest",
+        "gdocs_guide",  # v1.3.0+: orientation, zero args by design
+    }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these
 
