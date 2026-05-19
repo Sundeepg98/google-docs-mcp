@@ -4,6 +4,253 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-05-19
+
+Pre-v2.0b instrumentation. Process-local counter in `keys.py` measures
+the actual blast radius of the back-compat shim path before the v2.0b
+strict-flip removes it. No user-facing surface change; pure additive
+telemetry. Commit `beefdea` (PR #27).
+
+### Added
+
+- **`keys.py` shim-hit counter** — process-local
+  `_BACK_COMPAT_RAW_MASTER` hit counter per purpose (`api_bearer`,
+  `oauth_state`, `signed_url`). Increments every time a caller
+  resolves a key via the legacy raw-master path instead of an
+  explicit derived override. Zeroed at process start; not persisted
+  (the v2.0b decision is on the rolling delta, not lifetime totals).
+- **`gdocs_server_info().key_back_compat_shim_active_hits`** —
+  surfaces the per-purpose counter over MCP so operators can verify
+  zero active usage before flipping the strict default. Same shape
+  contract as the rest of the `server_info` payload (always present,
+  defaults to `{api_bearer: 0, oauth_state: 0, signed_url: 0}`).
+
+### Tests
+
+- `test_keys.py` — 9 new cases covering counter increment per
+  purpose, isolation across purposes, override-path not incrementing
+  the counter, fresh-process zero-state.
+- `test_server_info.py` — surfaces-via-server_info assertion +
+  shape contract (key always present).
+
+### Why this is a separate release vs. bundled with v2.0b
+
+v2.0b's strict-flip is a destructive change for anyone still on the
+shim path. Shipping the observability first means we let it soak on
+Fly for 3 days, watch the counter, and only flip when the rolling
+delta is zero. The soak period is the whole point of separating these
+two releases.
+
+## [Dependency floor bumps] — 2026-05-19 (deps batch, dependabot)
+
+Verified safe by the dependabot-verify agent (`uv sync --frozen` +
+`pytest tests/unit/` per individual bump). No code edits required;
+declared floors raised to match what `uv.lock` already resolved to.
+
+- `fastmcp ≥ 3.3.1` (was `≥ 2.13`, MAJOR `2 → 3`) — `c9f133d`. The
+  lockfile already carried `3.3.1`; this just raises the declared
+  floor so v1.3.x users upgrading get the version the test matrix
+  actually exercises.
+- `typing-extensions ≥ 4.15.0` (was `≥ 4.6`) — `4bcb27d`. Floor lift
+  only; no API used from the 4.6 → 4.15 delta.
+- `pytest ≥ 9.0.3` (was `≥ 8.0`, MAJOR `8 → 9`) — `90ea96e`. CI suite
+  green on 9.0.3 across all four Python versions.
+- `markdown-it-py ≥ 4.2.0` (was `≥ 3.0`, MAJOR `3 → 4`) — `9b52373`.
+  The 4.x renderer-api break does not touch our usage (`MarkdownIt()`
+  + `parse`/`render` only).
+- `google-auth ≥ 2.53.0` (was `≥ 2.0`) — `58bd3be`. Floor lift only.
+
+## [2.2b] — 2026-05-19
+
+LLM_RECOVERY artifacts: a dedicated recovery doc + an MCP resource +
+a `gdocs_help` tool that lets an agent look up the right next action
+when it sees an opaque failure response from any other tool. Tool count
+goes 22 → 23.
+
+### Why
+
+Agents that hit a known-failure shape (e.g.
+`{"error": "needs_authorization", ...}`) had no in-protocol way to
+discover the canonical recovery sequence — they re-derived it from
+training data or hallucinated. v2.2b makes the recovery catalogue
+addressable both as a resource (`gdocs://error-recovery`) and as a
+tool (`gdocs_help`) so it travels with the server.
+
+### Added
+
+- **`docs/LLM_RECOVERY.md`** — the recovery catalogue. One section per
+  known failure key, each section names the recovery tool + minimal
+  kwargs to retry. Single source of truth for the resource + tool.
+- **`src/google_docs_mcp/resources.py`** — exposes
+  `gdocs://error-recovery` via `@mcp.resource`. Import is load-bearing
+  at server-init time (registers the decorators); commented as such
+  in the module.
+- **`gdocs_help` MCP tool** — zero-arg-default; pass a real failure
+  response and the tool case-insensitively substring-matches it
+  against the catalogue and returns the matching recovery entry.
+
+### Changed
+
+Per post-merge review, 4 of the 9 documented failure-shape patterns
+matched no real tool output (kwargs mis-spelled, wrong enum values,
+dict-vs-JSON-string mismatch). Each pattern is now pinned by a
+round-trip test that feeds a real failing tool response through
+`json.dumps` → `gdocs_help` and asserts the match — so future
+documentation drift is caught at CI, not by an agent in production.
+`apps_script_modified` is marked planned-v2.0 because its surface
+hasn't shipped yet.
+
+### Tests
+
+`tests/unit/test_llm_recovery.py` — 9 round-trip cases (one per
+catalogue key) plus tool-surface tests. `gdocs_help` joins the
+no-args allowlist in `test_tool_schemas.py`. Tool count summary
+line updated 22 → 23.
+
+## [2.2a] — 2026-05-19
+
+Pure-docs batch from the audit deliverables. No source changes; no
+behavior change.
+
+### Added
+
+- **`docs/THREAT_MODEL.md`** — key inventory + 8-row threat table
+  (asset → adversary → control → residual risk).
+- **`docs/RUNBOOK.md`** — 7 outage classes with named diagnostic
+  sequences (OAuth-loop, mass-401, Apps-Script-403, signed-URL-replay,
+  user_state.db corruption, Fly disk-full, claude.ai-connector-disconnect).
+- **`docs/TOOL_CONTRACT.md`** — versioning policy + per-tool entries
+  for the 22-tool surface as of merge.
+- **`CONTRIBUTING.md`** — local dev workflow (uv sync, pytest layout,
+  branch naming, commit message format).
+
+Closes #14.
+
+## [2.0a] — 2026-05-19
+
+Migration prerequisites for v2.0b's strict-flip. Ships the per-user
+HMAC-key column + a one-shot backfill CLI. v2.0b (not yet merged) will
+flip `apps_script_hmac_key` from optional to required and switch the
+Apps Script Web App from anonymous to HMAC-signed requests.
+
+### Added
+
+- **`apps_script_hmac_key`** field in `user_store`:
+  `_PERSISTENT_FIELDS`, `_FIELD_VALIDATORS` (registered as a
+  validator entry — uses the v1.4.0a registry), schema column, and
+  an idempotent `ALTER TABLE` for in-place upgrade of existing
+  databases.
+- **`scripts/migrate_existing_users.py`** — backfills legacy rows
+  with a freshly minted `secrets.token_hex(32)` key. Default is
+  **dry-run**; writes require explicit `--apply`. Refuses to run if
+  any row has `updated_at` within the last 60s (heartbeat-as-liveness
+  check) so it can't clobber refresh writes from a live server;
+  `--force` skips this check for cold-DB emergencies.
+
+### Changed
+
+- `user_store._ensure_initialized` now uses `PRAGMA table_info` to
+  detect existing columns instead of substring-matching SQLite's
+  ALTER TABLE error message — error strings vary by SQLite version
+  and locale.
+- `_user_lock` docstring trimmed to honestly state in-process-only
+  scope (no cross-process serialization claim).
+
+### Tests
+
+`tests/unit/test_migrate_existing_users.py` — 13 cases covering
+dry-run default, `--apply` writes, heartbeat refusal, `--force`
+override, partial-row tolerance, idempotency on re-run.
+
+Closes #13. v2.0b strict-flip + Apps Script HMAC verification
+remain to ship; this PR is the prerequisite, not the cutover.
+
+## [1.4.0] — 2026-05-19
+
+Defense-in-depth + adoption + test-infrastructure release. Bundles
+three independently-reviewed PRs (v1.4.0a, v1.4.0b, v1.x-scope-reduction)
+plus a pending CI workflow (v1.4.0c). No user re-consent required —
+the scope reduction is forward-compatible (existing grants still work;
+new users see a smaller consent screen).
+
+### Pending: v1.4.0c (PR #26)
+
+The matching `.github/workflows/e2e.yml` (integration tests + chaos
+harness + pip-audit + lint) is in flight as a separate PR. Once it
+merges, this entry is updated + the `v1.4.0` tag pushed. Until then
+the chaos harness + integration suite ship in-tree but are runnable
+only locally.
+
+### Added
+
+- **`user_store._FIELD_VALIDATORS`** registry — per-field validator
+  dict invoked by `save_state` (raises `ValueError` before SQL touches
+  disk) and `get_state` (drops invalid persisted values + logs
+  WARNING). Initial entry: `_valid_gas_url` for `apps_script_url`,
+  accepts only `https://script.google.com/macros/s/<deploymentId>/(exec|dev)`
+  — rejects `http://`, look-alike hosts, malformed paths, and
+  non-string values. `None` still clears a validated field;
+  non-validated fields write through unchanged. Strict hostname match
+  (post-review tightening): suffix-match `.google.com` is gone, so
+  `apps.google.com` / `mail.google.com` / `attacker.script.google.com`
+  are all rejected (the downstream `urlopen` carries OAuth credentials,
+  so any other `google.com` subdomain is dangerous). Commits `45814ae`.
+- **`tests/integration/test_fresh_user_flow.py`** + **`test_migration_upgrade_path.py`**
+  — joint coverage of OAuth dance + persistence + schema-upgrade
+  paths. Wires `user_store` + `oauth_google` + `credentials` end-to-end
+  with Google's token endpoint mocked at the `Flow.from_client_config`
+  boundary (matches existing `test_oauth_google.py` pattern). Commit `0b8f248`.
+- **`tests/chaos/run_chaos.py`** — standalone argparse-driven CLI
+  (`--scenarios all --max-duration 60s --json-output X.json`).
+  Scenario S1 = concurrent `user_store` saturation (16 workers,
+  read-modify-write loop, p99 latency budget, post-run integrity
+  verification). Emits JSON for CI consumption; non-zero exit on
+  failure. S2 / S3 stubbed as placeholders. `tests/chaos/chaos_plan.md`
+  documents the catalogue + debug commands. Commit `0b8f248`.
+
+### Changed
+
+- **`GOOGLE_API_SCOPES` no longer includes `script.projects` +
+  `script.deployments` by default.** Pure-runtime users (who never
+  run `gdocs_setup_apps_script`) no longer see the "manage your Apps
+  Script projects" checkbox on first consent — a measurable adoption
+  deterrent in cloud-chat user testing. The Apps-Script-setup tool
+  requests those scopes via incremental authorization (Google's
+  `include_granted_scopes=true` adds the missing scope without
+  resetting existing grants); regression-guard test exercises the
+  cloud path and asserts the tool returns `needs_authorization` with
+  an `auth_url` when stored creds lack `script.*` scopes. Commit `4eadd16`.
+
+### Tests
+
+- `test_user_store.py` — 13 new validator tests (canonical/dev paths,
+  http/non-google/subdomain rejection, non-string rejection, save
+  raises on invalid, get drops invalid with WARNING, non-validated
+  fields unaffected).
+- `tests/integration/test_fresh_user_flow.py` — 4 tests
+  (no-creds → `NeedsReauthError`, full dance → usable creds, operator
+  secrets stripped from persisted JSON, state-replay rejected).
+- `tests/integration/test_migration_upgrade_path.py` — 4 tests
+  (pre-setup row round-trip, enrichment via merge, narrower-schema
+  legacy row reads, fresh-deploy lazy init with WAL mode).
+- `tests/chaos/run_chaos.py` — S1 smoke run (2s / 4 workers) lands
+  ~570 ops with p99 ~190ms, well under the 500ms budget.
+
+### Acceptance
+
+Saving `apps_script_url="http://bad"` raises `ValueError` before SQL
+write; a row with `apps_script_url="https://mail.google.com/..."`
+seeded via raw SQL is dropped on next `get_state` with a WARNING
+log. New cloud-chat users see consent screens without
+`script.projects` / `script.deployments` checkboxes; running
+`gdocs_setup_apps_script` triggers an in-line incremental-consent
+flow that adds the missing scope without invalidating Drive/Docs
+grants.
+
+### Deferred
+
+- **`.github/workflows/e2e.yml`** — see Pending section above (PR #26).
+
 ## [1.3.1] — 2026-05-19
 
 Security hotfix. Closes a cluster of pre-production hardening gaps
