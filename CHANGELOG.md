@@ -168,18 +168,10 @@ remain to ship; this PR is the prerequisite, not the cutover.
 ## [1.4.0] — 2026-05-19
 
 Defense-in-depth + adoption + test-infrastructure release. Bundles
-three independently-reviewed PRs (v1.4.0a, v1.4.0b, v1.x-scope-reduction)
-plus a pending CI workflow (v1.4.0c). No user re-consent required —
-the scope reduction is forward-compatible (existing grants still work;
-new users see a smaller consent screen).
-
-### Pending: v1.4.0c (PR #26)
-
-The matching `.github/workflows/e2e.yml` (integration tests + chaos
-harness + pip-audit + lint) is in flight as a separate PR. Once it
-merges, this entry is updated + the `v1.4.0` tag pushed. Until then
-the chaos harness + integration suite ship in-tree but are runnable
-only locally.
+four independently-reviewed PRs (v1.4.0a, v1.4.0b, v1.4.0c,
+v1.x-scope-reduction). No user re-consent required — the scope
+reduction is forward-compatible (existing grants still work; new
+users see a smaller consent screen).
 
 ### Added
 
@@ -207,6 +199,17 @@ only locally.
   verification). Emits JSON for CI consumption; non-zero exit on
   failure. S2 / S3 stubbed as placeholders. `tests/chaos/chaos_plan.md`
   documents the catalogue + debug commands. Commit `0b8f248`.
+- **`.github/workflows/e2e.yml`** — 4-job CI workflow sister to
+  `test.yml` (which keeps the unit-only Python-version matrix).
+  `e2e-test` runs `tests/integration/` with JSON artifact; `chaos-test`
+  runs the harness with `continue-on-error` (transient p99 blips
+  don't block merge); `security-audit` runs `pip-audit --strict`
+  against the locked deps (HIGH/CRITICAL CVEs fail the build);
+  `lint` runs pyright + ruff. All jobs use `uv sync --frozen`
+  (R20 attack #4 mitigation) and the `security-audit` job uses
+  `uv export --frozen` for the same reason. `concurrency` cancels
+  in-flight runs on the same ref; `permissions: contents: read`
+  honors least-privilege. Commit `35fdb01`.
 
 ### Changed
 
@@ -246,10 +249,6 @@ log. New cloud-chat users see consent screens without
 `gdocs_setup_apps_script` triggers an in-line incremental-consent
 flow that adds the missing scope without invalidating Drive/Docs
 grants.
-
-### Deferred
-
-- **`.github/workflows/e2e.yml`** — see Pending section above (PR #26).
 
 ## [1.3.1] — 2026-05-19
 
