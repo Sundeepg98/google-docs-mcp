@@ -12,6 +12,24 @@ When adding a new entry:
   1. Append to ``_RECOVERY_TABLE`` here.
   2. Add the matching ``## key: <name>`` section to ``docs/LLM_RECOVERY.md``.
   3. Re-run ``uv run pytest tests/unit/test_llm_recovery.py -v``.
+
+Pattern guidance — patterns MUST match the literal wire form an LLM
+sees, i.e. the JSON the MCP transport produces from the returned dict.
+Python repr (``'key': False``) and JSON (``"key": false``) are NOT
+interchangeable; pick the JSON form unless the error is surfaced as a
+human-readable string (e.g. ``ToolError`` body, ``friendly_http_error_message``).
+The round-trip test in ``test_llm_recovery.py`` enforces this by
+``json.dumps``-ing a realistic failing response per key and asserting
+``gdocs_help`` matches it.
+
+# === IMPORT-ORDER HAZARD ===
+# This module does ``from .server import mcp`` at module level. That
+# works ONLY because ``server.py`` defers ``from .resources import
+# _RECOVERY_TABLE`` to its very last lines (after ``mcp = FastMCP(...)``
+# is bound). If anyone moves that ``from .resources import ...`` up
+# in server.py, the import chain becomes circular and Python raises
+# ``ImportError: cannot import name 'mcp'`` at startup. Keep the late
+# bind at the END of server.py, never higher.
 """
 from __future__ import annotations
 
@@ -28,18 +46,26 @@ class RecoveryEntry(TypedDict):
     Fields:
         pattern: Substring an agent will see literally in an error
             message / response payload. Used by ``gdocs_help`` for
-            substring matching.
+            substring matching (case-insensitive — both pattern and
+            input are lowercased before comparison).
         severity: Roughly "how alarming" — informational, recoverable
             warning, or hard error.
         retriable: Whether retrying the SAME call (after any wait)
             is likely to succeed. False means do not auto-retry.
         wait_seconds: Suggested back-off before retry (only meaningful
             if ``retriable=True``). ``None`` for "no wait" / "n/a".
-        do: What the LLM should DO next — short, imperative.
+        do: What the LLM should DO next — short, imperative. Must
+            reference REAL kwarg names / enum values from the actual
+            tool signatures; do NOT invent hypothetical kwargs.
         user_message: What the LLM should SAY to the user — natural
             language, no jargon.
         related_tool: The MCP tool most relevant to recovery, or
             ``None`` if no single tool applies.
+        planned: True if the entry documents a failure shape that no
+            current emitter produces (e.g. landing in a future
+            release). Omit / False for live patterns. Round-trip
+            test skips ``planned=True`` entries (no emitter exists
+            to construct a realistic payload from).
     """
 
     pattern: str
@@ -49,30 +75,47 @@ class RecoveryEntry(TypedDict):
     do: str
     user_message: str
     related_tool: NotRequired[str | None]
+    planned: NotRequired[bool]
 
 
 _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
     "no_split_points_found": {
-        "pattern": 'warnings: ["no_split_points_found"]',
+        # Real emitter: restructure.gs:69 returns ``warnings: ['no_splits']``
+        # which serializes to ``"warnings": ["no_splits"]`` over JSON.
+        # The bare token ``no_splits`` is the most robust substring
+        # (matches both JSON form and Python repr, future-proof if
+        # the warning array is renamed).
+        "pattern": "no_splits",
         "severity": "warning",
         "retriable": False,
         "wait_seconds": None,
         "do": (
             "The .docx had no headings or visible split markers, so "
             "the tabbifier could not auto-segment it. Re-run "
-            "gdocs_preview_tab_split with explicit split_on markers, "
-            "OR fall back to a single-tab import using "
-            "gdocs_retrofit_existing_docx with force_single_tab=true."
+            "gdocs_preview_tab_split with a different split_by value "
+            "(try \"heading_2\", \"page_break\", or \"auto\" instead "
+            "of the default \"heading_1\"), OR fall back to retrofit "
+            "mode by calling gdocs_tab_existing_doc with an explicit "
+            "markers=[{\"marker_text\": str, \"tab_title\": str}, ...] "
+            "list — that bypasses heading detection entirely. If the "
+            "document is truly single-section, call gdocs_make_tabbed_doc "
+            "with one tab whose content is the full document text."
         ),
         "user_message": (
             "I could not detect any natural section breaks in that "
-            "document. Want me to import it as a single tab, or do "
-            "you have specific heading text I should split on?"
+            "document. Want me to try a different split style (e.g. "
+            "Heading 2 or page breaks), or do you have specific "
+            "phrases I should use as section markers?"
         ),
         "related_tool": "gdocs_preview_tab_split",
     },
     "owned_by_app_false": {
-        "pattern": "owned_by_app: false",
+        # Real wire form is JSON: ``"owned_by_app": false`` (lowercase
+        # boolean). Python repr would be ``'owned_by_app': False``
+        # (capital F, single-quote key) — different string. MCP
+        # transports return JSON, so pattern targets JSON form. The
+        # case-insensitive matcher in gdocs_help handles either casing.
+        "pattern": '"owned_by_app": false',
         "severity": "warning",
         "retriable": False,
         "wait_seconds": None,
@@ -82,7 +125,8 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
             "append) will return appNotAuthorizedToFile (403). Do "
             "not attempt destructive writes. Either ask the user to "
             "re-upload the file via this server, or restrict the "
-            "workflow to read-only tools."
+            "workflow to read-only tools (gdocs_read_doc, "
+            "gdocs_get_doc_outline)."
         ),
         "user_message": (
             "I found that document, but it was not created through "
@@ -94,36 +138,53 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": "gdocs_find_doc_by_title",
     },
     "needs_authorization": {
-        "pattern": "NeedsReauthError",
+        # Real emitter: server.py:206-210 raises ``ToolError`` whose
+        # body contains ``"Google API access required..."`` and
+        # ``"**[Click here to authorize](...)**"``. The bare class
+        # name ``NeedsReauthError`` does NOT make it into the LLM-
+        # visible string (it's the internal exception type, wrapped).
+        # Use the most distinctive substring from the rendered body.
+        "pattern": "Click here to authorize",
         "severity": "error",
         "retriable": True,
         "wait_seconds": None,
         "do": (
             "The user's Google OAuth grant is missing, expired, or "
-            "revoked. The response shape includes a fresh auth_url. "
-            "Surface that URL to the user as a clickable link — do "
-            "NOT silently retry the tool call. After the user "
-            "completes consent, retry the original tool call once."
+            "revoked. The ToolError body contains a Markdown link to "
+            "the consent URL. Surface that URL to the user as a "
+            "clickable link — do NOT silently retry the tool call. "
+            "After the user completes consent, retry the original "
+            "tool call once."
         ),
         "user_message": (
             "Your Google authorization needs a refresh. Please open "
-            "the auth_url in the response to re-consent, then tell "
-            "me to retry."
+            "the 'Click here to authorize' link in the error message "
+            "to re-consent, then tell me to retry."
         ),
         "related_tool": "gdocs_reset_authorization",
     },
     "apps_script_modified": {
+        # Aspirational entry — no current emitter produces this string.
+        # Lands in v2.0's strict-flip when the server starts
+        # detecting out-of-band Apps Script edits (script_id hash
+        # mismatch) and refusing to use the stale deployment. Kept
+        # in the table now so v2.0 doesn't need to update both
+        # docs AND code; flip planned=False when the emitter ships.
+        # The round-trip test skips entries with planned=True since
+        # there's no real failure response to construct.
         "pattern": "Apps Script Web App was modified outside this server",
         "severity": "error",
         "retriable": True,
         "wait_seconds": None,
+        "planned": True,
         "do": (
-            "The Apps Script Web App attached to this user was "
-            "edited (or re-deployed) outside the MCP server's "
-            "control, so the cached deployment URL / script_id is "
-            "stale. Call gdocs_setup_apps_script to regenerate the "
-            "deployment and refresh cached state. Then retry the "
-            "original tool once."
+            "PLANNED v2.0 entry — no current code path emits this "
+            "string. When v2.0 ships, the Apps Script Web App "
+            "attached to the user will be hash-checked; an out-of-"
+            "band edit will surface this error. Recovery: call "
+            "gdocs_setup_apps_script to regenerate the deployment "
+            "and refresh cached state, then retry the original "
+            "tool once."
         ),
         "user_message": (
             "Your Apps Script helper was changed outside this "
@@ -133,6 +194,10 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": "gdocs_setup_apps_script",
     },
     "rate_limited": {
+        # Real emitter: errors.py:69 ``friendly_http_error_message``
+        # returns ``f"Google API error: {status_code} {reason}. ..."``.
+        # For 429 that's ``"Google API error: 429 Too Many Requests..."``.
+        # Substring ``Google API error: 429`` matches.
         "pattern": "Google API error: 429",
         "severity": "warning",
         "retriable": True,
@@ -153,6 +218,10 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": None,
     },
     "app_not_authorized": {
+        # Real emitter: drive_api.py:260/493/606 etc. — soft-failure
+        # dicts ``{"reason": "app_not_authorized", ...}`` serialized
+        # to JSON wire ``"reason": "app_not_authorized"``. Pattern
+        # matches that JSON literal.
         "pattern": '"reason": "app_not_authorized"',
         "severity": "warning",
         "retriable": False,
@@ -173,6 +242,9 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": "gdocs_trash_file",
     },
     "not_found": {
+        # Real emitter: drive_api.py:229/426/571 etc. — soft-failure
+        # dicts ``{"reason": "not_found", ...}`` serialized to JSON
+        # ``"reason": "not_found"``. Substring matches JSON literal.
         "pattern": '"reason": "not_found"',
         "severity": "warning",
         "retriable": False,
@@ -193,6 +265,14 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": "gdocs_find_doc_by_title",
     },
     "unexpected_exception": {
+        # Real emitter: any unhandled ``KeyError`` / ``AttributeError``
+        # / ``TypeError`` that leaks past tool boundaries gets wrapped
+        # by FastMCP as a ToolError whose message contains the
+        # exception class name. Substring ``KeyError`` matches the
+        # most common shape; AttributeError / TypeError are covered
+        # by the same pattern family (caller can pass either via
+        # gdocs_help and the suggestion field nudges toward
+        # gdocs_server_info for bug reports).
         "pattern": "KeyError",
         "severity": "error",
         "retriable": False,
@@ -217,26 +297,35 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "related_tool": "gdocs_server_info",
     },
     "placeholder_behavior": {
+        # Real emitter: any tool docstring / error mentioning the
+        # ``placeholder_behavior`` kwarg. The enum is defined at
+        # server.py:509 as ``Literal["delete", "rename", "keep"]`` —
+        # NOT "keep_empty" / "add_placeholder" (those were
+        # hypothetical and would cause ValidationError if passed).
+        # Pattern is the bare kwarg name; the ``do`` field lists the
+        # ACTUAL enum values.
         "pattern": "placeholder_behavior",
         "severity": "info",
         "retriable": False,
         "wait_seconds": None,
         "do": (
-            "The response refers to ambiguous placeholder_behavior — "
-            "empty / null tab content was either kept as a literal "
-            "empty tab or auto-filled with a placeholder paragraph. "
-            "Resolution depends on the caller's intent: if the doc "
-            "is a template skeleton, pass placeholder_behavior="
-            '"keep_empty"; if it is for human reading, pass '
-            'placeholder_behavior="add_placeholder". Re-run the '
-            "tool with the explicit kwarg rather than guessing."
+            "The response refers to the placeholder_behavior kwarg "
+            "(controls what gdocs_tab_existing_doc does with the "
+            "leading placeholder tab after retrofit). The real "
+            "enum (server.py:509) is Literal[\"delete\", \"rename\", "
+            "\"keep\"]. Choose by intent: \"delete\" removes the "
+            "placeholder once content is split (default, cleanest "
+            "for human-readable docs); \"rename\" keeps it as the "
+            "tab named by placeholder_title (e.g. \"Overview\"); "
+            "\"keep\" leaves it as-is. Re-run the tool with the "
+            "explicit enum value rather than guessing."
         ),
         "user_message": (
             "One of the tabs had no content. Should I leave it "
-            "visibly empty, or insert a short 'TBD' placeholder so "
-            "the tab is not confusing in the sidebar?"
+            "visibly empty (keep), rename it to \"Overview\" "
+            "(rename), or remove it entirely (delete — the default)?"
         ),
-        "related_tool": "gdocs_make_tabbed_doc",
+        "related_tool": "gdocs_tab_existing_doc",
     },
 }
 
@@ -245,7 +334,8 @@ def _normalize_entry(key: str, entry: RecoveryEntry) -> dict:
     """Return a fully-populated dict (NotRequired fields filled with None).
 
     Keeps the on-wire payload predictable so callers can rely on
-    every field being present.
+    every field being present. ``planned`` defaults to ``False`` when
+    omitted so the wire shape is uniform.
     """
     return {
         "key": key,
@@ -256,6 +346,7 @@ def _normalize_entry(key: str, entry: RecoveryEntry) -> dict:
         "do": entry["do"],
         "user_message": entry["user_message"],
         "related_tool": entry.get("related_tool"),
+        "planned": entry.get("planned", False),
     }
 
 

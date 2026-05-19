@@ -2005,8 +2005,10 @@ def gdocs_help(error_message: str) -> dict:
 
     Args:
         error_message: The error string / warning text you want to
-            decode. Substring-matched (case-sensitive) against every
-            registered pattern; first hit wins.
+            decode. Substring-matched (case-INsensitive — both sides
+            lowercased before comparison) against every registered
+            pattern; first hit wins. Pass the raw error verbatim
+            (JSON, Python repr, ToolError body — all work).
 
     Returns:
         On match::
@@ -2021,7 +2023,8 @@ def gdocs_help(error_message: str) -> dict:
               "wait_seconds": int | null,
               "do": "<imperative recovery action>",
               "user_message": "<what to tell the user>",
-              "related_tool": "<gdocs_xxx>" | null
+              "related_tool": "<gdocs_xxx>" | null,
+              "planned": bool  # True = aspirational entry, no live emitter
             }
 
         On miss::
@@ -2037,8 +2040,16 @@ def gdocs_help(error_message: str) -> dict:
     to a different tool. Pairs with gdocs_server_info() when filing
     bug reports for the unexpected_exception case.
     """
+    # Case-insensitive substring match — LLMs sometimes lowercase /
+    # normalize the error text before passing it back. errors.py:69
+    # also lowercases its details_str before its own substring search,
+    # so case-insensitive here keeps gdocs_help symmetric with the
+    # rest of the error-handling code. Both pattern AND haystack are
+    # lowercased before comparison; the on-wire ``matched_pattern``
+    # / ``pattern`` fields still report the canonical case.
+    error_lower = error_message.lower()
     for key, entry in _RECOVERY_TABLE.items():
-        if entry["pattern"] in error_message:
+        if entry["pattern"].lower() in error_lower:
             return {
                 "matched": True,
                 "matched_pattern": entry["pattern"],
@@ -2050,6 +2061,7 @@ def gdocs_help(error_message: str) -> dict:
                 "do": entry["do"],
                 "user_message": entry["user_message"],
                 "related_tool": entry.get("related_tool"),
+                "planned": entry.get("planned", False),
             }
 
     return {
@@ -2058,12 +2070,12 @@ def gdocs_help(error_message: str) -> dict:
             e["pattern"] for e in _RECOVERY_TABLE.values()
         ],
         "suggestion": (
-            "No registered recovery pattern matched the error text. "
-            "Fetch the resource gdocs://error-recovery for the full "
-            "table, call gdocs_server_info() to capture version + "
-            "commit, and consider filing an issue at the project "
-            "repo with the raw error string so a new entry can be "
-            "added."
+            "No registered recovery pattern matched the error text "
+            "(matching is case-insensitive substring). Fetch the "
+            "resource gdocs://error-recovery for the full table, "
+            "call gdocs_server_info() to capture version + commit, "
+            "and consider filing an issue at the project repo with "
+            "the raw error string so a new entry can be added."
         ),
     }
 
