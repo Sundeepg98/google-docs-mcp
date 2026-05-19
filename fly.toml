@@ -22,9 +22,14 @@ primary_region = "bom"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # auto_stop_machines = "off" — was "stop" until 2026-05-19. Stopped
+  # machines hit a known unfixed Fly bug class
+  # (community.fly.io/t/.../27505) where they get stuck in stopped
+  # state after platform churn. +$1.30/mo to keep always-on; eliminates
+  # the entire failure mode.
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0    # cold-start tolerable for batch workflow
+  min_machines_running = 0
   processes = ["app"]
 
   [http_service.concurrency]
