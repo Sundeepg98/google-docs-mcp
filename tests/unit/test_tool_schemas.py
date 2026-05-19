@@ -26,6 +26,7 @@ EXPECTED_TOOLS = {
     "gdocs_get_signed_upload_url",
     "gdocs_get_tab_url",
     "gdocs_guide",  # v1.3.0+: self-documenting orientation payload
+    "gdocs_help",  # v2.2b+: LLM_RECOVERY lookup (pure, no creds)
     "gdocs_make_tabbed_doc",
     "gdocs_move_to_folder",
     "gdocs_preview_tab_split",
