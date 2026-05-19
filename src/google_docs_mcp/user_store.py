@@ -64,11 +64,32 @@ def _valid_gas_url(value: object) -> bool:
     return bool(_GAS_URL_PATH_RE.match(parsed.path or ""))
 
 
+def _valid_apps_script_hmac_key(value: object) -> bool:
+    """True if ``value`` is a 64-char lowercase hex string (HMAC-SHA256 key).
+
+    The per-user HMAC key signs requests from the MCP server to the user's
+    Apps Script Web App (v2.0+). 64 hex chars = 256 bits — exactly the
+    HMAC-SHA256 key size. Lowercase-only avoids ambiguity between casings
+    when keys round-trip through logs or copy-paste.
+
+    Used by ``_FIELD_VALIDATORS`` to gate writes (setup tool + migration
+    script produce keys via ``secrets.token_hex(32)``) and to drop tampered
+    values on read. An invalid persisted value signals either a
+    pre-validator install, manual DB tampering, or a regressed key-gen path.
+    """
+    if not isinstance(value, str):
+        return False
+    if len(value) != 64:
+        return False
+    return all(c in "0123456789abcdef" for c in value)
+
+
 # Per-field validators run in save_state (raise) and get_state (drop+log).
 # Add a new field by writing a ``_valid_<field>`` helper and registering it
 # here; keep the field listed in ``_PERSISTENT_FIELDS`` too.
 _FIELD_VALIDATORS: dict[str, Callable[[object], bool]] = {
     "apps_script_url": _valid_gas_url,
+    "apps_script_hmac_key": _valid_apps_script_hmac_key,
 }
 
 # Per-path init guard. ``PRAGMA journal_mode=WAL`` requires an exclusive
@@ -95,6 +116,7 @@ class UserState(TypedDict, total=False):
     apps_script_deployment_id: str  # GAS deployment id (versioned)
     apps_script_version_number: int
     apps_script_content_hash: str   # for setup idempotency (matches setup_state.py)
+    apps_script_hmac_key: str       # 64-char lowercase hex; HMAC-SHA256 key per user (v2.0+)
     created_at: int                 # unix epoch seconds, first write
     updated_at: int                 # unix epoch seconds, last write
 
@@ -106,6 +128,7 @@ _PERSISTENT_FIELDS = {
     "apps_script_deployment_id",
     "apps_script_version_number",
     "apps_script_content_hash",
+    "apps_script_hmac_key",
 }
 
 
@@ -147,11 +170,33 @@ def _ensure_initialized(path: Path) -> None:
                     apps_script_deployment_id    TEXT,
                     apps_script_version_number   INTEGER,
                     apps_script_content_hash     TEXT,
+                    apps_script_hmac_key         TEXT,
                     created_at                   INTEGER NOT NULL,
                     updated_at                   INTEGER NOT NULL
                 )
                 """
             )
+            # Existing v1.x deployments hit CREATE TABLE IF NOT EXISTS
+            # without the new column. Add it idempotently. ALTER TABLE
+            # ADD COLUMN with no DEFAULT is fast (no row rewrite) and
+            # leaves existing rows with NULL — which migrate_existing_users
+            # then backfills.
+            #
+            # Use PRAGMA table_info to decide whether to ALTER rather
+            # than catching OperationalError on the ALTER itself —
+            # SQLite's "duplicate column name" error is reported as
+            # generic SQLITE_ERROR (no specific extended code), so
+            # string-matching the message is fragile across versions
+            # and locales. table_info is the official introspection
+            # surface and gives an unambiguous answer.
+            existing_cols = {
+                row[1]  # row = (cid, name, type, notnull, dflt, pk)
+                for row in conn.execute("PRAGMA table_info(user_state)")
+            }
+            if "apps_script_hmac_key" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE user_state ADD COLUMN apps_script_hmac_key TEXT"
+                )
         finally:
             conn.close()
         _initialized_paths.add(path)
