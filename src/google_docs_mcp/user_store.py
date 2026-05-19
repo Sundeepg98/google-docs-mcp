@@ -1,4 +1,4 @@
-"""Per-user state for multi-tenant cloud MCP (v1.1+).
+"""Per-user state for multi-tenant cloud MCP (v1.1+, v2.1 abstracted).
 
 When the MCP server runs over HTTP (Fly.io) with proper OAuth, each
 calling user has their own Google credentials and their own Apps
@@ -16,6 +16,24 @@ SQLite was picked over JSON-per-user because:
 Stays separate from ``config.py`` (which is single-tenant local state
 for the stdio MCP — token cache, operator's webapp URL) on purpose:
 different consumers, different lifecycles, different security model.
+
+**v2.1 — StorageBackend abstraction.** The persistence calls are now
+mediated by a thin ``StorageBackend`` Protocol. The default backend
+remains ``SqliteBackend`` with identical on-disk semantics to v2.0a;
+``InMemoryBackend`` is provided for test ergonomics (no fsync, no
+WAL setup, faster). The public top-level functions
+(``get_state`` / ``save_state`` / ``clear_state`` /
+``save_credentials_json`` / ``google_creds_dict`` / ``db_path``) are
+preserved unchanged — every existing caller works untouched. The
+underscore-prefixed module attributes (``_initialized_paths``,
+``_ensure_initialized``, ``_FIELD_VALIDATORS``, etc.) are also
+preserved because the migration script + chaos harness + a few tests
+reach into them; treating those as load-bearing internal API.
+
+The whole point of v2.1 is to make the eventual Postgres migration
+swap-the-backend-class instead of rewrite-every-call-site. The
+``StorageBackend`` Protocol is what a hypothetical ``PostgresBackend``
+must satisfy.
 """
 from __future__ import annotations
 
@@ -28,7 +46,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 from typing_extensions import TypedDict
@@ -92,12 +110,18 @@ _FIELD_VALIDATORS: dict[str, Callable[[object], bool]] = {
     "apps_script_hmac_key": _valid_apps_script_hmac_key,
 }
 
+
 # Per-path init guard. ``PRAGMA journal_mode=WAL`` requires an exclusive
 # lock to transition into WAL mode — and ``busy_timeout`` doesn't help
 # here, the call fails fast under contention. We serialize first-time
 # init under a Python-level lock; once a path is in ``_initialized_paths``,
 # subsequent connections skip the init and just open normally (WAL mode
 # is persistent in the DB file).
+#
+# Stays at module level rather than inside SqliteBackend because the
+# chaos harness, test fixtures, and migration script all reach in via
+# ``user_store._initialized_paths.clear()`` to reset between test
+# runs. Treating these as load-bearing internal API.
 _initialized_paths: set[Path] = set()
 _init_lock = threading.Lock()
 
@@ -144,12 +168,261 @@ def db_path() -> Path:
     return default_data_dir() / "user_state.db"
 
 
+# ---------------------------------------------------------------------
+# StorageBackend Protocol + implementations (v2.1)
+# ---------------------------------------------------------------------
+
+
+@runtime_checkable
+class StorageBackend(Protocol):
+    """Minimal storage interface the rest of the codebase depends on.
+
+    A future ``PostgresBackend`` only needs to satisfy these four methods
+    to swap in. Signatures match the historical top-level public functions
+    exactly so the module-level facade can delegate trivially. Validation
+    and merge semantics live in the facade (the validators are a
+    cross-cutting concern, not backend-specific) — backend impls are
+    pure persistence + per-row merge.
+    """
+
+    def init_schema(self) -> None:
+        """Lazy first-call init. Idempotent. Must be safe under concurrency."""
+
+    def get_state(self, user_id: str) -> dict[str, Any]:
+        """Return the full row as a dict (no NULL/None values), or {} if absent."""
+
+    def save_state(self, user_id: str, updates: dict[str, Any]) -> None:
+        """Merge ``updates`` into the user's row.
+
+        Inserts a new row when none exists (setting created_at +
+        updated_at to ``now``). On update, bumps updated_at; preserves
+        created_at. The facade is responsible for validating ``updates``
+        and rejecting unknown columns BEFORE calling this method —
+        backends trust their inputs.
+        """
+
+    def clear_state(self, user_id: str) -> None:
+        """Delete the user's row. Idempotent — no error if absent."""
+
+
+class SqliteBackend:
+    """The canonical (and currently only production) backend.
+
+    Behaviorally identical to pre-v2.1 ``user_store`` — same WAL setup,
+    same per-path init guard, same idempotent ALTER TABLE for the
+    v2.0a ``apps_script_hmac_key`` column add, same merge semantics on
+    save.
+
+    ``path_resolver`` is a thunk rather than a fixed Path so the
+    backend re-reads ``GOOGLE_DOCS_USER_STORE_PATH`` on every call.
+    Pre-v2.1 code did this implicitly via top-level ``db_path()`` calls
+    in ``_connect``; preserving the behavior matters because test
+    fixtures + the chaos harness set the env var AFTER importing the
+    module.
+    """
+
+    def __init__(self, path_resolver: Callable[[], Path] = db_path) -> None:
+        self._path_resolver = path_resolver
+
+    def _path(self) -> Path:
+        return self._path_resolver()
+
+    def init_schema(self) -> None:
+        """First-time init for the current resolved path: WAL mode + schema.
+
+        Serialized under module-level ``_init_lock`` so concurrent callers
+        don't race on the PRAGMA. Idempotent — subsequent calls fast-path
+        through the set-membership check without grabbing the lock.
+
+        Stays the inner-loop body of the module-level
+        ``_ensure_initialized(path)`` so external code that reaches in
+        (e.g. ``scripts/migrate_existing_users.py``) keeps working.
+        """
+        _ensure_initialized(self._path())
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection to the (already-initialized) DB.
+
+        WAL mode is persistent in the DB file — once init_schema has
+        set it, every subsequent open uses WAL automatically.
+        ``busy_timeout=5000ms`` lets concurrent writers WAIT for the
+        row-level lock rather than failing fast.
+        """
+        self.init_schema()
+        conn = sqlite3.connect(self._path(), isolation_level=None, timeout=30)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.row_factory = sqlite3.Row
+            yield conn
+        finally:
+            conn.close()
+
+    def get_state(self, user_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_state WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            return {}
+        return {k: row[k] for k in row.keys() if row[k] is not None}
+
+    def save_state(self, user_id: str, updates: dict[str, Any]) -> None:
+        now = int(time.time())
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM user_state WHERE user_id = ?", (user_id,)
+            ).fetchone()
+
+            if existing is None:
+                cols = ["user_id", "created_at", "updated_at", *updates.keys()]
+                vals = [user_id, now, now, *updates.values()]
+                placeholders = ", ".join("?" * len(cols))
+                conn.execute(
+                    f"INSERT INTO user_state ({', '.join(cols)}) VALUES ({placeholders})",
+                    vals,
+                )
+            else:
+                cols = [*updates.keys(), "updated_at"]
+                vals = [*updates.values(), now, user_id]
+                set_clause = ", ".join(f"{c} = ?" for c in cols)
+                conn.execute(
+                    f"UPDATE user_state SET {set_clause} WHERE user_id = ?", vals,
+                )
+
+    def clear_state(self, user_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM user_state WHERE user_id = ?", (user_id,))
+
+
+class InMemoryBackend:
+    """Process-local dict-backed storage. For tests; no I/O.
+
+    Drop-in replacement for ``SqliteBackend``. Same merge semantics,
+    same created_at/updated_at bookkeeping, same return shape from
+    ``get_state``. Notable differences from SQLite:
+
+    - No persistence: a fresh instance starts empty.
+    - No WAL / locking concerns: a single ``threading.Lock`` guards
+      every read-modify-write so concurrent test threads can't
+      tear writes.
+    - Doesn't enforce ``apps_script_hmac_key`` column existence — the
+      facade's validator layer already gates field names via
+      ``_PERSISTENT_FIELDS``, so a backend doesn't need a column
+      catalogue.
+
+    Use via ``set_backend(InMemoryBackend())`` in test setup;
+    ``set_backend(SqliteBackend())`` to revert. The
+    ``with_backend(...)`` context manager is the ergonomic version.
+    """
+
+    def __init__(self) -> None:
+        self._rows: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def init_schema(self) -> None:
+        # No-op: the dict is the schema.
+        pass
+
+    def get_state(self, user_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._rows.get(user_id)
+            if row is None:
+                return {}
+            # Return a copy so callers mutating their dict don't
+            # mutate persisted state — matches SqliteBackend's behavior
+            # where the dict is built from a sqlite3.Row each call.
+            # Also drop None values to match the SQLite "NULL columns
+            # not in result" contract.
+            return {k: v for k, v in row.items() if v is not None}
+
+    def save_state(self, user_id: str, updates: dict[str, Any]) -> None:
+        now = int(time.time())
+        with self._lock:
+            row = self._rows.get(user_id)
+            if row is None:
+                self._rows[user_id] = {
+                    "user_id": user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                    **updates,
+                }
+            else:
+                row.update(updates)
+                row["updated_at"] = now
+
+    def clear_state(self, user_id: str) -> None:
+        with self._lock:
+            self._rows.pop(user_id, None)
+
+
+# Module-level default backend. SqliteBackend with the env-aware
+# path resolver = exact pre-v2.1 behavior.
+_backend: StorageBackend = SqliteBackend()
+_backend_lock = threading.Lock()  # guards set_backend / with_backend
+
+
+def get_backend() -> StorageBackend:
+    """Return the currently active backend. Tests + the with_backend
+    context manager use this to introspect or save+restore."""
+    return _backend
+
+
+def set_backend(backend: StorageBackend) -> StorageBackend:
+    """Replace the active backend. Returns the previous backend so
+    callers can restore it. Thread-safe.
+
+    Tests that want a clean in-memory store should call
+    ``set_backend(InMemoryBackend())`` in setup and restore the
+    returned previous backend in teardown — or use the ``with_backend``
+    context manager which does both automatically.
+    """
+    global _backend
+    with _backend_lock:
+        previous = _backend
+        _backend = backend
+    return previous
+
+
+@contextmanager
+def with_backend(backend: StorageBackend) -> Iterator[StorageBackend]:
+    """Temporarily swap the active backend within a ``with`` block.
+
+    Example:
+
+        from google_docs_mcp.user_store import InMemoryBackend, with_backend, save_state
+
+        with with_backend(InMemoryBackend()):
+            save_state("user-x", {"google_creds_json": "..."})
+            # ... assertions against in-memory state ...
+        # Outside the block, the default SqliteBackend is restored.
+    """
+    previous = set_backend(backend)
+    try:
+        yield backend
+    finally:
+        set_backend(previous)
+
+
+# ---------------------------------------------------------------------
+# Schema init (module-level: external callers reach in)
+# ---------------------------------------------------------------------
+
+
 def _ensure_initialized(path: Path) -> None:
     """First-time init for ``path``: set WAL mode + create schema.
 
     Serialized under ``_init_lock`` so concurrent callers don't race
     on the PRAGMA. Idempotent — subsequent calls fast-path through
     the set-membership check without grabbing the lock.
+
+    Lives at module level (rather than inside SqliteBackend as a
+    private method) because ``scripts/migrate_existing_users.py``
+    reaches in via ``user_store._ensure_initialized(path)`` to ensure
+    the column-add migration runs before the migration script does
+    its own raw-SQL writes. Keeping the symbol where it has been
+    since v1.1 means that script doesn't need to change.
     """
     if path in _initialized_paths:
         return
@@ -202,25 +475,9 @@ def _ensure_initialized(path: Path) -> None:
         _initialized_paths.add(path)
 
 
-@contextmanager
-def _connect() -> Iterator[sqlite3.Connection]:
-    """Yield a connection to the (already-initialized) DB.
-
-    WAL mode is persistent in the DB file — once
-    ``_ensure_initialized`` has set it, every subsequent open uses
-    WAL automatically. ``busy_timeout=5000ms`` lets concurrent
-    writers WAIT for the row-level lock rather than failing fast.
-    """
-    path = db_path()
-    _ensure_initialized(path)
-    conn = sqlite3.connect(path, isolation_level=None, timeout=30)
-    try:
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.row_factory = sqlite3.Row
-        yield conn
-    finally:
-        conn.close()
+# ---------------------------------------------------------------------
+# Public facade — preserved 1:1 from pre-v2.1
+# ---------------------------------------------------------------------
 
 
 def get_state(user_id: str) -> UserState:
@@ -230,18 +487,17 @@ def get_state(user_id: str) -> UserState:
     set" — e.g. a tool that needs ``apps_script_url`` and finds it
     missing should raise with a clear "run gdocs_setup_apps_script
     first" message.
+
+    Delegates to the active backend (default: SqliteBackend). The
+    drop-invalid-on-read pass (per ``_FIELD_VALIDATORS``) lives in
+    the facade so it runs identically against every backend.
     """
     if not user_id:
         raise ValueError("user_id is required")
 
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM user_state WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-    if row is None:
-        return {}
-    result: dict[str, Any] = {k: row[k] for k in row.keys() if row[k] is not None}
+    result = _backend.get_state(user_id)
+    if not result:
+        return {}  # type: ignore[return-value]
 
     # Drop+log any persisted field that fails validation. Likely causes:
     # row written before validators existed, manual SQL tampering, or a
@@ -269,6 +525,10 @@ def save_state(user_id: str, updates: dict[str, Any]) -> UserState:
 
     ``created_at`` is set on first write and never changed.
     ``updated_at`` is bumped on every call.
+
+    Validation (unknown-field check + per-field validators) runs in
+    the facade BEFORE delegating to the backend — so an invalid call
+    never reaches storage and all backends see clean inputs.
     """
     if not user_id:
         raise ValueError("user_id is required")
@@ -282,8 +542,8 @@ def save_state(user_id: str, updates: dict[str, Any]) -> UserState:
 
     # Field-level validation. ``None`` means "explicitly clear" — allowed
     # past the validator on purpose so a caller can blank a field that
-    # was previously set. Invalid non-None values raise; the SQL write
-    # below never happens.
+    # was previously set. Invalid non-None values raise; the backend
+    # write below never happens.
     for col, value in updates.items():
         validator = _FIELD_VALIDATORS.get(col)
         if validator is not None and value is not None and not validator(value):
@@ -293,28 +553,7 @@ def save_state(user_id: str, updates: dict[str, Any]) -> UserState:
                 f"user_store._FIELD_VALIDATORS."
             )
 
-    now = int(time.time())
-    with _connect() as conn:
-        existing = conn.execute(
-            "SELECT * FROM user_state WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-        if existing is None:
-            cols = ["user_id", "created_at", "updated_at", *updates.keys()]
-            vals = [user_id, now, now, *updates.values()]
-            placeholders = ", ".join("?" * len(cols))
-            conn.execute(
-                f"INSERT INTO user_state ({', '.join(cols)}) VALUES ({placeholders})",
-                vals,
-            )
-        else:
-            cols = [*updates.keys(), "updated_at"]
-            vals = [*updates.values(), now, user_id]
-            set_clause = ", ".join(f"{c} = ?" for c in cols)
-            conn.execute(
-                f"UPDATE user_state SET {set_clause} WHERE user_id = ?", vals,
-            )
-
+    _backend.save_state(user_id, updates)
     return get_state(user_id)
 
 
@@ -327,8 +566,7 @@ def clear_state(user_id: str) -> None:
     """
     if not user_id:
         raise ValueError("user_id is required")
-    with _connect() as conn:
-        conn.execute("DELETE FROM user_state WHERE user_id = ?", (user_id,))
+    _backend.clear_state(user_id)
 
 
 def google_creds_dict(state: UserState) -> dict | None:
