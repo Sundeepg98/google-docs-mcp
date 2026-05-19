@@ -29,6 +29,16 @@ dependencies = [
     "markdown-it-py>=3.0",
     "python-docx>=1.0",  # used by preview_tab_split + retrofit_existing_docx
     "typing-extensions>=4.6",  # NotRequired + TypedDict for Python 3.10/3.11
+    "starlette>=0.40,<0.52",  # v1.3.1: pin upper bound — FastMCP transitive can drift
+    # === v1.3.1 security floor — pinned to CVE-fixed minimums ===
+    # Re-audit these on every minor release. Bump floors when new CVEs land.
+    # After modifying any line below, regenerate uv.lock via `uv sync`
+    # and commit the lockfile. The Dockerfile uses `uv sync --frozen`
+    # so any drift fails CI before deploy.
+    "cryptography>=46.0.7,<47",  # CVE-2026-26007, -34073, -39892
+    "pyjwt>=2.12.0,<3",          # CVE-2026-32597
+    "urllib3>=2.7.0,<3",         # CVE-2026-44431, -44432
+    "requests>=2.33.0,<3",       # CVE-2026-25645
 ]
 
 [project.optional-dependencies]

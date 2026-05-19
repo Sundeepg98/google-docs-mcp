@@ -32,6 +32,7 @@ from starlette.applications import Starlette
 from starlette.datastructures import UploadFile
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -452,6 +453,82 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------------------------------
+# Host + body-size middleware (v1.3.1 security hardening)
+# ---------------------------------------------------------------------------
+
+
+def derive_trusted_hosts() -> list[str]:
+    """Resolve TrustedHost allowlist from env, fail-open with WARN in dev.
+
+    Priority:
+      1. ``TRUSTED_HOSTS`` env var (comma-separated) — explicit override.
+      2. ``FLY_APP_NAME`` -> derive ``<app>.fly.dev`` + ``*.<app>.fly.dev``
+         + ``localhost``.
+      3. Fail-open ``["*"]`` with WARNING log.
+
+    Production safety: refuses to start if ``FLY_REGION`` is set (machine
+    is running on Fly infra) but ``FLY_APP_NAME`` is absent — that's the
+    silent fail-open path round-20 adversarial review identified.
+    """
+    explicit = os.environ.get("TRUSTED_HOSTS", "").strip()
+    if explicit:
+        return [h.strip() for h in explicit.split(",") if h.strip()]
+
+    app_name = os.environ.get("FLY_APP_NAME", "").strip()
+    fly_region = os.environ.get("FLY_REGION", "").strip()
+
+    if fly_region and not app_name:
+        # Refuse to fail-open when we're clearly on Fly infra.
+        raise RuntimeError(
+            "FLY_REGION is set (running on Fly infra) but FLY_APP_NAME "
+            "is unset — refusing to fail-open TrustedHost. Set "
+            "TRUSTED_HOSTS explicitly or restore FLY_APP_NAME. See "
+            "v1.3.1 release notes for context."
+        )
+
+    if app_name:
+        return [f"{app_name}.fly.dev", f"*.{app_name}.fly.dev", "localhost"]
+
+    log.warning(
+        "TrustedHost middleware running fail-open (allow all hosts) -- "
+        "neither TRUSTED_HOSTS nor FLY_APP_NAME set. Acceptable for "
+        "local dev only."
+    )
+    return ["*"]
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Enforce a hard cap on declared Content-Length.
+
+    Fast path only -- checks the header before any body is read.
+    Chunked uploads / missing Content-Length fall through to the
+    endpoint's own enforcement (e.g., Starlette's ``request.form()``
+    per-part cap). Defense-in-depth, not a single line of defense.
+    """
+
+    def __init__(self, app: Any, *, max_bytes: int = 10 * 1024 * 1024) -> None:
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                declared = int(cl)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "invalid Content-Length"},
+                    status_code=400,
+                )
+            if declared > self.max_bytes:
+                return JSONResponse(
+                    {"error": "payload too large", "max_bytes": self.max_bytes},
+                    status_code=413,
+                )
+        return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
 # Composition + runner
 # ---------------------------------------------------------------------------
 
@@ -466,7 +543,19 @@ def build_app(mcp: FastMCP) -> Starlette:
             "with `fly secrets set MCP_BEARER_TOKEN=...`."
         )
 
-    middleware = [Middleware(BearerTokenMiddleware, token=token)]
+    # v1.3.1: middleware order is OUTERMOST first per Starlette semantics.
+    # TrustedHost first (cheap header check; rejects bad-host requests
+    # before any body is read). Bearer second (rejects unauthenticated
+    # /api/* without paying the body-size cost). BodySize last (defense-
+    # in-depth Content-Length cap; per-endpoint multipart caps live on
+    # the endpoints themselves).
+    trusted_hosts = derive_trusted_hosts()
+    body_max = int(os.environ.get("MCP_BODY_MAX_BYTES", 10 * 1024 * 1024))
+    middleware = [
+        Middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts),
+        Middleware(BearerTokenMiddleware, token=token),
+        Middleware(BodySizeLimitMiddleware, max_bytes=body_max),
+    ]
 
     # FastMCP 3.x quirk: the StreamableHTTPSessionManager inside
     # mcp.http_app() needs its lifespan to run on the PARENT ASGI app

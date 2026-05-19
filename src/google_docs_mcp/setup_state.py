@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import TypedDict
 
@@ -67,9 +68,33 @@ def load_state(data_dir: Path) -> SetupState:
 
 
 def save_state(data_dir: Path, state: SetupState) -> None:
+    """Atomic write via tmpfile + os.replace.
+
+    The tmpfile MUST live in the same directory as the target — os.replace
+    requires same-filesystem (cross-device fails on POSIX, raises OSError
+    on Windows). Both .tmp and target share data_dir.
+
+    Crash safety (v1.3.1 hardening): a SIGKILL between write and rename
+    leaves the original file intact. The .tmp may linger but never
+    corrupts the canonical state. Best-effort cleanup of the tmpfile
+    happens on the failure path; orphan-tmp cleanup is acceptable
+    since save_state is invoked rarely (only during apps-script setup).
+    """
     p = state_path(data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        # os.replace is atomic on POSIX; on Windows it overwrites the
+        # destination atomically when both files share a volume.
+        os.replace(str(tmp), str(p))
+    except Exception:
+        # Best-effort cleanup of partial tmpfile on failure path.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def clear_state(data_dir: Path) -> None:
