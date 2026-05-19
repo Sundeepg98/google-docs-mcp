@@ -21,10 +21,13 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 19 tools
+wraps that flow + the supporting Drive operations into 21 tools
 (`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
-find, retrofit, trash/untrash, convert existing docs, and one-shot
-per-user Apps Script Web App setup.
+find, retrofit, trash/untrash, convert existing docs, one-shot
+per-user Apps Script Web App setup, plus introspection tools that
+surface the server's CI test status over the MCP interface (so an
+agent can verify the running build was actually tested, not just
+trust a green badge).
 
 ## Tool index
 
@@ -50,7 +53,27 @@ on a live server to get the authoritative list with descriptions.
 | **Get deep link to a tab** | `gdocs_get_tab_url(doc_id, tab_id)` |
 | **Sandbox upload URL** (cloud chat) | `gdocs_get_signed_upload_url()` |
 | **Set up Apps Script Web App** (per-user) | `gdocs_setup_apps_script()` |
-| **Server identity / inventory** | `gdocs_server_info()` |
+| **Reset / revoke OAuth credentials** (force re-consent) | `gdocs_reset_authorization(full?)` |
+| **Server identity + CI test status** | `gdocs_server_info()` |
+| **CI test inventory + per-test outcomes** | `gdocs_test_manifest()` |
+
+## Self-evidencing CI gate (v1.2+)
+
+`gdocs_server_info` returns a `test_suite` block that lets any caller
+verify the running build was actually tested — not just trust an
+opaque count. Four layers:
+
+| Layer | Field | Proves |
+|---|---|---|
+| Count not faked | `test_suite.report_digest` | sha256 of canonical `test-results.json`; runtime recomputes and compares — mismatch → `status: "tampered"` |
+| CI actually ran | `test_suite.ci_run_url` | URL of the GitHub Actions run that produced this artifact (`"local"` for manual `./deploy.sh` deploys, never empty) |
+| Right tests exist | `gdocs_test_manifest()` | full test inventory + outcomes + named-regression-guard presence check |
+| Tests catch bugs | `test_suite.mutation_check` | `{ran, caught, status, asleep_guards}` — CI applies known bug patches per build and fails if any guard doesn't go red |
+
+Every push to `main` flows through GitHub Actions: `unit` → `mutation` →
+`deploy`. A commit that breaks any test can't reach production. See
+`.github/workflows/deploy.yml`, `scripts/mutation_check.py`, and the
+CHANGELOG for the full story.
 
 ## Setup — local stdio (Claude Desktop / Claude Code)
 
