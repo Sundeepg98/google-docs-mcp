@@ -19,6 +19,7 @@ import pytest
 # additions/removals/renames a deliberate, reviewed change.
 EXPECTED_TOOLS = {
     "gdocs_add_tabs",
+    "gdocs_admin_audit",  # v2.3+: admin-only forensic primitive (R29-B finding)
     "gdocs_append_to_tab",
     "gdocs_delete_tab",
     "gdocs_find_doc_by_title",
