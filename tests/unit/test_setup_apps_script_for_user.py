@@ -224,6 +224,107 @@ def test_clear_preserves_google_creds_json(mock_setup):
     )
 
 
+# ---------------------------------------------------------------
+# Tool-level scope guard (Issue #17 — v1.x scope reduction)
+# ---------------------------------------------------------------
+
+
+def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
+    monkeypatch, mock_setup,
+):
+    """Regression guard for Issue #17 (v1.x scope reduction).
+
+    After dropping ``script.projects`` + ``script.deployments`` from
+    ``GOOGLE_API_SCOPES``, a user whose first-consent grant only
+    covers the default Workspace scopes must NOT silently run the
+    Apps Script setup — they'd hit a 403 on the first projects.create
+    call and the failure mode would be confusing. Instead, the tool
+    must surface a ``needs_authorization`` response so the user
+    re-consents with the additional ``script.*`` scopes added via
+    Google's ``include_granted_scopes`` (incremental authorization,
+    no reset of existing grants).
+
+    This test exercises the cloud (HTTP) path: a user with default
+    scopes only, calling ``gdocs_setup_apps_script``, must get back
+    ``status: "needs_authorization"`` with an ``auth_url`` that the
+    UI surfaces as a clickable link. Setup must NOT proceed
+    (``create_project`` etc. must not be called)."""
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    from google_docs_mcp import user_store
+
+    # Seed creds for a user with ONLY the post-reduction default scopes —
+    # the script.* scopes are NOT present, mirroring real life after
+    # Issue #17 lands.
+    user_id = "user-narrow-scopes"
+    payload = {
+        "token": "STORED_ACCESS_TOKEN",
+        "refresh_token": "STORED_REFRESH_TOKEN",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "scopes": [
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+        "expiry": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+    }
+    user_store.save_state(user_id, {"google_creds_json": _json.dumps(payload)})
+
+    # Force the cloud-mode branch by making the tool see a user_id.
+    monkeypatch.setattr(
+        "google_docs_mcp.server.current_user_id_or_none",
+        lambda: user_id,
+    )
+
+    # Provide a fake runtime_oauth bundle so the tool can hand it to
+    # the credentials resolver.
+    client_config = {
+        "web": {
+            "client_id": "CID.apps.googleusercontent.com",
+            "client_secret": "CSECRET",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [
+                "https://example.fly.dev/oauth/google/api/callback",
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        "google_docs_mcp.server.resolve_runtime_oauth_config",
+        lambda: {
+            "client_config": client_config,
+            "signing_key": "test-signing-key",
+            "base_url": "https://example.fly.dev",
+        },
+    )
+
+    from google_docs_mcp.server import gdocs_setup_apps_script
+
+    result = gdocs_setup_apps_script()
+
+    assert result["status"] == "needs_authorization", (
+        "Tool should bounce to re-auth when creds lack script.* scopes; "
+        f"got status={result.get('status')!r}"
+    )
+    assert "auth_url" in result and result["auth_url"], (
+        "needs_authorization response must include an auth_url so the "
+        "user can click through to consent"
+    )
+    # Setup work MUST NOT have proceeded — no projects created, no
+    # files pushed, no deploys.
+    assert mock_setup.create_project.call_count == 0, (
+        "Tool ran setup despite missing script.* scopes — incremental "
+        "authorization guard regressed"
+    )
+    assert mock_setup.push_files.call_count == 0
+    assert mock_setup.deploy_webapp.call_count == 0
+
+
 # Helpers
 def _deployment(script_id: str, deployment_id: str, url: str):
     from google_docs_mcp.gas_deploy.client import WebAppDeployment

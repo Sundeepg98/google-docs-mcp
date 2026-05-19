@@ -37,17 +37,22 @@ from google_auth_oauthlib.flow import Flow
 from .crypto import NonceStore
 from .oauth_state import sign_state, verify_state
 
-# Full scope set we need to operate on a user's Workspace. Mirrors what
-# the upstream stdio mode requests (auth.py:SCOPES) plus Apps Script
-# management scopes for the gdocs_setup_apps_script tool.
+# Default consent set requested at first authorization — mirrors what
+# the upstream stdio mode requests (auth.py:SCOPES) for ordinary
+# read/write Workspace operations. ``script.*`` scopes are NOT in this
+# list anymore (v1.x scope reduction, Issue #17): they are requested
+# incrementally only by ``gdocs_setup_apps_script``. The
+# ``_check_scopes_or_raise`` path uses ``include_granted_scopes=true``
+# (see ``build_authorization_url`` below), so consenting to the Apps
+# Script scopes later does NOT reset the user's existing grants — it
+# adds the missing ones. Pure-runtime users who never run the
+# Apps-Script setup never see those scopes on their consent screen.
 GOOGLE_API_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/script.projects",
-    "https://www.googleapis.com/auth/script.deployments",
 ]
 
 CALLBACK_PATH = "/oauth/google/api/callback"
