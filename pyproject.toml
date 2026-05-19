@@ -62,3 +62,37 @@ google-docs-mcp = "google_docs_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/google_docs_mcp"]
+
+# ---------------------------------------------------------------------
+# Ruff lint config (v2.6a)
+#
+# Today's job: enforce the google_clients.get_service chokepoint.
+# The TID251 rule bans the bare `from googleapiclient.discovery import
+# build` import outside the wrapper file itself. Existing call sites
+# are exempted via per-file-ignores below; PR2 migrates them and
+# removes those ignores one file at a time.
+#
+# This config intentionally enables ONLY the TID rule family — broader
+# linting is left to a separate PR so this change is reviewable in
+# isolation and the e2e workflow's `ruff check src/ tests/` doesn't
+# suddenly turn red on unrelated style issues.
+# ---------------------------------------------------------------------
+
+[tool.ruff.lint]
+select = ["TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"googleapiclient.discovery.build" = { msg = "Use google_docs_mcp.google_clients.get_service instead — single chokepoint for retry, logging, cache, etc. See PR #47 (v2.0.3 operator-secret leak) for the anti-pattern this lint prevents: a wrapper that's bypassed by direct imports." }
+
+[tool.ruff.lint.per-file-ignores]
+# This file owns the legitimate use of googleapiclient.discovery.build.
+"src/google_docs_mcp/google_clients.py" = ["TID251"]
+# The 6 files below currently import `build` directly. PR2 migrates
+# them to google_clients.get_service and removes these ignores one
+# at a time. Each removal is a separate review surface.
+"src/google_docs_mcp/docs_api.py" = ["TID251"]
+"src/google_docs_mcp/drive_api.py" = ["TID251"]
+"src/google_docs_mcp/docx_import.py" = ["TID251"]
+"src/google_docs_mcp/preview.py" = ["TID251"]
+"src/google_docs_mcp/retrofit.py" = ["TID251"]
+"src/google_docs_mcp/gas_deploy/client.py" = ["TID251"]
