@@ -146,17 +146,21 @@ Affected users will need to re-authorize. Notify via GH issue.
 
 User reports their doc was created in someone else's Drive, or vice versa.
 
-**Currently blocked on missing `gdocs_admin_audit` tool** (v2.x roadmap). For now:
+Use the `gdocs_admin_audit` tool (v2.3+) for the server-side correlation step. The tool is gated by the `MCP_ADMIN_TOKEN` env var, set separately from `MCP_BEARER_TOKEN`; if it isn't set on the production server, set it via `fly secrets set MCP_ADMIN_TOKEN=...` and `fly machines restart` before running.
 
 1. Ask the customer for: (a) timestamp of the operation (UTC, ±5 min), (b) which Google account they THOUGHT they were authenticated to, (c) which Google account the doc ACTUALLY landed in
-2. Cross-reference timestamps in `flyctl logs --since 24h | grep <approx-timestamp>` — but user_id is logged only as `user_id_prefix[:8]`, so correlation is approximate
-3. SQL on `user_state.db`:
+2. Call `gdocs_admin_audit` against both candidate `user_id` values (the `sub` claim from each account's OAuth state):
+   ```
+   gdocs_admin_audit(admin_token=$MCP_ADMIN_TOKEN, user_id="abc123", since_hours=24)
+   ```
+   The response surfaces `updated_at` for that user's row plus a `user_id_prefix` you can use to grep flyctl logs. `since_hours` accepts 1-168 (1 hour to 1 week); use the tightest window that brackets the reported event.
+3. Cross-reference the returned `user_id_prefix` against `flyctl logs --since 24h` for per-operation detail — the tool intentionally returns only row-level timestamps because that's the audit granularity `user_state.db` currently has (finer-grained logging tracked in #25).
+4. SQL on `user_state.db` for the wider sweep (look for two rows updated within seconds of each other — possible session confusion if the user has two Google accounts and switched mid-flow):
    ```sql
    SELECT user_id, updated_at, datetime(updated_at, 'unixepoch')
    FROM user_state ORDER BY updated_at DESC LIMIT 20;
    ```
-   Look for two rows updated within seconds of each other — possible session confusion (user has two Google accounts; switched mid-flow)
-4. If no plausible benign explanation surfaces in 30 min, treat as POTENTIAL real bug; do not deny without evidence. File a P0 issue.
+5. If no plausible benign explanation surfaces in 30 min, treat as POTENTIAL real bug; do not deny without evidence. File a P0 issue.
 
 See `THREAT_MODEL.md` §3 (attacker model: authenticated peer) for the architectural reason cross-tenant SHOULD be impossible (per-user `sub`-keyed row isolation).
 

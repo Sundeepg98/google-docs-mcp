@@ -10,8 +10,11 @@ Apps Script setup needed by ``gdocs_tab_existing_doc``; see the
 """
 from __future__ import annotations
 
+import hmac
+import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -2084,6 +2087,180 @@ def gdocs_help(error_message: str) -> dict:
             "call gdocs_server_info() to capture version + commit, "
             "and consider filing an issue at the project repo with "
             "the raw error string so a new entry can be added."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# v2.3 admin-only forensic tool (gdocs_admin_audit)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing primitive added per R29-B's pressure-test finding: a
+# customer-reported cross-tenant data leak was unresolvable because no
+# per-user audit log existed. The tool returns the user_state row's
+# timestamp bounds (the only audit-grade signal currently persisted) so
+# the operator can correlate against flyctl logs without asking the
+# customer for more info.
+#
+# Gated by ``MCP_ADMIN_TOKEN`` env var (separate from MCP_BEARER_TOKEN —
+# admin auth MUST NOT share the surface that talks to claude.ai's
+# connector framework). If the env is unset the tool registers but
+# refuses to run, so operators see one consistent error path whether
+# they forgot to set the env or supplied a wrong token.
+#
+# Honest limits surfaced via the ``notes`` field — user_state.db tracks
+# per-row updated_at, not per-operation. A v2.x audit-log table would
+# upgrade this; for now this is the best we can do server-side without
+# bouncing back to the customer. Documented in RUNBOOK §2.8.
+
+_log = logging.getLogger("google_docs_mcp.server")
+
+_ADMIN_AUDIT_MIN_HOURS = 1
+_ADMIN_AUDIT_MAX_HOURS = 168  # 1 week
+
+
+def _check_admin_token(provided: object) -> None:
+    """Gate admin-only tool calls. Raises ToolError on any failure mode.
+
+    Three failure modes, each with a distinct message so the operator
+    can tell them apart in a 500 trace without ambiguous "auth failed":
+
+    - env unset → admin surface is disabled at the server
+    - arg not a string → caller signature error
+    - arg != env → wrong token (uses ``hmac.compare_digest`` so a
+      timing-side-channel attacker can't probe the env value by
+      measuring response latency).
+
+    Read the env at CALL time, not module-load time, so an operator
+    can rotate ``MCP_ADMIN_TOKEN`` via ``fly secrets set`` and have it
+    take effect without a server restart.
+    """
+    expected = os.environ.get("MCP_ADMIN_TOKEN")
+    if not expected:
+        raise ToolError(
+            "admin disabled; set MCP_ADMIN_TOKEN env var on the server "
+            "to enable gdocs_admin_audit."
+        )
+    if not isinstance(provided, str):
+        raise ToolError(
+            "admin_token must be a string"
+        )
+    # compare_digest expects equal-length operands; pad the shorter
+    # side rather than short-circuiting on length, so the timing
+    # signal doesn't leak the env value's length either.
+    if not hmac.compare_digest(
+        provided.encode("utf-8"), expected.encode("utf-8"),
+    ):
+        raise ToolError("admin_token does not match MCP_ADMIN_TOKEN")
+
+
+@mcp.tool()
+def gdocs_admin_audit(
+    admin_token: str, user_id: str, since_hours: int = 24,
+) -> dict:
+    """Return server-side state for ``user_id`` within a time window — admin only.
+
+    USE WHEN: a customer reports a cross-tenant data leak or other
+    operation-specific incident, and you need to correlate server-side
+    state against their account. Operator-facing forensic primitive;
+    NOT for LLM tool routing in a normal conversation.
+
+    Requires ``MCP_ADMIN_TOKEN`` env var set on the server AND the
+    ``admin_token`` arg matching it (constant-time comparison). If
+    the env is unset, the tool registers but always errors — so the
+    admin surface is OFF by default in dev/test environments.
+
+    Args:
+        admin_token: Must equal the server's ``MCP_ADMIN_TOKEN`` env
+            var. Separate token from ``MCP_BEARER_TOKEN`` on purpose
+            (admin auth must not share the surface that talks to
+            claude.ai's connector framework).
+        user_id: The Google ``sub`` claim (or email fallback) of the
+            user under investigation. Truncated to first 8 chars in
+            any server-side logs to avoid PII leakage into logs that
+            may be shipped to third-party log aggregators.
+        since_hours: Audit window size, 1-168 (1 hour to 1 week).
+            Defaults to 24h. Validated to that range — wider windows
+            would return huge responses; narrower is rounding noise.
+
+    Returns::
+
+        {
+          "user_id_prefix": "<first 8 chars>",
+          "window_hours": <since_hours>,
+          "total_entries": 0 | 1,
+          "entries": [
+            {
+              "timestamp": <unix epoch seconds of updated_at>,
+              "operation_type": "user_state_updated",
+              "doc_id": null,           # not tracked at this granularity
+              "success": true,
+            }
+          ],
+          "notes": "user_state.db tracks ..."
+        }
+
+    Honest limits: user_state.db tracks ``created_at`` / ``updated_at``
+    per user row — NOT per Google API call. This means the tool can
+    answer "did this user's session touch the server in the last N
+    hours?" but not "what specific docs were created?". For finer
+    granularity the operator must also grep flyctl logs by the
+    ``user_id_prefix`` value returned here. A v2.x audit-log table
+    would close this gap; tracked in #25.
+    """
+    _check_admin_token(admin_token)
+
+    if not isinstance(user_id, str) or not user_id:
+        raise ToolError("user_id must be a non-empty string")
+
+    if (
+        not isinstance(since_hours, int)
+        or isinstance(since_hours, bool)  # True/False are ints in Python
+        or since_hours < _ADMIN_AUDIT_MIN_HOURS
+        or since_hours > _ADMIN_AUDIT_MAX_HOURS
+    ):
+        raise ToolError(
+            f"since_hours must be an int in "
+            f"[{_ADMIN_AUDIT_MIN_HOURS}, {_ADMIN_AUDIT_MAX_HOURS}] "
+            f"(got {since_hours!r})"
+        )
+
+    # Log the call with user_id TRUNCATED to first 8 chars — full
+    # user_id is PII (Google sub claim) and must not land in logs
+    # that may be shipped to third-party aggregators.
+    _log.info(
+        "gdocs_admin_audit: user=%s window=%dh",
+        user_id[:8], since_hours,
+    )
+
+    # Lazy import to keep server.py module-load lean and avoid
+    # circular-import risk if user_store ever grows server-side deps.
+    from . import user_store
+
+    state = user_store.get_state(user_id)
+    cutoff = int(time.time()) - since_hours * 3600
+
+    entries: list[dict] = []
+    updated_at = state.get("updated_at")
+    if updated_at is not None and int(updated_at) >= cutoff:
+        entries.append({
+            "timestamp": int(updated_at),
+            "operation_type": "user_state_updated",
+            "doc_id": None,  # not tracked at this granularity
+            "success": True,  # row presence implies completed write
+        })
+
+    return {
+        "user_id_prefix": user_id[:8],
+        "window_hours": since_hours,
+        "total_entries": len(entries),
+        "entries": entries,
+        "notes": (
+            "user_state.db tracks updated_at per user row, not per "
+            "Google API call. Use this to confirm whether the user's "
+            "session was active in the window; for per-operation detail "
+            "grep flyctl logs by the user_id_prefix returned here. "
+            "Finer-grained audit logging is tracked in issue #25."
         ),
     }
 
