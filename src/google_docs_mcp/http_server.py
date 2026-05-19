@@ -234,9 +234,16 @@ async def oauth_google_api_callback(request: Request) -> Response:
         return _error_page(str(e), status_code=e.status_code)
 
     try:
-        user_store.save_state(user_id, {"google_creds_json": creds_json})
+        # MUST be save_credentials_json (not save_state) — the wrapper
+        # strips the operator's OAuth client_id + client_secret from the
+        # Credentials.to_json() output before persisting. Calling
+        # save_state directly here would leak those operator secrets
+        # into every per-user row in user_state.db. The matching
+        # regression guard is test_oauth_callback_strips_operator_secrets
+        # in tests/integration/test_fresh_user_flow.py.
+        user_store.save_credentials_json(user_id, creds_json)
     except Exception as e:  # noqa: BLE001 — last line of defence
-        log.exception("oauth: user_store.save_state failed for %s", user_id)
+        log.exception("oauth: user_store.save_credentials_json failed for %s", user_id)
         return _error_page(
             f"Failed to persist credentials: {e}. Contact the operator.",
             status_code=500,
