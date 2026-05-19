@@ -105,8 +105,8 @@ def test_two_users_get_independent_projects(mock_setup):
 
     mock_setup.create_project.side_effect = ["SCRIPT_A", "SCRIPT_B"]
     mock_setup.deploy_webapp.side_effect = [
-        _deployment("SCRIPT_A", "DEPLOY_A", "https://.../A"),
-        _deployment("SCRIPT_B", "DEPLOY_B", "https://.../B"),
+        _deployment("SCRIPT_A", "DEPLOY_A", "https://script.google.com/macros/s/DEPLOY_A/exec"),
+        _deployment("SCRIPT_B", "DEPLOY_B", "https://script.google.com/macros/s/DEPLOY_B/exec"),
     ]
 
     setup_apps_script_for_user(_fake_creds(), "alice")
@@ -149,7 +149,7 @@ def test_resume_after_deploy_failure(mock_setup):
 
     mock_setup.deploy_webapp.side_effect = None
     mock_setup.deploy_webapp.return_value = _deployment(
-        "SCRIPT_ID_NEW", "DEPLOY2", "https://.../DEPLOY2",
+        "SCRIPT_ID_NEW", "DEPLOY2", "https://script.google.com/macros/s/DEPLOY2/exec",
     )
     setup_apps_script_for_user(_fake_creds(), "user-1")
 

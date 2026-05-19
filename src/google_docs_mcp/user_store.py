@@ -20,17 +20,56 @@ different consumers, different lifecycles, different security model.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
+from urllib.parse import urlparse
 
 from typing_extensions import TypedDict
 
 from .auth import default_data_dir
+
+_log = logging.getLogger("google_docs_mcp.user_store")
+
+# Apps Script Web App URL: https://script.google.com/macros/s/<deploymentId>/(exec|dev)
+_GAS_URL_PATH_RE = re.compile(r"^/macros/s/[A-Za-z0-9_-]+/(exec|dev)$")
+
+
+def _valid_gas_url(value: object) -> bool:
+    """True if ``value`` is a valid Apps Script Web App URL string.
+
+    Accepts only ``https://script.google.com/macros/s/<deploymentId>/(exec|dev)``.
+    Used by ``_FIELD_VALIDATORS`` to gate writes to ``apps_script_url`` and to
+    drop tampered/legacy values on read. Defense-in-depth — the setup tool
+    builds this URL itself, so an invalid value here signals either a
+    pre-validator install, manual DB tampering, or a bug in the setup path.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except (ValueError, TypeError):
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if host != "script.google.com":
+        return False
+    return bool(_GAS_URL_PATH_RE.match(parsed.path or ""))
+
+
+# Per-field validators run in save_state (raise) and get_state (drop+log).
+# Add a new field by writing a ``_valid_<field>`` helper and registering it
+# here; keep the field listed in ``_PERSISTENT_FIELDS`` too.
+_FIELD_VALIDATORS: dict[str, Callable[[object], bool]] = {
+    "apps_script_url": _valid_gas_url,
+}
 
 # Per-path init guard. ``PRAGMA journal_mode=WAL`` requires an exclusive
 # lock to transition into WAL mode — and ``busy_timeout`` doesn't help
@@ -157,7 +196,22 @@ def get_state(user_id: str) -> UserState:
 
     if row is None:
         return {}
-    return {k: row[k] for k in row.keys() if row[k] is not None}  # type: ignore[return-value]
+    result: dict[str, Any] = {k: row[k] for k in row.keys() if row[k] is not None}
+
+    # Drop+log any persisted field that fails validation. Likely causes:
+    # row written before validators existed, manual SQL tampering, or a
+    # regressed setup path. Re-running setup repopulates the field.
+    for col, validator in _FIELD_VALIDATORS.items():
+        if col in result and not validator(result[col]):
+            _log.warning(
+                "user_store: dropping invalid persisted %s=%r for user "
+                "%s — likely from a pre-validator install or external "
+                "tampering; re-run setup to repopulate",
+                col, str(result[col])[:60], user_id[:8],
+            )
+            del result[col]
+
+    return result  # type: ignore[return-value]
 
 
 def save_state(user_id: str, updates: dict[str, Any]) -> UserState:
@@ -180,6 +234,19 @@ def save_state(user_id: str, updates: dict[str, Any]) -> UserState:
             f"Unknown user_state fields: {sorted(unknown)}. "
             f"Allowed: {sorted(_PERSISTENT_FIELDS)}"
         )
+
+    # Field-level validation. ``None`` means "explicitly clear" — allowed
+    # past the validator on purpose so a caller can blank a field that
+    # was previously set. Invalid non-None values raise; the SQL write
+    # below never happens.
+    for col, value in updates.items():
+        validator = _FIELD_VALIDATORS.get(col)
+        if validator is not None and value is not None and not validator(value):
+            raise ValueError(
+                f"user_state field {col!r} failed validation: "
+                f"{value!r} is not a valid value. See "
+                f"user_store._FIELD_VALIDATORS."
+            )
 
     now = int(time.time())
     with _connect() as conn:

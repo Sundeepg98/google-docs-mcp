@@ -144,7 +144,7 @@ def test_resolve_webapp_url_http_mode_returns_per_user_value(isolated_state):
 
     user_store.save_state(
         "user-alice",
-        {"apps_script_url": "https://alice.example/exec"},
+        {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"},
     )
 
     with patch(
@@ -153,7 +153,7 @@ def test_resolve_webapp_url_http_mode_returns_per_user_value(isolated_state):
     ):
         url = docx_import._resolve_webapp_url()
 
-    assert url == "https://alice.example/exec"
+    assert url == "https://script.google.com/macros/s/ALICE/exec"
 
 
 def test_resolve_webapp_url_http_mode_returns_None_when_user_has_no_setup(
@@ -178,8 +178,8 @@ def test_http_mode_isolation_alice_cannot_see_bobs_url(isolated_state):
     cross-user."""
     from google_docs_mcp import docx_import, user_store
 
-    user_store.save_state("alice", {"apps_script_url": "https://alice.example/exec"})
-    user_store.save_state("bob", {"apps_script_url": "https://bob.example/exec"})
+    user_store.save_state("alice", {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"})
+    user_store.save_state("bob", {"apps_script_url": "https://script.google.com/macros/s/BOB/exec"})
 
     with patch(
         "google_docs_mcp.docx_import.current_user_id_or_none", return_value="alice",
@@ -190,6 +190,6 @@ def test_http_mode_isolation_alice_cannot_see_bobs_url(isolated_state):
     ):
         bob_url = docx_import._resolve_webapp_url()
 
-    assert alice_url == "https://alice.example/exec"
-    assert bob_url == "https://bob.example/exec"
+    assert alice_url == "https://script.google.com/macros/s/ALICE/exec"
+    assert bob_url == "https://script.google.com/macros/s/BOB/exec"
     assert alice_url != bob_url
