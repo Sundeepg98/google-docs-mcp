@@ -4,6 +4,73 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] — 2026-05-18
+
+Closes the last v1.2.0 gap: `mutation_check.ran` goes 3 → 8.
+Every named regression guard now has an automated mutation
+proving it actually catches its named bug pattern.
+
+### Added
+
+Mutations for the 5 guards that v1.2.0 deferred. Researched in
+parallel by 5 named subagents (one per guard), each VERIFIED
+empirically (apply patch → run pytest → expect exit ≠ 0 → revert).
+All 5 came back with working diffs; 8/8 caught on local run.
+
+- **`test_owned_by_app_agrees_with_trash_outcome`** — flip the
+  403-probe branch from `write_results[fid] = False` to `True`.
+  Probe lies about writability → find claims `owned_by_app=True`
+  but trash still 403s → cross-tool inconsistency assertion fires.
+  Reintroduces the v0.19.0 bug pattern.
+
+- **`test_inject_matches_fragmented_runs`** — add `break` after
+  the first `<w:t>` text append in `_extract_visible_text`.
+  Extraction stops at the first run; fragmented paragraph
+  `["Sec", "tion", " ", "Banner"]` becomes just `"Sec"`. Marker
+  "Section Banner" can't match. Reintroduces the pre-v0.15.1
+  text-extraction bug.
+
+- **`test_preview_flags_what_convert_truncates`** — drift
+  `TITLE_MAX_CHARS` from 50 to 60 in `preview.py`. The test's
+  fixture heading is exactly 60 chars, so `60 > 60` becomes False
+  and no warning fires; even if one fired, the message would
+  interpolate "60" not "50" (test asserts "50" in msg). Double
+  failure mechanism — robust catch.
+
+- **`test_auth_pkce_consistency_every_url`** — the hard one from
+  v1.2.0. Original attempt commented out `flow.code_verifier = ...`
+  but `Flow.authorization_url()` auto-generates a 128-char verifier
+  when `code_verifier=None AND autogenerate_code_verifier=True`
+  (lib default). PKCE survived via the fallback. New mutation
+  overrides BOTH paths AFTER the original assignment:
+  `flow.code_verifier = None; flow.autogenerate_code_verifier = False`.
+  URL emits no `code_challenge`. Test's first assertion fires
+  immediately.
+
+- **`test_tool_discoverability_via_server_info`** — slice `[1:]`
+  on the sorted tool list returned by `gdocs_server_info`. Drops
+  the alphabetically-first tool (`gdocs_add_tabs`) while leaving
+  `mcp.list_tools()` intact → set-equality fails AND `tool_count`
+  diverges (20 vs 21).
+
+### Process note
+
+The 5 mutations were dispatched as parallel subagents. Each had
+the same brief: read the test, read the code, design a minimal
+find/replace, VERIFY by running pytest on the mutated state,
+revert via `git checkout --`. All 5 returned in ~3 minutes
+elapsed (vs ~15 min serial). Each agent's `verified_exit_code`
+field made the integration step purely mechanical — no guessing
+whether a mutation would actually fire.
+
+### Tests
+
+`scripts/mutation_check.py` now contains 8 mutations. CI's
+`mutation` job runs them all in ~30s. Local run confirms
+`8/8 mutations caught`. After this commit deploys via CI,
+`gdocs_server_info.test_suite.mutation_check.caught/ran` reports
+`8/8` with `asleep_guards: []`.
+
 ## [1.2.0] — 2026-05-18
 
 Closes the "is the gate real?" gap. Two big additions: CI-driven
