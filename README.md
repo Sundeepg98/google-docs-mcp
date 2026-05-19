@@ -4,11 +4,14 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An [MCP](https://modelcontextprotocol.io/) server for **Claude Desktop**,
-**Claude Code**, and **claude.ai** that creates and edits Google Docs
-using the native **Tabs** feature (October 2024+) — each tab is a
-separately-navigable section in the Docs sidebar, not just an outline
-heading.
+**google-docs-fly is the only [MCP](https://modelcontextprotocol.io/) server that creates and edits Google Docs with native sidebar Tabs (Google's October 2024 feature) AND losslessly retrofits existing `.docx` documents into tabbed format — preserving tables, drawings, and equations that text-only round-trips would destroy.**
+
+Tabs are a Google-Docs-native concept; they do **not** exist in the `.docx` / OOXML spec. Any pipeline that round-trips through `.docx` collapses to one tab. The only way to create or preserve Tabs programmatically is to call the Google Docs API directly — which is what this server does, packaged as an MCP server for **Claude Desktop**, **Claude Code**, and **claude.ai** custom connectors.
+
+- **For end-users:** see [docs/USER_GUIDE.md](docs/USER_GUIDE.md) to start using it with Claude Desktop / Claude Code / claude.ai — no install required if your operator has already deployed a connector URL.
+- **For developers + operators:** continue reading below.
+
+---
 
 Works as: local stdio MCP (Claude Desktop / Code) **or** remote
 HTTP MCP (claude.ai custom connector via Fly.io). The cloud
