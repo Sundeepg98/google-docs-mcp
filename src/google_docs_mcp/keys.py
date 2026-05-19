@@ -59,6 +59,22 @@ _shim_hit_counter: dict[str, int] = {
 }
 _shim_hit_counter_lock = threading.Lock()
 
+# v1.5.1 (#28): per-purpose denominator counter. Counts EVERY successful
+# get_key() call regardless of which path served the key (override /
+# shim / HKDF). Without this denominator, "0 shim hits" is ambiguous:
+# it could mean "everyone migrated off the shim" OR "nobody called
+# get_key at all in this window". The preflight script asserts BOTH
+# shim==0 AND total>=N before declaring it safe to ship v2.0b's
+# strict-flip.
+#
+# Same threading model as _shim_hit_counter: process-local, lock-guarded.
+_total_call_counter: dict[str, int] = {
+    "api_bearer": 0,
+    "oauth_state": 0,
+    "signed_url": 0,
+}
+_total_call_counter_lock = threading.Lock()
+
 # HKDF info-context per purpose. Changing any string here invalidates
 # the derived key for that purpose — same blast radius as rotating
 # the master. Never change these once they leave the shim.
@@ -69,6 +85,22 @@ _HKDF_INFO: dict[str, bytes] = {
 }
 
 Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
+
+# v1.5.1: per-purpose env-var overrides. When set (and ≥32 chars), the
+# override bytes are returned verbatim — bypassing BOTH the back-compat
+# shim AND HKDF derivation. The RUNBOOK §3.4 documents these as the
+# safe rotation path: an operator pins all 3 purposes to the current
+# master BEFORE rotating MCP_BEARER_TOKEN, so derived keys don't move
+# in lockstep with the master and invalidate every in-flight token.
+#
+# Removal from this map = breaking change; treat with same care as
+# the HKDF info strings (changing either invalidates that purpose's
+# in-flight tokens).
+_OVERRIDE_ENV: dict[str, str] = {
+    "api_bearer": "MCP_API_BEARER_KEY",
+    "oauth_state": "OAUTH_STATE_SIGNING_KEY",
+    "signed_url": "SIGNED_URL_SIGNING_KEY",
+}
 
 _MIN_MASTER_LEN = 32
 
@@ -126,16 +158,52 @@ def _hkdf_sha256(master_bytes: bytes, info: bytes, length: int = 32) -> bytes:
 
 
 def get_key(purpose: Purpose) -> bytes:
-    """Return key bytes for ``purpose``. Raw master (shim) or HKDF-derived.
+    """Return key bytes for ``purpose``. Override / shim / HKDF-derived.
 
-    Length check on master happens HERE, not at import, and only when
-    the derivation path is exercised. Shim path bypasses entirely.
+    Resolution order (first match wins):
+      1. Per-purpose env override (e.g. ``MCP_API_BEARER_KEY``) — v1.5.1+,
+         the safe-rotation path per RUNBOOK §3.4. Bypasses shim AND HKDF.
+      2. Back-compat shim — purposes in ``_BACK_COMPAT_RAW_MASTER`` return
+         the raw master bytes. Increments ``_shim_hit_counter`` for the
+         soak-test telemetry (v1.5+).
+      3. HKDF-derived — runs ``_hkdf_sha256(master, info)`` for the purpose.
+         Enforces ≥32-char master.
+
+    Master length check happens HERE, not at import, and only when the
+    HKDF derivation path is actually exercised. Override and shim paths
+    skip it.
+
+    Every successful call (any path) increments the per-purpose total-call
+    counter (v1.5.1, #28) so the preflight script can tell "zero shim hits
+    because nobody called" apart from "zero shim hits because everyone
+    migrated."
 
     Raises ``ValueError`` for unknown purposes (defensive — purposes
     are a closed set; an unknown one is a typo, never a runtime case).
+    Raises ``RuntimeError`` if the override is set but shorter than 32
+    chars (operator intent was clear; failing loud beats silent fallback).
     """
     if purpose not in _HKDF_INFO:
         raise ValueError(f"Unknown key purpose: {purpose!r}")
+
+    # 1. Per-purpose override — explicit operator choice, highest precedence.
+    # Read it BEFORE invoking _master() so an operator can use overrides
+    # without setting MCP_BEARER_TOKEN at all. NOTE: override hits do NOT
+    # touch the shim counter — they're not shim usage; conflating them
+    # would lie to operators reading the preflight telemetry.
+    override = os.environ.get(_OVERRIDE_ENV[purpose])
+    if override:
+        if len(override) < _MIN_MASTER_LEN:
+            raise RuntimeError(
+                f"{_OVERRIDE_ENV[purpose]} must be ≥{_MIN_MASTER_LEN} chars "
+                f"(got {len(override)}). Set a longer value or unset the "
+                f"override env var to fall back to the master."
+            )
+        with _total_call_counter_lock:
+            _total_call_counter[purpose] = (
+                _total_call_counter.get(purpose, 0) + 1
+            )
+        return override.encode("utf-8")
 
     master = _master()
 
@@ -145,11 +213,18 @@ def get_key(purpose: Purpose) -> bytes:
         # zero active usage before v2.0b's strict-flip ships.
         with _shim_hit_counter_lock:
             _shim_hit_counter[purpose] = _shim_hit_counter.get(purpose, 0) + 1
+        with _total_call_counter_lock:
+            _total_call_counter[purpose] = (
+                _total_call_counter.get(purpose, 0) + 1
+            )
         return master.encode("utf-8")
 
     # Derived path: enforce master length first.
     _validate_master_or_raise(master)
-    return _hkdf_sha256(master.encode("utf-8"), _HKDF_INFO[purpose])
+    derived = _hkdf_sha256(master.encode("utf-8"), _HKDF_INFO[purpose])
+    with _total_call_counter_lock:
+        _total_call_counter[purpose] = _total_call_counter.get(purpose, 0) + 1
+    return derived
 
 
 def key_provenance(purpose: Purpose) -> KeyProvenance:
@@ -209,3 +284,32 @@ def _reset_shim_hit_counters_for_tests() -> None:
     with _shim_hit_counter_lock:
         for purpose in _shim_hit_counter:
             _shim_hit_counter[purpose] = 0
+
+
+def get_total_call_counters() -> dict[str, int]:
+    """Snapshot of per-purpose ``get_key()`` total-call counters (v1.5.1+).
+
+    Returns a copy so callers can't mutate the live counter dict.
+    Surfaced via ``gdocs_server_info().key_call_totals`` — the
+    denominator for the shim-hit telemetry. Without this, "shim_hits=0"
+    is ambiguous (no traffic vs. full migration); with it, the preflight
+    script asserts ``shim_hits==0 AND totals>=N`` before declaring it
+    safe to ship v2.0b's strict-flip.
+
+    Process-local: each replica reports its own count. Aggregate across
+    replicas at read time.
+    """
+    with _total_call_counter_lock:
+        return dict(_total_call_counter)
+
+
+def _reset_total_call_counters_for_tests() -> None:
+    """For tests only — reset all per-purpose total-call counters to zero.
+
+    Underscore-prefixed and named ``_for_tests`` because production
+    code must never reset this counter (it pairs with the shim counter
+    as the denominator for v2.0b preflight gating).
+    """
+    with _total_call_counter_lock:
+        for purpose in _total_call_counter:
+            _total_call_counter[purpose] = 0
