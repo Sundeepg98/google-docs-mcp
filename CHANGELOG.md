@@ -4,12 +4,42 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [v1.5-observability] — Pending (PR #27)
+## [1.5.0] — 2026-05-19
 
-Pre-v2.0b instrumentation. `keys.py` gains a shim-hit counter so we can
-measure the actual blast radius before flipping the HKDF derived-path
-strict default. No user-facing surface change. Will merge once review
-clears + soak 3 days on Fly before v2.0b uses the data.
+Pre-v2.0b instrumentation. Process-local counter in `keys.py` measures
+the actual blast radius of the back-compat shim path before the v2.0b
+strict-flip removes it. No user-facing surface change; pure additive
+telemetry. Commit `beefdea` (PR #27).
+
+### Added
+
+- **`keys.py` shim-hit counter** — process-local
+  `_BACK_COMPAT_RAW_MASTER` hit counter per purpose (`api_bearer`,
+  `oauth_state`, `signed_url`). Increments every time a caller
+  resolves a key via the legacy raw-master path instead of an
+  explicit derived override. Zeroed at process start; not persisted
+  (the v2.0b decision is on the rolling delta, not lifetime totals).
+- **`gdocs_server_info().key_back_compat_shim_active_hits`** —
+  surfaces the per-purpose counter over MCP so operators can verify
+  zero active usage before flipping the strict default. Same shape
+  contract as the rest of the `server_info` payload (always present,
+  defaults to `{api_bearer: 0, oauth_state: 0, signed_url: 0}`).
+
+### Tests
+
+- `test_keys.py` — 9 new cases covering counter increment per
+  purpose, isolation across purposes, override-path not incrementing
+  the counter, fresh-process zero-state.
+- `test_server_info.py` — surfaces-via-server_info assertion +
+  shape contract (key always present).
+
+### Why this is a separate release vs. bundled with v2.0b
+
+v2.0b's strict-flip is a destructive change for anyone still on the
+shim path. Shipping the observability first means we let it soak on
+Fly for 3 days, watch the counter, and only flip when the rolling
+delta is zero. The soak period is the whole point of separating these
+two releases.
 
 ## [Dependency floor bumps] — 2026-05-19 (deps batch, dependabot)
 
