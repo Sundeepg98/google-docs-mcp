@@ -149,7 +149,12 @@ def test_server_info_includes_test_suite_block():
     assert "mutation_check" in suite
     mc = suite["mutation_check"]
     assert "status" in mc
-    assert mc["status"] in ("passed", "failed", "unknown")
+    # v1.2.2 added stale_patch, imprecise_patch, asleep_guard as
+    # specific failure subtypes that replace the catch-all "failed".
+    assert mc["status"] in (
+        "passed", "failed", "unknown",
+        "stale_patch", "imprecise_patch", "asleep_guard",
+    )
     assert "ran" in mc and "caught" in mc
 
 

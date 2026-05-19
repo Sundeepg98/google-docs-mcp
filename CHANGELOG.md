@@ -4,6 +4,95 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] — 2026-05-19
+
+Preventive maintenance for the mutation gate itself: detect when an
+injection patch has rotted instead of silently reporting "caught"
+for a bug that was never actually introduced.
+
+### Why
+
+Each mutation in `scripts/mutation_check.py` is a fixed `find`/`replace`
+diff against a specific source line. As the codebase evolves, that
+line can move or be rewritten — at which point the `find` text no
+longer matches, the patch silently no-ops, the targeted test passes
+(because nothing was mutated), and `mutation_check` reports the
+guard as caught. The verification looks green while being hollow.
+This was the one quiet way the self-evidencing gate could degrade.
+
+### Added
+
+`scripts/mutation_check.py` now classifies each mutation into one of
+four outcomes instead of binary caught/asleep:
+
+| Outcome           | Meaning                                                    |
+|-------------------|------------------------------------------------------------|
+| `caught`          | Patch applied, only the targeted test failed (clean catch) |
+| `stale_patch`     | `find` text gone, OR patch applied but 0 tests failed      |
+| `imprecise_patch` | Target failed AND unrelated tests also failed (collateral) |
+| `asleep_guard`    | Patch applied, but the named guard didn't notice the bug   |
+
+To distinguish these, the gate now runs the **full unit suite** per
+mutation (not just the targeted test) — ~11s × 8 mutations adds ~90s
+to CI's mutation job. The cost buys collateral-damage detection,
+which is the only way to tell `caught-cleanly` from
+`caught-but-the-patch-is-over-broad`.
+
+### Surfaced
+
+`gdocs_server_info.test_suite.mutation_check` adds two fields:
+
+```
+mutation_check: {
+  ran, caught, status, asleep_guards,        # existing
+  stale_patches:     [guard names whose patch no longer applies],
+  imprecise_patches: [guard names whose patch broke unrelated tests]
+}
+```
+
+`status` is `"passed"` only when `caught == ran` AND `stale_patches`,
+`imprecise_patches`, `asleep_guards` are all empty. When something
+fails, status takes a specific subtype value (most-fundamental first):
+`stale_patch` > `imprecise_patch` > `asleep_guard`. Pre-1.2.2
+`mutation-check.json` artifacts default the new fields to `[]` for
+back-compat.
+
+### Refinement: expected_collateral
+
+The strict "exactly one named failure" rule punished legitimate
+defense in depth — cases where multiple tests genuinely test the
+same code path and a faithful mutation trips all of them. Mutation
+now accepts an `expected_collateral: list[str]` field declaring
+known sibling guards; failures matching these are forgiven, but
+any other surprise still flags `imprecise_patch`. Two of the v1.1.x
+mutations declared siblings on first audit:
+
+- `test_inject_matches_fragmented_runs` declares
+  `test_inject_matches_nbsp_via_sym` (shared `_extract_visible_text`)
+- `test_tool_discoverability_via_server_info` declares
+  `test_server_info_self_consistency` (both notice tool_count drift)
+
+Also: `test_path` now matches parametrized failures by prefix
+(`base` matches `base[case1]`), since pytest reports parametrized
+ids and the historical Mutations declared base names.
+
+### Tests
+
+`tests/unit/test_mutation_check.py` (new, 17 tests): unit tests for
+`apply_mutation` (find text absent/ambiguous), `_matches_nodeid`
+(parametrized prefix match), `classify_outcome` (all four branches
+plus expected_collateral), and `aggregate` (status priority). The
+classification is pure-function-testable; the integration
+"deliberately rot a real patch → CI reports stale_patch" path is
+verifiable any time someone refactors source under the existing
+mutation list.
+
+### Priority note
+
+Low — this is preventive maintenance, not an active bug. Worth doing
+once so `mutation_check` can't silently hollow out, then leave the
+MCP alone.
+
 ## [1.2.1] — 2026-05-18
 
 Closes the last v1.2.0 gap: `mutation_check.ran` goes 3 → 8.

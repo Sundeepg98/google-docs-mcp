@@ -68,12 +68,15 @@ opaque count. Four layers:
 | Count not faked | `test_suite.report_digest` | sha256 of canonical `test-results.json`; runtime recomputes and compares — mismatch → `status: "tampered"` |
 | CI actually ran | `test_suite.ci_run_url` | URL of the GitHub Actions run that produced this artifact (`"local"` for manual `./deploy.sh` deploys, never empty) |
 | Right tests exist | `gdocs_test_manifest()` | full test inventory + outcomes + named-regression-guard presence check |
-| Tests catch bugs | `test_suite.mutation_check` | `{ran, caught, status, asleep_guards}` — CI applies known bug patches per build and fails if any guard doesn't go red |
+| Tests catch bugs | `test_suite.mutation_check` | `{ran, caught, status, asleep_guards, stale_patches, imprecise_patches}` — CI applies known bug patches per build, runs the full unit suite per patch, and fails if any patch is asleep / stale / over-broad |
 
 Every push to `main` flows through GitHub Actions: `unit` → `mutation` →
-`deploy`. A commit that breaks any test can't reach production. See
-`.github/workflows/deploy.yml`, `scripts/mutation_check.py`, and the
-CHANGELOG for the full story.
+`deploy`. A commit that breaks any test can't reach production. The
+mutation gate itself is self-checking — `stale_patches` flags
+mutations whose `find` text moved out from under them (preventing
+silent "caught" reports for bugs never actually injected); v1.2.2
+added that. See `.github/workflows/deploy.yml`,
+`scripts/mutation_check.py`, and the CHANGELOG for the full story.
 
 ## Setup — local stdio (Claude Desktop / Claude Code)
 

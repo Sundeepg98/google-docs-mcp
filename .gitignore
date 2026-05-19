@@ -20,6 +20,10 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+# CI-generated artifacts that get baked into the Docker image at deploy
+# time (uploaded via actions/upload-artifact). Don't commit them.
+test-results.json
+mutation-check.json
 
 # Editors
 .idea/
