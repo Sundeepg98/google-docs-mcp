@@ -1,0 +1,204 @@
+# End-to-end CI workflow (v1.4.0c).
+#
+# Sister to `test.yml` (which runs unit-only on a 3.10-3.13 matrix). This
+# workflow exercises the long-running stuff: integration tests against
+# mocked Google endpoints, the chaos harness under concurrent load, a
+# CVE audit against the locked deps, and lint. Single Python version
+# (3.12 — matches Fly runtime) to keep CI minutes sane; matrix lives in
+# test.yml.
+#
+# Jobs:
+#   e2e-test       — tests/integration suite + JSON artifact. Required.
+#                    Debug locally: `uv run pytest tests/integration/ -v`.
+#   chaos-test     — concurrent user_store hammer + JSON artifact.
+#                    continue-on-error so a transient p99 blip does not
+#                    block merge. Debug: `uv run python tests/chaos/run_chaos.py
+#                    --scenarios all --max-duration 30s`.
+#   security-audit — pip-audit against the lockfile, fails on HIGH/CRITICAL.
+#                    Debug: `uv export --format requirements-txt | pip-audit -r /dev/stdin --strict`.
+#   lint           — pyright + ruff over src/ + tests/. Debug:
+#                    `uv run pyright src/` and `uv run ruff check src/ tests/`.
+#
+# All jobs use `uv sync --frozen --all-extras`. The --frozen flag is
+# load-bearing security (R20 attack #4): lockfile drift between PR and
+# CI is a supply-chain signal, NOT an inconvenience to paper over.
+
+name: e2e
+
+# Quoted "on" key prevents YAML 1.1 parsers from coercing it to the
+# boolean True (PyYAML quirk; GitHub Actions itself parses correctly
+# either way, but local validation tooling is cleaner with the quotes).
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/e2e.yml"
+
+# Cancel in-flight runs for the same ref when a new commit lands.
+# Saves CI minutes on PR push-rebase loops without losing main-branch coverage.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+# Principle of least privilege. No write access needed for any job here.
+permissions:
+  contents: read
+
+jobs:
+  e2e-test:
+    name: integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Real values come from repo Secrets; first run after merge will
+      # fail with "secret not found" until operator provisions them.
+      MCP_BEARER_TOKEN: ${{ secrets.TEST_BEARER_TOKEN }}
+      GOOGLE_CLIENT_CONFIG: ${{ secrets.TEST_OAUTH_CONFIG_JSON }}
+      MCP_DATA_DIR: ${{ runner.temp }}/mcp-data
+      MCP_BASE_URL: http://localhost:8080
+      # Set FLY_APP_NAME so derive_trusted_hosts doesn't WARN-fail-open
+      # in CI (where there's no real Fly metadata). Pinned to a sentinel
+      # so accidental real-Fly env bleed surfaces in logs.
+      FLY_APP_NAME: ci-test-app
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: setup uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: install deps (frozen lockfile)
+        run: uv sync --frozen --all-extras
+
+      - name: run integration tests
+        run: |
+          uv run pytest tests/integration/ -v --tb=short \
+            --json-report --json-report-file=test-results.json \
+            || (echo "::error::integration tests failed — see test-results.json artifact" && exit 1)
+
+      - name: upload test-results.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: test-results.json
+          retention-days: 14
+
+  chaos-test:
+    name: chaos harness
+    needs: e2e-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    env:
+      MCP_DATA_DIR: ${{ runner.temp }}/mcp-data
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: setup uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: install deps (frozen lockfile)
+        run: uv sync --frozen --all-extras
+
+      - name: run chaos scenarios (60s budget)
+        run: |
+          uv run python tests/chaos/run_chaos.py \
+            --scenarios all --max-duration 60s \
+            --json-output chaos-results.json \
+            || (echo "::error::chaos run failed — see chaos-results.json artifact" && exit 1)
+
+      - name: upload chaos-results.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-results
+          path: chaos-results.json
+          retention-days: 14
+
+  security-audit:
+    name: pip-audit (HIGH/CRITICAL gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: setup uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: install pip-audit
+        run: pip install pip-audit
+
+      - name: export locked requirements
+        # --frozen matches the other jobs' uv sync --frozen: use uv.lock
+        # verbatim, do NOT re-resolve from pyproject.toml. Without this,
+        # a pyproject vs lockfile drift would cause uv export to audit
+        # a DIFFERENT dep graph than e2e-test / lint saw, defeating
+        # this workflow's load-bearing R20 attack #4 mitigation.
+        run: uv export --frozen --format requirements-txt --no-hashes --no-emit-project > requirements-locked.txt
+
+      - name: pip-audit against lockfile (HIGH/CRITICAL fail build)
+        run: |
+          pip-audit --strict --requirement requirements-locked.txt \
+            || (echo "::error::pip-audit found HIGH/CRITICAL CVE in locked deps — bump CVE-floor pins in pyproject.toml + regenerate uv.lock" && exit 1)
+
+  lint:
+    name: pyright + ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: setup uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: install deps (frozen lockfile)
+        run: uv sync --frozen --all-extras
+
+      - name: pyright on src/
+        run: |
+          uv run pyright src/ \
+            || (echo "::error::pyright type errors in src/ — see job log for details" && exit 1)
+
+      - name: ruff check on src/ + tests/
+        run: |
+          uv run ruff check src/ tests/ \
+            || (echo "::error::ruff lint errors — run 'uv run ruff check --fix src/ tests/' locally" && exit 1)
