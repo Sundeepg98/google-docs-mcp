@@ -195,11 +195,54 @@ def _get_credentials():
             user_id, **resolve_runtime_oauth_config(),
         )
     except NeedsReauthError as e:
+        # PRESERVE THIS BLOCK through v1.5.0. The v1.5 @gdocs_tool
+        # decorator will also map NeedsReauthError → ToolError; ONE
+        # of the two layers must be removed to avoid double-mapping
+        # (ToolError raised → wrapped as ToolError again, losing the
+        # auth_url markdown link). Removal plan: v1.5.0 deletes this
+        # block when the decorator subsumes it. Until then, this is
+        # the load-bearing mapping for the HTTP-mode auth-required
+        # path. See R27 audit surprise #2.
         raise ToolError(
             f"Google API access required.\n\n"
             f"**[Click here to authorize]({e.auth_url})**\n\n"
             f"After granting access, re-run this tool."
         ) from e
+
+
+# v1.3.1: title validation helper. Drive rejects titles with control
+# chars (U+0000-001F, U+007F) by surfacing a confusing 400; we fail
+# fast with a clear message. >1024 chars is a defensive cap below
+# Drive's actual limit so we never surface raw API errors for length.
+_TITLE_MAX_CHARS = 1024
+
+
+def _validate_title(title, *, field: str = "title") -> None:
+    """Reject titles that would crash downstream Drive/Docs APIs.
+
+    - Must be a non-empty string
+    - ≤ 1024 chars
+    - No control chars (U+0000-001F, U+007F)
+    """
+    if not isinstance(title, str):
+        raise ToolError(
+            f"{field} must be a string (got {type(title).__name__})"
+        )
+    if not title:
+        raise ToolError(f"{field} cannot be empty")
+    if len(title) > _TITLE_MAX_CHARS:
+        raise ToolError(
+            f"{field} is {len(title)} chars; max is {_TITLE_MAX_CHARS}. "
+            f"Truncate before retrying."
+        )
+    for ch in title:
+        code = ord(ch)
+        if code < 0x20 or code == 0x7F:
+            raise ToolError(
+                f"{field} contains a control character (U+{code:04X}) — "
+                f"strip control chars before retrying. Drive rejects "
+                f"titles with these and surfaces a confusing API error."
+            )
 
 
 @mcp.tool()
@@ -260,12 +303,14 @@ def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     ``gdocs_get_doc_outline`` (verify). For existing files use
     ``gdocs_tab_existing_doc`` instead — not this tool.
     """
+    _validate_title(title)
     if not tabs:
         raise ToolError("Must provide at least one tab")
 
     for i, tab in enumerate(tabs):
         if not tab.get("title"):
             raise ToolError(f"tabs[{i}] is missing a non-empty title")
+        _validate_title(tab["title"], field=f"tabs[{i}].title")
         icon = tab.get("icon_emoji")
         if icon and len(icon.encode("utf-8")) > 8:
             raise ToolError(
@@ -313,6 +358,7 @@ def gdocs_add_tabs(
     for i, tab in enumerate(tabs):
         if not tab.get("title"):
             raise ToolError(f"tabs[{i}] is missing a non-empty title")
+        _validate_title(tab["title"], field=f"tabs[{i}].title")
         icon = tab.get("icon_emoji")
         if icon and len(icon.encode("utf-8")) > 8:
             raise ToolError(
@@ -577,6 +623,8 @@ def gdocs_tab_existing_doc(
             "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
         )
+    if title is not None:
+        _validate_title(title)
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
         creds = _get_credentials()
@@ -647,6 +695,8 @@ def gdocs_rename_tab(
     """
     if title is None and icon_emoji is None:
         raise ToolError("Provide at least one of title or icon_emoji")
+    if title is not None:
+        _validate_title(title)
     if icon_emoji is not None and len(icon_emoji.encode("utf-8")) > 8:
         raise ToolError("icon_emoji must be a single emoji (≤8 UTF-8 bytes)")
     try:

@@ -4,6 +4,112 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-05-19
+
+Security hotfix. Closes a cluster of pre-production hardening gaps
+surfaced during the L10 architecture audit and bumps four
+transitive deps off known-CVE versions. No protocol changes, no
+user re-consent required. Existing `MCP_BEARER_TOKEN` continues to
+work unchanged.
+
+### Why
+
+Audit findings R3–R20 identified three classes of pre-production
+risk: (1) unbounded request bodies on `/api/convert` could OOM the
+512 MB Fly VM with a crafted zip-bomb, (2) missing `Host` header
+validation left the public endpoint exposed to host-confusion
+attacks, (3) four transitive dependencies were pinned to versions
+with disclosed CVEs (notably `cryptography` 45.x with the
+cert-validation path issue fixed in 46.0.7). Each is shippable in
+isolation; bundling them reduces deploy churn and keeps the
+middleware stack coherent.
+
+### Added
+
+- **`keys.py`** — HKDF key-derivation scaffolding. Today the shim
+  path returns the raw `MCP_BEARER_TOKEN` for back-compat with all
+  three derived purposes (`api_bearer`, `oauth_state`,
+  `signed_url`), so existing signed URLs and OAuth states minted
+  pre-v1.3.1 verify cleanly after upgrade. Derived path is
+  inactive; v2.0 ships the strict-flip with a planned mass-token
+  rotation window. Operators may set
+  `MCP_API_BEARER_KEY` / `OAUTH_STATE_SIGNING_KEY` /
+  `SIGNED_URL_SIGNING_KEY` anytime to override individual keys.
+- **`TrustedHostMiddleware`** with `derive_trusted_hosts()` helper
+  reading `FLY_APP_NAME` + `localhost` + `*.fly.dev`. Fail-closed
+  startup assertion if `FLY_REGION` is set without `FLY_APP_NAME`
+  (catches misconfigured Fly deploys at boot, not at first request).
+- **`BodySizeLimitMiddleware`** — rejects `/api/*` requests with
+  declared `Content-Length` > 10 MB at 413 before any body bytes
+  are read. Chunked-encoding bypass is closed in v1.4 via
+  Starlette's built-in `request.form(max_part_size=...)`.
+- **`_validate_title()`** — rejects control characters
+  (U+0000–001F, U+007F) and titles > 1024 chars before they reach
+  Google's API. Applied to `gdocs_make_tabbed_doc`,
+  `gdocs_tab_existing_doc`, `gdocs_rename_tab`, `gdocs_add_tabs`.
+  Pre-fix, control chars in titles returned a confusing 400
+  from Google with no per-field hint.
+
+### Changed
+
+- **`setup_state.save_state`** now writes via tmpfile + `os.replace`
+  for atomic persistence. A crash mid-write (machine SIGKILL,
+  disk-full, container OOM) no longer corrupts the setup ledger;
+  the prior file remains intact and the partial tmpfile is
+  discarded.
+- **`server.py::_get_credentials`** retains the existing
+  `NeedsReauthError → ToolError` mapping unchanged. This will be
+  subsumed by the `@gdocs_tool` decorator in v1.5; pre-announced
+  here so the v1.5 PR is a pure refactor with no behavior delta.
+- **Dependency floors** bumped to clear disclosed CVEs:
+  `cryptography ≥ 46.0.7` (cert-validation),
+  `pyjwt ≥ 2.12.0` (algorithm-confusion patch),
+  `urllib3 ≥ 2.7.0` (redirect-header injection),
+  `requests ≥ 2.33.0` (carries the urllib3 bump),
+  `starlette ≥ 0.40` (explicit pin so it's no longer purely
+  transitive). `uv.lock` regenerated against current PyPI; no
+  resolver conflicts.
+
+### Tests
+
+- `test_keys_back_compat_purposes_all_return_raw_master` — all
+  three purposes return `MCP_BEARER_TOKEN` when no override is set.
+- `test_keys_short_master_fails_loud` — `MCP_BEARER_TOKEN` < 32
+  chars raises `RuntimeError` at first `get_key` call.
+- `test_derive_trusted_hosts_*` — three cases (`FLY_APP_NAME` set,
+  `TRUSTED_HOSTS` override, both unset → fail-open with WARNING).
+- `test_bodysize_413_when_content_length_exceeds` — multipart POST
+  with declared 60 MB rejected at 413 before body read.
+- `test_validate_title_rejects_control_chars` — `title="x\x00y"`
+  raises `ToolError` from `gdocs_make_tabbed_doc`.
+- `test_setup_state_save_atomic_under_crash` — patches `os.replace`
+  to raise; asserts original file untouched and tmpfile cleaned up.
+
+All 240 existing unit tests pass. Mutation gate: 8/8 caught.
+
+### Deferred
+
+Per audit R30-A merge-blocker triage, the following land in later
+releases rather than gate this hotfix:
+
+- `_FIELD_VALIDATORS` for `user_store` row-level validation → v1.4
+- Integration tests + `e2e.yml` workflow → v1.4
+- Migration script for legacy user_state rows → v2.0
+- `docs/THREAT_MODEL.md`, `RUNBOOK.md`, `TOOL_CONTRACT.md`,
+  `CONTRIBUTING.md` → v2.2 (batched docs release)
+- `LLM_RECOVERY.md` + `@mcp.resource("gdocs://error-recovery")` +
+  `gdocs_help` tool → v2.2 batch
+- HKDF derived-path activation (mass-token rotation event) → v2.0
+
+### Acceptance
+
+A v1.3.1 deploy survives a `Host: evil.com` probe with 400, a
+60 MB upload to `/api/convert` with 413, and a `title="x\x00"`
+tool call with `ToolError` — all before reaching any code that
+would have crashed or hit Google's API with bad input. Existing
+signed upload URLs and OAuth states minted on v1.3.0 continue
+to verify against v1.3.1's `keys.get_key()` calls.
+
 ## [1.3.0] — 2026-05-19
 
 Make the MCP self-documenting — the external
