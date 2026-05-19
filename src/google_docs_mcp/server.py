@@ -1959,7 +1959,15 @@ def _format_http_error(e: HttpError) -> str:
     return friendly_http_error_message(e)
 
 
-_CLI_SUBCOMMANDS = {"setup-apps-script", "configure-webapp", "status", "help", "-h", "--help"}
+_CLI_SUBCOMMANDS = {
+    "setup-apps-script",
+    "setup-apps-script-auto",  # README lines 156 + 191 document this as the recommended setup path
+    "configure-webapp",
+    "status",
+    "help",
+    "-h",
+    "--help",
+}
 
 
 def main() -> None:
