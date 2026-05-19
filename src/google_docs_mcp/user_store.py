@@ -59,7 +59,7 @@ def _valid_gas_url(value: object) -> bool:
     if parsed.scheme != "https":
         return False
     host = (parsed.hostname or "").lower()
-    if not (host == "script.google.com" or host.endswith(".google.com")):
+    if host != "script.google.com":
         return False
     return bool(_GAS_URL_PATH_RE.match(parsed.path or ""))
 

@@ -237,6 +237,19 @@ def test_valid_gas_url_rejects_non_google():
     assert _valid_gas_url("https://script.google.com.evil.com/macros/s/x/exec") is False
 
 
+def test_valid_gas_url_rejects_other_google_subdomains():
+    """Apps Script Web Apps only deploy under script.google.com -- any other
+    google.com subdomain (apps.google.com, mail.google.com, ...) is illegitimate
+    for this field and dangerous because downstream urlopen carries OAuth creds.
+    An attacker-tampered DB row pointing at mail.google.com/macros/s/X/exec
+    would otherwise direct authenticated requests at Gmail's host. Strict
+    hostname match, fail closed."""
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("https://apps.google.com/macros/s/X/exec") is False
+    assert _valid_gas_url("https://mail.google.com/macros/s/X/exec") is False
+    assert _valid_gas_url("https://attacker.script.google.com/macros/s/X/exec") is False
+
+
 def test_valid_gas_url_rejects_malformed_path():
     from google_docs_mcp.user_store import _valid_gas_url
     assert _valid_gas_url("https://script.google.com/wrong/path") is False
