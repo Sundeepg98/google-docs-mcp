@@ -1,0 +1,64 @@
+# release-drafter config (v2.x).
+#
+# Defines how merged PRs roll up into the auto-drafted release notes.
+# Categories are matched by PR label — a PR with a label listed under
+# the "labels:" of a category lands in that section. PRs without any
+# matching label fall into the default "Other Changes" bucket.
+#
+# Version bump: release-drafter picks the next version (major/minor/
+# patch) by checking each PR's labels against version-resolver.
+# A PR labeled "breaking" bumps major; "feature" bumps minor; anything
+# else bumps patch. Used only for the draft title — operator can
+# overwrite the version when publishing.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: 'Breaking Changes'
+    labels:
+      - 'breaking'
+  - title: 'Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+  - title: 'Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+  - title: 'Documentation'
+    labels:
+      - 'docs'
+      - 'documentation'
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'dependencies'
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-title-escapes: '\<*_&'
+
+version-resolver:
+  major:
+    labels:
+      - 'breaking'
+  minor:
+    labels:
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'chore'
+      - 'docs'
+      - 'documentation'
+      - 'dependencies'
+  default: patch
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

@@ -1,0 +1,57 @@
+# Block-on-finding: PRs marked breaking must document a "## Breaking"
+# section in the PR body (v2.x).
+#
+# Post-v2.0.0 SemVer hygiene: a PR that ships a breaking change without
+# explaining what breaks and how to migrate is a CHANGELOG bug waiting
+# to happen. The check fires on PR open / edit / new commit so the
+# author sees the failure immediately in the PR's checks UI and can
+# either add the section or drop the breaking marker.
+#
+# Signal sources (any one triggers the gate):
+#   - "feat!:" in PR title — Conventional Commits breaking marker
+#   - "BREAKING" in PR title — looser, catches PRs not following CC
+#   - "BREAKING CHANGE:" in PR body — Conventional Commits footer
+#
+# Required documentation: a "## Breaking" heading anywhere in the PR
+# body (case-insensitive match). If you legitimately need to ship a
+# breaking change, the gate is satisfied by adding that section
+# describing what breaks + the migration path — no waiver flag.
+#
+# Read-only on the PR; never executes repo code. Safe with pull_request
+# trigger (no need for pull_request_target's elevated token surface).
+
+name: breaking-change-check
+
+# Quoted "on" key prevents YAML 1.1 parsers from coercing it to the
+# boolean True (matches codeql.yml / e2e.yml convention).
+"on":
+  pull_request:
+    types: [opened, edited, synchronize]
+    branches: [main]
+
+permissions:
+  pull-requests: read   # read title + body only; never write
+
+jobs:
+  check:
+    name: Verify breaking-change documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || '';
+            const body = context.payload.pull_request.body || '';
+            const isBreaking = title.includes('feat!:') ||
+                               title.includes('BREAKING') ||
+                               body.includes('BREAKING CHANGE:');
+            if (isBreaking && !/##\s*Breaking/i.test(body)) {
+              core.setFailed(
+                'PR is marked breaking (feat!: / BREAKING in title or ' +
+                'BREAKING CHANGE: in body) but the PR body has no ' +
+                '"## Breaking" section. Add a heading describing what ' +
+                'breaks and the migration path, or drop the breaking ' +
+                'marker if this is not actually a breaking change.'
+              );
+            }
