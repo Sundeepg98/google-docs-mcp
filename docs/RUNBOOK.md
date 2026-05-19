@@ -203,25 +203,74 @@ The trip-wire here is `_BACK_COMPAT_RAW_MASTER` in `keys.py`: it's the single so
 
 ### 3.6 Pre-strict-flip preflight check
 
-**Before merging v2.0b** (or any future PR that removes entries from `_BACK_COMPAT_RAW_MASTER`), run:
+**Before merging v2.0b** (or any future PR that removes entries from `_BACK_COMPAT_RAW_MASTER`), there is a two-step operator procedure:
+
+**Step 1 — set per-purpose overrides + redeploy.** This is the critical prep. Until overrides are set, every `keys.get_key()` call routes through the back-compat shim, and the preflight gate (Step 2) returns exit 4 forever in steady state — there is no "natural soak" that makes shim_hits drop to 0 without operator action. Use the current master as the value for each override (matches §3.4's rotation pattern — net effect is "pin derived keys to today's master before removing the shim that produces the same bytes by default"):
+
+```bash
+CURRENT_MASTER=$(flyctl secrets list -j | jq -r '.[] | select(.name=="MCP_BEARER_TOKEN") | .digest')
+# (If the digest path doesn't work in your flyctl version, just paste the
+# value you used when you originally set MCP_BEARER_TOKEN. Don't generate a
+# fresh value here — the point is "no key material changes for live users.")
+
+flyctl secrets set \
+  MCP_API_BEARER_KEY="$CURRENT_MASTER" \
+  OAUTH_STATE_SIGNING_KEY="$CURRENT_MASTER" \
+  SIGNED_URL_SIGNING_KEY="$CURRENT_MASTER"
+# flyctl triggers a redeploy automatically after `secrets set`.
+```
+
+After the redeploy completes, `keys.get_key()` resolves each purpose via the override path, bypassing both the shim and HKDF derivation. In-flight tokens minted by the shim continue to verify cleanly because the override returns the same bytes the shim did. **No user-visible disruption.**
+
+**Step 2 — run the preflight after a soak window.** Wait long enough for real traffic to exercise each purpose at least a few times (typically 1h30 is plenty — see `key_observability.first_call_age_seconds` for the elapsed-since-first-call telemetry). Then:
 
 ```bash
 ./scripts/preflight_strict_flip.sh https://sundeepg98-docs-mcp.fly.dev "$MCP_BEARER_TOKEN"
 ```
 
-The script queries production's `gdocs_server_info` and asserts:
-- `sum(key_back_compat_shim_active_hits.values()) == 0` — nobody hit the shim path in this replica's lifetime
-- `sum(key_call_totals.values()) >= 100` — the counter is sensitive enough to be trusted (no traffic = no signal)
+The script GETs the bearer-authed `/info` endpoint (v2.6+) and asserts:
+- `sum(key_call_totals.values()) >= 100` — counter is sensitive enough to be trusted (no traffic = no evidence)
+- `sum(key_back_compat_shim_active_hits.values()) == 0` — every call served by override (or HKDF, post-flip); nothing routes through the shim. This is achievable ONLY after Step 1 above.
+
+The derived `override_hits = total - shim_hits` is logged for operator visibility — when it equals `total` and `shim_hits` is 0, every call landed on the override path, which means removing the shim is provably a no-op for live traffic.
 
 **Exit codes:**
 - `0` — green-light, safe to merge v2.0b
-- `2` — could not reach `/mcp/v1/info` (check URL, token, network)
-- `3` — total call count < 100 (let the soak run longer or generate traffic)
-- `4` — shim hits > 0 (DO NOT flip; wait for in-flight tokens to expire, see §3.5 recovery)
+- `2` — could not reach `/info` (check URL, bearer, server >= v2.6 deployed)
+- `3` — total call count < 100 (let the soak run longer or drive synthetic traffic, see below)
+- `4` — shim hits > 0 (Step 1 not done, OR overrides aren't being picked up by the running server — confirm the redeploy completed and the env vars are set: `flyctl secrets list | grep -E "API_BEARER_KEY|OAUTH_STATE_SIGNING_KEY|SIGNED_URL_SIGNING_KEY"`)
+- `5` — required field missing from response (server too old; upgrade to >= v2.6 first)
+
+**Driving synthetic traffic** if `total < 100` after a wait:
+
+```bash
+# Increment api_bearer via the bearer-header check on /info (cheap, no
+# side effects). 200 iterations easily clears the 100-call floor.
+for i in $(seq 1 200); do
+    curl -fsS -H "Authorization: Bearer $MCP_BEARER_TOKEN" \
+        https://sundeepg98-docs-mcp.fly.dev/info >/dev/null
+done
+
+# Increment signed_url by minting throw-away signed URLs (TTL is 60s
+# so they're harmless if leaked):
+for i in $(seq 1 50); do
+    fastmcp call --server-spec https://sundeepg98-docs-mcp.fly.dev/mcp \
+        --target gdocs_get_signed_upload_url \
+        --auth "$MCP_BEARER_TOKEN" \
+        --input-json '{"ttl_seconds": 60}' >/dev/null 2>&1
+done
+
+# oauth_state is harder to drive synthetically (it requires the Google
+# OAuth dance to land in /oauth/google/api/callback). Easier path: ask
+# a test user to log in once via claude.ai's connector — that single
+# OAuth round-trip increments oauth_state.
+```
 
 The 100-call floor is a heuristic for "telemetry is meaningful, not noise." Tune up for higher confidence; never tune down without good reason.
 
 **Multi-replica caveat:** counters are process-local. If Fly ever lifts the single-machine constraint (see §4 footguns), the preflight must aggregate across replicas — currently the operator runs it against ONE machine and trusts the single-machine invariant. Document the rollout cadence (replica restarts reset counters) in the deploy notes for v2.0b.
+
+**Why Step 1 is non-optional (gate-semantics rationale):** removing entries from `_BACK_COMPAT_RAW_MASTER` invalidates every key minted via the shim that's still in flight. Pre-R8, the preflight tried to gate on "wait for shim_hits to drop to 0 naturally" — but during the shim window, every call hits the shim by design, so that never happens. The override-prep step shifts traffic to the override path BEFORE the strict-flip, so by the time the shim is removed, nothing is using it. This is the only safe ordering.
 
 ## 4. What NOT to do (footguns)
 
