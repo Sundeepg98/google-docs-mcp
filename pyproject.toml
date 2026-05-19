@@ -28,7 +28,7 @@ dependencies = [
     "google-auth-oauthlib>=1.0",
     "markdown-it-py>=4.2.0",
     "python-docx>=1.0",  # used by preview_tab_split + retrofit_existing_docx
-    "typing-extensions>=4.6",  # NotRequired + TypedDict for Python 3.10/3.11
+    "typing-extensions>=4.15.0",  # NotRequired + TypedDict for Python 3.10/3.11
     "starlette>=0.40,<0.52",  # v1.3.1: pin upper bound — FastMCP transitive can drift
     # === v1.3.1 security floor — pinned to CVE-fixed minimums ===
     # Re-audit these on every minor release. Bump floors when new CVEs land.
