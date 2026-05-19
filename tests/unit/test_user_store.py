@@ -10,7 +10,9 @@ Covers the v1.1 multi-tenant storage abstraction. Guards against:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -57,11 +59,17 @@ def test_save_merges_existing_state_not_overwrites():
     """The killer guard: a partial update must NOT erase other fields."""
     from google_docs_mcp.user_store import get_state, save_state
 
-    save_state("user-2", {"apps_script_url": "URL_V1", "apps_script_script_id": "S1"})
+    save_state(
+        "user-2",
+        {
+            "apps_script_url": "https://script.google.com/macros/s/URLV1/exec",
+            "apps_script_script_id": "S1",
+        },
+    )
     save_state("user-2", {"apps_script_deployment_id": "D1"})  # partial!
 
     state = get_state("user-2")
-    assert state["apps_script_url"] == "URL_V1", (
+    assert state["apps_script_url"] == "https://script.google.com/macros/s/URLV1/exec", (
         "second save() with no apps_script_url field erased the first one — "
         "merge semantics are broken"
     )
@@ -72,7 +80,7 @@ def test_save_merges_existing_state_not_overwrites():
 def test_save_preserves_created_at_but_bumps_updated_at():
     from google_docs_mcp.user_store import get_state, save_state
 
-    save_state("user-3", {"apps_script_url": "URL"})
+    save_state("user-3", {"apps_script_url": "https://script.google.com/macros/s/U3/exec"})
     first = get_state("user-3")
 
     # Sleep just enough to guarantee a different unix timestamp.
@@ -87,7 +95,7 @@ def test_save_preserves_created_at_but_bumps_updated_at():
 def test_clear_removes_state():
     from google_docs_mcp.user_store import clear_state, get_state, save_state
 
-    save_state("user-4", {"apps_script_url": "URL"})
+    save_state("user-4", {"apps_script_url": "https://script.google.com/macros/s/U4/exec"})
     assert get_state("user-4") != {}
 
     clear_state("user-4")
@@ -103,11 +111,11 @@ def test_clear_nonexistent_user_is_noop():
 def test_multiple_users_isolated():
     from google_docs_mcp.user_store import get_state, save_state
 
-    save_state("alice", {"apps_script_url": "ALICE_URL"})
-    save_state("bob", {"apps_script_url": "BOB_URL"})
+    save_state("alice", {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"})
+    save_state("bob", {"apps_script_url": "https://script.google.com/macros/s/BOB/exec"})
 
-    assert get_state("alice")["apps_script_url"] == "ALICE_URL"
-    assert get_state("bob")["apps_script_url"] == "BOB_URL"
+    assert get_state("alice")["apps_script_url"] == "https://script.google.com/macros/s/ALICE/exec"
+    assert get_state("bob")["apps_script_url"] == "https://script.google.com/macros/s/BOB/exec"
 
 
 def test_unknown_field_raises_loudly():
@@ -171,7 +179,10 @@ def test_concurrent_writes_to_different_users_dont_corrupt():
 
     def worker(uid: str) -> None:
         for i in range(10):
-            save_state(uid, {"apps_script_url": f"{uid}_url_{i}"})
+            # Validator requires real GAS-style URLs; encode uid+i into the
+            # deployment-id slot (kept alphanumeric so it matches the regex).
+            tag = uid.replace("-", "") + str(i)
+            save_state(uid, {"apps_script_url": f"https://script.google.com/macros/s/{tag}/exec"})
 
     threads = [
         threading.Thread(target=worker, args=(f"user-thread-{i}",))
@@ -183,4 +194,168 @@ def test_concurrent_writes_to_different_users_dont_corrupt():
     for i in range(5):
         uid = f"user-thread-{i}"
         state = get_state(uid)
-        assert state["apps_script_url"] == f"{uid}_url_9"  # last write wins
+        tag = uid.replace("-", "") + "9"
+        assert state["apps_script_url"] == f"https://script.google.com/macros/s/{tag}/exec"  # last write wins
+
+
+# ---------------------------------------------------------------------------
+# v1.4.0a -- _FIELD_VALIDATORS (issue #11)
+# Defense-in-depth guard for persisted fields. Validators are invoked by
+# save_state (raise on invalid) and get_state (drop+log on invalid).
+# ---------------------------------------------------------------------------
+
+
+def test_valid_gas_url_accepts_canonical_exec():
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("https://script.google.com/macros/s/ABC123/exec") is True
+
+
+def test_valid_gas_url_accepts_dev_path():
+    """/dev is the head-deployment endpoint, also legitimate."""
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("https://script.google.com/macros/s/ABC123/dev") is True
+
+
+def test_valid_gas_url_accepts_deployment_id_with_underscores_and_hyphens():
+    """Real GAS deployment IDs include _ and - characters."""
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url(
+        "https://script.google.com/macros/s/AKfycb_X-Y_Z-abc123/exec"
+    ) is True
+
+
+def test_valid_gas_url_rejects_http():
+    """HTTPS-only: an http:// URL would silently downgrade transport security."""
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("http://script.google.com/macros/s/ABC123/exec") is False
+
+
+def test_valid_gas_url_rejects_non_google():
+    """Reject look-alike hosts -- attacker-controlled origin is the threat model."""
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("https://evil.com/macros/s/x/exec") is False
+    assert _valid_gas_url("https://script.google.com.evil.com/macros/s/x/exec") is False
+
+
+def test_valid_gas_url_rejects_malformed_path():
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url("https://script.google.com/wrong/path") is False
+    assert _valid_gas_url("https://script.google.com/macros/s/ABC123/run") is False  # not exec|dev
+    assert _valid_gas_url("https://script.google.com/macros/s//exec") is False  # empty deploy id
+
+
+def test_valid_gas_url_rejects_non_string():
+    from google_docs_mcp.user_store import _valid_gas_url
+    assert _valid_gas_url(None) is False
+    assert _valid_gas_url(123) is False
+    assert _valid_gas_url({"url": "x"}) is False
+    assert _valid_gas_url("") is False
+
+
+def test_save_state_raises_on_invalid_gas_url():
+    """Bad value at the write boundary must abort the write loudly."""
+    from google_docs_mcp.user_store import get_state, save_state
+
+    with pytest.raises(ValueError, match="apps_script_url"):
+        save_state("user-bad", {"apps_script_url": "http://bad"})
+
+    # And the row must not exist -- failed validation is all-or-nothing.
+    assert get_state("user-bad") == {}
+
+
+def test_save_state_error_message_names_field_and_value():
+    from google_docs_mcp.user_store import save_state
+    with pytest.raises(ValueError) as exc:
+        save_state("user-bad-2", {"apps_script_url": "https://evil.com/x"})
+    msg = str(exc.value)
+    assert "apps_script_url" in msg
+    assert "_FIELD_VALIDATORS" in msg  # points the operator at the registry
+
+
+def test_save_state_accepts_valid_gas_url():
+    """Happy path: a valid URL writes cleanly and roundtrips."""
+    from google_docs_mcp.user_store import get_state, save_state
+    good = "https://script.google.com/macros/s/HAPPY/exec"
+    save_state("user-good", {"apps_script_url": good})
+    assert get_state("user-good")["apps_script_url"] == good
+
+
+def test_save_state_allows_none_to_blank_validated_field():
+    """A caller explicitly clearing a validated field with None must succeed --
+    validators only veto bad non-None values, not the absence of a value."""
+    from google_docs_mcp.user_store import save_state
+    # Should not raise.
+    save_state("user-clear", {"apps_script_url": None})
+
+
+def test_get_state_drops_invalid_gas_url_with_warn(isolated_db, caplog):
+    """Seed the DB with an invalid URL via raw SQL (simulating a row from
+    a pre-validator install or external tampering), then assert get_state
+    drops the field AND emits a WARNING."""
+    from google_docs_mcp.user_store import get_state, _ensure_initialized
+
+    # Trigger schema creation so the table exists before we INSERT.
+    _ensure_initialized(isolated_db)
+
+    now = int(time.time())
+    conn = sqlite3.connect(isolated_db, isolation_level=None, timeout=30)
+    try:
+        conn.execute(
+            "INSERT INTO user_state "
+            "(user_id, apps_script_url, apps_script_script_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("user-tampered", "http://attacker.example/x", "SCRIPT_OK", now, now),
+        )
+    finally:
+        conn.close()
+
+    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.user_store"):
+        state = get_state("user-tampered")
+
+    assert "apps_script_url" not in state, "validator-failed field must be dropped"
+    # Other fields on the same row must survive untouched.
+    assert state["apps_script_script_id"] == "SCRIPT_OK"
+    assert state["user_id"] == "user-tampered"
+
+    # Must emit a WARNING -- silent drops would mask data loss in production.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("apps_script_url" in r.getMessage() for r in warnings), (
+        f"expected a WARNING mentioning apps_script_url, got: "
+        f"{[r.getMessage() for r in warnings]}"
+    )
+
+
+def test_get_state_does_not_drop_valid_persisted_url(isolated_db, caplog):
+    """Negative control: a valid persisted URL must NOT be dropped or
+    trigger a warning -- guards against an over-eager validator regression."""
+    from google_docs_mcp.user_store import get_state, save_state
+
+    save_state(
+        "user-ok",
+        {"apps_script_url": "https://script.google.com/macros/s/OK1/exec"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.user_store"):
+        state = get_state("user-ok")
+
+    assert state["apps_script_url"] == "https://script.google.com/macros/s/OK1/exec"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_save_state_unaffected_for_other_fields():
+    """Fields without a registered validator must write through normally.
+    Regression guard: don't accidentally validate-everything."""
+    from google_docs_mcp.user_store import get_state, save_state
+
+    save_state(
+        "user-other",
+        {
+            "apps_script_script_id": "arbitrary-string-no-validator",
+            "apps_script_deployment_id": "also-arbitrary",
+            "apps_script_version_number": 42,
+        },
+    )
+    state = get_state("user-other")
+    assert state["apps_script_script_id"] == "arbitrary-string-no-validator"
+    assert state["apps_script_deployment_id"] == "also-arbitrary"
+    assert state["apps_script_version_number"] == 42
