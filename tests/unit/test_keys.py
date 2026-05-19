@@ -188,3 +188,100 @@ def test_validate_master_accepts_exactly_32_chars():
     from google_docs_mcp.keys import _validate_master_or_raise
 
     _validate_master_or_raise("x" * 32)  # no raise
+
+
+# ---------------------------------------------------------------------
+# v1.5 observability: shim-path hit counter
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def reset_shim_counters():
+    """Zero the shim hit counters before each counter test."""
+    from google_docs_mcp.keys import _reset_shim_hit_counters_for_tests
+
+    _reset_shim_hit_counters_for_tests()
+    yield
+    _reset_shim_hit_counters_for_tests()
+
+
+def test_shim_hit_counter_increments_on_shim_path(long_master, reset_shim_counters):
+    """Each get_key() call through the shim path must bump the counter
+    for that purpose by exactly 1."""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    for _ in range(7):
+        get_key("api_bearer")
+
+    counters = get_shim_hit_counters()
+    assert counters["api_bearer"] == 7
+    # Untouched purposes stay at 0.
+    assert counters["oauth_state"] == 0
+    assert counters["signed_url"] == 0
+
+
+def test_shim_hit_counter_separate_per_purpose(long_master, reset_shim_counters):
+    """Counters track per-purpose, not aggregate."""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    for _ in range(3):
+        get_key("api_bearer")
+    for _ in range(5):
+        get_key("oauth_state")
+    for _ in range(2):
+        get_key("signed_url")
+
+    counters = get_shim_hit_counters()
+    assert counters["api_bearer"] == 3
+    assert counters["oauth_state"] == 5
+    assert counters["signed_url"] == 2
+
+
+def test_shim_hit_counter_is_threadsafe(long_master, reset_shim_counters):
+    """Concurrent get_key() calls from multiple threads must not lose
+    increments — the threading.Lock is load-bearing under Starlette+uvicorn."""
+    import threading
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    n_threads = 16
+    calls_per_thread = 200
+    barrier = threading.Barrier(n_threads)
+
+    def worker():
+        barrier.wait()  # maximize contention
+        for _ in range(calls_per_thread):
+            get_key("api_bearer")
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    counters = get_shim_hit_counters()
+    assert counters["api_bearer"] == n_threads * calls_per_thread
+
+
+def test_get_shim_hit_counters_returns_copy(long_master, reset_shim_counters):
+    """Mutating the returned dict must not corrupt the live counter."""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    get_key("api_bearer")
+    snapshot = get_shim_hit_counters()
+    snapshot["api_bearer"] = 999_999  # mutate the snapshot
+
+    # Live counter is unaffected.
+    assert get_shim_hit_counters()["api_bearer"] == 1
+
+
+def test_shim_hit_counter_unaffected_by_unknown_purpose(long_master, reset_shim_counters):
+    """ValueError-raising calls must NOT touch the counter."""
+    from google_docs_mcp.keys import get_key, get_shim_hit_counters
+
+    with pytest.raises(ValueError):
+        get_key("not_a_real_purpose")  # type: ignore[arg-type]
+
+    counters = get_shim_hit_counters()
+    assert counters["api_bearer"] == 0
+    assert counters["oauth_state"] == 0
+    assert counters["signed_url"] == 0
