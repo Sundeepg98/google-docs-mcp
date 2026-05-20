@@ -87,11 +87,11 @@ select = ["TID"]
 [tool.ruff.lint.per-file-ignores]
 # This file owns the legitimate use of googleapiclient.discovery.build.
 "src/google_docs_mcp/google_clients.py" = ["TID251"]
-# The 5 remaining files below still import `build` directly. PR2
+# The 4 remaining files below still import `build` directly. PR2
 # migrates them to google_clients.get_service and removes these
 # ignores one at a time. Each removal is a separate review surface.
+# PR2-A (v2.6b) removed docs_api.py from this list.
 # PR2-B (v2.6b) removed drive_api.py from this list.
-"src/google_docs_mcp/docs_api.py" = ["TID251"]
 "src/google_docs_mcp/docx_import.py" = ["TID251"]
 "src/google_docs_mcp/preview.py" = ["TID251"]
 "src/google_docs_mcp/retrofit.py" = ["TID251"]
