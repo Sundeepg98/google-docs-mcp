@@ -9,23 +9,31 @@ before).
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 
 @pytest.fixture
 def mock_script_svc():
-    """Yield a fake script_v1 service with a mock projects() chain.
+    """Yield a fake script_v1 service via the M2 GoogleAPIClient port.
 
-    PR2-C (v2.6b): patches ``get_service`` (the post-migration
-    chokepoint) instead of the legacy ``build`` symbol. The
-    callsite-as-patch-target pattern is unchanged — follow the
-    imported name in ``gas_deploy.client``'s namespace.
+    **v2.1.2 (M2)**: pre-v2.1.2 this fixture used
+    ``patch("google_docs_mcp.gas_deploy.client.get_service")``, which
+    required knowing exactly which module imported ``get_service``.
+    The ``with_google_api_client`` + ``InMemoryGoogleAPIClient``
+    pattern (introduced in this PR's M2 port) routes through the
+    single facade — no import-binding awareness needed.
     """
-    with patch("google_docs_mcp.gas_deploy.client.get_service") as svc_mock:
-        svc = MagicMock()
-        svc_mock.return_value = svc
+    from google_docs_mcp.google_api_client import (
+        InMemoryGoogleAPIClient,
+        with_google_api_client,
+    )
+
+    svc = MagicMock()
+    with with_google_api_client(InMemoryGoogleAPIClient({
+        ("script", "v1"): svc,
+    })):
         yield svc
 
 

@@ -7,7 +7,7 @@ tests catch it.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from googleapiclient.errors import HttpError
@@ -30,16 +30,24 @@ def _mock_http_error(status_code: int, reason_code: str = "") -> HttpError:
 
 @pytest.fixture
 def mock_drive():
-    """Yield a fake drive service whose .files() returns a mock chain.
+    """Yield a fake drive service via the M2 GoogleAPIClient port.
 
-    Patches the ``get_service`` symbol in ``drive_api``'s namespace
-    (post-PR2-B migration, v2.6b). Previously patched ``build`` —
-    drive_api now goes through ``google_clients.get_service``, but
-    the import-binding-as-patch-target pattern is unchanged.
+    **v2.1.2 (M2)**: pre-v2.1.2 this fixture used
+    ``patch("google_docs_mcp.drive_api.get_service")``, which required
+    knowing exactly which module imported ``get_service``. The
+    ``with_google_api_client`` + ``InMemoryGoogleAPIClient`` pattern
+    (introduced in this PR's M2 port) routes through the same single
+    facade that production uses — no import-binding awareness needed.
     """
-    with patch("google_docs_mcp.drive_api.get_service") as build_mock:
-        drive = MagicMock()
-        build_mock.return_value = drive
+    from google_docs_mcp.google_api_client import (
+        InMemoryGoogleAPIClient,
+        with_google_api_client,
+    )
+
+    drive = MagicMock()
+    with with_google_api_client(InMemoryGoogleAPIClient({
+        ("drive", "v3"): drive,
+    })):
         yield drive
 
 
