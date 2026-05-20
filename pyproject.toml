@@ -51,6 +51,11 @@ test = [
     # existing test_oauth_google.py pattern). pytest-asyncio is here
     # for forthcoming async paths but unused today.
     "pytest-asyncio>=0.23",
+    # === v2.0.6: coverage gate (R33) ===
+    # pytest-cov drives the --cov-fail-under floor configured in
+    # pytest.ini (currently 56%, measured baseline 56.74%).
+    # Ratchet policy in docs/COVERAGE.md (+1pp/release toward 80%).
+    "pytest-cov>=4.1",
 ]
 
 [project.urls]
