@@ -19,24 +19,10 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 
-@pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    """Point user_store at a per-test SQLite file so tests don't bleed.
-
-    Mirrors tests/unit/test_user_store.py — same env-var override path
-    user_store reads internally.
-    """
-    db_file = tmp_path / "user_state.db"
-    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
-    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-
-    # Reset the package's in-process init cache so the new tmp DB
-    # actually gets schema-init treatment rather than being skipped
-    # due to a cache hit from a previous test's path.
-    from google_docs_mcp import user_store
-    user_store._initialized_paths.clear()
-
-    yield db_file
+# isolated_db fixture is auto-applied from tests/conftest.py (R23 B3
+# consolidation, v2.0.5). Canonical version preserves the
+# _initialized_paths reset this file needed and adds resets for
+# _per_user_locks, _shim_hit_counter, and _creds_cache.
 
 
 @pytest.fixture(autouse=True)

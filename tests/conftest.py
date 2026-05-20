@@ -3,6 +3,18 @@
 Live (``@pytest.mark.live``) tests are opt-in — they hit real Drive.
 Run with ``pytest --live`` to enable; default skips them so unit
 tests stay fast and CI-friendly.
+
+R23 B3: canonical ``isolated_db`` fixture lives here. Previously, five
+unit-test modules each declared their own copy with subtly different
+``_initialized_paths.clear()`` discipline (some pre-only, some post-only,
+test_user_store.py none at all, test_credentials.py also resetting
+``_per_user_locks``). That divergence was the symptom of test-isolation
+debt — under ``pytest -n auto`` it would surface as flakes the moment
+two workers raced on the shared module-level dicts.
+
+The canonical fixture resets EVERY shared module-level dict in
+``google_docs_mcp`` both pre- and post-yield: the union of all five
+historical variants. Per-test cost: ~four dict clears, well under 1ms.
 """
 from __future__ import annotations
 
@@ -10,6 +22,61 @@ import os
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    """Per-test SQLite path + reset of every shared module-level dict.
+
+    Canonical fixture consolidated in v2.0.5 (R23 B3). Replaces five
+    per-file copies with identical-but-not-quite cleanup discipline.
+
+    Resets, both pre- and post-yield:
+      - ``user_store._initialized_paths``  (set of paths that already
+        had schema-init applied; without resetting, the next test's
+        fresh tmp DB skips the ALTER path)
+      - ``credentials._per_user_locks``    (per-user threading.Lock
+        registry; would accumulate across tests and let one test's
+        lock contention bleed into another)
+      - ``keys._shim_hit_counter``         (per-purpose shim-path
+        increments; if a prior test triggered the shim, a later
+        test asserting ``shim_hits == 0`` would falsely fail)
+      - ``server._creds_cache``            (operator OAuth creds cache;
+        a prior stdio-mode test would leave creds in place and a
+        later HTTP-mode test would skip the per-user resolver)
+
+    Also points ``user_store`` and ``default_data_dir()`` at ``tmp_path``
+    via env-var override so no test touches ``~/.google-docs-mcp/``.
+
+    Yields the per-test SQLite path for tests that want to seed it
+    directly (e.g. legacy-schema migration tests).
+    """
+    db_file = tmp_path / "user_state.db"
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
+    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
+
+    _reset_shared_module_state()
+    yield db_file
+    _reset_shared_module_state()
+
+
+def _reset_shared_module_state() -> None:
+    """Clear every shared module-level dict in google_docs_mcp.
+
+    Kept as a top-level helper so a test that mutates state mid-body
+    (e.g. spawning threads, then asserting a count, then continuing)
+    can call it explicitly. Imports are inside so importing conftest
+    doesn't drag the package in for live-test-only collection.
+    """
+    from google_docs_mcp import credentials, keys, user_store
+    from google_docs_mcp import server as server_mod
+
+    user_store._initialized_paths.clear()
+    credentials._per_user_locks.clear()
+    # keys.py exposes a public test helper that takes the right lock —
+    # don't reach into the dict directly here.
+    keys._reset_shim_hit_counters_for_tests()
+    server_mod._creds_cache = None
 
 
 def pytest_addoption(parser):

@@ -28,21 +28,10 @@ import threading
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    """Per-test SQLite path so any test that hits the default backend
-    doesn't bleed into ``~/.google-docs-mcp/``. Same fixture pattern as
-    test_user_store.py."""
-    db_file = tmp_path / "user_state.db"
-    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
-    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-
-    # Bust the module-level path cache so a previous test's seeded path
-    # doesn't shortcut init for this test's path.
-    from google_docs_mcp import user_store
-    user_store._initialized_paths.clear()
-    yield db_file
-    user_store._initialized_paths.clear()
+# isolated_db fixture is auto-applied from tests/conftest.py (R23 B3
+# consolidation, v2.0.5). Canonical version preserves this file's
+# pre+post-yield _initialized_paths discipline and adds resets for
+# _per_user_locks, _shim_hit_counter, and _creds_cache.
 
 
 # ---------------------------------------------------------------------
