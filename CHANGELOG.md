@@ -4,6 +4,48 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — v2.0.5
+
+Parallel-shipping wave from a 27-round audit cycle (R1–R27). Six independently-reviewed PRs, each a self-contained finding with its own regression test. Bundled here as v2.0.5; the per-PR commit messages will also land in release-drafter's auto-draft, so the GitHub Release will carry both this curated summary and the per-PR detail. No user re-consent required; no tool-surface break; no schema change.
+
+Companion in-flight items (A1 `/api/convert` multi-tenancy, B2 async error-handling test, B3 `isolated_db` fixture consolidation) are tracked but not part of this bundle — they ship as v2.0.6 once their reviews settle.
+
+### Security
+
+- **Reflected XSS on `/oauth/google/api/callback` error page (PR #50).** `_error_page` now escapes the user-controlled `?error=` query param via `html.escape()` before rendering. The local `html` name was aliased to `_html` to avoid shadowing the stdlib module. Exploitable in production prior to this fix — operators on v2.0.4 or earlier should treat this as the headline reason to upgrade. Regression test: `test_oauth_error_param_escaped`.
+- **README access-level lie + broken auth-recovery CLI reference (PR #52, N1+N2).** README:162 stated the Apps Script Web App deploys with `MYSELF` access; the actual `_MANIFEST` deploys `ANYONE_ANONYMOUS`. Fixed the README to match code reality so threat-model readers don't underestimate exposure. Separately, `errors.py` mapped `invalid_grant` failures to a recovery message that pointed users at a `google-docs-mcp auth` CLI subcommand that does not exist; corrected to the actual remediation. Both classes now fenced by claim-vs-code regression tests.
+- **CI supply-chain hardening (PR #51, A1).** `superfly/flyctl-actions/setup-flyctl` SHA-pinned to `ed8efb3` (= the master ref past the v1.5 release, captured as an immutable SHA so a future tag-force-push can't backdoor our deploy step). `dependabot.yml` now blocks fastmcp major bumps because of the CVE-floor pin from CVE-2025-69196 + CVE-2026-27124 — auto-bumping would silently re-open the floor. The `preflight_strict_flip.sh` TTL string was also corrected from a misleading "24h default" to the actual `10min default / 1h max` values, so operators reading the script header don't oversleep the cutover window.
+- **HMAC fiction hedge across 8 documentation sites (PR #53, C4).** Eight sites in `docs/THREAT_MODEL.md`, `docs/MIGRATION_v1_to_v2.md`, `docs/TOOL_CONTRACT.md`, and `scripts/migrate_existing_users.py` previously claimed v2.0a's `apps_script_hmac_key` provides HMAC per-request validation on the Apps Script Web App `/exec` surface. Code reality (verified 7+ audit rounds): `restructure.gs` has zero `Utilities.computeHmacSha256Signature`; `_call_webapp` does not sign; the column is stored-and-unused at runtime. Every site now states "schema only in v2.0a; verify-path deferred to v2.0c" and notes THREAT_MODEL §4 row 5 remains OPEN. The actual HMAC verify-path is multi-week TIER 2 work targeting v2.0c. New CI guard `test_threat_model_claims_match_code` couples the doc claims to the code reality in both directions — it flips red when HMAC actually lands, forcing the hedges to be removed at the same time.
+
+### Added
+
+- **`ToolAnnotations` on all 24 `@mcp.tool` decorators (PR #55, F1).** Each tool now carries explicit `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and `title` annotations. Per MCP spec, clients can use these hints to decide which tools to gate behind a user-confirmation prompt; the 10 tools marked `readOnlyHint=True` now flow through ChatGPT and similar clients without the per-call confirmation interstitial. No surface change for FastMCP / Claude clients that ignored the missing annotations.
+- **ChatGPT non-support note in README (PR #55, F2).** Deep Research mode is explicitly unsupported because OpenAI's ChatGPT integration requires tools literally named `search` and `fetch`; this MCP exposes `gdocs_find_doc_by_title` and `gdocs_read_doc` instead. Documented so operators know not to wire this MCP into Deep Research and expect it to work.
+
+### Fixed
+
+- **`_cmd_setup_auto` swallows traceback (PR #54, F3).** The setup-apps-script-auto CLI subcommand previously printed only `str(e)` on failure, hiding the chained exception cause and making "setup failed somehow" tickets unactionable. Now uses `traceback.print_exc(file=sys.stderr)` so operators debugging setup failures see the full chain. Regression test fences the call against future stripping.
+
+### Tests
+
+- New regression tests landing across the 6 PRs (each PR fences its own change):
+  - `test_oauth_error_param_escaped` (PR #50) — asserts the OAuth error-page output contains no unescaped `<script>` after a crafted query param.
+  - `test_readme_access_level_matches_manifest` + `test_error_recovery_references_real_cli` (PR #52) — claim-vs-code couplings preventing README and `errors.py` from drifting again.
+  - `test_threat_model_claims_match_code` (PR #53) — pairs every aspirational HMAC claim with a status-hedge keyword inside a 500-char window AND asserts `restructure.gs` still has no `computeHmacSha256Signature`. Flips red the moment v2.0c verify-path lands.
+  - `test_setup_auto_prints_full_traceback` (PR #54) — captures stderr and asserts a `Traceback` line is present after a synthetic failure.
+  - `test_tool_annotations_populated` (PR #55) — iterates every `@mcp.tool` decorator and asserts the 5 annotation fields are set (catches "added a new tool, forgot the hints" regressions).
+
+### Audit-trail provenance
+
+Backlog rationalization across R17–R26 trimmed the candidate set down to what actually shipped here:
+
+- **R17** invalidated F10 — the proposed pattern was mis-identified as a peer of an existing finding; no real bug.
+- **R18** downgraded R13 D2 — the Salesloft-Drift analogy didn't transfer to a 5-user-scale deployment.
+- **R18** invalidated F1-Fernet — a single-machine SQLite deployment has no key-data separation boundary, so Fernet-at-rest would be theatre.
+- **R20** confirmed B1 v14 Task 1 is stranded — separate follow-up issue, not this bundle.
+- **R21** corrected B4 — already shipped via PR #49; the audit had read a stale local checkout.
+- **R23–R26** fresh-eyes audits on `retrofit.py`, `cli.py`, `setup_state.py`, and `resources.py` confirmed no missed HIGH-severity findings in those modules.
+
 ## [1.5.0] — 2026-05-19
 
 Pre-v2.0b instrumentation. Process-local counter in `keys.py` measures
