@@ -124,3 +124,18 @@ def test_body_size_passes_small_payload():
     resp = client.post("/echo", content=b"hello")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+# ---------------------------------------------------------------------
+# OAuth callback HTML escaping (reflected XSS prevention, v2.0.5)
+# ---------------------------------------------------------------------
+
+
+def test_error_page_escapes_html_metachars():
+    """Reflected XSS prevention: _error_page must escape HTML metachars."""
+    from google_docs_mcp.http_server import _error_page
+    resp = _error_page("<script>alert(1)</script>", 400)
+    body = resp.body.decode("utf-8")
+    assert "&lt;script&gt;" in body
+    assert "<script>" not in body
+    assert "alert(1)" in body  # escaped form still readable
