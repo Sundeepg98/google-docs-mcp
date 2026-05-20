@@ -25,17 +25,49 @@ from starlette.testclient import TestClient
 
 # 32-char master so HKDF / shim paths don't trip on length checks
 _TEST_BEARER = "z" * 32
+_TEST_BEARER_BYTES = _TEST_BEARER.encode("utf-8")
 
 
 @pytest.fixture(autouse=True)
-def setup_keys(monkeypatch):
-    """Per-test env + reset counters so assertions are deterministic."""
-    monkeypatch.setenv("MCP_BEARER_TOKEN", _TEST_BEARER)
+def setup_keys():
+    """Inject a deterministic KeyProvider so all 3 purposes return
+    ``_TEST_BEARER_BYTES``; reset counters around each test.
+
+    **v2.1.1 (M1a-complete)**: pre-v2.1.1 this fixture set
+    ``MCP_BEARER_TOKEN`` via monkeypatch.setenv. The M1a port (PR #88)
+    introduced ``with_key_provider`` + ``InMemoryKeyProvider`` as the
+    test-injection ergonomic; this migration cashes that pattern in.
+
+    Important: the InMemoryKeyProvider is **wrapped in a
+    LayeredKeyProvider** so the per-purpose counters (shim_hits,
+    total_calls, first_call_at) still increment. The /info endpoint
+    contract is the counter shape — a bare InMemoryKeyProvider doesn't
+    own counters and ``keys.get_total_call_counters()`` would fall
+    back to the default provider, breaking the per-call deterministic
+    assertion below. Wrapping in Layered restores the observability
+    discipline without re-introducing env-var coupling.
+    """
     from google_docs_mcp import keys
+    from google_docs_mcp.key_provider import (
+        InMemoryKeyProvider,
+        LayeredKeyProvider,
+        with_key_provider,
+    )
+
     keys._reset_shim_hit_counters_for_tests()
     keys._reset_total_call_counters_for_tests()
     keys._reset_first_call_timestamps_for_tests()
-    yield
+
+    layered = LayeredKeyProvider([
+        InMemoryKeyProvider({
+            "api_bearer": _TEST_BEARER_BYTES,
+            "oauth_state": _TEST_BEARER_BYTES,
+            "signed_url": _TEST_BEARER_BYTES,
+        }),
+    ])
+    with with_key_provider(layered):
+        yield
+
     keys._reset_shim_hit_counters_for_tests()
     keys._reset_total_call_counters_for_tests()
     keys._reset_first_call_timestamps_for_tests()

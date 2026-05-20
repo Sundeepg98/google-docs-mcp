@@ -202,18 +202,33 @@ def test_gdocs_server_info_response_matches_schema():
 
 def test_gdocs_get_signed_upload_url_response_matches_schema(monkeypatch):
     """gdocs_get_signed_upload_url with a mocked auth context — exercises
-    the v2.1 user-bound mint path without needing a live FastMCP request."""
+    the v2.1 user-bound mint path without needing a live FastMCP request.
+
+    **v2.1.1 (M1a-complete)**: pre-v2.1.1 this test used
+    ``monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)`` to give the
+    HKDF derivation a master to work from. The InMemoryKeyProvider
+    pattern (PR #88's M1a port) lets the test inject a deterministic
+    key for ``signed_url`` directly — no env coupling, no incidental
+    dependency on HKDF input length.
+    """
     from google_docs_mcp.server import gdocs_get_signed_upload_url
     from google_docs_mcp import server as server_mod
+    from google_docs_mcp.key_provider import (
+        InMemoryKeyProvider,
+        with_key_provider,
+    )
     from google_docs_mcp.tool_schemas import (
         GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
     )
 
-    monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
     monkeypatch.setattr(
         server_mod, "current_user_id_or_none", lambda: "test-user-sub",
     )
 
-    result = gdocs_get_signed_upload_url(ttl_seconds=60)
+    with with_key_provider(InMemoryKeyProvider({
+        "signed_url": b"deterministic-signed-url-key-32b",
+    })):
+        result = gdocs_get_signed_upload_url(ttl_seconds=60)
+
     jsonschema.validate(result, GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA)
     assert result["user_id"] == "test-user-sub"

@@ -18,7 +18,6 @@ Guards:
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -26,25 +25,39 @@ import pytest
 from starlette.testclient import TestClient
 
 
+_TEST_KEY_BYTES = b"test-signing-key-32-characters-long"
+
+
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    """Isolate user_store DB + config dir across tests."""
+    """Isolate user_store DB + config dir across tests; inject a fixed
+    KeyProvider so all 3 purposes return the same predictable bytes.
+
+    **v2.1.1 (M1a-complete)**: pre-v2.1.1 this fixture set 4 env vars
+    (MCP_BEARER_TOKEN + 3 overrides) all to the same value so the test
+    client knew exactly what bytes the middleware would compare. The
+    ``with_key_provider`` + ``InMemoryKeyProvider`` pattern (introduced
+    in PR #88's M1a port) does the same thing without leaking into
+    os.environ — and proves the pattern works at the consumer level.
+    The InMemoryKeyProvider returns the SAME bytes for all 3 purposes
+    so the bearer-header path (which compares the request token to
+    keys.get_key("api_bearer")) and the signed-URL path (HMAC over
+    keys.get_key("signed_url")) both authenticate with the same value
+    the test uses to build the requests.
+    """
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(tmp_path / "user_state.db"))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-    # v2.0b: post-strict-flip the bearer-header path needs the
-    # operator-known token bytes, not HKDF output. Mirror the RUNBOOK
-    # §3.6 operator workflow by pinning all 3 purpose overrides to
-    # the master value — this is exactly what the preflight expects
-    # operators to do BEFORE merging the strict-flip. Without these
-    # overrides, get_key('api_bearer') returns HKDF(master) bytes
-    # which the test client has no way to know.
-    master = "test-signing-key-32-characters-long"
-    monkeypatch.setenv("MCP_BEARER_TOKEN", master)
-    monkeypatch.setenv("MCP_API_BEARER_KEY", master)
-    monkeypatch.setenv("OAUTH_STATE_SIGNING_KEY", master)
-    monkeypatch.setenv("SIGNED_URL_SIGNING_KEY", master)
     monkeypatch.setenv("TRUSTED_HOSTS", "testserver,localhost")
-    yield
+    from google_docs_mcp.key_provider import (
+        InMemoryKeyProvider,
+        with_key_provider,
+    )
+    with with_key_provider(InMemoryKeyProvider({
+        "api_bearer": _TEST_KEY_BYTES,
+        "oauth_state": _TEST_KEY_BYTES,
+        "signed_url": _TEST_KEY_BYTES,
+    })):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -67,14 +80,13 @@ def _build_app_under_test():
 
 def _mint_signed_url_for(user_id: str, *, base="http://testserver/api/convert") -> str:
     from google_docs_mcp.crypto import sign_upload_url
-    # v2.0b: sign_upload_url expects signing_key as bytes (matches
-    # keys.get_key("signed_url") return type). The fixture's
-    # MCP_BEARER_TOKEN value is a str; encode to bytes here at the
-    # test boundary (production code calls get_key(), which returns
-    # bytes natively).
+    # v2.1.1: signed-URL HMAC uses the same _TEST_KEY_BYTES that the
+    # fixture injected via InMemoryKeyProvider, so the middleware's
+    # keys.get_key("signed_url") and this helper agree on the key
+    # material without round-tripping through os.environ.
     minted = sign_upload_url(
         base_url=base,
-        signing_key=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
+        signing_key=_TEST_KEY_BYTES,
         user_id=user_id,
     )
     return minted["url"]
@@ -104,14 +116,12 @@ def test_middleware_stashes_user_id_on_request_state_for_signed_url():
         routes=[Route("/api/echo", echo_uid, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
-            # (matches keys.get_key()'s return type). Encode the
-            # fixture str at the test boundary; production code calls
-            # get_key() which returns bytes natively.
-            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
-            signed_url_key=os.environ.get(
-                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ).encode("utf-8"),
+            # v2.1.1: middleware takes bytes-typed keys (matches
+            # keys.get_key()'s return type). Use the same _TEST_KEY_BYTES
+            # the fixture injected via InMemoryKeyProvider so the
+            # middleware authenticates requests built with that key.
+            bearer_token=_TEST_KEY_BYTES,
+            signed_url_key=_TEST_KEY_BYTES,
         )],
     )
     client = TestClient(app)
@@ -140,14 +150,12 @@ def test_middleware_rejects_pre_v21_signed_url_without_uid():
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
-            # (matches keys.get_key()'s return type). Encode the
-            # fixture str at the test boundary; production code calls
-            # get_key() which returns bytes natively.
-            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
-            signed_url_key=os.environ.get(
-                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ).encode("utf-8"),
+            # v2.1.1: middleware takes bytes-typed keys (matches
+            # keys.get_key()'s return type). Use the same _TEST_KEY_BYTES
+            # the fixture injected via InMemoryKeyProvider so the
+            # middleware authenticates requests built with that key.
+            bearer_token=_TEST_KEY_BYTES,
+            signed_url_key=_TEST_KEY_BYTES,
         )],
     )
     client = TestClient(app)
@@ -182,14 +190,12 @@ def test_middleware_rejects_swapped_uid_cross_tenant_attack():
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
-            # (matches keys.get_key()'s return type). Encode the
-            # fixture str at the test boundary; production code calls
-            # get_key() which returns bytes natively.
-            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
-            signed_url_key=os.environ.get(
-                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ).encode("utf-8"),
+            # v2.1.1: middleware takes bytes-typed keys (matches
+            # keys.get_key()'s return type). Use the same _TEST_KEY_BYTES
+            # the fixture injected via InMemoryKeyProvider so the
+            # middleware authenticates requests built with that key.
+            bearer_token=_TEST_KEY_BYTES,
+            signed_url_key=_TEST_KEY_BYTES,
         )],
     )
     client = TestClient(app)
@@ -333,7 +339,7 @@ def test_convert_endpoint_bearer_header_still_uses_operator_creds():
         resp = client.post(
             "/api/convert",
             files=_docx_form(),
-            headers={"authorization": f"Bearer {os.environ['MCP_BEARER_TOKEN']}"},
+            headers={"authorization": f"Bearer {_TEST_KEY_BYTES.decode('utf-8')}"},
         )
 
     assert resp.status_code == 200, resp.text
