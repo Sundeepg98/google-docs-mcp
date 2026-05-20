@@ -4,14 +4,29 @@
 
 CI enforces minimum **line coverage** via `--cov-fail-under` in `pytest.ini`.
 
-- **Floor: 56%** (set 2026-05-20 per R33 baseline measurement).
-- **Measured baseline: 56.74%** — floor is one integer below to give ~0.7pp
-  headroom for platform / test-order variance across Python 3.10–3.13.
+- **Floor: 55%** (set 2026-05-20 per R33 baseline measurement).
+- **Measured baseline per Python version on CI:**
+
+  | Platform | Coverage |
+  |---|---|
+  | Linux Py 3.10 | 56.52% |
+  | Linux Py 3.11 | **55.21%** ← outlier; sets the floor |
+  | Linux Py 3.12 | 56.56% |
+  | Linux Py 3.13 | 56.56% |
+  | Windows Py 3.13 | 56.74% |
+
+  Py 3.11 measures noticeably lower than every other version — likely a
+  version-conditional import branch (some `if sys.version_info` gate). To be
+  investigated; either covered with a test or explicitly accepted as
+  version-specific dead code (then `# pragma: no cover` it).
+
+- **Floor at 55**: one integer below the worst-case version (55.21%), giving
+  ~0.2pp headroom.
 
 If your PR drops total coverage below the floor, CI fails with:
 
 ```
-FAIL Required test coverage of 56% not reached. Total coverage: 55.xx%
+FAIL Required test coverage of 55% not reached. Total coverage: 54.xx%
 ```
 
 To see what changed locally:
@@ -24,9 +39,9 @@ pytest tests/unit --cov=src/google_docs_mcp --cov-report=term-missing
 
 - **Bump `+1pp` per release** (or every 2 weeks, whichever comes first)
   until **80%** is reached.
-- First scheduled ratchet: floor goes `56 → 57` once measured baseline
-  is ≥ 57.5% (i.e. when a coverage-improving PR pushes us comfortably
-  above the next integer).
+- First scheduled ratchet: floor goes `55 → 56` once the **Py 3.11 outlier**
+  is resolved (either covered by a test or `# pragma: no cover`'d), bringing
+  the worst-case version to ≥ 56.5%.
 - After 80% is hit, switch to branch coverage (`--cov-branch`) and
   re-baseline.
 
