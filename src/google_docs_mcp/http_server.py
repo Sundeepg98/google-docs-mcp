@@ -18,6 +18,7 @@ Fly.io probes.
 """
 from __future__ import annotations
 
+import html as _html  # aliased — `html` is shadowed by local var in _success_page/_error_page
 import json
 import logging
 import os
@@ -138,7 +139,7 @@ _OAUTH_SUCCESS_HTML = """<!doctype html>
 
 
 def _success_page() -> Response:
-    html = _OAUTH_SUCCESS_HTML.format(
+    body_html = _OAUTH_SUCCESS_HTML.format(
         check="✅",
         heading="Google access granted",
         body=(
@@ -146,16 +147,16 @@ def _success_page() -> Response:
             "on your behalf. Return to your chat and retry the action."
         ),
     )
-    return Response(html, status_code=200, media_type="text/html")
+    return Response(body_html, status_code=200, media_type="text/html")
 
 
 def _error_page(message: str, status_code: int) -> Response:
-    html = _OAUTH_SUCCESS_HTML.format(
+    body_html = _OAUTH_SUCCESS_HTML.format(
         check="⚠️",
         heading="Authorization didn't complete",
-        body=message,
+        body=_html.escape(message),
     )
-    return Response(html, status_code=status_code, media_type="text/html")
+    return Response(body_html, status_code=status_code, media_type="text/html")
 
 
 async def oauth_google_api_callback(request: Request) -> Response:
