@@ -12,7 +12,14 @@ _REPO = Path(__file__).resolve().parents[2]
 def test_no_floating_third_party_action_refs():
     """Third-party actions must be SHA-pinned, not @master/@main."""
     workflows_dir = _REPO / ".github" / "workflows"
-    floating_pattern = re.compile(r'uses:\s*(?!actions/)(\S+)@(master|main)\b')
+    # Allowlist GitHub-owned action orgs in the negative lookahead:
+    #   actions/  — canonical (actions/checkout, actions/setup-python, ...)
+    #   github/   — GitHub-owned (codeql-action, ...); first-party security
+    #               tooling, treated as trusted infra just like actions/.
+    # Third-party refs still must be SHA-pinned. R28 nit on PR #51.
+    floating_pattern = re.compile(
+        r'uses:\s*(?!(?:actions|github)/)(\S+)@(master|main)\b'
+    )
 
     bad: list[str] = []
     for yml in sorted(workflows_dir.glob("*.yml")):
