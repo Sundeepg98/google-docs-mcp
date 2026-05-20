@@ -218,7 +218,7 @@ def test_tab_nesting_depth_cap_enforced():
     an empty doc + the user gets a confusing API error from Google.
     """
     from unittest.mock import MagicMock
-    from google_docs_mcp.docs_api import make_doc_with_tabs
+    from google_docs_mcp.services.docs.api import make_doc_with_tabs
 
     # 4-level nesting: root → child → grandchild → great-grandchild.
     # Should raise ValueError before any Google API call (so the

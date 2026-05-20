@@ -35,7 +35,7 @@ def test_doc_is_owned_by_authorizing_account(live_creds, created_docs):
     latter requires userinfo.email which our runtime SCOPES don't
     include by default.
     """
-    from google_docs_mcp.docs_api import make_doc_with_tabs
+    from google_docs_mcp.services.docs.api import make_doc_with_tabs
     from google_docs_mcp.google_clients import get_service
 
     drive = get_service("drive", "v3", credentials=live_creds)

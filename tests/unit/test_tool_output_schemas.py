@@ -146,7 +146,9 @@ def test_each_decorator_schema_matches_registry_entry():
 def test_gdocs_get_tab_url_response_matches_schema():
     """``gdocs_get_tab_url`` is pure URL composition — no API call.
     Drive it, validate response against its declared schema."""
-    from google_docs_mcp.server import gdocs_get_tab_url
+    # v2.1.3 (M3 POC): gdocs_get_tab_url moved from server.py to
+    # services/docs/tools.py. Import path updated accordingly.
+    from google_docs_mcp.services.docs.tools import gdocs_get_tab_url
     from google_docs_mcp.tool_schemas import GDOCS_GET_TAB_URL_OUTPUT_SCHEMA
 
     result = gdocs_get_tab_url("DOC123", "TAB456")
