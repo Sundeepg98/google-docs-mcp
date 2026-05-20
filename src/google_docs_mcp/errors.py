@@ -30,8 +30,11 @@ _GUIDANCE: list[tuple[str, str]] = [
     ),
     (
         "invalid_grant",
-        "The OAuth token has been revoked or expired. Run "
-        "`google-docs-mcp auth` to re-authenticate.",
+        "The OAuth token has been revoked or expired. In cloud/HTTP mode, "
+        "call the `gdocs_reset_authorization` tool — the next tool call "
+        "returns a fresh consent URL. In stdio mode, delete "
+        "`~/.google-docs-mcp/token.json` and re-run any tool to trigger "
+        "fresh consent.",
     ),
     (
         "insufficient permission",

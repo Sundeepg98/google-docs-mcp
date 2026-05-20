@@ -13,6 +13,9 @@ the README's documented commands MUST be in the dispatch set.
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 
 # Every command surfaced in the README's setup section must dispatch
 # through the CLI router. If you add a new `google-docs-mcp <cmd>`
@@ -82,3 +85,28 @@ def test_every_dispatched_subcommand_has_a_cli_handler():
             f"command routes into cli.py and hits the 'Unknown command' "
             f"branch."
         )
+
+
+def test_error_recovery_references_exist_as_cli_subcommands():
+    """errors.py guidance saying 'Run `google-docs-mcp X`' — X must be
+    a real subcommand. Catches N2-class broken recovery instructions."""
+    from google_docs_mcp.cli import cli_main  # noqa: F401
+    errors_text = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "google_docs_mcp" / "errors.py"
+    ).read_text(encoding="utf-8")
+    cli_text = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "google_docs_mcp" / "cli.py"
+    ).read_text(encoding="utf-8")
+
+    known = set(re.findall(r'cmd\s*==\s*"([\w\-]+)"', cli_text))
+    refs = set(re.findall(r'google-docs-mcp ([\w\-]+)', errors_text))
+    missing = refs - known
+    assert not missing, (
+        f"errors.py references CLI subcommands that don't exist: {missing!r}. "
+        f"Known subcommands: {sorted(known)}. "
+        f"Either implement the subcommand OR fix the error message to "
+        f"reference an existing one (e.g. tool name like "
+        f"`gdocs_reset_authorization`)."
+    )
