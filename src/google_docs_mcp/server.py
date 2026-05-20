@@ -1833,6 +1833,12 @@ def gdocs_get_signed_upload_url(
     The URL is single-use (the server tracks consumed nonces) and
     expires after ``ttl_seconds`` (default 10 min, max 1 hour).
 
+    **v2.1 — bound to your user identity.** The URL embeds the calling
+    user's Google ``sub`` claim, so the /api/convert request lands in
+    YOUR Drive (using YOUR Apps Script Web App), not the operator's.
+    Stdio callers (no FastMCP auth context) cannot mint signed URLs —
+    they have direct tool access and don't need the REST detour.
+
     Args:
         ttl_seconds: How long the URL stays valid. Default 600s; keep
             short to limit blast radius if the URL leaks into a chat
@@ -1841,9 +1847,10 @@ def gdocs_get_signed_upload_url(
             Defaults to 50 MB (Drive's converter ceiling).
 
     Returns:
-        ``{"url", "expires_at", "max_bytes", "nonce", "usage_hint"}``.
-        ``usage_hint`` is a one-line Python snippet showing how to use
-        the URL — the model copies it into the sandbox.
+        ``{"url", "expires_at", "max_bytes", "nonce", "user_id",
+        "usage_hint"}``. ``usage_hint`` is a one-line Python snippet
+        showing how to use the URL — the model copies it into the
+        sandbox.
 
     Choreography: this is the FIRST step of the `convert_sandbox_docx`
     workflow. Mint the URL here, then POST the .docx bytes to that URL
@@ -1873,9 +1880,23 @@ def gdocs_get_signed_upload_url(
             f"ttl_seconds must be 1..{MAX_TTL_SECONDS}, got {ttl_seconds}"
         )
 
+    # v2.1: every signed URL is bound to the calling user. Without a
+    # FastMCP auth context we have no user — stdio callers don't need
+    # /api/convert at all (they have direct tool access), so refuse
+    # rather than mint an operator-scoped URL that would write into
+    # the wrong Drive.
+    user_id = current_user_id_or_none()
+    if user_id is None:
+        raise ToolError(
+            "gdocs_get_signed_upload_url requires an authenticated MCP "
+            "session (cloud / HTTP mode). Stdio callers should pass "
+            "docx_path directly to gdocs_tab_existing_doc instead."
+        )
+
     minted = sign_upload_url(
         base_url=f"{base}/api/convert",
         signing_key=signing_key,
+        user_id=user_id,
         ttl_seconds=ttl_seconds,
         max_bytes=max_bytes,
     )
