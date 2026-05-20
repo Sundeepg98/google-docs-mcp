@@ -109,16 +109,19 @@ select = ["TID"]
 "googleapiclient.discovery.build" = { msg = "Use google_docs_mcp.google_clients.get_service instead — single chokepoint for retry, logging, cache, etc. See PR #47 (v2.0.3 operator-secret leak) for the anti-pattern this lint prevents: a wrapper that's bypassed by direct imports." }
 
 [tool.ruff.lint.per-file-ignores]
-# This file owns the legitimate use of googleapiclient.discovery.build.
+# These two files own the legitimate use of googleapiclient.discovery.build.
 # PR2-A (v2.6b) removed docs_api.py from this list.
 # PR2-B (v2.6b) removed drive_api.py from this list.
 # PR2-C (v2.6b) removed the final 4 — docx_import.py, preview.py,
 # retrofit.py, and gas_deploy/client.py — closing the bypass class.
-# google_clients.py is now the SOLE TID251 exemption; any direct
-# `from googleapiclient.discovery import build` outside this file
-# is a lint failure (= a reintroduced bypass that defeats the
+# M2 (v2.1.2) promoted the actual ``build()`` call from google_clients.py
+# into the new google_api_client.GoogleApiClientAdapter — google_clients.py
+# is now a thin delegating facade that only re-exports the Resource type.
+# Any direct `from googleapiclient.discovery import build` outside these
+# two files is a lint failure (= a reintroduced bypass that defeats the
 # retry / logging / cache chokepoint).
 "src/google_docs_mcp/google_clients.py" = ["TID251"]
+"src/google_docs_mcp/google_api_client.py" = ["TID251"]
 
 # ---------------------------------------------------------------------
 # Pyright config (v2.0.6)

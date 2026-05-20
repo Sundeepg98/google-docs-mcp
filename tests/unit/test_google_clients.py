@@ -1,12 +1,21 @@
-"""Coverage for the v2.6a google_clients wrapper.
+"""Coverage for the v2.6a google_clients facade + v2.1.2 M2 production adapter.
 
-The wrapper is a pure passthrough today; these tests pin down the
-behavioral invariants that any future caching / retry / telemetry
-layer MUST preserve. In particular,
+The facade ``google_clients.get_service`` is a pure passthrough today;
+these tests pin down the behavioral invariants that any future caching /
+retry / telemetry layer MUST preserve. In particular,
 ``test_distinct_credentials_get_distinct_resources`` is the
 mutation guard for any future cache addition: a cache that forgets
 credentials in its key would let one user's Drive Resource leak
 to another, and that test fails immediately on such a regression.
+
+**v2.1.2 (M2)**: the actual ``build()`` call moved into
+``google_api_client.GoogleApiClientAdapter`` (the production adapter
+behind the new Hex-style Port). The patch target updated from
+``google_docs_mcp.google_clients.build`` to
+``google_docs_mcp.google_api_client.build`` — both call shapes
+are equivalent since the facade delegates straight through. Port-level
+tests (Protocol satisfaction, InMemoryGoogleAPIClient behavior,
+injection ergonomics) live in ``tests/unit/test_google_api_client.py``.
 
 We mock ``googleapiclient.discovery.build`` so the tests are pure
 unit isolation — no network, no Google SDK construction cost.
@@ -32,7 +41,7 @@ def test_get_service_returns_what_build_returns():
     """
     from google_docs_mcp.google_clients import get_service
 
-    with patch("google_docs_mcp.google_clients.build") as mk_build:
+    with patch("google_docs_mcp.google_api_client.build") as mk_build:
         sentinel_resource = MagicMock(name="drive-v3-resource")
         mk_build.return_value = sentinel_resource
 
@@ -61,7 +70,7 @@ def test_distinct_service_tuples_get_distinct_resources():
     """
     from google_docs_mcp.google_clients import get_service
 
-    with patch("google_docs_mcp.google_clients.build") as mk_build:
+    with patch("google_docs_mcp.google_api_client.build") as mk_build:
         # Return a distinct Resource per call so we can tell them apart.
         mk_build.side_effect = lambda *args, **kwargs: MagicMock(
             name=f"resource-{args[0]}-{args[1]}",
@@ -96,7 +105,7 @@ def test_distinct_credentials_get_distinct_resources():
     """
     from google_docs_mcp.google_clients import get_service
 
-    with patch("google_docs_mcp.google_clients.build") as mk_build:
+    with patch("google_docs_mcp.google_api_client.build") as mk_build:
         # Return a distinct Resource per call so we can tell them apart.
         # If a future cache uses (service, version) as key and ignores
         # credentials, the SECOND call below would return the cached

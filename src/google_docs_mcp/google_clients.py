@@ -3,12 +3,16 @@
 Owned wrapper around the vendor SDK so high-level code depends on
 this module's abstraction, not on googleapiclient directly.
 
-**Initial implementation: pure passthrough.** No caching, no retry,
-no telemetry. The wrapper EXISTS so those concerns can be added
-later as single-site changes inside this module instead of
-23-site sweeps across the codebase. PR1 (v2.6a) ships the seam;
-PR2 migrates the 23 existing call sites; later PRs add caching /
-retry / telemetry behind this surface.
+**v2.1.2 M2 refactor.** The mechanism layer has been promoted to
+``google_api_client.py`` — Protocol + 2 adapters (production
+``GoogleApiClientAdapter`` + test-only ``InMemoryGoogleAPIClient``)
++ injection ergonomics matching ``StorageBackend`` (user_store.py)
+and ``KeyProvider`` (key_provider.py). This module remains the public
+facade: every pre-v2.1.2 import path continues to work. The refactor
+is purely internal — no behavior change for callers.
+
+See ``google_api_client.py`` module docstring for the Hex-style
+port-and-adapters rationale and the M1b-skipped / M2-chosen verdict.
 
 **Why this defends against the v2.0.3 anti-pattern (PR #47).** That
 bug was an existing wrapper (``user_store.save_credentials_json``)
@@ -22,7 +26,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from googleapiclient.discovery import Resource, build  # noqa: TID251 — this file owns the legitimate use
+# Re-export Resource for callers that import it from here. The actual
+# construction lives in ``google_api_client.GoogleApiClientAdapter``
+# (which still does ``from googleapiclient.discovery import build``).
+# This module is the public facade; the TID251 exemption now applies
+# to ``google_api_client.py`` instead.
+from googleapiclient.discovery import Resource
+
+from .google_api_client import get_service as _delegate_get_service
 
 if TYPE_CHECKING:
     # Base type — googleapiclient.build() accepts any Credentials subclass
@@ -41,10 +52,12 @@ def get_service(
 ) -> Resource:
     """Return a Google API ``Resource`` for ``(service, version, credentials)``.
 
-    Pure passthrough today — equivalent to
-    ``googleapiclient.discovery.build(service, version, credentials=creds)``.
-    Future enhancements (cache, retry, telemetry, async swap) land
-    in this function without touching callers.
+    **v2.1.2**: delegates to ``google_api_client.get_service``, which
+    routes to the active ``GoogleAPIClient`` adapter (production
+    default = ``GoogleApiClientAdapter``, byte-equivalent to pre-v2.1.2
+    behavior). Tests that want to swap the backend use
+    ``google_api_client.with_google_api_client(InMemoryGoogleAPIClient(...))``
+    instead of ``patch("google_docs_mcp.google_clients.build")``.
 
     The ``credentials`` parameter is keyword-only on purpose: any
     future caching layer MUST keep credentials in the cache key
@@ -55,4 +68,7 @@ def get_service(
     ``tests/unit/test_google_clients.py`` — if you collapse the
     cache key across credentials, that test fails immediately.
     """
-    return build(service, version, credentials=credentials)
+    return _delegate_get_service(service, version, credentials=credentials)
+
+
+__all__ = ["Resource", "get_service"]
