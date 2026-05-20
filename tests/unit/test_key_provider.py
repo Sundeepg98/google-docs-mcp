@@ -329,3 +329,107 @@ def test_keyprovenance_is_frozen():
     prov = KeyProvenance(purpose="api_bearer", mechanism="hkdf_derived", master_len=32)
     with pytest.raises(Exception):  # FrozenInstanceError
         prov.master_len = 99  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------
+# Defensive branches: defer-on-unknown-purpose + missing-master shim path
+# ---------------------------------------------------------------------
+
+
+def test_env_override_returns_none_for_unknown_purpose():
+    """Defensive: a purpose not in the override-env map (typo, future
+    addition without registration) must defer, not crash."""
+    adapter = EnvOverrideKeyProvider()
+    # type:ignore — we deliberately pass a string outside Purpose Literal
+    assert adapter.get_key("not_a_real_purpose") is None  # type: ignore[arg-type]
+    assert adapter.provenance("not_a_real_purpose") is None  # type: ignore[arg-type]
+
+
+def test_shim_defers_when_master_env_missing(monkeypatch):
+    """Defensive: shim purpose in set but master missing → defer to next
+    provider rather than crash; HKDF will then surface the clearer
+    "MCP_BEARER_TOKEN required" error."""
+    monkeypatch.delenv("MCP_BEARER_TOKEN", raising=False)
+    adapter = RawMasterShimKeyProvider(lambda: frozenset({"api_bearer"}))
+    assert adapter.get_key("api_bearer") is None
+
+
+def test_hkdf_returns_none_for_unknown_purpose():
+    """Defensive: facade gates this, but the adapter itself must defer
+    on unknown rather than KeyError on the _HKDF_INFO lookup."""
+    adapter = HKDFKeyProvider()
+    assert adapter.get_key("not_a_real_purpose") is None  # type: ignore[arg-type]
+    assert adapter.provenance("not_a_real_purpose") is None  # type: ignore[arg-type]
+
+
+def test_keys_facade_observability_falls_back_when_non_layered_active(
+    monkeypatch,
+):
+    """When a test injects a bare ``InMemoryKeyProvider`` (no counters),
+    the facade's observability accessors must fall back to the default
+    provider's counters — not crash. Exercises ``_provider()``'s
+    isinstance check in ``keys.py``."""
+    monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
+    from google_docs_mcp import keys
+
+    bare = InMemoryKeyProvider({"api_bearer": b"x" * 32})
+    with with_key_provider(bare):
+        # These don't crash; they return the DEFAULT provider's counters
+        # (which are 0 / None since no get_key call has hit the default
+        # provider during this block).
+        shim = keys.get_shim_hit_counters()
+        totals = keys.get_total_call_counters()
+        firsts = keys.get_first_call_timestamps()
+
+    assert isinstance(shim, dict) and "api_bearer" in shim
+    assert isinstance(totals, dict) and "api_bearer" in totals
+    assert isinstance(firsts, dict) and "api_bearer" in firsts
+
+
+# ---------------------------------------------------------------------
+# HKDF byte-equality golden-value regression (v2.1.1 / Hex-spec deferral)
+# ---------------------------------------------------------------------
+
+
+def test_hkdf_byte_equality_golden_value():
+    """Pin the exact 32-byte HKDF-SHA256 output for a fixed IKM + info.
+
+    PR #88 replaced the inline ``hmac.new(b"", ikm, hashlib.sha256)`` +
+    ``hmac.new(prk, info + b"\\x01", hashlib.sha256)`` HKDF
+    implementation with ``cryptography.hazmat.primitives.kdf.hkdf.HKDF``
+    (to clear a CodeQL false-positive). The swap was manually verified
+    byte-identical, but that verification wasn't pinned by a test —
+    until now.
+
+    The golden value below was computed once against the current
+    implementation. Any future change that drifts the bytes (a
+    parameter substitution, an algorithm swap, an info-string typo)
+    fails this test loudly, forcing the author to either:
+
+    1. Confirm the drift is intentional and run a key-rotation event
+       (every in-flight key for the affected purpose becomes invalid),
+       OR
+    2. Revert the change.
+
+    Either way, the contract — "byte-stable HKDF output across
+    implementation swaps" — is enforced at CI time, not at deploy
+    time when shim_hit telemetry would notice.
+    """
+    from google_docs_mcp.key_provider import _hkdf_sha256
+
+    # Fixed inputs: 32 bytes of 'A', the live api_bearer info string.
+    ikm = b"A" * 32
+    info = b"google-docs-mcp v1 api_bearer"
+    expected = bytes.fromhex(
+        "6203ba051ab36bbdc14a27d9cca5dc3d04a60329ee3c890c64548bc1be7542b3"
+    )
+
+    actual = _hkdf_sha256(ikm, info)
+    assert actual == expected, (
+        f"HKDF output drifted from PR #88's pinned value.\n"
+        f"  expected: {expected.hex()}\n"
+        f"  actual:   {actual.hex()}\n"
+        f"If this is intentional, also bump the key-rotation event in "
+        f"CHANGELOG and confirm operator-side override-pinning per "
+        f"RUNBOOK §3.4."
+    )
