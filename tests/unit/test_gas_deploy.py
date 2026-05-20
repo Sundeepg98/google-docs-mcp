@@ -16,10 +16,16 @@ import pytest
 
 @pytest.fixture
 def mock_script_svc():
-    """Yield a fake script_v1 build() with a mock projects() chain."""
-    with patch("google_docs_mcp.gas_deploy.client.build") as build_mock:
+    """Yield a fake script_v1 service with a mock projects() chain.
+
+    PR2-C (v2.6b): patches ``get_service`` (the post-migration
+    chokepoint) instead of the legacy ``build`` symbol. The
+    callsite-as-patch-target pattern is unchanged — follow the
+    imported name in ``gas_deploy.client``'s namespace.
+    """
+    with patch("google_docs_mcp.gas_deploy.client.get_service") as svc_mock:
         svc = MagicMock()
-        build_mock.return_value = svc
+        svc_mock.return_value = svc
         yield svc
 
 

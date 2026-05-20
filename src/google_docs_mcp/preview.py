@@ -16,7 +16,7 @@ from typing import Literal
 
 from docx import Document
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+from google_docs_mcp.google_clients import get_service
 
 from .drive_api import DOCX_MIME, GDOC_MIME
 
@@ -123,7 +123,7 @@ def _detect_split_titles(
 
 def _fetch_drive_as_docx(creds: Credentials, drive_file_id: str) -> io.BytesIO:
     """Download a Drive file as .docx bytes (works for both .docx and Google Doc)."""
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     meta = drive.files().get(fileId=drive_file_id, fields="mimeType").execute()
     mime = meta.get("mimeType")
     if mime == DOCX_MIME:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+from google_docs_mcp.google_clients import get_service
 from googleapiclient.errors import HttpError
 
 # Apps Script's manifest file is conventionally named "appsscript" with
@@ -52,7 +52,7 @@ class AppsScriptClient:
     """
 
     def __init__(self, creds: Credentials) -> None:
-        self._svc = build("script", "v1", credentials=creds)
+        self._svc = get_service("script", "v1", credentials=creds)
 
     def script_exists(self, script_id: str) -> bool:
         """True if the Apps Script project is still reachable.

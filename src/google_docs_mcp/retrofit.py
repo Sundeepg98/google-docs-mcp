@@ -39,7 +39,7 @@ from .docx_import import (
     convert_docx_to_tabbed_doc,
 )
 from .drive_api import DOCX_MIME, GDOC_MIME
-from googleapiclient.discovery import build
+from google_docs_mcp.google_clients import get_service
 
 W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -319,7 +319,7 @@ def _build_heading_paragraph(title: str) -> Any:
 
 def _fetch_drive_as_docx_bytes(creds: Credentials, drive_file_id: str) -> bytes:
     """Pull a Drive file as .docx bytes (works for .docx and Google Doc)."""
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     meta = drive.files().get(fileId=drive_file_id, fields="mimeType").execute()
     mime = meta.get("mimeType")
     if mime == DOCX_MIME:
