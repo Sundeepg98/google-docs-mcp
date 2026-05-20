@@ -20,9 +20,10 @@ from typing import Any, Literal
 from typing_extensions import NotRequired, TypedDict
 
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
+
+from google_docs_mcp.google_clients import get_service
 
 CODE_FONT = "Roboto Mono"
 CODE_BG_RGB = {"red": 0.945, "green": 0.957, "blue": 0.965}  # #F1F3F4
@@ -59,7 +60,7 @@ def make_doc_with_tabs(
             f"got depth {max_depth + 1}"
         )
 
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     doc = docs.documents().create(body={"title": title}).execute()
     doc_id = doc["documentId"]
 
@@ -221,7 +222,7 @@ def add_tabs_to_doc(
 
     max_depth = max((d for d, _, _ in flat), default=0)
 
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
 
     if parent_tab_id:
         fetched = docs.documents().get(
@@ -327,7 +328,7 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> dict:
     True, callers should usually warn the user before continuing to
     edit — the file is invisible to them in Drive.
     """
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     # includeTabsContent must be True for the tabs[] field to be populated
     # at all; without it the response uses the legacy single-tab schema.
     fetched = docs.documents().get(
@@ -382,7 +383,7 @@ def read_tab_content(
     if not tab_id and not tab_title:
         raise ValueError("Provide either tab_id or tab_title")
 
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()
@@ -473,7 +474,7 @@ def replace_all_text(
     """
     if not find:
         raise ValueError("find string cannot be empty")
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     req: dict[str, Any] = {
         "replaceAllText": {
             "containsText": {"text": find, "matchCase": match_case},
@@ -508,7 +509,7 @@ def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
     Returns ``{"doc_id", "tabs": [{tab_id, title, depth, paragraphs:
     [{style, text}, ...]}, ...]}`` — tabs in pre-order traversal.
     """
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()
@@ -566,7 +567,7 @@ def delete_tab(creds: Credentials, doc_id: str, tab_id: str) -> None:
     ``deleteTab``, not ``deleteDocumentTab``). Per the API contract,
     deleting a tab cascades to its child tabs.
     """
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     docs.documents().batchUpdate(
         documentId=doc_id,
         body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
@@ -596,7 +597,7 @@ def rename_tab(
         fields.append("iconEmoji")
     if not fields:
         return
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     docs.documents().batchUpdate(
         documentId=doc_id,
         body={
@@ -641,7 +642,7 @@ def set_tab_icons(
     if not icons_by_title:
         raise ValueError("icons_by_title cannot be empty")
 
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()
@@ -711,7 +712,7 @@ def append_to_tab(
     if not content:
         return {"tab_id": tab_id, "appended_chars": 0}
 
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()
