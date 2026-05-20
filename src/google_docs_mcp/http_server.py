@@ -653,12 +653,22 @@ def derive_trusted_hosts() -> list[str]:
     Priority:
       1. ``TRUSTED_HOSTS`` env var (comma-separated) — explicit override.
       2. ``FLY_APP_NAME`` -> derive ``<app>.fly.dev`` + ``*.<app>.fly.dev``
-         + ``localhost``.
+         + ``localhost`` + Fly's internal probe hostnames.
       3. Fail-open ``["*"]`` with WARNING log.
 
     Production safety: refuses to start if ``FLY_REGION`` is set (machine
     is running on Fly infra) but ``FLY_APP_NAME`` is absent — that's the
     silent fail-open path round-20 adversarial review identified.
+
+    **v2.0.6 — Fly internal probe allowlist.** Fly's deploy health gate
+    probes ``GET /health`` from an internal address whose Host header
+    does NOT match ``<app>.fly.dev``. Without ``<app>.internal`` and the
+    ``*.internal`` machine-id pattern in the allowlist, the probe gets
+    a 400 from TrustedHostMiddleware before reaching the handler, the
+    health gate fails, and Fly aborts the deploy (rolling back to the
+    previous machine). Verified against 5 consecutive failed deploys
+    (v78-v82) where ``/health`` returned 200 to external requests but
+    400 to Fly's internal probe at ``172.19.24.105``.
     """
     explicit = os.environ.get("TRUSTED_HOSTS", "").strip()
     if explicit:
@@ -677,7 +687,15 @@ def derive_trusted_hosts() -> list[str]:
         )
 
     if app_name:
-        return [f"{app_name}.fly.dev", f"*.{app_name}.fly.dev", "localhost"]
+        return [
+            f"{app_name}.fly.dev",
+            f"*.{app_name}.fly.dev",
+            "localhost",
+            # Fly's internal health-check + service-discovery hostnames.
+            # See v2.0.6 docstring above for the deploy-blocker context.
+            f"{app_name}.internal",
+            "*.internal",  # covers machine-id.vm.<app>.internal probes
+        ]
 
     log.warning(
         "TrustedHost middleware running fail-open (allow all hosts) -- "
