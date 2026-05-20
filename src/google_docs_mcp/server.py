@@ -2356,7 +2356,7 @@ def _check_admin_token(provided: object) -> None:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    title="Admin: list registered users (read-only, admin-token gated)",
+    title="Admin: query user_state forensic timeline (admin-token gated)",
     readOnlyHint=True,
     destructiveHint=False,
     idempotentHint=True,
