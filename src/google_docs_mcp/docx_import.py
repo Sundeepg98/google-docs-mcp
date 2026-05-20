@@ -22,7 +22,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+from google_docs_mcp.google_clients import get_service
 
 from . import user_store
 from .config import get_webapp_url
@@ -170,7 +170,7 @@ def convert_docx_to_tabbed_doc(
     doc_id = converted["doc_id"]
 
     # 2. Find split points in the converted doc's primary tab body.
-    docs = build("docs", "v1", credentials=creds)
+    docs = get_service("docs", "v1", credentials=creds)
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()

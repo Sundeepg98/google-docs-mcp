@@ -86,13 +86,12 @@ select = ["TID"]
 
 [tool.ruff.lint.per-file-ignores]
 # This file owns the legitimate use of googleapiclient.discovery.build.
-"src/google_docs_mcp/google_clients.py" = ["TID251"]
-# The 4 remaining files below still import `build` directly. PR2
-# migrates them to google_clients.get_service and removes these
-# ignores one at a time. Each removal is a separate review surface.
 # PR2-A (v2.6b) removed docs_api.py from this list.
 # PR2-B (v2.6b) removed drive_api.py from this list.
-"src/google_docs_mcp/docx_import.py" = ["TID251"]
-"src/google_docs_mcp/preview.py" = ["TID251"]
-"src/google_docs_mcp/retrofit.py" = ["TID251"]
-"src/google_docs_mcp/gas_deploy/client.py" = ["TID251"]
+# PR2-C (v2.6b) removed the final 4 — docx_import.py, preview.py,
+# retrofit.py, and gas_deploy/client.py — closing the bypass class.
+# google_clients.py is now the SOLE TID251 exemption; any direct
+# `from googleapiclient.discovery import build` outside this file
+# is a lint failure (= a reintroduced bypass that defeats the
+# retry / logging / cache chokepoint).
+"src/google_docs_mcp/google_clients.py" = ["TID251"]
