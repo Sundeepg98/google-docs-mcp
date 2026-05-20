@@ -27,7 +27,7 @@ from google_docs_mcp.google_clients import get_service
 from . import user_store
 from .config import get_webapp_url
 from .credentials import current_user_id_or_none
-from .docs_api import (
+from .services.docs.api import (
     MAX_NESTING_DEPTH,
     TabSpec,
     add_tabs_to_doc,

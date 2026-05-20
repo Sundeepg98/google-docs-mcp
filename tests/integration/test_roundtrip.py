@@ -8,7 +8,7 @@ pytestmark = pytest.mark.live
 
 def test_create_outline_trash_untrash_roundtrip(live_creds):
     """Guards the basic happy path across 4 tools at once."""
-    from google_docs_mcp.docs_api import (
+    from google_docs_mcp.services.docs.api import (
         delete_tab,
         get_doc_outline,
         make_doc_with_tabs,
