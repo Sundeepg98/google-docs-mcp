@@ -184,11 +184,20 @@ def resolve_runtime_oauth_config() -> dict:
     import json as _json
     import os as _os
 
-    signing_key = _os.environ.get("MCP_BEARER_TOKEN")
-    if not signing_key:
+    from . import keys as _keys
+
+    # v2.6 (#48): purpose-routed via keys.get_key("oauth_state") so the
+    # v2.0b strict-flip activates HKDF-derivation for OAuth state HMACs
+    # without further edits here. _master() inside get_key raises with
+    # the existing operator-config message if MCP_BEARER_TOKEN is unset.
+    try:
+        signing_key = _keys.get_key("oauth_state").decode("utf-8")
+    except RuntimeError as e:
+        # Preserve the historical message wording so callers /
+        # integration tests that match on it keep working.
         raise RuntimeError(
             "MCP_BEARER_TOKEN env var is required for OAuth state signing"
-        )
+        ) from e
 
     base_url = _os.environ.get("GOOGLE_OAUTH_BASE_URL")
     if not base_url:

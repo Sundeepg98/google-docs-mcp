@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
-from . import user_store
+from . import keys, user_store
 from .auth import default_data_dir, load_credentials
 from .crypto import NonceStore, verify_signed_params
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
@@ -65,6 +66,48 @@ log = logging.getLogger("google_docs_mcp.http")
 
 async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+
+
+async def info_endpoint(_request: Request) -> JSONResponse:
+    """``GET /info`` — bearer-authed observability endpoint (v2.6 #48).
+
+    Mirrors a slice of ``gdocs_server_info``'s output that the v2.0b
+    preflight script needs: shim hits, total calls, first-call ages
+    per purpose, plus build provenance for log correlation. Curl-friendly
+    JSON so ``scripts/preflight_strict_flip.sh`` can hit it without
+    needing the ``fastmcp`` CLI (which dropped its ``client`` subcommand
+    in 3.x — auth-auditor R5 pre-mortem caught the broken invocation
+    before merge).
+
+    Auth: same path as ``/api/*`` via ``BearerTokenMiddleware`` (the
+    dispatch matcher includes ``/info``). 401 on missing/wrong bearer.
+
+    Shape contract: the ``key_back_compat_shim_active_hits``,
+    ``key_call_totals``, and ``key_observability`` keys are guaranteed
+    by ``test_info_endpoint_response_matches_gdocs_server_info`` to
+    match the MCP tool's output — drift between the two is a release
+    blocker, not a quiet inconsistency.
+    """
+    # Local import avoids a circular at module load time
+    # (server.py imports from this module; this would re-trigger that
+    # import chain on http_server.py module load).
+    from . import __version__ as _pkg_version
+
+    first_call_at = keys.get_first_call_timestamps()
+    now = time.time()
+    return JSONResponse({
+        "version": _pkg_version,
+        "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+        "build_time": os.environ.get("BUILD_TIME", "unknown"),
+        "key_back_compat_shim_active_hits": keys.get_shim_hit_counters(),
+        "key_call_totals": keys.get_total_call_counters(),
+        "key_observability": {
+            "first_call_age_seconds": {
+                purpose: (now - ts) if ts is not None else None
+                for purpose, ts in first_call_at.items()
+            },
+        },
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +230,13 @@ async def oauth_google_api_callback(request: Request) -> Response:
             status_code=400,
         )
 
-    signing_key = os.environ.get("MCP_BEARER_TOKEN")
-    if not signing_key:
-        # Misconfigured server — fail closed rather than handing out
-        # creds without state validation.
+    # v2.6 (#48): purpose-routed via keys.get_key("oauth_state") so the
+    # v2.0b strict-flip activates HKDF-derivation for OAuth state HMACs
+    # without further edits here. get_key raises RuntimeError on missing
+    # MCP_BEARER_TOKEN; preserve the prior fail-closed behavior.
+    try:
+        signing_key = keys.get_key("oauth_state").decode("utf-8")
+    except RuntimeError:
         log.error("oauth: MCP_BEARER_TOKEN unset; cannot verify state")
         return _error_page(
             "Server configuration error. Contact the operator.",
@@ -240,7 +286,8 @@ async def oauth_google_api_callback(request: Request) -> Response:
         # Credentials.to_json() output before persisting. Calling
         # save_state directly here would leak those operator secrets
         # into every per-user row in user_state.db. The matching
-        # regression guard is test_oauth_callback_strips_operator_secrets
+        # regression guard is
+        # test_oauth_callback_endpoint_strips_operator_secrets_in_production
         # in tests/integration/test_fresh_user_flow.py.
         user_store.save_credentials_json(user_id, creds_json)
     except Exception as e:  # noqa: BLE001 — last line of defence
@@ -419,13 +466,42 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
       OAuthProxy, /mcp/* relies on URL secrecy.
     """
 
-    def __init__(self, app: Any, *, token: str) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        bearer_token: str,
+        signed_url_key: str,
+    ) -> None:
+        """v2.6 (#48): two separate keys instead of one bearer-token-as-both.
+
+        Pre-v2.6 the same env var (``MCP_BEARER_TOKEN``) served BOTH purposes
+        verbatim — bearer-header equality AND signed-URL HMAC. v2.0b's
+        strict-flip wants the two HKDF-derived separately so leaking the
+        bearer to a log doesn't compromise signed URLs (and vice versa).
+        ``build_app`` now resolves each via ``keys.get_key("api_bearer")``
+        and ``keys.get_key("signed_url")``. The shim window (v1.5 - v2.0b)
+        keeps both returning the raw master so existing in-flight URLs +
+        bearer tokens continue to work; v2.0b's flip activates the split.
+
+        Reviewers: the two parameters MUST come from separate ``get_key()``
+        calls (not the same value reused), even today during the shim.
+        That preserves the call-site discipline so the v2.0b flip is a
+        pure-config change in keys.py, not a re-edit of this middleware.
+        """
         super().__init__(app)
-        self._expected = f"Bearer {token}"
-        self._signing_key = token  # HMAC key for signed-URL auth path
+        self._expected = f"Bearer {bearer_token}"
+        self._signing_key = signed_url_key  # HMAC key for signed-URL auth path
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if not request.url.path.startswith("/api/"):
+        # v2.6 (#48): /info is the curl-friendly observability surface
+        # the preflight script hits (replaces a broken `fastmcp client`
+        # invocation auth-auditor caught pre-merge — fastmcp 3.3.1 has
+        # no `client` subcommand). Same bearer-or-signed-URL gate as
+        # /api/* so the existing auth discipline applies; no separate
+        # auth path.
+        path = request.url.path
+        if not (path.startswith("/api/") or path == "/info"):
             return await call_next(request)
 
         # Auth path 1: bearer header (legacy / direct API callers).
@@ -543,13 +619,22 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
 
 def build_app(mcp: FastMCP) -> Starlette:
     """Compose the public HTTP surface: REST routes + MCP HTTP transport."""
-    token = os.environ.get("MCP_BEARER_TOKEN")
-    if not token:
+    # v2.6 (#48): the DUAL site — bearer header auth AND signed-URL HMAC
+    # used the same env var read directly. Now routed through
+    # keys.get_key() so the v2.0b strict-flip can HKDF-derive them
+    # separately. During the shim window (v1.5 - v2.0b) both still resolve
+    # to MCP_BEARER_TOKEN verbatim; the strict-flip activates the split.
+    try:
+        bearer_token = keys.get_key("api_bearer").decode("utf-8")
+        signed_url_key = keys.get_key("signed_url").decode("utf-8")
+    except RuntimeError as e:
+        # Preserve the historical "must be set when running in HTTP mode"
+        # message that operators have grepped for since v1.0.
         raise RuntimeError(
             "MCP_BEARER_TOKEN env var must be set when running in HTTP "
             "mode. Generate a long random string and set it on Fly.io "
             "with `fly secrets set MCP_BEARER_TOKEN=...`."
-        )
+        ) from e
 
     # v1.3.1: middleware order is OUTERMOST first per Starlette semantics.
     # TrustedHost first (cheap header check; rejects bad-host requests
@@ -561,7 +646,11 @@ def build_app(mcp: FastMCP) -> Starlette:
     body_max = int(os.environ.get("MCP_BODY_MAX_BYTES", 10 * 1024 * 1024))
     middleware = [
         Middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts),
-        Middleware(BearerTokenMiddleware, token=token),
+        Middleware(
+            BearerTokenMiddleware,
+            bearer_token=bearer_token,
+            signed_url_key=signed_url_key,
+        ),
         Middleware(BodySizeLimitMiddleware, max_bytes=body_max),
     ]
 
@@ -580,6 +669,10 @@ def build_app(mcp: FastMCP) -> Starlette:
 
     routes = [
         Route("/health", health, methods=["GET"]),
+        # v2.6 (#48): /info is the curl-friendly observability surface
+        # for the v2.0b preflight script. Bearer-authed via the same
+        # BearerTokenMiddleware dispatch path as /api/*.
+        Route("/info", info_endpoint, methods=["GET"]),
         Route("/api/convert", convert_endpoint, methods=["POST"]),
         # OAuth callback for the v1.1+ per-user Google API auth. Public
         # by design (browser hits it after Google redirect, no bearer

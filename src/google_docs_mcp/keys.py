@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -74,6 +75,28 @@ _total_call_counter: dict[str, int] = {
     "signed_url": 0,
 }
 _total_call_counter_lock = threading.Lock()
+
+# v2.6 (#48): per-purpose timestamp of the FIRST successful get_key() call
+# in this process. ``None`` means the purpose has never been requested.
+# Surfaced via ``gdocs_server_info().key_observability.first_call_age_seconds``
+# as ``time.time() - first_call_at`` so operators can gate the v2.0b strict-
+# flip on a soak window: "first call happened ≥1h30 ago AND the cumulative
+# total since then is large enough" is the trustworthy signal.
+#
+# Without this, a freshly-restarted machine reports ``shim_hits=0`` AND
+# ``totals=0`` after start-up, and the preflight gate can't tell that
+# apart from "everyone has migrated off the shim, just no traffic yet."
+# The first-call timestamp closes that gap.
+#
+# Process-local (each replica reports its own first-call) — same as the
+# hit/total counters. Lock-guarded for the same Starlette+uvicorn-worker
+# reason; the write is a tiny CAS under the lock, no measurable overhead.
+_first_call_at: dict[str, float | None] = {
+    "api_bearer": None,
+    "oauth_state": None,
+    "signed_url": None,
+}
+_first_call_at_lock = threading.Lock()
 
 # HKDF info-context per purpose. Changing any string here invalidates
 # the derived key for that purpose — same blast radius as rotating
@@ -136,6 +159,23 @@ def _validate_master_or_raise(master: str) -> None:
             f"the token or use a purpose currently in the back-compat "
             f"shim. See THREAT_MODEL.md §5 for rotation guidance."
         )
+
+
+def _record_first_call(purpose: str) -> None:
+    """Idempotently stamp the first-call timestamp for ``purpose``.
+
+    v2.6 (#48). Called from every successful ``get_key()`` path (override,
+    shim, HKDF-derived) so the timestamp reflects the first time the
+    purpose was actually exercised in this process. Subsequent calls
+    are no-ops — the timestamp pins the START of the soak window, not
+    the most-recent call.
+
+    Lock-guarded check-then-set so concurrent worker threads can't both
+    see ``None`` and race to write different values.
+    """
+    with _first_call_at_lock:
+        if _first_call_at.get(purpose) is None:
+            _first_call_at[purpose] = time.time()
 
 
 def _hkdf_sha256(master_bytes: bytes, info: bytes, length: int = 32) -> bytes:
@@ -203,6 +243,7 @@ def get_key(purpose: Purpose) -> bytes:
             _total_call_counter[purpose] = (
                 _total_call_counter.get(purpose, 0) + 1
             )
+        _record_first_call(purpose)
         return override.encode("utf-8")
 
     master = _master()
@@ -217,6 +258,7 @@ def get_key(purpose: Purpose) -> bytes:
             _total_call_counter[purpose] = (
                 _total_call_counter.get(purpose, 0) + 1
             )
+        _record_first_call(purpose)
         return master.encode("utf-8")
 
     # Derived path: enforce master length first.
@@ -224,6 +266,7 @@ def get_key(purpose: Purpose) -> bytes:
     derived = _hkdf_sha256(master.encode("utf-8"), _HKDF_INFO[purpose])
     with _total_call_counter_lock:
         _total_call_counter[purpose] = _total_call_counter.get(purpose, 0) + 1
+    _record_first_call(purpose)
     return derived
 
 
@@ -313,3 +356,41 @@ def _reset_total_call_counters_for_tests() -> None:
     with _total_call_counter_lock:
         for purpose in _total_call_counter:
             _total_call_counter[purpose] = 0
+
+
+def get_first_call_timestamps() -> dict[str, float | None]:
+    """Snapshot of per-purpose first-call timestamps (v2.6, #48).
+
+    Each value is the unix-epoch seconds of the FIRST successful
+    ``get_key(purpose)`` call in this process, or ``None`` if the
+    purpose has not been requested. Returns a copy so callers can't
+    mutate the live dict.
+
+    Surfaced via
+    ``gdocs_server_info().key_observability.first_call_age_seconds``
+    (as ``time.time() - timestamp`` so the field is monotonically
+    increasing while the process runs). Operators use this with the
+    preflight script to gate the v2.0b strict-flip on a 1h30 soak
+    window: a fresh restart reports zero hits AND zero totals, but
+    a non-None first_call_at says "yes, we've had real traffic since
+    boot, the zero shim hits are meaningful."
+
+    Process-local: each replica reports its own first-call. The
+    operator aggregates across replicas at read time (taking the
+    MIN-non-None across replicas as the cluster-wide first-call,
+    since the soak window starts from the earliest call anywhere).
+    """
+    with _first_call_at_lock:
+        return dict(_first_call_at)
+
+
+def _reset_first_call_timestamps_for_tests() -> None:
+    """For tests only — reset all per-purpose first-call timestamps.
+
+    Underscore-prefixed because production code must never reset
+    these (doing so would lie to operators about how long the soak
+    window has actually been running).
+    """
+    with _first_call_at_lock:
+        for purpose in _first_call_at:
+            _first_call_at[purpose] = None

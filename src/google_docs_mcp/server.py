@@ -56,7 +56,12 @@ from .credentials import (
     get_credentials_for_user,
 )
 from .gas_deploy import GAS_DEPLOY_SCOPES
-from .keys import get_shim_hit_counters, get_total_call_counters
+from .keys import (
+    get_first_call_timestamps,
+    get_key,
+    get_shim_hit_counters,
+    get_total_call_counters,
+)
 from .oauth_google import resolve_runtime_oauth_config
 from .setup_apps_script import (
     setup_apps_script_auto,
@@ -840,6 +845,20 @@ async def gdocs_server_info() -> dict:
         # so "0 shim hits" can't mean "0 calls". Process-local; same
         # aggregation caveat as the shim counter.
         "key_call_totals": get_total_call_counters(),
+        # v2.6 (#48): observability for the soak-window gate. The
+        # preflight script demands BOTH shim_hits==0 AND total>=N AND
+        # first_call_age_seconds >= 1h30 (i.e. real traffic has flowed
+        # since boot) before declaring it safe to ship v2.0b's strict-
+        # flip. ``first_call_age_seconds[purpose]`` is None if that
+        # purpose has never been requested in this process (e.g.
+        # api_bearer on a server that has only served signed URLs).
+        # Process-local; aggregate across replicas at read time.
+        "key_observability": {
+            "first_call_age_seconds": {
+                purpose: (time.time() - ts) if ts is not None else None
+                for purpose, ts in get_first_call_timestamps().items()
+            },
+        },
     }
 
 
@@ -1837,12 +1856,18 @@ def gdocs_get_signed_upload_url(
     signed-URL upload flow is the sandbox-bytes path.
     """
     base = os.environ.get("PUBLIC_BASE_URL", "https://sundeepg98-docs-mcp.fly.dev")
-    signing_key = os.environ.get("MCP_BEARER_TOKEN")
-    if not signing_key:
+    # v2.6 (#48): purpose-routed via keys.get_key("signed_url") so the
+    # v2.0b strict-flip activates HKDF-derivation for signed-URL HMACs
+    # without further edits here. get_key raises RuntimeError on missing
+    # MCP_BEARER_TOKEN; translate to ToolError so the surface stays
+    # user-facing (Markdown-renderable in claude.ai's connector UI).
+    try:
+        signing_key = get_key("signed_url").decode("utf-8")
+    except RuntimeError as e:
         raise ToolError(
             "MCP_BEARER_TOKEN env var not set on the server — "
             "signed URLs require it as the HMAC key."
-        )
+        ) from e
     if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
         raise ToolError(
             f"ttl_seconds must be 1..{MAX_TTL_SECONDS}, got {ttl_seconds}"
