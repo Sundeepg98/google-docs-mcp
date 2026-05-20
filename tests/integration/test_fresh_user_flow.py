@@ -64,7 +64,14 @@ def client_config():
 
 @pytest.fixture
 def signing_key():
-    return "test-signing-key-fresh-user-flow"
+    # v2.0b (PR #34 Option A.1): oauth_state.sign_state / verify_state
+    # take signing_key as bytes (matches keys.get_key("oauth_state")'s
+    # return type post-HKDF-strict-flip). The unit-test fixtures
+    # (test_oauth_state.py, test_oauth_google.py) were swept in A.1;
+    # this integration fixture was missed and silently failed every
+    # test in this file with TypeError from hmac.new(). Fixed in
+    # follow-up after R34 investigation.
+    return b"test-signing-key-fresh-user-flow"
 
 
 @pytest.fixture
