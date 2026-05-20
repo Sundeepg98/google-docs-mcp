@@ -20,14 +20,14 @@ The schema (per `src/google_docs_mcp/user_store.py`):
 | `apps_script_deployment_id` | string | Functional | Versioned deployment id of the Web App. |
 | `apps_script_version_number` | int | Functional | Deployment version. |
 | `apps_script_content_hash` | string | Functional | sha256 of the deployed script contents; used for setup idempotency. Reveals nothing about you. |
-| `apps_script_hmac_key` | 64-char hex (v2.0+) | **Sensitive** | Per-user HMAC-SHA256 key. Authenticates POSTs from the server to your Web App. Compromise lets an attacker invoke restructure operations on your docs. |
+| `apps_script_hmac_key` | 64-char hex (v2.0+) | **Sensitive (forward-looking)** | Per-user HMAC-SHA256 key. Reserved for per-request HMAC authentication of POSTs to your Web App (**SCHEMA ONLY in v2.0a; runtime verify-path deferred to v2.0c**; until v2.0c, neither `restructure.gs` nor `_call_webapp` consume this key — POSTs are mitigated only by `/exec` URL secrecy, see THREAT_MODEL.md §4 row 5). Compromise today does not enable any attack the v2.0a `/exec` URL doesn't already enable; once v2.0c ships, compromise would let an attacker invoke restructure operations on your docs. |
 | `created_at` / `updated_at` | unix epoch seconds | Telemetry | First-write and last-write timestamps. No per-tool-call audit log. |
 
 **On-disk encryption**: the SQLite file is stored in **plaintext**. Anyone with shell access to the running container (operator, Fly platform staff in an incident scenario, or anyone who compromises a credential authorized for `fly ssh console`) can read every row. If you require encryption at rest, deploy on infrastructure that provides volume-level encryption and treat that as your trust boundary.
 
 ### 1.1 Operator-secret stripping (known gap — see issue tracker)
 
-`src/google_docs_mcp/user_store.py::save_credentials_json` exists specifically to strip the operator's OAuth `client_id` and `client_secret` from the persisted JSON before writing. As of the current main, the production OAuth callback at `src/google_docs_mcp/http_server.py:237` calls `save_state(...)` directly rather than `save_credentials_json(...)`, so the stripping does NOT run for the cloud path. This means a `user_state.db` leak today also leaks the deployment's OAuth app credentials. The fix is a one-line change; tracked separately. This document errs on the side of disclosing the current behavior accurately.
+`src/google_docs_mcp/user_store.py::save_credentials_json` exists specifically to strip the operator's OAuth `client_id` and `client_secret` from the persisted JSON before writing. **Closed in v2.0.3** (PR #47, commit `dadb699`) — the production OAuth callback in `src/google_docs_mcp/http_server.py` now correctly invokes `save_credentials_json(...)` rather than the un-stripping `save_state(...)`. Operators on v2.0.3 or later: a `user_state.db` leak no longer reveals the deployment's OAuth `client_secret`. Operators still running v2.0.2 or earlier: a leak today does include the operator OAuth secrets; upgrade.
 
 ## 2. What we do NOT store
 
@@ -57,7 +57,7 @@ If you treat `sub` as personal data under your jurisdiction's definition (the GD
 ## 5. Data sharing and transmission
 
 - **Google's APIs.** Every authorized tool call sends document content + your access token to `*.googleapis.com` and `script.google.com`. Limited to the OAuth scopes you consented to.
-- **Your own Apps Script Web App.** The server POSTs to your per-user `apps_script_url`, signed with `apps_script_hmac_key` (v2.0+).
+- **Your own Apps Script Web App.** The server POSTs to your per-user `apps_script_url`. The `apps_script_hmac_key` column exists in `user_state` as of v2.0a but is currently **stored, not consumed at runtime** — neither `restructure.gs` nor `_call_webapp` consume it. Verify-path is deferred to v2.0c. Until then, POSTs to your `/exec` are mitigated only by URL secrecy (THREAT_MODEL.md §4 row 5 remains OPEN).
 - **Anthropic's claude.ai infrastructure**, when running via the claude.ai connector. Your tool-call arguments and responses transit Anthropic's MCP transport. Anthropic's own privacy policy applies to that leg.
 - **No other third parties.** No analytics, no error reporting SaaS, no LLM-based logging.
 
