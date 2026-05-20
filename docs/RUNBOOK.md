@@ -208,10 +208,12 @@ The trip-wire here is `_BACK_COMPAT_RAW_MASTER` in `keys.py`: it's the single so
 **Step 1 — set per-purpose overrides + redeploy.** This is the critical prep. Until overrides are set, every `keys.get_key()` call routes through the back-compat shim, and the preflight gate (Step 2) returns exit 4 forever in steady state — there is no "natural soak" that makes shim_hits drop to 0 without operator action. Use the current master as the value for each override (matches §3.4's rotation pattern — net effect is "pin derived keys to today's master before removing the shim that produces the same bytes by default"):
 
 ```bash
-CURRENT_MASTER=$(flyctl secrets list -j | jq -r '.[] | select(.name=="MCP_BEARER_TOKEN") | .digest')
-# (If the digest path doesn't work in your flyctl version, just paste the
-# value you used when you originally set MCP_BEARER_TOKEN. Don't generate a
-# fresh value here — the point is "no key material changes for live users.")
+# Paste the value you stored when you originally set MCP_BEARER_TOKEN
+# (secrets vault, password manager, .envrc.gpg, wherever). `flyctl secrets
+# list` only exposes SHA digests, not values — Fly intentionally doesn't
+# let you read back a secret once set. Don't generate a fresh value here:
+# the point is "no key material changes for live users."
+CURRENT_MASTER='<paste-master-value-here>'
 
 flyctl secrets set \
   MCP_API_BEARER_KEY="$CURRENT_MASTER" \
