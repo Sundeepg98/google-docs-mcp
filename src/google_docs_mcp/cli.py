@@ -15,6 +15,7 @@ Subcommands handle the Apps Script Web App deployment and config:
 from __future__ import annotations
 
 import sys
+import traceback
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -112,6 +113,10 @@ def _cmd_setup_auto(rest: list[str]) -> int:
         )
     except Exception as e:  # noqa: BLE001
         print(f"\nSetup failed: {e}", file=sys.stderr)
+        # Print full chained traceback so operators debugging setup
+        # failures see the underlying cause (e.g. HttpError wrapped in
+        # RuntimeError), not just str(e). R24/F3.
+        traceback.print_exc(file=sys.stderr)
         print(
             "\nIf the API path doesn't work for you (firewall, scope\n"
             "consent issues, etc.), fall back to the manual recipe with:\n"
