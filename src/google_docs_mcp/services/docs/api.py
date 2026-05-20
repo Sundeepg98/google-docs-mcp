@@ -356,7 +356,7 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> dict:
 
     # Surface Drive trash state. Best-effort: if the Drive lookup
     # fails we report trashed=False rather than failing the call.
-    from google_docs_mcp.drive_api import is_file_trashed
+    from google_docs_mcp.services.drive.api import is_file_trashed
     trashed = is_file_trashed(creds, doc_id)
 
     return {"doc_id": doc_id, "trashed": trashed, "tabs": tabs_out}
@@ -440,7 +440,7 @@ def read_tab_content(
         elif "tableOfContents" in elem:
             paragraphs.append({"style": "TOC", "text": "[table of contents]"})
 
-    from google_docs_mcp.drive_api import is_file_trashed
+    from google_docs_mcp.services.drive.api import is_file_trashed
     return {
         "tab_id": tab["tabProperties"]["tabId"],
         "title": tab["tabProperties"]["title"],
@@ -533,7 +533,7 @@ def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
             walk(tab.get("childTabs") or [], depth + 1)
 
     walk(fetched.get("tabs") or [])
-    from google_docs_mcp.drive_api import is_file_trashed
+    from google_docs_mcp.services.drive.api import is_file_trashed
     return {
         "doc_id": doc_id,
         "trashed": is_file_trashed(creds, doc_id),

@@ -42,15 +42,18 @@ DOCS_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_preview_tab_split",
 })
 
-# Remaining tools — still in server.py for M3 POC. After drive/ and
-# gas_deploy/ migrate in the next M3 phases, this set shrinks.
-NON_DOCS_TOOLS: frozenset[str] = frozenset({
-    # Drive
+# Drive-service tools — moved to ``services/drive/tools.py`` in M3 Phase B (v2.1.4).
+DRIVE_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_find_doc_by_title",
     "gdocs_move_to_folder",
     "gdocs_trash_file",
     "gdocs_untrash_file",
-    # gas_deploy
+})
+
+# Remaining tools — still in server.py for M3 Phase B. After gas_deploy/
+# migrates in Phase C, this set shrinks again.
+NON_SERVICE_TOOLS: frozenset[str] = frozenset({
+    # gas_deploy (next to migrate in Phase C)
     "gdocs_setup_apps_script",
     # admin / introspection / local-only
     "gdocs_server_info",
@@ -63,7 +66,14 @@ NON_DOCS_TOOLS: frozenset[str] = frozenset({
     "gdocs_reset_authorization",
 })
 
-EXPECTED_TOOLS: frozenset[str] = DOCS_SERVICE_TOOLS | NON_DOCS_TOOLS
+# Backward-compat alias for any external readers / future test sweeps.
+# ``NON_DOCS_TOOLS`` was the Phase A name; Phase B partitions it into
+# ``DRIVE_SERVICE_TOOLS`` (moved) + ``NON_SERVICE_TOOLS`` (still in server.py).
+NON_DOCS_TOOLS: frozenset[str] = DRIVE_SERVICE_TOOLS | NON_SERVICE_TOOLS
+
+EXPECTED_TOOLS: frozenset[str] = (
+    DOCS_SERVICE_TOOLS | DRIVE_SERVICE_TOOLS | NON_SERVICE_TOOLS
+)
 
 
 def _registered_tool_names() -> set[str]:
@@ -145,19 +155,61 @@ def test_docs_service_tools_register_from_services_docs_tools_module():
         )
 
 
-def test_non_docs_tools_still_register_from_server_py():
-    """The 12 non-docs tools must STILL be defined in server.py (the
-    M3 POC deliberately did not migrate them). When the next M3 phase
-    moves drive/ and gas_deploy/, this test's NON_DOCS_TOOLS set
-    shrinks accordingly."""
+def test_non_service_tools_still_register_from_server_py():
+    """The remaining (non-service-folder) tools must STILL be defined in
+    server.py. After each M3 phase migrates another service group, this
+    test's ``NON_SERVICE_TOOLS`` set shrinks.
+
+    Phase A (v2.1.3) moved 12 docs tools.
+    Phase B (v2.1.4) moved 4 drive tools + ``_run_batch`` helper.
+    Phase C (next) will move 1 gas_deploy tool — at which point the
+    Phase-C author updates ``DRIVE_SERVICE_TOOLS``/``NON_SERVICE_TOOLS``
+    here to add ``GAS_DEPLOY_SERVICE_TOOLS``.
+    """
     from google_docs_mcp import server
 
-    for tool_name in NON_DOCS_TOOLS:
+    for tool_name in NON_SERVICE_TOOLS:
         assert hasattr(server, tool_name), (
             f"{tool_name} not found in server.py — this tool was NOT "
-            f"slated for M3 POC migration. Either move it to the "
-            f"appropriate services/X/tools.py (and update NON_DOCS_TOOLS "
-            f"here) or restore the definition in server.py."
+            f"slated for the current M3 phase migration. Either move it "
+            f"to the appropriate services/X/tools.py (and update "
+            f"NON_SERVICE_TOOLS here) or restore the definition in "
+            f"server.py."
+        )
+
+
+def test_drive_service_tools_register_from_services_drive_tools_module():
+    """M3 Phase B (v2.1.4): the 4 drive-service tools must be defined in
+    ``services/drive/tools.py``, NOT in server.py. Symmetric to
+    ``test_docs_service_tools_register_from_services_docs_tools_module``
+    in concept — pins the no-shadow invariant + ``__module__`` invariant
+    that the test architect's review of Phase A called out.
+
+    Catches a regression where someone re-adds a drive tool to server.py
+    by accident (e.g. a copy-paste from a pre-Phase-B commit)."""
+    from google_docs_mcp.services.drive import tools as drive_tools
+
+    for tool_name in DRIVE_SERVICE_TOOLS:
+        # The tool function must exist as a module-level attribute of
+        # services/drive/tools.py.
+        assert hasattr(drive_tools, tool_name), (
+            f"{tool_name} not found in services.drive.tools — "
+            f"M3 Phase B moved it; ensure it's defined there."
+        )
+        fn = getattr(drive_tools, tool_name)
+        # The function's __module__ must point at services.drive.tools.
+        assert fn.__module__ == "google_docs_mcp.services.drive.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.drive.tools'. M3 Phase B moved "
+            f"this tool out of server.py."
+        )
+        # The function must NOT also exist at server module-level
+        # (that would be a half-finished migration).
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. M3 Phase B removed the server.py copy; ensure "
+            f"the deletion is complete."
         )
 
 

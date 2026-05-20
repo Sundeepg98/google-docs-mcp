@@ -153,7 +153,7 @@ def created_docs(live_creds):
             # ... assertions ...
             # No finally needed — fixture trashes on teardown.
     """
-    from google_docs_mcp.drive_api import trash_drive_file
+    from google_docs_mcp.services.drive.api import trash_drive_file
     ids: list[str] = []
     yield ids
     for doc_id in ids:

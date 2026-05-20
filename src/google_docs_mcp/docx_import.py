@@ -40,7 +40,7 @@ from .services.docs.api import (
 PlaceholderBehavior = Literal["delete", "rename", "keep"]
 DEFAULT_PLACEHOLDER_TITLE = "Overview"
 DEFAULT_PLACEHOLDER_ICON = "\U0001f4d1"  # 📑
-from .drive_api import (
+from .services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
     classify_drive_file,
