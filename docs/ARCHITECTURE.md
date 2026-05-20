@@ -1,7 +1,7 @@
 # Architecture — Hex Foundation for the Google Workspace MCP
 
-**Version:** v2.1.2 (M1a landed v2.1.0/v2.1.1; M1b skipped; M2 in flight on `ship-d1`)
-**Last updated:** 2026-05-20 (v2.1.2 M1b-skipped revision)
+**Version:** v2.1.3 (M1a landed v2.1.0/v2.1.1; M1b skipped; M2 landed v2.1.2; M3 §5.1 spec added; M3 Phase A in flight on `ship-d1`)
+**Last updated:** 2026-05-20 (v2.1.3 §5.1 server.py decomposition spec)
 **Audience:** maintainers, reviewers of refactor PRs, contributors adding a new Google service
 
 ## 1. Context
@@ -142,6 +142,135 @@ src/google_docs_mcp/services/
 - Common shape stays in core infrastructure (`google_clients.py`, `credentials.py`, etc.) — services depend on infrastructure, not on each other.
 
 **Why not a `BaseService` ABC:** each service's `api.py` is naturally service-specific (Docs operates on docs; Gmail operates on messages). A shared base class would carry no useful methods and would invite hand-waving inheritance. Folder mirroring + naming convention gets the navigability win without the abstraction debt.
+
+### 5.1 `server.py` decomposition (M3 mechanism)
+
+Added v2.1.3 after Hex specialist's M2 review verdict (GO to M3) flagged this section as under-specified. M3 is a 2-day landmine without it; ship-d1 (M3 POC) uses §5.1 as their spec reference.
+
+**What STAYS in `server.py` post-M3:**
+- `mcp = FastMCP(...)` instance creation (MUST be first, before any `@mcp.tool` decoration runs anywhere)
+- `main()` + CLI dispatch
+- `configure_auth_for_http()` invocation (FastMCP-coupled — intentionally NOT touching)
+- Shared helpers: `_get_credentials`, `_format_http_error` (extract to `common.py` IFF a second service consumer materializes — premature today)
+- The end-of-file side-effect import (`from . import resources as _llm_recovery_resources`) — see import-order section below for why this must stay at the bottom
+- Version metadata / build_info introspection (`gdocs_server_info`, `gdocs_test_manifest`, `gdocs_guide`, `gdocs_help` — the 4 local-only tools that don't fit any service)
+
+Expected size: **~500–800 LOC** (down from current 2,452 — 70% reduction). The 1,600+ LOC that leaves is the 15 API-touching tools' bodies that migrate to `services/*/tools.py`.
+
+**Tool registration mechanism (Option A — chosen by operator):**
+
+`services/<service>/tools.py` imports the live `mcp` instance from `server.py` and uses `@mcp.tool` (via the `@gdocs_tool` composite from PR #83) directly:
+
+```python
+# services/docs/tools.py
+from google_docs_mcp.server import mcp  # the FastMCP instance
+from google_docs_mcp.decorators import gdocs_tool  # from PR #83
+from google_docs_mcp.server import _get_credentials, _format_http_error
+from . import api as docs_api
+
+@gdocs_tool(
+    title="Create a new tabbed Google Doc",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+)
+def gdocs_make_tabbed_doc(creds, title: str, tabs: list[dict]) -> dict:
+    return docs_api.make_tabbed_doc(creds, title, tabs)
+```
+
+Why Option A (vs. a registration-function pattern like `def register_tools(mcp): ...`): the decorator-at-import-time shape matches the existing 24 tool decorators verbatim. Registration-function would force every service to add boilerplate (`register_tools(mcp)` + a manual call site in `server.py`) that decorators do for free. The trade-off is the import-order guarantee below.
+
+**Import-order guarantee (CRITICAL — Round 1 landmine):**
+
+`server.py` MUST create `mcp = FastMCP(...)` BEFORE importing any service module:
+
+```python
+# server.py
+mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)  # 1. Create mcp first
+
+# 2. THEN import services (each triggers @mcp.tool decoration at module-load)
+from .services import docs            # triggers services/docs/tools.py decoration
+# from .services import drive         # added in Phase B
+# from .services import gas_deploy    # added in Phase C
+
+# 3. Existing side-effect import for resources (KEEP AT BOTTOM — see below)
+from . import resources as _llm_recovery_resources  # noqa: E402,F401
+```
+
+Two specific footguns:
+
+1. **`mcp.auth` is `None` until `configure_auth_for_http()` runs in `main()`.** If a service module's TOP-LEVEL code (not tool-body code) touches `mcp.auth`, the read returns `None` at import time, gets baked into a closure, and the tool silently misbehaves in HTTP mode while working fine in stdio mode. **Fix: services touch `mcp.auth` only inside tool BODIES (runtime), never at import time.** The existing `_get_credentials` helper already obeys this — migrating services should not re-derive it.
+2. **The `from . import resources` line must stay LAST in `server.py`** (currently line 2172, `noqa: E402,F401` annotated). `resources.py` calls `@mcp.resource` at module load; if it runs before the tool decorators register, FastMCP's internal ordering can shift resource-discovery semantics. The comment block above the import documents this; keep it through M3.
+
+**Test layout (Mirror `src/`):**
+
+```
+tests/unit/services/
+├── __init__.py
+└── docs/
+    ├── __init__.py
+    ├── test_api.py       # was tests/unit/test_docs_api.py
+    └── test_tools.py     # NEW per service folder — covers the @gdocs_tool wrappers
+```
+
+Existing test files that don't have a service home (`test_keys.py`, `test_credentials.py`, `test_google_clients.py`, etc.) stay flat in `tests/unit/`. The mirror only applies to per-service code.
+
+**Fixture-discovery test (REQUIRED — Round 1 silent-drop guard):**
+
+To catch "forgot to add `services/X` to `server.py`'s import chain" silent failures (tools register in stdio dev but vanish in HTTP prod):
+
+```python
+# tests/unit/test_tool_registration.py
+import asyncio
+import pytest
+
+# Verified expected list — bump on every add/remove. Keep alphabetized.
+EXPECTED_TOOLS = {
+    "gdocs_add_tabs", "gdocs_admin_audit", "gdocs_append_to_tab",
+    "gdocs_delete_tab", "gdocs_find_doc_by_title", "gdocs_get_doc_outline",
+    "gdocs_get_signed_upload_url", "gdocs_get_tab_url", "gdocs_guide",
+    "gdocs_help", "gdocs_make_tabbed_doc", "gdocs_move_to_folder",
+    "gdocs_preview_tab_split", "gdocs_read_doc", "gdocs_rename_tab",
+    "gdocs_replace_all_text", "gdocs_reset_authorization",
+    "gdocs_server_info", "gdocs_set_tab_icons", "gdocs_setup_apps_script",
+    "gdocs_tab_existing_doc", "gdocs_test_manifest", "gdocs_trash_file",
+    "gdocs_untrash_file",
+}
+
+def test_all_24_tools_register_from_their_service_locations():
+    """Guard against the M3 silent-registration-drop class.
+
+    If a services/X/tools.py module is missing from server.py's import
+    chain, its @gdocs_tool decorators never run, the tools silently
+    fail to register, and the failure mode is "works in stdio (dev),
+    401/not-found in HTTP (prod)" — the worst possible class of bug
+    to ship.
+
+    FastMCP's tool registry is async-accessed via mcp.list_tools()
+    (NOT mcp._tools — that's not a public attribute and breaks across
+    FastMCP versions). Wrap in asyncio.run() for a sync test.
+    """
+    from google_docs_mcp.server import mcp
+    tools = asyncio.run(mcp.list_tools())
+    registered = {t.name for t in tools}
+    missing = EXPECTED_TOOLS - registered
+    extra = registered - EXPECTED_TOOLS
+    assert not missing, f"Service module missing from server.py import chain: {missing}"
+    assert not extra, f"Unexpected tools registered (update EXPECTED_TOOLS): {extra}"
+```
+
+The `asyncio.run(mcp.list_tools())` pattern matches the existing precedent in `tests/unit/test_gdocs_tool_decorator.py:108` + `test_server_info.py:23`. Do NOT use `mcp._tools` — it's a private attribute that has shifted across FastMCP versions (we currently pin `fastmcp >= 3.3.1`; the public access path is the one FastMCP itself guarantees).
+
+**Sequencing within M3:**
+
+| Phase | Scope | Status |
+|---|---|---|
+| **A** | `services/docs/` POC. Move `docs_api.py` → `services/docs/api.py`; carve docs tool bodies from `server.py` → `services/docs/tools.py`. Land the fixture-discovery test in the SAME PR. | In flight on `ship-d1` |
+| **PAUSE** | Operator review of the docs/ shape before propagating. Verifies the import-order guarantee, the test-layout mirror, and the fixture-discovery test all behave as spec'd. | Triggered post-Phase A merge |
+| **B** | `services/drive/` migration. Same shape as A; `sharing.py` sub-module split per §5 if `drive_api.py` exceeds the ~400 LOC threshold (current: check at migration time). | After PAUSE |
+| **C** | `gas_deploy/` is already a sub-package boundary (per README:165); move to `services/gas_deploy/` with the same shape. Mostly file moves; expect minimal call-site churn. | After B |
+| **D** | Final `server.py` cleanup — remove now-empty helper blocks, verify the LOC target (~500–800), update the LOC reference at the top of this sub-section. | After C |
+
+PAUSE between A and B is deliberate — same rationale as M1a → M1b (the pattern set in Phase A flows to B/C/D; better to discover shape problems once than three times).
 
 ## 6. Test architecture impact
 
