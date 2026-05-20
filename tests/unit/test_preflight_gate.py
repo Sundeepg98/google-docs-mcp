@@ -138,19 +138,21 @@ _BEARER = "x" * 32
 
 
 def test_gate_exit_4_when_shim_still_active():
-    """shim_hits=150, total=150 → exit 4 (overrides not set / not picked up).
+    """shim_hits>0 with each purpose exercised → exit 4 (overrides not set).
 
-    Total deliberately above the 100-call floor so the floor check at
-    exit-3 doesn't pre-empt the shim check at exit-4. The gate's
-    intentional order is "floor first" (you can't judge shim activity
-    without enough signal); this test isolates the SHIM branch by
-    keeping us past the floor.
+    Order matters under the R32-redesigned gate: total>=3 check first,
+    then per-purpose>=1 check, then shim==0 check. To isolate the SHIM
+    branch we need every purpose to have at least 1 hit (so the per-
+    purpose check doesn't pre-empt) AND shim_hits > 0.
     """
     base_url, stop = _start_fake_info_server(
         payload={
             "version": "1.5.1",
-            "key_back_compat_shim_active_hits": {"api_bearer": 150, "oauth_state": 0, "signed_url": 0},
-            "key_call_totals": {"api_bearer": 150, "oauth_state": 0, "signed_url": 0},
+            # api_bearer shows shim activity; the other 2 purposes are
+            # exercised via overrides (so per-purpose check passes,
+            # leaving only the shim check to fire).
+            "key_back_compat_shim_active_hits": {"api_bearer": 5, "oauth_state": 0, "signed_url": 0},
+            "key_call_totals": {"api_bearer": 5, "oauth_state": 1, "signed_url": 1},
         },
         bearer=_BEARER,
     )
@@ -175,7 +177,7 @@ def test_gate_exit_4_when_shim_still_active():
 
 
 def test_gate_exit_0_when_overrides_serving_all_traffic():
-    """shim_hits=0, total=150 → exit 0 (override path working)."""
+    """shim_hits=0, total=150, every purpose >=1 → exit 0 (override path working)."""
     base_url, stop = _start_fake_info_server(
         payload={
             "version": "1.5.1",
@@ -198,15 +200,23 @@ def test_gate_exit_0_when_overrides_serving_all_traffic():
     assert "override hits: 150" in result.stdout
 
 
-def test_gate_exit_0_when_multi_purpose_overrides_serving():
-    """Per the brief's case 3: partial override across purposes is fine
-    so long as shim_hits==0 and total>=100 overall.
-    shim_hits=0, total=110 (api_bearer:50 + signed_url:60) → exit 0."""
+def test_gate_exit_0_at_minimum_healthy_boot():
+    """R32 case: cached-at-init wrapper produces exactly 1 hit per purpose
+    at process boot and stays there indefinitely. The new gate must
+    treat this minimal-but-healthy state as green-light — the entire
+    point of the redesign.
+
+    shim_hits=0, total=3 (api_bearer:1 + oauth_state:1 + signed_url:1)
+    → exit 0.
+
+    Pre-R32 this would have failed exit-3 ("total < 100") despite being
+    the architecturally-correct steady state.
+    """
     base_url, stop = _start_fake_info_server(
         payload={
             "version": "1.5.1",
             "key_back_compat_shim_active_hits": {"api_bearer": 0, "oauth_state": 0, "signed_url": 0},
-            "key_call_totals": {"api_bearer": 50, "oauth_state": 0, "signed_url": 60},
+            "key_call_totals": {"api_bearer": 1, "oauth_state": 1, "signed_url": 1},
         },
         bearer=_BEARER,
     )
@@ -215,23 +225,27 @@ def test_gate_exit_0_when_multi_purpose_overrides_serving():
     finally:
         stop.set()
     assert result.returncode == 0, (
-        f"expected exit 0 (multi-purpose green-light); got {result.returncode}.\n"
+        f"expected exit 0 (minimum healthy boot); got {result.returncode}.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )
+    assert "safe to merge v2.0b" in result.stdout
 
 
-# ---------------------------------------------------------------------
-# 3. Insufficient signal -> exit 3 (the floor is 100 calls).
-# ---------------------------------------------------------------------
+def test_gate_exit_3_when_purpose_has_zero_hits():
+    """R32 case: a wire-up regression in one purpose must be caught
+    directly by the per-purpose check, even when other purposes have
+    served plenty of traffic. Pre-R32 this would have passed silently
+    (TOTAL=200 >> 100 floor) and the strict-flip would have shipped
+    with a broken signed_url wire-up.
 
-
-def test_gate_exit_3_when_total_below_100():
-    """total=50 (even with shim_hits=0) → exit 3 (insufficient signal)."""
+    shim_hits=0, total=200 (api_bearer:100 + oauth_state:100 +
+    signed_url:0) → exit 3 (per-purpose wire-up check fires).
+    """
     base_url, stop = _start_fake_info_server(
         payload={
             "version": "1.5.1",
             "key_back_compat_shim_active_hits": {"api_bearer": 0, "oauth_state": 0, "signed_url": 0},
-            "key_call_totals": {"api_bearer": 30, "oauth_state": 10, "signed_url": 10},
+            "key_call_totals": {"api_bearer": 100, "oauth_state": 100, "signed_url": 0},
         },
         bearer=_BEARER,
     )
@@ -240,10 +254,61 @@ def test_gate_exit_3_when_total_below_100():
     finally:
         stop.set()
     assert result.returncode == 3, (
-        f"expected exit 3 (insufficient signal); got {result.returncode}.\n"
+        f"expected exit 3 (wire-up regression on signed_url); "
+        f"got {result.returncode}.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )
-    assert "RUNBOOK §3.6" in result.stderr
+    # Error message must name the regressed purpose so operators know
+    # which callsite to inspect.
+    assert "signed_url" in result.stderr
+    assert "wire-up" in result.stderr.lower()
+
+
+# ---------------------------------------------------------------------
+# 3. Wire-up regression -> exit 3 (R32 redesigned semantics).
+# ---------------------------------------------------------------------
+#
+# Pre-R32 this section gated on `total >= 100` as "insufficient signal"
+# — that was set against a wrong mental model (assumed per-request
+# get_key calls; actual wrapper caches at process init). Post-R32 the
+# exit-3 condition is "total < 3 OR any purpose has 0 hits", which
+# directly proves wire-up regression rather than indirectly inferring
+# it from traffic volume.
+#
+# The "purpose has 0 hits" arm is covered by
+# test_gate_exit_3_when_purpose_has_zero_hits above. This test covers
+# the "total < 3" arm — a state operators see only when the server
+# has not yet served any traffic at all (e.g. immediately post-boot
+# before the lazy-resolution path has fired).
+
+
+def test_gate_exit_3_when_total_below_3():
+    """total=0 → exit 3 (no purpose has been exercised yet).
+
+    Could happen if the preflight runs against a freshly-booted Fly
+    machine that hasn't received any traffic — the lazy-init path in
+    keys.py only fires when something calls get_key, which under
+    multi-purpose orchestration happens at first protected request.
+    """
+    base_url, stop = _start_fake_info_server(
+        payload={
+            "version": "1.5.1",
+            "key_back_compat_shim_active_hits": {"api_bearer": 0, "oauth_state": 0, "signed_url": 0},
+            "key_call_totals": {"api_bearer": 0, "oauth_state": 0, "signed_url": 0},
+        },
+        bearer=_BEARER,
+    )
+    try:
+        result = _run_preflight(base_url, _BEARER)
+    finally:
+        stop.set()
+    assert result.returncode == 3, (
+        f"expected exit 3 (no purpose exercised); got {result.returncode}.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+    # Error message must guide the operator to either restart or
+    # trigger lazy resolution — both are valid recoveries.
+    assert "wire-up regression" in result.stderr.lower() or "wired" in result.stderr.lower()
 
 
 # ---------------------------------------------------------------------

@@ -155,6 +155,28 @@ Backlog rationalization across R17–R29 trimmed the candidate set down to what 
   widened to catch ``"<env>", "<default>"`` shapes so future
   refactors of this class can't reintroduce the bypass.
 
+- **Preflight gate** (`scripts/preflight_strict_flip.sh`, R32) —
+  replaced the over-strict ``TOTAL >= 100`` threshold with a
+  ``TOTAL >= 3 AND each_purpose >= 1`` gate. The 100-call floor
+  was set against a wrong mental model (assumed per-request
+  ``get_key()`` calls); the actual wrapper architecture resolves
+  each purpose ONCE at process init and caches the bytes, which
+  is the correct shape for a key-derivation wrapper (HKDF on every
+  request would burn CPU for zero value). The old gate was
+  unsatisfiable in steady state — a healthy boot produces
+  ``{api_bearer:1, oauth_state:1, signed_url:1}`` = 3 total and
+  stays there indefinitely without synthetic traffic. The new
+  per-purpose check directly proves wire-up of each callsite
+  (what the 100-call floor was actually trying to test) AND
+  catches a wire-up regression in any single purpose that would
+  otherwise hide behind other purposes' counters. Smoke-tested
+  against synthetic ``/info`` shapes for all 4 gate paths
+  (exit-0 happy, exit-3 wire-up, exit-3 total-too-low, exit-4
+  shim-active). Exit-code semantics for code 3 widened from
+  "insufficient signal" to "wire-up regression"; RUNBOOK §3.6
+  guidance about "drive synthetic traffic" no longer applies and
+  is implicitly dropped.
+
 ## [1.5.0] — 2026-05-19
 
 Pre-v2.0b instrumentation. Process-local counter in `keys.py` measures
