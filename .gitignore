@@ -19,6 +19,7 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 # CI-generated artifacts that get baked into the Docker image at deploy
 # time (uploaded via actions/upload-artifact). Don't commit them.

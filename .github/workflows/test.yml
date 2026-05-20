@@ -29,7 +29,20 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: pytest (unit only — live tests need OAuth + Drive, not in CI)
+        # Coverage gate is configured in pytest.ini (--cov-fail-under=57).
+        # The step fails if line coverage drops below the floor.
         run: pytest tests/unit -v
+
+      - name: upload coverage report (per Python version)
+        # always() so we get the artifact even when the coverage gate
+        # fails — that's exactly when the report is most useful.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: syntax check all src
         run: python -m py_compile src/google_docs_mcp/*.py
