@@ -58,8 +58,8 @@ if [ "$TOTAL" -lt 100 ]; then
 fi
 if [ "$SHIM_HITS" -gt 0 ]; then
     echo "FAIL: shim still active ($SHIM_HITS hits) — DO NOT flip." >&2
-    echo "      Wait for in-flight tokens to expire (signed-URL TTL is 24h" >&2
-    echo "      by default; OAuth state TTL is 10min). See RUNBOOK §3.5." >&2
+    echo "      Wait for in-flight tokens to expire (signed-URL TTL is 10min" >&2
+    echo "      by default, 1h max; OAuth state TTL is 10min). See RUNBOOK §3.5." >&2
     exit 4
 fi
 

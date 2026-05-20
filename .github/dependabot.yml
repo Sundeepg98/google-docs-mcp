@@ -6,6 +6,13 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    # fastmcp pin is load-bearing security control:
+    #   CVE-2025-69196 (token reuse) — fixed 2.14.2
+    #   CVE-2026-27124 (confused deputy) — fixed 3.2.0
+    # Block major bumps; review manually with smoke test before any 4.x bump.
+    ignore:
+      - dependency-name: "fastmcp"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps"
     labels:
