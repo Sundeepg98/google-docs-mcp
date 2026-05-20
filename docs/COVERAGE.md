@@ -2,7 +2,10 @@
 
 ## Current floor
 
-CI enforces minimum **line coverage** via `--cov-fail-under` in `pytest.ini`.
+CI enforces minimum **line coverage** via `--cov-fail-under=55` on the
+**unit-only** test invocation in `.github/workflows/test.yml`. The flag
+deliberately does NOT live in `pytest.ini` default `addopts` (see
+[Scope](#scope) below).
 
 - **Floor: 55%** (set 2026-05-20 per R33 baseline measurement).
 - **Measured baseline per Python version on CI:**
@@ -35,6 +38,32 @@ To see what changed locally:
 pytest tests/unit --cov=src/google_docs_mcp --cov-report=term-missing
 ```
 
+## Scope
+
+Coverage **measurement** (`--cov`, `--cov-report=*`) is enabled globally via
+`pytest.ini` default `addopts` so every invocation produces a `coverage.xml`
+the CI artifact step can pick up.
+
+Coverage **enforcement** (`--cov-fail-under=55`) is added explicitly on the
+unit-only CLI invocation in `.github/workflows/test.yml`. It is NOT in default
+`addopts` for a reason:
+
+| Test layer | Natural coverage | Should enforce 55%? |
+|---|---|---|
+| `tests/unit/*` | ~56.5% | yes — that's the calibrated layer |
+| `tests/integration/*` | ~34% (high-level flows only) | no — would always fail |
+| Ad-hoc subset (`pytest tests/unit/test_foo.py`) | varies wildly | no — investigation tool |
+| Combined `pytest tests/unit tests/integration` | dominated by unit | no — opt-in if you want it |
+
+The original v2.0.6 ship put `--cov-fail-under=55` in default `addopts`,
+which made the integration job in `e2e.yml` fail on every run because
+integration tests measure ~34% of the package by design. v2.0.7 (PR #84)
+moved the flag to the unit-only CLI; surfaced via ship-doc's investigation.
+
+If you need to enforce a different floor on a different layer in the future
+(e.g. 30% on integration), add `--cov-fail-under=30` to that job's CLI; the
+two layers are independent.
+
 ## Ratchet policy
 
 - **Bump `+1pp` per release** (or every 2 weeks, whichever comes first)
@@ -49,8 +78,9 @@ pytest tests/unit --cov=src/google_docs_mcp --cov-report=term-missing
 
 1. Run `pytest tests/unit` locally; note the `Total coverage: XX.YY%`
    line.
-2. If `XX >= floor + 1`, bump `--cov-fail-under` in `pytest.ini` by 1.
-3. Update both the inline comment block in `pytest.ini` and this file's
+2. If `XX >= floor + 1`, bump `--cov-fail-under=<N>` in
+   `.github/workflows/test.yml` (the unit-test step CLI) by 1.
+3. Update both the comment block in `pytest.ini` and this file's
    "Current floor" section.
 4. Open a small `chore(ci):` PR.
 

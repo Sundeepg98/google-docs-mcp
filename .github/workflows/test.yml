@@ -29,9 +29,16 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: pytest (unit only — live tests need OAuth + Drive, not in CI)
-        # Coverage gate is configured in pytest.ini (--cov-fail-under=57).
-        # The step fails if line coverage drops below the floor.
-        run: pytest tests/unit -v
+        # Coverage gate (--cov-fail-under=55) lives HERE, on the unit-only
+        # CLI invocation, NOT in pytest.ini default addopts. Why split:
+        # the global default addopts would also force the 55% floor onto
+        # the integration-test job in e2e.yml — which naturally measures
+        # ~34% line coverage (high-level flows, not exhaustive unit paths)
+        # and so always failed. Keeping enforcement scoped to the unit
+        # job is what the 55% baseline in docs/COVERAGE.md was calibrated
+        # against. Measurement (--cov / --cov-report=*) still happens by
+        # default everywhere so the coverage.xml artifact below populates.
+        run: pytest tests/unit -v --cov-fail-under=55
 
       - name: upload coverage report (per Python version)
         # always() so we get the artifact even when the coverage gate
