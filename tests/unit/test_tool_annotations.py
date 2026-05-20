@@ -152,3 +152,33 @@ def test_all_tools_have_human_readable_title():
         if not title:
             missing_title.append(t.name)
     assert not missing_title, f"Tools without annotation title: {missing_title}"
+
+
+# ---------------------------------------------------------------------
+# R28 design-internal nit — gdocs_admin_audit title must describe what
+# the function actually does. Pre-fix it claimed "list registered users";
+# the body (server.py near line 2447) actually calls
+# ``user_store.get_state(user_id)`` and returns timestamp bounds for a
+# single user_id — not a user list. Misleading titles erode trust in
+# the annotation surface and confuse operators reading the MCP client
+# UI before they read the docstring.
+# ---------------------------------------------------------------------
+
+
+def test_admin_audit_title_describes_actual_behavior():
+    """Regression: gdocs_admin_audit returns timestamp bounds for one
+    user_id, not a user list. Title must not say "list users" or
+    "list registered users"."""
+    tools = {t.name: t for t in _list_tools()}
+    assert "gdocs_admin_audit" in tools, "gdocs_admin_audit not registered"
+    title = tools["gdocs_admin_audit"].annotations.title
+    lowered = title.lower()
+    assert "list" not in lowered, (
+        f"Title misrepresents function: {title!r}. "
+        f"gdocs_admin_audit returns timestamp bounds for a single user_id "
+        f"(see server.py user_store.get_state call), not a user list."
+    )
+    assert any(kw in lowered for kw in ("timeline", "forensic", "audit", "state")), (
+        f"Title doesn't describe actual behavior: {title!r}. "
+        f"Should reference timeline / forensic / audit / state."
+    )
