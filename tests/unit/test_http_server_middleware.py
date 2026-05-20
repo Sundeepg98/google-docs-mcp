@@ -139,3 +139,50 @@ def test_error_page_escapes_html_metachars():
     assert "&lt;script&gt;" in body
     assert "<script>" not in body
     assert "alert(1)" in body  # escaped form still readable
+
+
+# ---------------------------------------------------------------------
+# OAuth callback CSP header (defense-in-depth on top of XSS fix, v2.0.6)
+# ---------------------------------------------------------------------
+
+
+def test_oauth_error_page_includes_csp_header():
+    """Defense-in-depth: if a future edit forgets to escape the body
+    substitution, CSP must block the injected script from loading."""
+    from google_docs_mcp.http_server import _error_page
+    resp = _error_page("test", 400)
+    csp = resp.headers.get("content-security-policy", "")
+    assert csp, "expected Content-Security-Policy header on _error_page"
+    assert "default-src 'none'" in csp, (
+        f"CSP must lock down default-src; got {csp!r}"
+    )
+    # No script-src directive at all (template has no <script> tags).
+    # Absence is stricter than `script-src 'none'` because UA falls back
+    # to default-src, which is already 'none'.
+    assert "script-src" not in csp, (
+        f"CSP must NOT permit any script source; got {csp!r}"
+    )
+
+
+def test_oauth_success_page_includes_csp_header():
+    """Same defense-in-depth on the success page — even though the
+    success page's body is server-controlled and not user-influenced
+    today, future edits could change that."""
+    from google_docs_mcp.http_server import _success_page
+    resp = _success_page()
+    csp = resp.headers.get("content-security-policy", "")
+    assert csp, "expected Content-Security-Policy header on _success_page"
+    assert "default-src 'none'" in csp
+    assert "script-src" not in csp
+
+
+def test_oauth_pages_csp_allows_inline_style():
+    """The _OAUTH_SUCCESS_HTML template carries an inline <style> block;
+    CSP must permit it via style-src 'unsafe-inline' or the page renders
+    unstyled. Regression guard against an over-aggressive future CSP edit."""
+    from google_docs_mcp.http_server import _error_page, _success_page
+    for resp in (_error_page("x", 400), _success_page()):
+        csp = resp.headers["content-security-policy"]
+        assert "style-src 'unsafe-inline'" in csp, (
+            f"inline <style> requires style-src 'unsafe-inline'; got {csp!r}"
+        )

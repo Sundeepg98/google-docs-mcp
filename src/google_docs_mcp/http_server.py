@@ -182,6 +182,18 @@ _OAUTH_SUCCESS_HTML = """<!doctype html>
 </html>"""
 
 
+# v2.0.6 (R28 defense-in-depth on top of PR #50 D1 XSS fix): the OAuth
+# callback HTML pages render at the Fly app's origin and contain a
+# server-supplied ``body`` substitution. PR #50 escapes that substitution
+# (``_html.escape(message)``), which is the actual fix. CSP is the
+# fallback if a future edit forgets to escape — `default-src 'none'`
+# blocks every resource type, so even an injected ``<script>`` cannot
+# load. ``style-src 'unsafe-inline'`` is required because the template
+# carries an inline ``<style>`` block; the template has NO ``<script>``
+# tags so we deliberately do NOT permit any script source.
+_CSP_HEADER = "default-src 'none'; style-src 'unsafe-inline'"
+
+
 def _success_page() -> Response:
     body_html = _OAUTH_SUCCESS_HTML.format(
         check="✅",
@@ -191,7 +203,12 @@ def _success_page() -> Response:
             "on your behalf. Return to your chat and retry the action."
         ),
     )
-    return Response(body_html, status_code=200, media_type="text/html")
+    return Response(
+        body_html,
+        status_code=200,
+        media_type="text/html",
+        headers={"Content-Security-Policy": _CSP_HEADER},
+    )
 
 
 def _error_page(message: str, status_code: int) -> Response:
@@ -200,7 +217,12 @@ def _error_page(message: str, status_code: int) -> Response:
         heading="Authorization didn't complete",
         body=_html.escape(message),
     )
-    return Response(body_html, status_code=status_code, media_type="text/html")
+    return Response(
+        body_html,
+        status_code=status_code,
+        media_type="text/html",
+        headers={"Content-Security-Policy": _CSP_HEADER},
+    )
 
 
 async def oauth_google_api_callback(request: Request) -> Response:
