@@ -45,6 +45,32 @@ def test_fly_app_name_derivation(monkeypatch):
     assert "localhost" in result
 
 
+def test_derive_trusted_hosts_includes_fly_internal(monkeypatch):
+    """v2.0.6 deploy-blocker fix: Fly's internal health probe sends a
+    Host header that doesn't match <app>.fly.dev. Without these entries
+    the probe is rejected with 400 BEFORE reaching the /health handler,
+    the deploy health gate fails, and Fly aborts the deploy.
+
+    Regression guard for the v78-v82 incident (5 consecutive aborted
+    deploys). See derive_trusted_hosts docstring for the full context.
+    """
+    monkeypatch.delenv("TRUSTED_HOSTS", raising=False)
+    monkeypatch.setenv("FLY_APP_NAME", "my-app")
+    monkeypatch.delenv("FLY_REGION", raising=False)
+
+    from google_docs_mcp.http_server import derive_trusted_hosts
+    result = derive_trusted_hosts()
+    # The two Fly-internal-probe entries:
+    assert "my-app.internal" in result, (
+        f"Fly internal hostname <app>.internal missing; deploys will "
+        f"fail TrustedHost on internal probes. Got: {result!r}"
+    )
+    assert "*.internal" in result, (
+        f"Fly machine-id.vm.<app>.internal pattern missing; deploys "
+        f"will fail TrustedHost on per-machine probes. Got: {result!r}"
+    )
+
+
 def test_fail_open_with_warn_when_neither_env_set(monkeypatch, caplog):
     monkeypatch.delenv("TRUSTED_HOSTS", raising=False)
     monkeypatch.delenv("FLY_APP_NAME", raising=False)
