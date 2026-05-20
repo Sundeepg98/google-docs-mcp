@@ -21,6 +21,7 @@ from typing import Literal
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
+from mcp.types import ToolAnnotations
 
 from .auth import default_data_dir, load_credentials
 from .crypto import DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, sign_upload_url
@@ -249,7 +250,13 @@ def _validate_title(title, *, field: str = "title") -> None:
             )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Create a new tabbed Google Doc",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+))
 def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     """DEFAULT tool for building a tabbed Google Doc from text content.
 
@@ -328,7 +335,13 @@ def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Append tabs to an existing Google Doc",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+))
 def gdocs_add_tabs(
     doc_id: str,
     tabs: list[TabSpec],
@@ -378,7 +391,13 @@ def gdocs_add_tabs(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Read doc outline (tab structure only)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_get_doc_outline(doc_id: str) -> dict:
     """List every tab in a Google Doc with its structure (no body content).
 
@@ -416,7 +435,13 @@ def gdocs_get_doc_outline(doc_id: str) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Read full text content of a Google Doc",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_read_doc(
     doc_id: str,
     tab_id: str | None = None,
@@ -462,7 +487,13 @@ def gdocs_read_doc(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Append content to an existing tab",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+))
 def gdocs_append_to_tab(
     doc_id: str,
     tab_id: str,
@@ -500,7 +531,13 @@ def gdocs_append_to_tab(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Convert .docx or existing Doc into tabbed Google Doc",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+))
 def gdocs_tab_existing_doc(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
@@ -671,7 +708,13 @@ def gdocs_tab_existing_doc(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Rename a tab and/or change its icon",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_rename_tab(
     doc_id: str,
     tab_id: str,
@@ -716,7 +759,13 @@ def gdocs_rename_tab(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Server identity + tool inventory",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 async def gdocs_server_info() -> dict:
     """Server identity + full tool inventory — for change detection across sessions.
 
@@ -958,7 +1007,13 @@ def _read_mutation_check() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="List CI test manifest",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_test_manifest() -> dict:
     """List every test in the CI artifact + its pass/fail outcome.
 
@@ -1053,7 +1108,13 @@ def gdocs_test_manifest() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Build deep-link URL to a specific tab",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     """Build a Google Docs URL that opens directly to a specific tab.
 
@@ -1080,7 +1141,13 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Orientation guide (local, no API)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def gdocs_guide() -> dict:
     """Orientation payload — the "start here" / --help for this server.
 
@@ -1313,7 +1380,13 @@ def _run_batch(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Find a Google Doc by title (search)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_find_doc_by_title(
     query: str,
     exact: bool = False,
@@ -1373,7 +1446,13 @@ def gdocs_find_doc_by_title(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Move a file into a Drive folder",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
     """Move a Drive file into a folder (out of root or wherever it lives).
 
@@ -1416,7 +1495,13 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Restore a file from Drive trash",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     """Restore a trashed Drive file back to its original location.
 
@@ -1458,7 +1543,13 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Move a Drive file to trash",
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_trash_file(file_id: str | list[str]) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
@@ -1505,7 +1596,13 @@ def gdocs_trash_file(file_id: str | list[str]) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Delete a tab from a Google Doc",
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
@@ -1532,7 +1629,13 @@ def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Replace all matching text in a doc",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_replace_all_text(
     doc_id: str,
     find: str,
@@ -1573,7 +1676,13 @@ def gdocs_replace_all_text(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Set emoji icons on tabs",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     """Set or update icon emojis on existing tabs by title match.
 
@@ -1622,7 +1731,13 @@ def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Preview how a doc would split into tabs (dry-run)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_preview_tab_split(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
@@ -1670,7 +1785,13 @@ def gdocs_preview_tab_split(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Mint a one-shot signed upload URL",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+))
 def gdocs_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
@@ -1745,7 +1866,13 @@ def gdocs_get_signed_upload_url(
 # can share it without circular imports.
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Provision per-user Apps Script project",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_setup_apps_script() -> dict:
     """One-shot setup of the Apps Script Web App needed for lossless retrofit.
 
@@ -1847,7 +1974,13 @@ def gdocs_setup_apps_script() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Reset user authorization / revoke tokens",
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_reset_authorization(full: bool = False) -> dict:
     """Reset / revoke / clear stored Google OAuth credentials. Force re-consent.
 
@@ -2016,7 +2149,13 @@ from . import resources as _llm_recovery_resources  # noqa: E402,F401
 from .resources import _RECOVERY_TABLE  # noqa: E402
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Help for an error message (local, no API)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def gdocs_help(error_message: str) -> dict:
     """Look up recovery guidance for a server error string.
 
@@ -2170,7 +2309,13 @@ def _check_admin_token(provided: object) -> None:
         raise ToolError("admin_token does not match MCP_ADMIN_TOKEN")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    title="Admin: list registered users (read-only, admin-token gated)",
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 def gdocs_admin_audit(
     admin_token: str, user_id: str, since_hours: int = 24,
 ) -> dict:
