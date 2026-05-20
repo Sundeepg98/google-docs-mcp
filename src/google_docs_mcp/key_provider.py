@@ -42,14 +42,20 @@ reads it at call time (not at construction).
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal, Protocol, runtime_checkable
+
+# v2.1 (post-M1a CodeQL fix): high-level RFC 5869 HKDF wrapper from the
+# already-required ``cryptography`` library. Replaces the prior inline
+# ``hmac.new(..., hashlib.sha256)`` implementation — see ``_hkdf_sha256``
+# docstring for the full rationale (byte-for-byte identical output;
+# CodeQL false-positive avoidance).
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
 
@@ -210,32 +216,42 @@ _HKDF_INFO: dict[str, bytes] = {
 def _hkdf_sha256(ikm: bytes, info: bytes, length: int = 32) -> bytes:
     """RFC 5869 HKDF-Extract+Expand using HMAC-SHA256, salt='' for our use.
 
-    Single inline implementation — keeps ``key_provider.py`` import-free
-    of cryptography for the import-fast-path. Matches pre-v2.1 ``keys._hkdf_sha256``
-    byte-for-byte; reproduced here to keep the adapter self-contained.
-
     ``ikm`` is the RFC 5869 "Input Keying Material" — high-entropy key
-    bytes derived from ``MCP_BEARER_TOKEN`` (≥32 chars enforced by the
-    HKDFKeyProvider before this function is reached). It is NOT a
+    bytes derived from ``MCP_BEARER_TOKEN`` (≥32 chars enforced by
+    ``HKDFKeyProvider`` before this function is reached). It is NOT a
     human-chosen password and MUST NOT be processed with a password-
     hashing KDF (bcrypt / scrypt / argon2). HKDF is the canonical RFC
     5869 KDF for high-entropy key material; SHA-256 here is the HMAC
     primitive HKDF specifies, not a standalone password hash.
 
-    CodeQL's ``py/weak-sensitive-data-hashing`` rule heuristically flags
-    SHA-256 + an identifier resembling "password" or "secret" as a
-    weak password hash. That heuristic does not apply here — the
-    ``ikm`` rename + this comment make the cryptographic primitive
-    explicit. The suppressions on the two ``hmac.new`` lines below are
-    documented at those call sites.
+    **v2.1 (post-M1a CodeQL fix)**: implementation now delegates to
+    ``cryptography.hazmat.primitives.kdf.hkdf.HKDF`` — the standard
+    library's high-level HKDF wrapper. Two reasons:
+
+    1. CodeQL's ``py/weak-sensitive-data-hashing`` rule heuristically
+       traced the inline ``hmac.new(..., hashlib.sha256)`` pattern as
+       "SHA-256 hash on sensitive data" (via dataflow from
+       ``MCP_BEARER_TOKEN`` env-var source). The high-level ``HKDF``
+       class is a named KDF in the ``cryptography`` library and is
+       recognised as such by CodeQL — no false-positive trigger.
+    2. ``cryptography`` is already a hard dep (CVE-floor pin in
+       pyproject.toml) so the "import-free of cryptography for the
+       fast-path" rationale no longer applies.
+
+    **Byte-for-byte identical output** to the pre-v2.1 inline HMAC
+    implementation. Verified manually (same IKM + info → same 32-byte
+    output) — no key-rotation event for live signed-URL / OAuth-state
+    / API-bearer keys.
     """
-    # HKDF-Extract: PRK = HMAC-SHA256(salt=b"", IKM=ikm). Per RFC 5869 §2.2.
-    # SHA-256 is the HMAC primitive HKDF requires, not a password hash —
-    # see function docstring for full rationale.
-    prk = hmac.new(b"", ikm, hashlib.sha256).digest()  # lgtm[py/weak-sensitive-data-hashing]
-    # HKDF-Expand: T(1) = HMAC-SHA256(PRK, info || 0x01). Per RFC 5869 §2.3.
-    t = hmac.new(prk, info + b"\x01", hashlib.sha256).digest()  # lgtm[py/weak-sensitive-data-hashing]
-    return t[:length]
+    # cryptography's HKDF expects salt=None to default to salt=b"\\x00" * hash_len
+    # per RFC 5869 §2.2 — equivalent to the inline impl's salt=b"" because
+    # HMAC-Extract with empty salt OR zero salt produces the same PRK.
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=length,
+        salt=None,
+        info=info,
+    ).derive(ikm)
 
 
 class HKDFKeyProvider:
