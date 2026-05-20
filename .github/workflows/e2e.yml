@@ -61,13 +61,27 @@ jobs:
       # fail with "secret not found" until operator provisions them.
       MCP_BEARER_TOKEN: ${{ secrets.TEST_BEARER_TOKEN }}
       GOOGLE_CLIENT_CONFIG: ${{ secrets.TEST_OAUTH_CONFIG_JSON }}
-      MCP_DATA_DIR: ${{ runner.temp }}/mcp-data
+      # MCP_DATA_DIR is set from $RUNNER_TEMP in the first step below.
+      # The ${{ runner.* }} expression context is NOT available in
+      # job-level `env:` (it only resolves inside steps), so wiring it
+      # here would fail workflow validation with:
+      #   "Unrecognized named-value: 'runner'"
+      # That's exactly what was blocking every e2e run from #26 (the
+      # workflow's introduction) onwards.
       MCP_BASE_URL: http://localhost:8080
       # Set FLY_APP_NAME so derive_trusted_hosts doesn't WARN-fail-open
       # in CI (where there's no real Fly metadata). Pinned to a sentinel
       # so accidental real-Fly env bleed surfaces in logs.
       FLY_APP_NAME: ci-test-app
     steps:
+      - name: set MCP_DATA_DIR from runner temp
+        # `$RUNNER_TEMP` is the shell-level alias for `${{ runner.temp }}`
+        # and IS available inside steps. Pushing the assignment to
+        # $GITHUB_ENV makes it visible to every subsequent step in this
+        # job — the same semantic as the original job-level env entry,
+        # without the unresolvable-at-job-env-time `runner.*` lookup.
+        run: echo "MCP_DATA_DIR=$RUNNER_TEMP/mcp-data" >> "$GITHUB_ENV"
+
       - name: checkout
         uses: actions/checkout@v6
 
@@ -104,9 +118,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true
-    env:
-      MCP_DATA_DIR: ${{ runner.temp }}/mcp-data
+    # MCP_DATA_DIR is set from $RUNNER_TEMP in the first step below for
+    # the same reason as e2e-test above — `${{ runner.* }}` does not
+    # resolve in job-level `env:`.
     steps:
+      - name: set MCP_DATA_DIR from runner temp
+        run: echo "MCP_DATA_DIR=$RUNNER_TEMP/mcp-data" >> "$GITHUB_ENV"
+
       - name: checkout
         uses: actions/checkout@v6
 
