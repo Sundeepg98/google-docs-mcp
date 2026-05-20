@@ -4,6 +4,52 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.6] — 2026-05-20
+
+Eight-PR consolidation wave (#78–#85). Closes the silent e2e CI gap that had been hiding integration-test + chaos-harness + pip-audit + pyright + ruff failures since v1.4.0c (PR #26): the `e2e.yml` workflow had been broken by an invalid `runner.temp` reference in job-level `env`, rejected by GitHub's validator with HTTP 422, since the day it shipped — none of the gated tests ever actually ran in CI. PR #82 fixes that; the rest of this wave is the work that landed clean once CI was actually validating it. Also lays the `@gdocs_tool` decorator groundwork for the multi-service `@workspace_tool` rename (see `docs/ARCHITECTURE.md` §7 M4).
+
+> **Major: e2e CI gap closed.** Integration tests, chaos harness, pip-audit, pyright, and ruff now actually run on every PR — previously silently failing since PR #26. Operators relying on the green test badge as a freshness signal should treat the v2.0.6 cut as the first build where that signal carries the full e2e suite.
+
+### Security
+
+- **`pip-audit` severity-aware ignore for pyjwt PYSEC-2025-183 (PR #85, C4).** The pyjwt CVE (CVSS 7.0 HIGH, DISPUTED by upstream) enters via `mcp[crypto] → pyjwt` and surfaces in `pip-audit --strict` against `uv.lock`. Verified non-applicable: `grep -rn "import jwt" src/ tests/ scripts/` returns zero hits, and `mcp[crypto]`'s only consumer is `PrivateKeyJWTOAuthProvider` + `RFC7523OAuthClientProvider` (neither instantiated in our codebase — our OAuth path is Google's standard Authorization Code flow via `google-auth-oauthlib`). The vulnerable code path is never executed in our deployment. e2e workflow now ignores the CVE with a 20-line provenance comment + re-audit trigger. Full rationale in `SECURITY.md` § Dependency CVE handling.
+- **OAuth callback + signed-URL roundtrip integration tests (PR #79).** Closes the security-critical e2e gap surfaced by the THREAT_MODEL §4 review: the multi-stage flows (browser → `/oauth/google/api/callback` → token exchange; `gdocs_get_signed_upload_url` → POST `/api/convert`) had unit coverage of each leg but no end-to-end test exercising the leg boundaries. New tests in `tests/integration/` cover both flows including the failure cases (replay, expired state, tampered signature).
+
+### Added
+
+- **`@gdocs_tool` composite decorator (PR #83, R28 5-round deferral close).** New module `src/google_docs_mcp/decorators.py` collapses the per-tool boilerplate (the `try / except HttpError → ToolError` + `_get_credentials()` + `ToolAnnotations(...)` triad) into a single decorator. Eliminates ~83 LOC of duplication across the 15 API-touching tools. The decorator is deliberately scoped to tools that opt-in via `creds=True`; the 9 local-only tools (`gdocs_server_info`, `gdocs_help`, `gdocs_guide`, etc.) keep custom shapes. Sets the pattern for the future `@workspace_tool` rename in M4 of the Hex foundation refactor (see `docs/ARCHITECTURE.md`).
+- **`output_schema=` on all 24 `@mcp.tool` decorators + per-tool runtime validation (PR #80, R33 F6).** Each tool now declares its return-shape contract via `output_schema=`; the FastMCP runtime validates every tool response against the schema before returning to the caller. Closes R33 F6 + the 21 missing contract tests that had accumulated since v1.3.0's tool-surface stabilization. New module `src/google_docs_mcp/tool_schemas.py` is the single source of truth for the schemas; `test_tool_output_schemas.py` asserts every decorator carries a schema (regression guard for "added a new tool, forgot the schema").
+- **Coverage gate (PR #78, R33 floor + ratchet policy).** `pytest-cov` wired into the e2e workflow with a 55% floor (lowered from the initial 56% target after CI revealed a Py 3.11 outlier at 55.21% — see `docs/COVERAGE.md` § "Why 55% and not 56%"). Each subsequent release ratchets the floor by +1pp until coverage stabilizes. `docs/COVERAGE.md` documents the ratchet policy, the per-module exemptions, and the rationale for not chasing 100%.
+
+### Changed
+
+- **pyright + ruff wired into e2e workflow (PR #84).** `pyright` runs strict mode against `src/` + `tests/`; `ruff` runs `check + format --check`. Surfaced and fixed 7 real type issues + 2 ruff violations on landing. `tests/` migrated from inline `# noqa` comments to the per-file ruff `tests/` override. Pinned `astral-sh/setup-uv` from the floating `@v3` to the immutable `@v8.1.0` SHA-anchored ref (caught in post-landing fixup: no `v8` major alias exists; `v8.1.0` is the actual release that the workflow exercises).
+- **Integration test fixture str → bytes (PR #81, PR #34 A.1 contract).** `test_fresh_user_flow.py` fixture was passing the signing key as `str`; the v2.0b strict-flip changes the signing key contract to `bytes` (HKDF derivation output). Fixture updated to match. 4 of the 5 integration tests now pass under the strict-flip; the 5th was resolved in the follow-up v2.0.7 fix-pack (see `ship/fix-fixture-dual-type`).
+
+### Fixed
+
+- **`e2e.yml` workflow `runner.temp` rejection (PR #82, broken since PR #26).** GitHub's workflow validator was rejecting the job-level `env: COVERAGE_TMP: ${{ runner.temp }}/cov` block with HTTP 422 — `runner.*` context is not available in job-level `env`, only in step-level `env`. The workflow had failed validation on every run since v1.4.0c shipped (commit `35fdb01`, 2026-05-19), but the failure mode was a silent "workflow did not run" status that didn't surface in the PR check list. **Until this fix, integration tests / chaos harness / pip-audit / pyright / ruff had never validated a single PR.** Moved the `runner.temp` references into step-level `env` blocks; e2e now runs end-to-end on every push. Root-cause comment added to the workflow header so future contributors don't re-introduce the same shape.
+- **Fly internal probe TrustedHostMiddleware allowlist (PR #77).** Out-of-band v2.0.6 hotfix landed first to unblock v78+ deploys: Fly's internal health probes use hostnames that weren't covered by `derive_trusted_hosts()`. Allowlist now includes the Fly-internal `*.flycast` + `fly-local-6pn` patterns alongside the existing `*.fly.dev` + `localhost`. Per-test fence in `test_derive_trusted_hosts_fly_internal`.
+
+### Tests
+
+- **OAuth + signed-URL integration coverage** (PR #79, see Security above).
+- **24 contract tests for `output_schema=`** (PR #80, see Added above). `test_tool_output_schemas.py` asserts schema presence + runs a smoke validation against a representative successful response for each tool.
+- **Integration test fixture migration** (PR #81, see Changed above).
+
+### Documentation
+
+- **`docs/ARCHITECTURE.md` landed** — rationale for the Hex/Ports/Adapters foundation refactor underway (M1a in flight). Documents the 4 promoted ports (StorageBackend [proven], GoogleAPIClient, KeyProvider, CredentialStore), the 2 NOT promoted (HTTPServer, UrlSigner) with YAGNI rationale, the per-service folder pattern (inspired by `taylorwilsdon/google_workspace_mcp`), the M1a → PAUSE → M1b → M2 → M3 → M4 sequencing, and the research-agent provenance for the corrections that landed.
+- **`docs/COVERAGE.md` landed** (PR #78, see Added above) — coverage floor + ratchet policy + per-module exemptions.
+- **`SECURITY.md` extended** — adds the dependency-CVE handling section (motivated by the pyjwt PYSEC-2025-183 non-applicability finding in PR #85), the threat-model pointer, and the supported-versions clarification.
+
+### Audit-trail provenance
+
+- **R28** (5-round deferral) finally closed by PR #83's `@gdocs_tool` decorator. The deferral had been "yes, but the right shape is unclear" since v1.4.2; the v2.0.6 round nailed down the shape (creds=True opt-in + per-tool ToolAnnotations preserved) and shipped it.
+- **R33 F6** closed by PR #80's `output_schema=` pass + 21 contract tests. The finding had documented the missing schemas but deferred the fix to "after we lock the tool surface"; v2.0.x's stable surface unblocked it.
+- **C4** (CVE handling rigor) closed by PR #85's pyjwt provenance comment. The earlier `# TODO: figure out pyjwt CVE` comment in `e2e.yml` had been stale since v2.0.5; the comment now documents WHY the ignore is safe, plus the re-audit trigger ("if we ever wire `PrivateKeyJWTOAuthProvider` or `RFC7523OAuthClientProvider`, re-evaluate").
+- **R26 + R28 nit** — the CI green status before PR #82 was a known-unknown: tests claimed to be running but the workflow validator failure was invisible in the PR check list. Documented as a runbook entry in `docs/RUNBOOK.md` so the next workflow change that fails GitHub validation gets caught earlier.
+
 ## [Unreleased] — v2.0.5
 
 Parallel-shipping wave from a 29-round audit cycle (R1–R29 + ongoing peer review). Eight independently-reviewed PRs, each a self-contained finding with its own regression test. Bundled here as v2.0.5; the per-PR commit messages will also land in release-drafter's auto-draft, so the GitHub Release will carry both this curated summary and the per-PR detail. No user re-consent required; no tool-surface break; no schema change.
