@@ -21,9 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
+
+from google_docs_mcp.google_clients import get_service
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 GDOC_MIME = "application/vnd.google-apps.document"
@@ -69,7 +70,7 @@ def upload_and_convert_docx(
             f"Drive upload limit for conversion is {MAX_UPLOAD_BYTES // 1024 // 1024} MB."
         )
 
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     media = MediaFileUpload(str(docx_path), mimetype=DOCX_MIME, resumable=False)
     body = {
         "name": title or docx_path.stem,
@@ -104,7 +105,7 @@ def fetch_and_convert_drive_docx(
     the Anthropic Drive connector (different app, different scopes),
     then hands the file ID to this tool.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
 
     meta = drive.files().get(
         fileId=drive_file_id, fields="id,name,mimeType,size"
@@ -167,7 +168,7 @@ def copy_google_doc(
     in place via REST + Apps Script — same code path as the .docx
     conversion case, just without the initial mime-type conversion.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     meta = drive.files().get(
         fileId=google_doc_id, fields="id,name,mimeType"
     ).execute()
@@ -215,7 +216,7 @@ def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
         days. Beyond that, the file is gone permanently and this
         returns ``not_found``.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
 
     try:
         before = drive.files().get(
@@ -315,7 +316,7 @@ def find_doc_by_title(
         ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
         ``verify_writable=False``.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
 
     # Escape single quotes inside the query — Drive's q DSL requires
     # quoting them with a backslash.
@@ -412,7 +413,7 @@ def move_to_folder(
         - ``"folder_not_found"`` — folder_id doesn't resolve
         - ``"app_not_authorized"`` — drive.file scope can't write
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
 
     try:
         before = drive.files().get(
@@ -515,7 +516,7 @@ def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
     working with a hidden file. Best-effort — if the lookup itself
     fails (e.g. file deleted permanently), returns False.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     try:
         meta = drive.files().get(
             fileId=drive_file_id, fields="trashed"
@@ -528,7 +529,7 @@ def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
 def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
     """Return the mime type of a Drive file. Used to route to the
     right ingestion function (raw .docx vs already-converted Google Doc)."""
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
     meta = drive.files().get(
         fileId=drive_file_id, fields="mimeType"
     ).execute()
@@ -555,7 +556,7 @@ def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
 
         Other errors still raise ``HttpError`` so genuine bugs surface.
     """
-    drive = build("drive", "v3", credentials=creds)
+    drive = get_service("drive", "v3", credentials=creds)
 
     # Read current state first so we can flag idempotent no-ops AND
     # detect non-existent IDs early with a clean reason.
