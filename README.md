@@ -339,6 +339,8 @@ Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). 
 
 See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
+**Privacy:** see [docs/PRIVACY.md](docs/PRIVACY.md) for what we store, how long, and your rights.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
