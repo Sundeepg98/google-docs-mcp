@@ -30,8 +30,14 @@ def _mock_http_error(status_code: int, reason_code: str = "") -> HttpError:
 
 @pytest.fixture
 def mock_drive():
-    """Yield a fake drive service whose .files() returns a mock chain."""
-    with patch("google_docs_mcp.drive_api.build") as build_mock:
+    """Yield a fake drive service whose .files() returns a mock chain.
+
+    Patches the ``get_service`` symbol in ``drive_api``'s namespace
+    (post-PR2-B migration, v2.6b). Previously patched ``build`` —
+    drive_api now goes through ``google_clients.get_service``, but
+    the import-binding-as-patch-target pattern is unchanged.
+    """
+    with patch("google_docs_mcp.drive_api.get_service") as build_mock:
         drive = MagicMock()
         build_mock.return_value = drive
         yield drive
