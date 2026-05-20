@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=3.3.1",  # v1.1: GoogleProvider + OAuthProxy + get_access_token deps
-    "google-api-python-client>=2.0",
+    "google-api-python-client>=2.196.0",
     "google-auth>=2.53.0",
     "google-auth-oauthlib>=1.0",
     "markdown-it-py>=4.2.0",
