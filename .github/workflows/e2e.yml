@@ -92,7 +92,7 @@ jobs:
 
       - name: upload test-results.json
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-results
           path: test-results.json
@@ -132,7 +132,7 @@ jobs:
 
       - name: upload chaos-results.json
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chaos-results
           path: chaos-results.json
