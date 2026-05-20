@@ -48,6 +48,32 @@ from .docs_api import (
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 from .preview import preview_tab_split as _preview_tab_split
 from .retrofit import retrofit_existing_docx as _retrofit_existing_docx
+from .tool_schemas import (
+    GDOCS_ADD_TABS_OUTPUT_SCHEMA,
+    GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
+    GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
+    GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
+    GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+    GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
+    GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+    GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
+    GDOCS_GUIDE_OUTPUT_SCHEMA,
+    GDOCS_HELP_OUTPUT_SCHEMA,
+    GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
+    GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+    GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA,
+    GDOCS_READ_DOC_OUTPUT_SCHEMA,
+    GDOCS_RENAME_TAB_OUTPUT_SCHEMA,
+    GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
+    GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
+    GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
+    GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+    GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA,
+    GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
+    GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
+    GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+)
 # v1.1+ multi-tenant cloud auth — imported lazily-via-function so stdio
 # users without the OAuth env vars don't trip import-time errors.
 from .credentials import (
@@ -261,7 +287,7 @@ def _validate_title(title, *, field: str = "title") -> None:
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
-))
+), output_schema=GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA)
 def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     """DEFAULT tool for building a tabbed Google Doc from text content.
 
@@ -346,7 +372,7 @@ def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
-))
+), output_schema=GDOCS_ADD_TABS_OUTPUT_SCHEMA)
 def gdocs_add_tabs(
     doc_id: str,
     tabs: list[TabSpec],
@@ -402,7 +428,7 @@ def gdocs_add_tabs(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA)
 def gdocs_get_doc_outline(doc_id: str) -> dict:
     """List every tab in a Google Doc with its structure (no body content).
 
@@ -446,7 +472,7 @@ def gdocs_get_doc_outline(doc_id: str) -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_READ_DOC_OUTPUT_SCHEMA)
 def gdocs_read_doc(
     doc_id: str,
     tab_id: str | None = None,
@@ -498,7 +524,7 @@ def gdocs_read_doc(
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
-))
+), output_schema=GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA)
 def gdocs_append_to_tab(
     doc_id: str,
     tab_id: str,
@@ -542,7 +568,7 @@ def gdocs_append_to_tab(
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
-))
+), output_schema=GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA)
 def gdocs_tab_existing_doc(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
@@ -719,7 +745,7 @@ def gdocs_tab_existing_doc(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_RENAME_TAB_OUTPUT_SCHEMA)
 def gdocs_rename_tab(
     doc_id: str,
     tab_id: str,
@@ -770,7 +796,7 @@ def gdocs_rename_tab(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA)
 async def gdocs_server_info() -> dict:
     """Server identity + full tool inventory — for change detection across sessions.
 
@@ -1032,7 +1058,7 @@ def _read_mutation_check() -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA)
 def gdocs_test_manifest() -> dict:
     """List every test in the CI artifact + its pass/fail outcome.
 
@@ -1133,7 +1159,7 @@ def gdocs_test_manifest() -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_GET_TAB_URL_OUTPUT_SCHEMA)
 def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     """Build a Google Docs URL that opens directly to a specific tab.
 
@@ -1166,7 +1192,7 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=False,
-))
+), output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA)
 def gdocs_guide() -> dict:
     """Orientation payload — the "start here" / --help for this server.
 
@@ -1405,7 +1431,7 @@ def _run_batch(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA)
 def gdocs_find_doc_by_title(
     query: str,
     exact: bool = False,
@@ -1471,7 +1497,7 @@ def gdocs_find_doc_by_title(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA)
 def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
     """Move a Drive file into a folder (out of root or wherever it lives).
 
@@ -1520,7 +1546,7 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA)
 def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     """Restore a trashed Drive file back to its original location.
 
@@ -1568,7 +1594,7 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     destructiveHint=True,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA)
 def gdocs_trash_file(file_id: str | list[str]) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
@@ -1621,7 +1647,7 @@ def gdocs_trash_file(file_id: str | list[str]) -> dict:
     destructiveHint=True,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_DELETE_TAB_OUTPUT_SCHEMA)
 def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
@@ -1654,7 +1680,7 @@ def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA)
 def gdocs_replace_all_text(
     doc_id: str,
     find: str,
@@ -1701,7 +1727,7 @@ def gdocs_replace_all_text(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA)
 def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     """Set or update icon emojis on existing tabs by title match.
 
@@ -1756,7 +1782,7 @@ def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA)
 def gdocs_preview_tab_split(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
@@ -1810,7 +1836,7 @@ def gdocs_preview_tab_split(
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
-))
+), output_schema=GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA)
 def gdocs_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
@@ -1921,7 +1947,7 @@ def gdocs_get_signed_upload_url(
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
 def gdocs_setup_apps_script() -> dict:
     """One-shot setup of the Apps Script Web App needed for lossless retrofit.
 
@@ -2029,7 +2055,7 @@ def gdocs_setup_apps_script() -> dict:
     destructiveHint=True,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA)
 def gdocs_reset_authorization(full: bool = False) -> dict:
     """Reset / revoke / clear stored Google OAuth credentials. Force re-consent.
 
@@ -2204,7 +2230,7 @@ from .resources import _RECOVERY_TABLE  # noqa: E402
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=False,
-))
+), output_schema=GDOCS_HELP_OUTPUT_SCHEMA)
 def gdocs_help(error_message: str) -> dict:
     """Look up recovery guidance for a server error string.
 
@@ -2364,7 +2390,7 @@ def _check_admin_token(provided: object) -> None:
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=True,
-))
+), output_schema=GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA)
 def gdocs_admin_audit(
     admin_token: str, user_id: str, since_hours: int = 24,
 ) -> dict:
