@@ -1,3 +1,10 @@
+# STATUS NOTE (R12/R16 audit): this script backfills `apps_script_hmac_key`
+# for legacy users so the v2.0a schema is uniform. The key is currently
+# stored but NOT consumed at runtime — restructure.gs has no
+# `Utilities.computeHmacSha256Signature` and `_call_webapp` doesn't sign.
+# The verify-path is planned for v2.0c. Running this migration today
+# does not provide any runtime security uplift; it prepares the schema
+# for v2.0c.
 """v2.0a migration — backfill ``apps_script_hmac_key`` for legacy user rows.
 
 Pre-v2.0 the MCP server signed requests to each user's Apps Script Web App
