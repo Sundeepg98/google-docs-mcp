@@ -69,7 +69,7 @@ def _canonical(sub_b64: str, nonce: str, exp: int) -> str:
 
 def sign_state(
     user_id: str,
-    signing_key: str,
+    signing_key: bytes,
     *,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     code_verifier: str | None = None,
@@ -78,6 +78,13 @@ def sign_state(
 
     Returns a ``.``-separated string: ``sub_b64.nonce.exp.sig``. Pass
     this verbatim as the ``state`` query param in the Google auth URL.
+
+    ``signing_key`` is bytes (matches ``keys.get_key("oauth_state")``'s
+    return type). v2.0b strict-flip: HKDF returns raw 32-byte keys
+    that aren't generally valid UTF-8 — the pre-flip ``.decode("utf-8")``
+    round-trip at the call site crashed ~99.96% of derived-key
+    deployments. Passing bytes through directly works for all key
+    sources (override / shim / HKDF).
 
     If ``code_verifier`` is provided (PKCE), it's stored server-side
     under the generated nonce. ``verify_state`` will retrieve it on
@@ -104,7 +111,7 @@ def sign_state(
 
 
 def verify_state(
-    state: str, signing_key: str, nonce_store: NonceStore
+    state: str, signing_key: bytes, nonce_store: NonceStore
 ) -> tuple[bool, str | None, str | None, str | None]:
     """Validate + consume a state token.
 
@@ -155,7 +162,7 @@ def verify_state(
     return True, user_id, None, code_verifier
 
 
-def _hmac(key: str, message: str) -> str:
+def _hmac(key: bytes, message: str) -> str:
     return hmac.new(
-        key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
+        key, message.encode("utf-8"), hashlib.sha256
     ).hexdigest()

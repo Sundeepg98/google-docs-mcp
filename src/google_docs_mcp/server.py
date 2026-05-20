@@ -1868,8 +1868,11 @@ def gdocs_get_signed_upload_url(
     # without further edits here. get_key raises RuntimeError on missing
     # MCP_BEARER_TOKEN; translate to ToolError so the surface stays
     # user-facing (Markdown-renderable in claude.ai's connector UI).
+    # v2.0b: keys.get_key() returns bytes; pass through to sign_upload_url
+    # without the pre-flip .decode("utf-8") (which crashed on HKDF
+    # output that isn't UTF-8 in general).
     try:
-        signing_key = get_key("signed_url").decode("utf-8")
+        signing_key = get_key("signed_url")
     except RuntimeError as e:
         raise ToolError(
             "MCP_BEARER_TOKEN env var not set on the server — "

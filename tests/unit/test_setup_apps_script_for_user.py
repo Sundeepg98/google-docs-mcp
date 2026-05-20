@@ -298,7 +298,10 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
         "google_docs_mcp.server.resolve_runtime_oauth_config",
         lambda: {
             "client_config": client_config,
-            "signing_key": "test-signing-key",
+            # v2.0b: resolve_runtime_oauth_config returns signing_key
+            # as bytes (matches keys.get_key("oauth_state") return
+            # type post-strict-flip).
+            "signing_key": b"test-signing-key",
             "base_url": "https://example.fly.dev",
         },
     )

@@ -75,6 +75,69 @@ Backlog rationalization across R17–R29 trimmed the candidate set down to what 
   See `docs/RUNBOOK.md` §3.5 (recovery if symptoms surface) + §3.6
   (preflight procedure).
 
+- **`MCP_BEARER_TOKEN` must be ≥32 chars.** The pre-flip shim path
+  had no length check and silently accepted shorter values (the
+  legacy 16-char form documented in v1.0–v1.3); HKDF derivation has
+  a 32-char minimum and refuses shorter masters at the first
+  ``keys.get_key()`` call with the existing
+  ``MCP_BEARER_TOKEN must be ≥32 chars`` error message. Operators
+  on a token shorter than 32 chars MUST rotate to a longer value
+  BEFORE flipping (typically: `python -c "import secrets;
+  print(secrets.token_hex(32))"` and set as the new
+  ``MCP_BEARER_TOKEN`` + each ``*_KEY`` override). The preflight
+  script does not directly check master length; the next bearer-
+  authed request after deploy raises if the master is short.
+
+- **Signing keys propagate as `bytes` end-to-end** (was `str` under
+  the shim). ``keys.get_key()`` has always returned ``bytes``; the
+  shim-era consumers performed a ``.decode("utf-8")`` →
+  ``.encode("utf-8")`` round-trip across ``http_server.py``,
+  ``server.py``, ``oauth_google.py``, ``crypto.py``, and
+  ``oauth_state.py``. The decode worked because the shim returned
+  the operator's UTF-8 master verbatim; HKDF returns 32 random
+  bytes which fail UTF-8 decoding for ~99.96% of master values.
+  This release drops the round-trip: ``signing_key`` parameters
+  are typed ``bytes`` throughout the chain and flow directly into
+  ``hmac.new()``. The bearer-header comparison in
+  ``BearerTokenMiddleware`` now uses ``hmac.compare_digest`` on
+  bytes (was f-string equality on ``str``) — semantically
+  equivalent for operator-set overrides, correct for HKDF output.
+
+  External consumers calling ``crypto.sign_upload_url``,
+  ``crypto.verify_signed_params``, ``oauth_state.sign_state``,
+  ``oauth_state.verify_state``, ``credentials.get_credentials_for_user``,
+  ``oauth_google.build_authorization_url``, or
+  ``oauth_google.exchange_code_for_credentials`` directly (rather
+  than via the production wire-up) must pass ``bytes`` for
+  ``signing_key`` — typically ``my_str_key.encode("utf-8")``.
+
+- **`BearerTokenMiddleware.__init__` now takes ``bytes`` for both
+  ``bearer_token`` and ``signed_url_key``** (was ``str``). Same
+  rationale as above; mirrors the production callsite
+  (``keys.get_key()`` returns bytes natively).
+
+### Fixed
+
+- **Latent production crash class surfaced + closed:** 5 production
+  sites (`server.py:1872`, `http_server.py:239`/`:672`/`:673`,
+  `oauth_google.py:194`) did ``keys.get_key(...).decode("utf-8")``.
+  Under the shim this was a pointless round-trip; under HKDF it
+  would have crashed every OAuth callback, signed-URL mint, and
+  bearer-auth request with ``UnicodeDecodeError`` for ~99.96% of
+  operator deployments. R30 audit caught this during PR #34's
+  rebase + Option A.1 fixture investigation; ship state pre-A.1
+  would have broken v2.0.0 on first call. See R30 row in the
+  ``[Unreleased] — v2.0.5`` audit-trail provenance.
+
+- **Latent bypass-pattern gap closed:** `http_server.py:420`
+  (signed-URL convert endpoint resolving per-user creds) read
+  ``os.environ.get("MCP_BEARER_TOKEN", "")`` directly — a
+  comma-default form that PR #57's ``_BYPASS_PATTERNS``
+  architectural guard missed. The site now routes through
+  ``keys.get_key("oauth_state")`` and the guard's pattern list is
+  widened to catch ``"<env>", "<default>"`` shapes so future
+  refactors of this class can't reintroduce the bypass.
+
 ## [1.5.0] — 2026-05-19
 
 Pre-v2.0b instrumentation. Process-local counter in `keys.py` measures

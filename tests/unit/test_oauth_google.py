@@ -30,7 +30,9 @@ def client_config():
 
 @pytest.fixture
 def signing_key():
-    return "test-signing-key-not-for-prod"
+    # v2.0b: build_authorization_url / exchange_code_for_credentials
+    # take bytes (matches keys.get_key("oauth_state") return type).
+    return b"test-signing-key-not-for-prod"
 
 
 @pytest.fixture

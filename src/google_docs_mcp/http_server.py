@@ -18,6 +18,7 @@ Fly.io probes.
 """
 from __future__ import annotations
 
+import hmac
 import html as _html  # aliased — `html` is shadowed by local var in _success_page/_error_page
 import json
 import logging
@@ -235,8 +236,11 @@ async def oauth_google_api_callback(request: Request) -> Response:
     # v2.0b strict-flip activates HKDF-derivation for OAuth state HMACs
     # without further edits here. get_key raises RuntimeError on missing
     # MCP_BEARER_TOKEN; preserve the prior fail-closed behavior.
+    # v2.0b: keys.get_key() returns bytes — pass through to verify_state
+    # directly; the prior .decode("utf-8") round-trip crashed on HKDF
+    # output (~99.96% of 32 random bytes aren't valid UTF-8).
     try:
-        signing_key = keys.get_key("oauth_state").decode("utf-8")
+        signing_key = keys.get_key("oauth_state")
     except RuntimeError:
         log.error("oauth: MCP_BEARER_TOKEN unset; cannot verify state")
         return _error_page(
@@ -413,7 +417,15 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     try:
         if signed_uid is not None:
             client_config = _resolve_client_config()
-            signing_key = os.environ.get("MCP_BEARER_TOKEN", "")
+            # v2.0b: route via keys.get_key("oauth_state") instead of
+            # reading MCP_BEARER_TOKEN directly. Pre-flip this branch was
+            # a latent bypass that PR #57's _BYPASS_PATTERNS missed
+            # (pattern didn't catch the ``, ""``-default form). Post-flip
+            # the str-default bypass would type-error against the
+            # bytes-typed get_credentials_for_user signature anyway; the
+            # fix is to use the same key-resolution path as the OAuth
+            # callback (which also calls oauth_state-related sign/verify).
+            signing_key = keys.get_key("oauth_state")
             base_url = _resolve_base_url(request)
             try:
                 creds = get_credentials_for_user(
@@ -508,8 +520,8 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         self,
         app: Any,
         *,
-        bearer_token: str,
-        signed_url_key: str,
+        bearer_token: bytes,
+        signed_url_key: bytes,
     ) -> None:
         """v2.6 (#48): two separate keys instead of one bearer-token-as-both.
 
@@ -522,14 +534,35 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         keeps both returning the raw master so existing in-flight URLs +
         bearer tokens continue to work; v2.0b's flip activates the split.
 
+        v2.0b: parameters are ``bytes`` (matches ``keys.get_key()``'s
+        return type). The bearer-header equality path now compares the
+        request's ``Authorization`` header value as bytes via
+        ``hmac.compare_digest`` rather than building an f-string from
+        ``bytes`` (which would format as the literal ``"b'...'"`` and
+        never match). Per RUNBOOK §3.6, operators are expected to set
+        ``MCP_API_BEARER_KEY`` to a UTF-8 string before flipping, so
+        the bytes from ``get_key("api_bearer")`` are operator-chosen
+        UTF-8; HTTP clients send the same string in the
+        ``Authorization: Bearer <value>`` header and the byte
+        comparison matches. If the operator skips the override and
+        relies on HKDF, ``get_key("api_bearer")`` returns 32 random
+        bytes; the operator must compute the same bytes client-side
+        (e.g. via the same HKDF derivation) and submit them as the
+        header value — RUNBOOK §3.6 covers this.
+
         Reviewers: the two parameters MUST come from separate ``get_key()``
         calls (not the same value reused), even today during the shim.
         That preserves the call-site discipline so the v2.0b flip is a
         pure-config change in keys.py, not a re-edit of this middleware.
         """
         super().__init__(app)
-        self._expected = f"Bearer {bearer_token}"
-        self._signing_key = signed_url_key  # HMAC key for signed-URL auth path
+        # Precompute the expected ``Authorization`` header value as bytes.
+        # HTTP/1.1 mandates ASCII in the header line so concatenating the
+        # ASCII prefix b"Bearer " with the bearer-token bytes yields the
+        # exact byte sequence a conformant client will send; we compare
+        # via ``hmac.compare_digest`` for constant-time equality.
+        self._expected_bytes: bytes = b"Bearer " + bearer_token
+        self._signing_key: bytes = signed_url_key
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         # v2.6 (#48): /info is the curl-friendly observability surface
@@ -543,8 +576,15 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Auth path 1: bearer header (legacy / direct API callers).
-        provided = request.headers.get("authorization", "")
-        if provided == self._expected:
+        # v2.0b: compare as bytes via hmac.compare_digest. The pre-flip
+        # f-string equality assumed bearer_token was str; HKDF returns
+        # bytes that aren't UTF-8 in general, so the f-string path
+        # broke. ``provided`` is str (Starlette decodes headers as ISO-
+        # 8859-1 / latin-1 internally then exposes str); encode to
+        # latin-1 to round-trip the same byte sequence the client sent.
+        provided_str = request.headers.get("authorization", "")
+        provided_bytes = provided_str.encode("latin-1")
+        if hmac.compare_digest(provided_bytes, self._expected_bytes):
             return await call_next(request)
 
         # Auth path 2: signed-URL query string (cloud-chat sandbox).
@@ -668,9 +708,13 @@ def build_app(mcp: FastMCP) -> Starlette:
     # keys.get_key() so the v2.0b strict-flip can HKDF-derive them
     # separately. During the shim window (v1.5 - v2.0b) both still resolve
     # to MCP_BEARER_TOKEN verbatim; the strict-flip activates the split.
+    # v2.0b: keys.get_key() returns bytes; pass through to the middleware
+    # which compares ``Authorization`` header bytes directly via
+    # ``hmac.compare_digest`` (was an f-string equality on str pre-flip,
+    # which crashed on HKDF output). Both keys are bytes end-to-end now.
     try:
-        bearer_token = keys.get_key("api_bearer").decode("utf-8")
-        signed_url_key = keys.get_key("signed_url").decode("utf-8")
+        bearer_token = keys.get_key("api_bearer")
+        signed_url_key = keys.get_key("signed_url")
     except RuntimeError as e:
         # Preserve the historical "must be set when running in HTTP mode"
         # message that operators have grepped for since v1.0.

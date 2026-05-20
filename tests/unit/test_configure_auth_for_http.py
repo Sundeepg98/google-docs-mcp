@@ -27,7 +27,13 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch, tmp_path):
     """Don't leak our env mutations into other tests."""
-    monkeypatch.setenv("MCP_BEARER_TOKEN", "test-signing-key")
+    # v2.0b: HKDF derivation requires ≥32-char master. The pre-flip
+    # "test-signing-key" (16 chars) worked via the shim path which
+    # had no length check; post-flip every test that drives a code
+    # path through keys.get_key("oauth_state") would RuntimeError.
+    monkeypatch.setenv(
+        "MCP_BEARER_TOKEN", "test-signing-key-32-characters-long"
+    )
     monkeypatch.setenv("GOOGLE_OAUTH_BASE_URL", "https://example.fly.dev")
     cs = tmp_path / "client_secrets.json"
     import json
