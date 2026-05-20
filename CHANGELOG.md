@@ -6,9 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — v2.0.5
 
-Parallel-shipping wave from a 27-round audit cycle (R1–R27). Six independently-reviewed PRs, each a self-contained finding with its own regression test. Bundled here as v2.0.5; the per-PR commit messages will also land in release-drafter's auto-draft, so the GitHub Release will carry both this curated summary and the per-PR detail. No user re-consent required; no tool-surface break; no schema change.
+Parallel-shipping wave from a 29-round audit cycle (R1–R29 + ongoing peer review). Eight independently-reviewed PRs, each a self-contained finding with its own regression test. Bundled here as v2.0.5; the per-PR commit messages will also land in release-drafter's auto-draft, so the GitHub Release will carry both this curated summary and the per-PR detail. No user re-consent required; no tool-surface break; no schema change.
 
-Companion in-flight items (A1 `/api/convert` multi-tenancy, B2 async error-handling test, B3 `isolated_db` fixture consolidation) are tracked but not part of this bundle — they ship as v2.0.6 once their reviews settle.
+Companion in-flight items — distinct version targets, called out individually so naming-by-version-cluster doesn't bury PR #57:
+
+- **A1 `/api/convert` multi-tenancy** (#60, targets **v2.1.0**) — signed-URL canonical string bound to user_id; per-user creds resolution at the endpoint. The version bump (v2.0.x → v2.1.0) reflects the contract-level change to the signed-URL format.
+- **B1 v14 keys.get_key() wire-up** (#57, targets **v2.6** — separate version target) — closes the long-standing keys.get_key() bypass class flagged by R7→R20. Unblocks PR #34 (v2.0b HKDF strict-flip). Stranded by an earlier coding session; R20 ground-truth caught the un-pushed branch.
 
 ### Security
 
@@ -28,23 +31,27 @@ Companion in-flight items (A1 `/api/convert` multi-tenancy, B2 async error-handl
 
 ### Tests
 
-- New regression tests landing across the 6 PRs (each PR fences its own change):
+- New regression tests landing across the 8 PRs (each PR fences its own change):
   - `test_oauth_error_param_escaped` (PR #50) — asserts the OAuth error-page output contains no unescaped `<script>` after a crafted query param.
   - `test_readme_access_level_matches_manifest` + `test_error_recovery_references_real_cli` (PR #52) — claim-vs-code couplings preventing README and `errors.py` from drifting again.
-  - `test_threat_model_claims_match_code` (PR #53) — pairs every aspirational HMAC claim with a status-hedge keyword inside a 500-char window AND asserts `restructure.gs` still has no `computeHmacSha256Signature`. Flips red the moment v2.0c verify-path lands.
+  - `test_threat_model_claims_match_code` (PR #53) — pairs every aspirational HMAC claim with a status-hedge keyword in the same atomic unit (table row or prose paragraph) AND asserts `restructure.gs` still has no `computeHmacSha256Signature`. Flips red the moment v2.0c verify-path lands. Tightened from the original 500-char byte window per R28 peer-review.
   - `test_setup_auto_prints_full_traceback` (PR #54) — captures stderr and asserts a `Traceback` line is present after a synthetic failure.
   - `test_tool_annotations_populated` (PR #55) — iterates every `@mcp.tool` decorator and asserts the 5 annotation fields are set (catches "added a new tool, forgot the hints" regressions).
+  - **R23 B2 async exception-handling guard (PR #58)** — fences the async error-handling robustness path so a future refactor that swallows a coroutine exception trips CI.
+  - **R23 B3 `isolated_db` fixture consolidation (PR #59)** — 8 copies of the per-test SQLite-isolation fixture were collapsed into a single canonical version in `tests/conftest.py`. Pure refactor; no behavior change. Removes the drift risk where 8 copies could diverge silently.
 
 ### Audit-trail provenance
 
-Backlog rationalization across R17–R26 trimmed the candidate set down to what actually shipped here:
+Backlog rationalization across R17–R29 trimmed the candidate set down to what actually shipped here:
 
 - **R17** invalidated F10 — the proposed pattern was mis-identified as a peer of an existing finding; no real bug.
 - **R18** downgraded R13 D2 — the Salesloft-Drift analogy didn't transfer to a 5-user-scale deployment.
 - **R18** invalidated F1-Fernet — a single-machine SQLite deployment has no key-data separation boundary, so Fernet-at-rest would be theatre.
-- **R20** confirmed B1 v14 Task 1 is stranded — separate follow-up issue, not this bundle.
-- **R21** corrected B4 — already shipped via PR #49; the audit had read a stale local checkout.
+- **R20** confirmed B1 v14 Task 1 was stranded — branch was review-ready but never pushed; PR #57 pushes the stranded branch as-is (targets v2.6, not this bundle).
+- **R21** corrected B4 — already shipped via PR #49; the audit had read a stale local checkout. Re-verified in R29 cross-check: current `Dockerfile` uses `COPY --from=ghcr.io/astral-sh/uv:0.5.0` + `uv sync --frozen --no-dev --no-editable` with an explicit "R20 attack #4 mitigation" comment.
 - **R23–R26** fresh-eyes audits on `retrofit.py`, `cli.py`, `setup_state.py`, and `resources.py` confirmed no missed HIGH-severity findings in those modules.
+- **R28** peer-review of PR #53 tightened the CI guard from a 500-char byte window to atomic-unit (table-row / prose-paragraph) coupling + a HMAC+AppsScript co-occurrence catch-all; also folded in `docs/PRIVACY.md` for auto-activation when PR #44 merges.
+- **R29** peer-review of this CHANGELOG block surfaced 4 items: 2 valid (this commit addresses Item 1: B1 explicit naming + v2.0.6 vs v2.6 disambiguation; Item 4: header date-format is correct for `[Unreleased]` and gets the date at release-cut), 2 dismissed after orchestrator cross-check against current main (Item 2: B4 already-shipped claim is accurate per re-verification above; Item 3: SHA pin `ed8efb3` matches the post-#51-merge `deploy.yml`).
 
 ## [1.5.0] — 2026-05-19
 
