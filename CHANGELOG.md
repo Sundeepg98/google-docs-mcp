@@ -116,6 +116,23 @@ Backlog rationalization across R17–R29 trimmed the candidate set down to what 
   rationale as above; mirrors the production callsite
   (``keys.get_key()`` returns bytes natively).
 
+- **OPERATOR FOOT-GUN — bearer header bytes (R31).** If you SKIP the
+  per-purpose overrides (RUNBOOK §3.6 step 1) and let HKDF derive
+  the bearer key from your master, ``keys.get_key("api_bearer")``
+  returns 32 HKDF-derived random bytes. Those bytes are intentionally
+  non-printable and most HTTP clients (curl, requests, fetch) cannot
+  submit them as ``Authorization: Bearer <value>`` — the bearer
+  header path will reject every request, even though the server
+  itself boots fine and ``/health`` keeps returning 200. Operators
+  who skip overrides strand their own clients. Mitigation: set
+  ``MCP_API_BEARER_KEY`` to a printable UTF-8 string (typically the
+  current ``MCP_BEARER_TOKEN`` value) BEFORE flipping. The override
+  path keeps the bearer header UTF-8-safe; the HKDF-direct path
+  does not. Same applies to ``OAUTH_STATE_SIGNING_KEY`` /
+  ``SIGNED_URL_SIGNING_KEY`` if any external client needs to mint
+  state tokens or sign URLs out-of-band (rare; production usually
+  has the server itself do both, so HKDF bytes are fine internally).
+
 ### Fixed
 
 - **Latent production crash class surfaced + closed:** 5 production
