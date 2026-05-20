@@ -110,3 +110,30 @@ def test_error_recovery_references_exist_as_cli_subcommands():
         f"reference an existing one (e.g. tool name like "
         f"`gdocs_reset_authorization`)."
     )
+
+
+def test_cli_setup_auto_prints_traceback_on_exception(capsys, monkeypatch):
+    """F3 regression: operator must see full traceback on
+    _cmd_setup_auto failure. Pre-fix, only ``str(e)`` was printed —
+    chained exceptions (e.g. HttpError wrapped in RuntimeError) hid
+    the root cause and made setup failures undebuggable from the
+    operator console alone."""
+    from google_docs_mcp import cli, setup_apps_script
+
+    def boom(*a, **kw):
+        raise RuntimeError("simulated chain") from ValueError("root cause")
+
+    # _cmd_setup_auto does `from .setup_apps_script import
+    # setup_apps_script_auto` at call time, so patch the source
+    # module's attribute rather than a stale name in cli.
+    monkeypatch.setattr(
+        setup_apps_script, "setup_apps_script_auto", boom, raising=True
+    )
+    rc = cli.cli_main(["setup-apps-script-auto"])
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "Setup failed" in captured.err
+    assert "simulated chain" in captured.err
+    assert "Traceback" in captured.err  # full traceback shown
+    assert "root cause" in captured.err  # chained cause visible
