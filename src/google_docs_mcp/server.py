@@ -246,6 +246,19 @@ def _get_credentials():
         ) from e
 
 
+def _format_http_error(e: HttpError) -> str:
+    return friendly_http_error_message(e)
+
+
+# v2.0.6 (R28 deferral close): wire @gdocs_tool now that the mcp instance
+# and both helpers (_get_credentials, _format_http_error) exist. After
+# register(), the 24 tool decorators below can use @gdocs_tool(...) in
+# place of the @mcp.tool + ToolAnnotations + try/except boilerplate.
+from . import decorators as _gdocs_decorators
+_gdocs_decorators.register(mcp, _get_credentials, _format_http_error)
+gdocs_tool = _gdocs_decorators.gdocs_tool
+
+
 # v1.3.1: title validation helper. Drive rejects titles with control
 # chars (U+0000-001F, U+007F) by surfacing a confusing 400; we fail
 # fast with a clear message. >1024 chars is a defensive cap below
@@ -281,14 +294,13 @@ def _validate_title(title, *, field: str = "title") -> None:
             )
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Create a new tabbed Google Doc",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=True,
-), output_schema=GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA)
-def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
+)
+def gdocs_make_tabbed_doc(creds, title: str, tabs: list[TabSpec]) -> dict:
     """DEFAULT tool for building a tabbed Google Doc from text content.
 
     USE WHEN: You are composing a new document in the conversation —
@@ -359,21 +371,17 @@ def gdocs_make_tabbed_doc(title: str, tabs: list[TabSpec]) -> dict:
                 f"tabs[{i}].icon_emoji must be a single emoji (≤8 UTF-8 bytes)"
             )
 
-    try:
-        creds = _get_credentials()
-        return make_doc_with_tabs(creds, title, tabs)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return make_doc_with_tabs(creds, title, tabs)
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Append tabs to an existing Google Doc",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=True,
-), output_schema=GDOCS_ADD_TABS_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_ADD_TABS_OUTPUT_SCHEMA,
+)
 def gdocs_add_tabs(
+    creds,
     doc_id: str,
     tabs: list[TabSpec],
     parent_tab_id: str | None = None,
@@ -414,22 +422,18 @@ def gdocs_add_tabs(
             )
 
     try:
-        creds = _get_credentials()
         return add_tabs_to_doc(creds, doc_id, tabs, parent_tab_id=parent_tab_id)
     except ValueError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Read doc outline (tab structure only)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA)
-def gdocs_get_doc_outline(doc_id: str) -> dict:
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
+)
+def gdocs_get_doc_outline(creds, doc_id: str) -> dict:
     """List every tab in a Google Doc with its structure (no body content).
 
     Useful as a discovery step before ``gdocs_append_to_tab`` or other
@@ -459,21 +463,17 @@ def gdocs_get_doc_outline(doc_id: str) -> dict:
         the ``tab_id`` they need;
     (c) before ``gdocs_get_tab_url`` to compose a deep-link.
     """
-    try:
-        creds = _get_credentials()
-        return _get_doc_outline(creds, doc_id)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return _get_doc_outline(creds, doc_id)
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Read full text content of a Google Doc",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_READ_DOC_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_READ_DOC_OUTPUT_SCHEMA,
+)
 def gdocs_read_doc(
+    creds,
     doc_id: str,
     tab_id: str | None = None,
     tab_title: str | None = None,
@@ -506,7 +506,6 @@ def gdocs_read_doc(
     text use ``gdocs_get_doc_outline`` (faster, smaller).
     """
     try:
-        creds = _get_credentials()
         if tab_id is None and tab_title is None:
             return _read_all_tabs(creds, doc_id)
         return _read_tab_content(
@@ -514,18 +513,16 @@ def gdocs_read_doc(
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Append content to an existing tab",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=True,
-), output_schema=GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
+)
 def gdocs_append_to_tab(
+    creds,
     doc_id: str,
     tab_id: str,
     content: str,
@@ -552,24 +549,21 @@ def gdocs_append_to_tab(
     to existing) use ``gdocs_add_tabs`` instead.
     """
     try:
-        creds = _get_credentials()
         return _append_to_tab(
             creds, doc_id, tab_id, content, content_format=content_format
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Convert .docx or existing Doc into tabbed Google Doc",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=True,
-), output_schema=GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA,
+)
 def gdocs_tab_existing_doc(
+    creds,
     docx_path: str | None = None,
     drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
@@ -699,7 +693,6 @@ def gdocs_tab_existing_doc(
         _validate_title(title)
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
-        creds = _get_credentials()
         if markers:
             # Retrofit path: inject Heading 1s before each marker, then
             # convert. Single tool, two modes — discriminated by markers.
@@ -735,18 +728,16 @@ def gdocs_tab_existing_doc(
         raise ToolError(str(e)) from e
     except RuntimeError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Rename a tab and/or change its icon",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_RENAME_TAB_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_RENAME_TAB_OUTPUT_SCHEMA,
+)
 def gdocs_rename_tab(
+    creds,
     doc_id: str,
     tab_id: str,
     title: str | None = None,
@@ -777,26 +768,20 @@ def gdocs_rename_tab(
         _validate_title(title)
     if icon_emoji is not None and len(icon_emoji.encode("utf-8")) > 8:
         raise ToolError("icon_emoji must be a single emoji (≤8 UTF-8 bytes)")
-    try:
-        creds = _get_credentials()
-        _rename_tab(creds, doc_id, tab_id, title=title, icon_emoji=icon_emoji)
-        updated = []
-        if title is not None:
-            updated.append("title")
-        if icon_emoji is not None:
-            updated.append("iconEmoji")
-        return {"doc_id": doc_id, "tab_id": tab_id, "updated_fields": updated}
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    _rename_tab(creds, doc_id, tab_id, title=title, icon_emoji=icon_emoji)
+    updated = []
+    if title is not None:
+        updated.append("title")
+    if icon_emoji is not None:
+        updated.append("iconEmoji")
+    return {"doc_id": doc_id, "tab_id": tab_id, "updated_fields": updated}
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Server identity + tool inventory",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
+)
 async def gdocs_server_info() -> dict:
     """Server identity + full tool inventory — for change detection across sessions.
 
@@ -1052,13 +1037,11 @@ def _read_mutation_check() -> dict:
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="List CI test manifest",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
+)
 def gdocs_test_manifest() -> dict:
     """List every test in the CI artifact + its pass/fail outcome.
 
@@ -1153,13 +1136,11 @@ def gdocs_test_manifest() -> dict:
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Build deep-link URL to a specific tab",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_GET_TAB_URL_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
+)
 def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     """Build a Google Docs URL that opens directly to a specific tab.
 
@@ -1186,13 +1167,11 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     return {"doc_id": doc_id, "tab_id": tab_id, "url": url}
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Orientation guide (local, no API)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
-), output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=False,
+    output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA,
+)
 def gdocs_guide() -> dict:
     """Orientation payload — the "start here" / --help for this server.
 
@@ -1425,14 +1404,14 @@ def _run_batch(
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Find a Google Doc by title (search)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+)
 def gdocs_find_doc_by_title(
+    creds,
     query: str,
     exact: bool = False,
     include_trashed: bool = False,
@@ -1479,26 +1458,21 @@ def gdocs_find_doc_by_title(
     """
     if not query.strip():
         raise ToolError("query cannot be empty")
-    try:
-        creds = _get_credentials()
-        return _find_doc_by_title(
-            creds, query,
-            exact=exact,
-            include_trashed=include_trashed,
-            verify_writable=verify_writable,
-        )
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return _find_doc_by_title(
+        creds, query,
+        exact=exact,
+        include_trashed=include_trashed,
+        verify_writable=verify_writable,
+    )
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Move a file into a Drive folder",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA)
-def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+)
+def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     """Move a Drive file into a folder (out of root or wherever it lives).
 
     USE WHEN: the MCP just created a doc (which lands in Drive root by
@@ -1533,21 +1507,16 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
     NOTE: same app-ownership constraint as the trash tools — moving a
     file this app didn't create returns ``reason: "app_not_authorized"``.
     """
-    try:
-        creds = _get_credentials()
-        return _move_to_folder(creds, file_id, folder_id)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return _move_to_folder(creds, file_id, folder_id)
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Restore a file from Drive trash",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA)
-def gdocs_untrash_file(file_id: str | list[str]) -> dict:
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
     """Restore a trashed Drive file back to its original location.
 
     Inverse of ``gdocs_trash_file``. Ships together so a wrong trash
@@ -1581,21 +1550,16 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     """
     if isinstance(file_id, list):
         return _run_batch(file_id, _untrash_drive_file, "active")
-    try:
-        creds = _get_credentials()
-        return _untrash_drive_file(creds, file_id)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return _untrash_drive_file(creds, file_id)
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Move a Drive file to trash",
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA)
-def gdocs_trash_file(file_id: str | list[str]) -> dict:
+    readonly=False, destructive=True, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
     USE WHEN: you need to clean up an obsolete Drive file — a
@@ -1634,21 +1598,16 @@ def gdocs_trash_file(file_id: str | list[str]) -> dict:
     """
     if isinstance(file_id, list):
         return _run_batch(file_id, _trash_drive_file, "trashed")
-    try:
-        creds = _get_credentials()
-        return _trash_drive_file(creds, file_id)
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    return _trash_drive_file(creds, file_id)
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Delete a tab from a Google Doc",
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_DELETE_TAB_OUTPUT_SCHEMA)
-def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
+    readonly=False, destructive=True, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
+)
+def gdocs_delete_tab(creds, doc_id: str, tab_id: str) -> dict:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
     Use ``gdocs_get_doc_outline`` first to find the ``tab_id``. If the tab
@@ -1666,22 +1625,18 @@ def gdocs_delete_tab(doc_id: str, tab_id: str) -> dict:
     To delete an entire DOCUMENT (not just one tab) use
     ``gdocs_trash_file`` instead.
     """
-    try:
-        creds = _get_credentials()
-        _delete_tab(creds, doc_id, tab_id)
-        return {"doc_id": doc_id, "deleted_tab_id": tab_id}
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
+    _delete_tab(creds, doc_id, tab_id)
+    return {"doc_id": doc_id, "deleted_tab_id": tab_id}
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Replace all matching text in a doc",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+)
 def gdocs_replace_all_text(
+    creds,
     doc_id: str,
     find: str,
     replace: str,
@@ -1710,25 +1665,21 @@ def gdocs_replace_all_text(
     ``gdocs_get_doc_outline`` first.
     """
     try:
-        creds = _get_credentials()
         return _replace_all_text(
             creds, doc_id, find, replace,
             match_case=match_case, tab_ids=tab_ids,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Set emoji icons on tabs",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA)
-def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
+)
+def gdocs_set_tab_icons(creds, doc_id: str, icons_by_title: dict[str, str]) -> dict:
     """Set or update icon emojis on existing tabs by title match.
 
     Title matching is case-insensitive substring: the first tab whose
@@ -1768,21 +1719,19 @@ def gdocs_set_tab_icons(doc_id: str, icons_by_title: dict[str, str]) -> dict:
                 "(≤8 UTF-8 bytes)"
             )
     try:
-        creds = _get_credentials()
         return _set_tab_icons(creds, doc_id, icons_by_title)
     except ValueError as e:
         raise ToolError(str(e)) from e
-    except HttpError as e:
-        raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Preview how a doc would split into tabs (dry-run)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    # creds=False: this tool fetches creds CONDITIONALLY (only when
+    # drive_file_id is provided; the docx_path branch needs no auth).
+    # Decorator's unconditional creds-fetch would change that contract.
+    output_schema=GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA,
+)
 def gdocs_preview_tab_split(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
@@ -1830,13 +1779,13 @@ def gdocs_preview_tab_split(
         raise ToolError(_format_http_error(e)) from e
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Mint a one-shot signed upload URL",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=True,
-), output_schema=GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=False, external=True,
+    # creds=False: this tool mints an HMAC URL; no Google API call here.
+    # It handles its own user_id check via current_user_id_or_none().
+    output_schema=GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+)
 def gdocs_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
@@ -1941,13 +1890,15 @@ def gdocs_get_signed_upload_url(
 # can share it without circular imports.
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Provision per-user Apps Script project",
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    readonly=False, destructive=False, idempotent=True, external=True,
+    # creds=False: this tool has its own NeedsReauthError → structured
+    # response handling (returns status="needs_authorization" with
+    # auth_url instead of raising ToolError). The standard decorator
+    # path would lose that structured shape.
+    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+)
 def gdocs_setup_apps_script() -> dict:
     """One-shot setup of the Apps Script Web App needed for lossless retrofit.
 
@@ -2049,13 +2000,15 @@ def gdocs_setup_apps_script() -> dict:
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Reset user authorization / revoke tokens",
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA)
+    readonly=False, destructive=True, idempotent=True, external=True,
+    # creds=False: this tool DELETES creds (it's the inverse of the
+    # usual auth path). Wrapping with the standard creds injection
+    # would try to fetch creds first, breaking the user's reset path
+    # when their creds are already broken.
+    output_schema=GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
+)
 def gdocs_reset_authorization(full: bool = False) -> dict:
     """Reset / revoke / clear stored Google OAuth credentials. Force re-consent.
 
@@ -2163,10 +2116,6 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
     }
 
 
-def _format_http_error(e: HttpError) -> str:
-    return friendly_http_error_message(e)
-
-
 _CLI_SUBCOMMANDS = {
     "setup-apps-script",
     "setup-apps-script-auto",  # README lines 156 + 191 document this as the recommended setup path
@@ -2224,13 +2173,11 @@ from . import resources as _llm_recovery_resources  # noqa: E402,F401
 from .resources import _RECOVERY_TABLE  # noqa: E402
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Help for an error message (local, no API)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
-), output_schema=GDOCS_HELP_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=False,
+    output_schema=GDOCS_HELP_OUTPUT_SCHEMA,
+)
 def gdocs_help(error_message: str) -> dict:
     """Look up recovery guidance for a server error string.
 
@@ -2384,13 +2331,13 @@ def _check_admin_token(provided: object) -> None:
         raise ToolError("admin_token does not match MCP_ADMIN_TOKEN")
 
 
-@mcp.tool(annotations=ToolAnnotations(
+@gdocs_tool(
     title="Admin: query user_state forensic timeline (admin-token gated)",
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=True,
-), output_schema=GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA)
+    readonly=True, destructive=False, idempotent=True, external=True,
+    # creds=False: this tool reads user_store SQLite ledger directly,
+    # gated by an admin token (not user OAuth). No Google API call.
+    output_schema=GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
+)
 def gdocs_admin_audit(
     admin_token: str, user_id: str, since_hours: int = 24,
 ) -> dict:
