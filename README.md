@@ -11,6 +11,13 @@ Tabs are a Google-Docs-native concept; they do **not** exist in the `.docx` / OO
 - **For end-users:** see [docs/USER_GUIDE.md](docs/USER_GUIDE.md) to start using it with Claude Desktop / Claude Code / claude.ai — no install required if your operator has already deployed a connector URL.
 - **For developers + operators:** continue reading below.
 
+**Tested with:** Claude Desktop, Claude Code, claude.ai custom connectors. Other
+MCP-speaking clients (Cursor, Zed, Windsurf, Cline, Continue) likely work but
+aren't in the test matrix — please file an issue if you hit client-specific
+surprises. **ChatGPT Deep Research mode is NOT supported** — that mode requires
+tools literally named `search` and `fetch`; our tool surface is prefixed
+(`gdocs_find_doc_by_title`, `gdocs_read_doc`). ChatGPT regular MCP mode works.
+
 ---
 
 Works as: local stdio MCP (Claude Desktop / Code) **or** remote
