@@ -13,7 +13,7 @@ def test_create_outline_trash_untrash_roundtrip(live_creds):
         get_doc_outline,
         make_doc_with_tabs,
     )
-    from google_docs_mcp.drive_api import trash_drive_file, untrash_drive_file
+    from google_docs_mcp.services.drive.api import trash_drive_file, untrash_drive_file
 
     # 1. CREATE — 3 tabs with icons
     spec = [

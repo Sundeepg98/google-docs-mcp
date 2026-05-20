@@ -38,7 +38,7 @@ from .docx_import import (
     PlaceholderBehavior,
     convert_docx_to_tabbed_doc,
 )
-from .drive_api import DOCX_MIME, GDOC_MIME
+from .services.drive.api import DOCX_MIME, GDOC_MIME
 from google_docs_mcp.google_clients import get_service
 
 W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
