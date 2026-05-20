@@ -159,7 +159,7 @@ First tool call opens the browser. Sign in → grant scopes. Tokens cached after
 google-docs-mcp setup-apps-script-auto
 ```
 
-Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs`, deploys as a Web App with `executeAs: USER_DEPLOYING / access: MYSELF`, and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
+Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs`, deploys as a Web App with `executeAs: USER_DEPLOYING / access: ANYONE_ANONYMOUS` (URL secrecy = the access control; see `docs/THREAT_MODEL.md` §4 row 5), and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
 
 The plumbing lives in `src/google_docs_mcp/gas_deploy/` as a clean sub-package boundary — if a second project ever needs Apps Script project management, that folder can be `git mv`'d out and published as a standalone package.
 
