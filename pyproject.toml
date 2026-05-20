@@ -36,7 +36,14 @@ dependencies = [
     # and commit the lockfile. The Dockerfile uses `uv sync --frozen`
     # so any drift fails CI before deploy.
     "cryptography>=46.0.7,<47",  # CVE-2026-26007, -34073, -39892
-    "pyjwt>=2.12.1,<3",          # CVE-2026-32597
+    # pyjwt: transitive via mcp[crypto] only — we don't import jwt directly
+    # anywhere in src/. Pin kept because CVE-2026-32597 (RFC 7515 §4.1.11
+    # `crit` header validation, fixed in 2.12.0) is real + active; without
+    # the floor, a future solver could resolve down to a vulnerable
+    # version. Independent of PYSEC-2025-183 — that's a disputed key-length
+    # CVE we ignore in CI; see .github/workflows/e2e.yml pip-audit step
+    # for the non-applicability rationale.
+    "pyjwt>=2.12.1,<3",          # CVE-2026-32597 (transitive via mcp[crypto])
     "urllib3>=2.7.0,<3",         # CVE-2026-44431, -44432
     "requests>=2.34.2,<3",       # CVE-2026-25645
 ]

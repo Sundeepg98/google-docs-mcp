@@ -186,8 +186,31 @@ jobs:
         run: uv export --frozen --format requirements-txt --no-hashes --no-emit-project > requirements-locked.txt
 
       - name: pip-audit against lockfile (HIGH/CRITICAL fail build)
+        # PYSEC-2025-183 (CVE-2025-45768, CVSS 7.0 HIGH): disputed pyjwt
+        # "weak encryption" finding. pyjwt enters our deploy ONLY as a
+        # transitive optional extra of mcp[crypto], which uses it solely
+        # for ``PrivateKeyJWTOAuthProvider`` and ``RFC7523OAuthClientProvider``
+        # client-side OAuth providers. We do NOT instantiate either —
+        #   grep -rn "PrivateKeyJWTOAuthProvider|RFC7523OAuthClientProvider" src/
+        # returns zero matches. Our OAuth path is Google's Authorization
+        # Code flow via google-auth-oauthlib (src/google_docs_mcp/
+        # oauth_google.py), which does not touch pyjwt. The vulnerable
+        # jwt.encode call is never reached at runtime in our deployment.
+        # Upstream pyjwt disputes the CVE (key-length policy belongs to
+        # the application, not the library) and will not ship a fix.
+        # Re-audit: if a future change makes us instantiate any pyjwt-
+        # consuming MCP client provider, REMOVE this --ignore-vuln and
+        # treat the CVE as a real blocker until upstream ships a fix or
+        # we pin our own key-length policy at the call site.
+        #
+        # Unrelated: CVE-2026-32597 (RFC 7515 §4.1.11 `crit` header) is
+        # still pinned closed at the pyjwt>=2.12.1 floor in
+        # pyproject.toml's security-floor block — that one IS gated
+        # by version, not by --ignore-vuln.
         run: |
-          pip-audit --strict --requirement requirements-locked.txt \
+          pip-audit --strict \
+            --ignore-vuln PYSEC-2025-183 \
+            --requirement requirements-locked.txt \
             || (echo "::error::pip-audit found HIGH/CRITICAL CVE in locked deps — bump CVE-floor pins in pyproject.toml + regenerate uv.lock" && exit 1)
 
   lint:
