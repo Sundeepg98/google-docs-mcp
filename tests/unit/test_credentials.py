@@ -22,22 +22,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    db_file = tmp_path / "user_state.db"
-    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
-    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-    yield db_file
-
-
-@pytest.fixture(autouse=True)
-def reset_lock_registry():
-    """Per-user locks accumulate across tests in the module-level dict;
-    reset so tests are independent."""
-    from google_docs_mcp import credentials
-    credentials._per_user_locks.clear()
-    yield
-    credentials._per_user_locks.clear()
+# isolated_db fixture is auto-applied from tests/conftest.py (R23 B3
+# consolidation, v2.0.5). The canonical version now resets
+# _per_user_locks both pre- and post-yield — same guarantee the
+# previously-local reset_lock_registry fixture provided, plus the
+# additional _initialized_paths / _shim_hit_counter / _creds_cache
+# resets the other ex-locals contributed.
 
 
 @pytest.fixture

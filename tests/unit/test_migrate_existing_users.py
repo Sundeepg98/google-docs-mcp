@@ -28,29 +28,11 @@ sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 import migrate_existing_users as mig  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 
-@pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    """Point user_store at a per-test SQLite file so tests don't bleed.
-
-    Mirrors tests/unit/test_user_store.py — same env-var override path
-    the script uses internally so we get the same file end-to-end.
-
-    Also clears the in-process ``_initialized_paths`` cache so each
-    test's tmp DB is treated as fresh — otherwise the legacy-schema
-    test would inherit a "already initialized" mark from a prior test
-    and the package would skip the introspection / ALTER path.
-    """
-    db_file = tmp_path / "user_state.db"
-    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
-    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-
-    # Reset the package's in-process init cache so the new tmp DB
-    # actually gets schema-init treatment rather than being skipped
-    # due to a cache hit from a previous test's path.
-    from google_docs_mcp import user_store
-    user_store._initialized_paths.clear()
-
-    yield db_file
+# isolated_db fixture is auto-applied from tests/conftest.py (R23 B3
+# consolidation, v2.0.5). Canonical version clears _initialized_paths
+# so the legacy-schema test in this file still gets the ALTER path,
+# and additionally resets _per_user_locks, _shim_hit_counter, and
+# _creds_cache.
 
 
 def _seed_user(

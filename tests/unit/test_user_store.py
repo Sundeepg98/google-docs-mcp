@@ -20,15 +20,10 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def isolated_db(tmp_path, monkeypatch):
-    """Point user_store at a per-test SQLite file so tests don't bleed."""
-    db_file = tmp_path / "user_state.db"
-    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
-    # Also override data_dir so default_data_dir() doesn't touch the
-    # real ~/.google-docs-mcp during test runs.
-    monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-    yield db_file
+# isolated_db fixture is auto-applied from tests/conftest.py (R23 B3
+# consolidation, v2.0.5). Canonical version also clears
+# _per_user_locks, _shim_hit_counter, and _creds_cache — the union
+# of every pre-consolidation variant's cleanup discipline.
 
 
 def test_get_state_returns_empty_dict_for_unknown_user():
