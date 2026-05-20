@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from docx import Document
+from docx.document import Document as DocumentT  # the class; `Document` itself is a factory function
 from google.oauth2.credentials import Credentials
 from google_docs_mcp.google_clients import get_service
 
@@ -90,7 +91,7 @@ def preview_tab_split(
 
 
 def _detect_split_titles(
-    doc: Document, split_by: PreviewSplitBy
+    doc: DocumentT, split_by: PreviewSplitBy
 ) -> tuple[list[str], str]:
     """Walk the python-docx Document and emit titles per split strategy."""
     if split_by == "auto":

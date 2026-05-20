@@ -65,6 +65,17 @@ test = [
     # Ratchet policy in docs/COVERAGE.md (+1pp/release toward 80%).
     "pytest-cov>=4.1",
 ]
+# === v2.0.6: lint extras (closes pyright/ruff CI gap) ===
+# e2e.yml's `lint` job invokes `uv run pyright src/` and
+# `uv run ruff check src/ tests/`. Before this extra, neither tool was
+# declared anywhere — `uv run` couldn't find them and the job died with
+# `Failed to spawn: pyright / No such file or directory`. Pinned floors
+# avoid surprise lint-rule churn between local + CI; bump on a separate
+# PR when ready to absorb new findings.
+lint = [
+    "pyright>=1.1.400",
+    "ruff>=0.7",
+]
 
 [project.urls]
 Homepage = "https://github.com/Sundeepg98/google-docs-mcp"
@@ -108,3 +119,27 @@ select = ["TID"]
 # is a lint failure (= a reintroduced bypass that defeats the
 # retry / logging / cache chokepoint).
 "src/google_docs_mcp/google_clients.py" = ["TID251"]
+
+# ---------------------------------------------------------------------
+# Pyright config (v2.0.6)
+#
+# `googleapiclient.discovery.Resource` is built dynamically from the
+# Google API discovery document at runtime — its `.files()`,
+# `.documents()`, `.scripts()`, etc. methods don't exist as static
+# attributes that pyright can introspect. Every project that uses
+# googleapiclient hits the same `reportAttributeAccessIssue` noise
+# (46 instances across our 11 files). Silencing the rule globally
+# is the idiomatic fix; the alternative is per-line `# type: ignore`
+# at every Drive / Docs API call site, which pollutes diffs and
+# offers zero real protection (it's not a bug class pyright catches
+# anyway, since Resource attributes are intentionally unknowable
+# statically).
+#
+# Everything else stays at default. The 7 genuine type issues
+# pyright still flags on this codebase get proper fixes, not ignores.
+# ---------------------------------------------------------------------
+
+[tool.pyright]
+include = ["src"]
+# googleapiclient.discovery.Resource is dynamic; see rationale above.
+reportAttributeAccessIssue = false

@@ -171,8 +171,8 @@ def test_folder_id(live_creds):
     after that. Lets us isolate test debris from real docs and gives
     us a stable target for cleanup audits.
     """
-    from googleapiclient.discovery import build
-    drive = build("drive", "v3", credentials=live_creds)
+    from google_docs_mcp.google_clients import get_service
+    drive = get_service("drive", "v3", credentials=live_creds)
     FOLDER_NAME = "google-docs-mcp-tests"
 
     # Look for existing

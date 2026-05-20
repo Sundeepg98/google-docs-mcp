@@ -151,8 +151,12 @@ def configure_auth_for_http(mcp) -> None:
     # Post-init scope bundling — taylorwilsdon's core/server.py:524-537.
     # These are what actually make Claude.ai request the Workspace
     # scopes during connector consent (vs just openid+email).
-    if getattr(provider, "client_registration_options", None) is not None:
-        provider.client_registration_options.default_scopes = full_scope_union
+    # Bind to a local so pyright narrows the Optional in the assignment
+    # below — a `getattr(provider, ...) is not None` check doesn't
+    # propagate the narrowing to the subsequent attribute access.
+    reg_opts = getattr(provider, "client_registration_options", None)
+    if reg_opts is not None:
+        reg_opts.default_scopes = full_scope_union
     # Private attr — load-bearing per the agent's source dive. If a
     # future FastMCP renames this, every Workspace tool call silently
     # 401s; CI live tests will catch it (re-consent is needed anyway).

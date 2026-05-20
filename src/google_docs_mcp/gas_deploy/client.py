@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from google.oauth2.credentials import Credentials
+from google.auth.credentials import Credentials  # base type: covers oauth2 + service-account flows
 from google_docs_mcp.google_clients import get_service
 from googleapiclient.errors import HttpError
 

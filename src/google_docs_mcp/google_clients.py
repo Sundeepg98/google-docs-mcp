@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING
 from googleapiclient.discovery import Resource, build  # noqa: TID251 — this file owns the legitimate use
 
 if TYPE_CHECKING:
-    from google.oauth2.credentials import Credentials
+    # Base type — googleapiclient.build() accepts any Credentials subclass
+    # at runtime (oauth2 user creds, service account, external account,
+    # impersonated creds, etc.). Annotating the wrapper with the base
+    # type lets every flow share this single chokepoint instead of
+    # forcing per-flow wrappers or downstream casts.
+    from google.auth.credentials import Credentials
 
 
 def get_service(
