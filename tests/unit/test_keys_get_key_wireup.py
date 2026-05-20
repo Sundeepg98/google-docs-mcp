@@ -245,11 +245,14 @@ def test_site_4_signed_upload_url_routes_through_get_key_signed_url(monkeypatch)
 
 
 _ALLOWED_FILES_FOR_RAW_MCP_BEARER_TOKEN_READ = {
-    # keys.py legitimately reads the master to derive from it. This is
-    # the ONLY file in src/ that may do so — every other purpose must
-    # go through keys.get_key() and let keys.py decide override / shim
-    # / HKDF.
+    # keys.py is the public facade. The mechanism layer (the actual
+    # os.environ reads) lives in key_provider.py as of v2.1 M1a —
+    # ``HKDFKeyProvider`` / ``RawMasterShimKeyProvider`` both read
+    # MCP_BEARER_TOKEN at call time. The facade in keys.py no longer
+    # reads it directly; provenance() falls back to os.environ ONLY
+    # when the active provider doesn't supply a value (defensive).
     "src/google_docs_mcp/keys.py",
+    "src/google_docs_mcp/key_provider.py",
 }
 
 

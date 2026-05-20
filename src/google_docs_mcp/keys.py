@@ -11,6 +11,15 @@ continue working unchanged. Operators see ``key_back_compat_shim_active:
 true`` in ``gdocs_server_info`` (added in v1.4.0). The shim removes in
 v2.0+ alongside the tool-consolidation Option B shim window.
 
+**v2.1 M1a refactor.** The mechanism layer has been promoted to
+``key_provider.py`` — Protocol + 3 adapters + LayeredKeyProvider
+composite. This module remains the public facade: every pre-v2.1
+function signature is preserved, and every internal symbol that tests
+or external code monkeypatched (``_BACK_COMPAT_RAW_MASTER``,
+``_reset_*_for_tests``) is preserved too. The refactor is purely
+internal — no behavior change for callers. See ``key_provider.py``
+module docstring for the Hex-style port-and-adapters rationale.
+
 Threat-model notes (see THREAT_MODEL §5 once that doc lands):
 
 - The 32-char master length check is DEFERRED to first ``get_key()``
@@ -27,13 +36,17 @@ Threat-model notes (see THREAT_MODEL §5 once that doc lands):
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
-import threading
-import time
-from dataclasses import dataclass
 from typing import Literal
+
+from .key_provider import (
+    HKDFKeyProvider,
+    KeyProvenance,
+    LayeredKeyProvider,
+    build_default_provider,
+    get_active_provider,
+    set_key_provider,
+)
 
 # v2.0b: shim removed. All 3 derived keys now go through HKDF unless
 # overridden via MCP_API_BEARER_KEY / OAUTH_STATE_SIGNING_KEY /
@@ -49,109 +62,34 @@ from typing import Literal
 #
 # DO NOT re-populate without major version bump + CHANGELOG note: any
 # entry here resurrects mass-invalidation risk at the next removal.
+#
+# v2.1 NOTE: this symbol is read at call time by
+# ``RawMasterShimKeyProvider`` (via ``build_default_provider``'s
+# resolver closure). Tests that ``monkeypatch.setattr`` this to a
+# non-empty frozenset still take effect for the next ``get_key()``
+# call without needing to swap out the active provider.
 _BACK_COMPAT_RAW_MASTER: frozenset[str] = frozenset()
 
-# v1.5 observability: per-purpose hit counter for the shim path. Surfaced
-# via gdocs_server_info().key_back_compat_shim_active_hits so operators
-# can soak-test (deploy v1.5, wait 3+ days, verify counters are 0 for
-# the last 24h) before shipping v2.0b's strict-flip. The shim removal
-# would invalidate every key minted via the shim — this counter is the
-# evidence that no such keys are actively in use.
-#
-# Process-local (intentionally — each replica reports its own count;
-# the operator aggregates across replicas at read time). A threading
-# Lock guards increments because Starlette+uvicorn can call into this
-# from multiple worker threads.
-_shim_hit_counter: dict[str, int] = {
-    "api_bearer": 0,
-    "oauth_state": 0,
-    "signed_url": 0,
-}
-_shim_hit_counter_lock = threading.Lock()
 
-# v1.5.1 (#28): per-purpose denominator counter. Counts EVERY successful
-# get_key() call regardless of which path served the key (override /
-# shim / HKDF). Without this denominator, "0 shim hits" is ambiguous:
-# it could mean "everyone migrated off the shim" OR "nobody called
-# get_key at all in this window". The preflight script asserts BOTH
-# shim==0 AND total>=N before declaring it safe to ship v2.0b's
-# strict-flip.
-#
-# Same threading model as _shim_hit_counter: process-local, lock-guarded.
-_total_call_counter: dict[str, int] = {
-    "api_bearer": 0,
-    "oauth_state": 0,
-    "signed_url": 0,
-}
-_total_call_counter_lock = threading.Lock()
-
-# v2.6 (#48): per-purpose timestamp of the FIRST successful get_key() call
-# in this process. ``None`` means the purpose has never been requested.
-# Surfaced via ``gdocs_server_info().key_observability.first_call_age_seconds``
-# as ``time.time() - first_call_at`` so operators can gate the v2.0b strict-
-# flip on a soak window: "first call happened ≥1h30 ago AND the cumulative
-# total since then is large enough" is the trustworthy signal.
-#
-# Without this, a freshly-restarted machine reports ``shim_hits=0`` AND
-# ``totals=0`` after start-up, and the preflight gate can't tell that
-# apart from "everyone has migrated off the shim, just no traffic yet."
-# The first-call timestamp closes that gap.
-#
-# Process-local (each replica reports its own first-call) — same as the
-# hit/total counters. Lock-guarded for the same Starlette+uvicorn-worker
-# reason; the write is a tiny CAS under the lock, no measurable overhead.
-_first_call_at: dict[str, float | None] = {
-    "api_bearer": None,
-    "oauth_state": None,
-    "signed_url": None,
-}
-_first_call_at_lock = threading.Lock()
-
-# HKDF info-context per purpose. Changing any string here invalidates
-# the derived key for that purpose — same blast radius as rotating
-# the master. Never change these once they leave the shim.
+# Constants preserved at module level for backward-compat (tests + other
+# code import these directly). The duplication with ``key_provider.py``
+# is intentional — those are the adapter-internal source of truth, these
+# are the historical public surface.
 _HKDF_INFO: dict[str, bytes] = {
     "api_bearer": b"google-docs-mcp v1 api_bearer",
     "oauth_state": b"google-docs-mcp v1 oauth_state",
     "signed_url": b"google-docs-mcp v1 signed_url",
 }
 
-Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
-
-# v1.5.1: per-purpose env-var overrides. When set (and ≥32 chars), the
-# override bytes are returned verbatim — bypassing BOTH the back-compat
-# shim AND HKDF derivation. The RUNBOOK §3.4 documents these as the
-# safe rotation path: an operator pins all 3 purposes to the current
-# master BEFORE rotating MCP_BEARER_TOKEN, so derived keys don't move
-# in lockstep with the master and invalidate every in-flight token.
-#
-# Removal from this map = breaking change; treat with same care as
-# the HKDF info strings (changing either invalidates that purpose's
-# in-flight tokens).
 _OVERRIDE_ENV: dict[str, str] = {
     "api_bearer": "MCP_API_BEARER_KEY",
     "oauth_state": "OAUTH_STATE_SIGNING_KEY",
     "signed_url": "SIGNED_URL_SIGNING_KEY",
 }
 
+Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
+
 _MIN_MASTER_LEN = 32
-
-
-@dataclass(frozen=True)
-class KeyProvenance:
-    """How a key was sourced — for ``gdocs_server_info`` introspection."""
-    purpose: str
-    mechanism: Literal["raw_master_shim", "hkdf_derived"]
-    master_len: int
-
-
-def _master() -> str:
-    val = os.environ.get("MCP_BEARER_TOKEN")
-    if not val:
-        raise RuntimeError(
-            "MCP_BEARER_TOKEN env var is required for key derivation"
-        )
-    return val
 
 
 def _validate_master_or_raise(master: str) -> None:
@@ -160,6 +98,10 @@ def _validate_master_or_raise(master: str) -> None:
     NEVER call at module import — short legacy tokens must boot cleanly
     and only fail when a derived purpose is requested. The shim path
     skips this entirely.
+
+    **v2.1**: the actual enforcement is inside ``HKDFKeyProvider.get_key``;
+    this helper is preserved for backward-compat with tests that import
+    it directly. Same threshold, same error shape.
     """
     if len(master) < _MIN_MASTER_LEN:
         raise RuntimeError(
@@ -170,40 +112,72 @@ def _validate_master_or_raise(master: str) -> None:
         )
 
 
-def _record_first_call(purpose: str) -> None:
-    """Idempotently stamp the first-call timestamp for ``purpose``.
+# ---------------------------------------------------------------------
+# Wire the default provider at import time.
+# ---------------------------------------------------------------------
 
-    v2.6 (#48). Called from every successful ``get_key()`` path (override,
-    shim, HKDF-derived) so the timestamp reflects the first time the
-    purpose was actually exercised in this process. Subsequent calls
-    are no-ops — the timestamp pins the START of the soak window, not
-    the most-recent call.
 
-    Lock-guarded check-then-set so concurrent worker threads can't both
-    see ``None`` and race to write different values.
+def _shim_set_resolver() -> frozenset[str]:
+    """Read the current ``_BACK_COMPAT_RAW_MASTER`` set at call time.
+
+    Lazily-bound so tests that ``monkeypatch.setattr("keys._BACK_COMPAT_RAW_MASTER", ...)``
+    take effect immediately — no need to re-create the provider.
     """
-    with _first_call_at_lock:
-        if _first_call_at.get(purpose) is None:
-            _first_call_at[purpose] = time.time()
+    return _BACK_COMPAT_RAW_MASTER
 
 
-def _hkdf_sha256(master_bytes: bytes, info: bytes, length: int = 32) -> bytes:
-    """RFC 5869 HKDF-Extract+Expand using HMAC-SHA256, salt='' for our use.
+# Build the default LayeredKeyProvider chain and register as the
+# process-wide active provider. The chain matches the pre-v2.1
+# resolution order: env override > shim > HKDF.
+_default_provider: LayeredKeyProvider = build_default_provider(_shim_set_resolver)
+set_key_provider(_default_provider)
 
-    Simple inline implementation — single dep on stdlib ``hmac`` +
-    ``hashlib`` keeps ``keys.py`` import-free of cryptography for the
-    shim path. The full ``cryptography`` lib is used elsewhere but
-    avoiding the import here keeps boot fast and minimizes surface.
 
-    Currently UNREACHED in v1.3.1 (all live purposes route through the
-    shim) but verified via unit tests so v2.0's strict-flip is a
-    pure-config change.
+# ---------------------------------------------------------------------
+# Backward-compat: pre-v2.1 module-level counters + locks.
+# ---------------------------------------------------------------------
+# Pre-v2.1, ``keys.py`` owned the counters directly:
+#     _shim_hit_counter, _shim_hit_counter_lock,
+#     _total_call_counter, _total_call_counter_lock,
+#     _first_call_at, _first_call_at_lock
+# Test fixtures (conftest.py, test_isolated_db_fixture.py) reach into
+# these by name. v2.1 moved the LIVE counters into LayeredKeyProvider,
+# but we preserve the module-level symbols as thin live-view proxies
+# so the existing test scaffolding keeps working without rewrites.
+#
+# The dicts below are the SAME objects as the provider's internal
+# counters — mutating ``keys._shim_hit_counter[...]`` updates the
+# provider's view. This is achieved by binding to the provider's
+# internal dict attribute at import (since the default provider is
+# constructed above).
+_shim_hit_counter: dict[str, int] = _default_provider._shim_hits
+_shim_hit_counter_lock = _default_provider._lock
+_total_call_counter: dict[str, int] = _default_provider._totals
+_total_call_counter_lock = _default_provider._lock
+_first_call_at: dict[str, float | None] = _default_provider._first_call
+_first_call_at_lock = _default_provider._lock
+
+
+def _provider() -> LayeredKeyProvider:
+    """Return the active provider as a LayeredKeyProvider.
+
+    The active provider can be swapped via ``with_key_provider(...)``
+    for tests; that swap may install a non-Layered provider (e.g. a
+    bare ``InMemoryKeyProvider``). The observability accessors below
+    (``get_shim_hit_counters``, etc.) require a Layered instance —
+    they fall back to the module-level ``_default_provider`` when a
+    non-Layered provider is active. Tests that care about counters
+    should inject via the layered composite explicitly.
     """
-    # Extract: PRK = HMAC-SHA256(salt=b"", IKM=master_bytes)
-    prk = hmac.new(b"", master_bytes, hashlib.sha256).digest()
-    # Expand: T(1) = HMAC-SHA256(PRK, info || 0x01)
-    t = hmac.new(prk, info + b"\x01", hashlib.sha256).digest()
-    return t[:length]
+    active = get_active_provider()
+    if isinstance(active, LayeredKeyProvider):
+        return active
+    return _default_provider
+
+
+# ---------------------------------------------------------------------
+# Facade — public API preserved bit-for-bit from pre-v2.1
+# ---------------------------------------------------------------------
 
 
 def get_key(purpose: Purpose) -> bytes:
@@ -213,10 +187,10 @@ def get_key(purpose: Purpose) -> bytes:
       1. Per-purpose env override (e.g. ``MCP_API_BEARER_KEY``) — v1.5.1+,
          the safe-rotation path per RUNBOOK §3.4. Bypasses shim AND HKDF.
       2. Back-compat shim — purposes in ``_BACK_COMPAT_RAW_MASTER`` return
-         the raw master bytes. Increments ``_shim_hit_counter`` for the
+         the raw master bytes. Increments shim-path hit counter for the
          soak-test telemetry (v1.5+).
-      3. HKDF-derived — runs ``_hkdf_sha256(master, info)`` for the purpose.
-         Enforces ≥32-char master.
+      3. HKDF-derived — runs HKDF-SHA256 for the purpose. Enforces ≥32-char
+         master.
 
     Master length check happens HERE, not at import, and only when the
     HKDF derivation path is actually exercised. Override and shim paths
@@ -231,52 +205,26 @@ def get_key(purpose: Purpose) -> bytes:
     are a closed set; an unknown one is a typo, never a runtime case).
     Raises ``RuntimeError`` if the override is set but shorter than 32
     chars (operator intent was clear; failing loud beats silent fallback).
+
+    **v2.1**: implementation delegates to the active ``KeyProvider``
+    (the layered ``[Env, Shim, HKDF]`` chain by default). Behavior is
+    byte-identical to pre-v2.1; see ``key_provider.py`` for the port shape.
     """
     if purpose not in _HKDF_INFO:
         raise ValueError(f"Unknown key purpose: {purpose!r}")
-
-    # 1. Per-purpose override — explicit operator choice, highest precedence.
-    # Read it BEFORE invoking _master() so an operator can use overrides
-    # without setting MCP_BEARER_TOKEN at all. NOTE: override hits do NOT
-    # touch the shim counter — they're not shim usage; conflating them
-    # would lie to operators reading the preflight telemetry.
-    override = os.environ.get(_OVERRIDE_ENV[purpose])
-    if override:
-        if len(override) < _MIN_MASTER_LEN:
-            raise RuntimeError(
-                f"{_OVERRIDE_ENV[purpose]} must be ≥{_MIN_MASTER_LEN} chars "
-                f"(got {len(override)}). Set a longer value or unset the "
-                f"override env var to fall back to the master."
-            )
-        with _total_call_counter_lock:
-            _total_call_counter[purpose] = (
-                _total_call_counter.get(purpose, 0) + 1
-            )
-        _record_first_call(purpose)
-        return override.encode("utf-8")
-
-    master = _master()
-
-    if purpose in _BACK_COMPAT_RAW_MASTER:
-        # Shim: return raw master bytes. No length check.
-        # v1.5: instrument every shim-path hit so operators can confirm
-        # zero active usage before v2.0b's strict-flip ships.
-        with _shim_hit_counter_lock:
-            _shim_hit_counter[purpose] = _shim_hit_counter.get(purpose, 0) + 1
-        with _total_call_counter_lock:
-            _total_call_counter[purpose] = (
-                _total_call_counter.get(purpose, 0) + 1
-            )
-        _record_first_call(purpose)
-        return master.encode("utf-8")
-
-    # Derived path: enforce master length first.
-    _validate_master_or_raise(master)
-    derived = _hkdf_sha256(master.encode("utf-8"), _HKDF_INFO[purpose])
-    with _total_call_counter_lock:
-        _total_call_counter[purpose] = _total_call_counter.get(purpose, 0) + 1
-    _record_first_call(purpose)
-    return derived
+    provider = get_active_provider()
+    key = provider.get_key(purpose)
+    if key is None:
+        # Defensive: a layered provider should always serve a known
+        # purpose (HKDF is the unconditional fallback). If we land
+        # here it means a test injected a partial InMemoryKeyProvider
+        # that doesn't cover this purpose — surface clearly.
+        raise RuntimeError(
+            f"Active KeyProvider returned no key for purpose {purpose!r}. "
+            f"If you're injecting an InMemoryKeyProvider, ensure it "
+            f"includes this purpose."
+        )
+    return key
 
 
 def key_provenance(purpose: Purpose) -> KeyProvenance:
@@ -287,16 +235,26 @@ def key_provenance(purpose: Purpose) -> KeyProvenance:
     """
     if purpose not in _HKDF_INFO:
         raise ValueError(f"Unknown key purpose: {purpose!r}")
-    master = _master()
-    if purpose in _BACK_COMPAT_RAW_MASTER:
+    provider = get_active_provider()
+    prov = provider.provenance(purpose)
+    if prov is None:
+        # Active provider doesn't cover this purpose. Fall back to the
+        # default layered chain so observability never returns None.
+        prov = _default_provider.provenance(purpose)
+    if prov is None:
+        # Defensive — HKDFKeyProvider in the default chain always
+        # provides provenance for known purposes. Reaching here means
+        # the constants got out of sync between modules.
+        master = os.environ.get("MCP_BEARER_TOKEN", "")
         return KeyProvenance(
-            purpose=purpose, mechanism="raw_master_shim",
-            master_len=len(master),
+            purpose=purpose, mechanism="hkdf_derived", master_len=len(master),
         )
-    return KeyProvenance(
-        purpose=purpose, mechanism="hkdf_derived",
-        master_len=len(master),
-    )
+    # Pre-v2.1 contract: only the two mechanisms "raw_master_shim" /
+    # "hkdf_derived" appeared. v2.1 adds "env_override" but legacy
+    # callers (e.g. /info endpoint serializer) may still type-check
+    # against the old union. The new value is additive; not a breaking
+    # change.
+    return prov
 
 
 def is_shim_active() -> bool:
@@ -322,8 +280,7 @@ def get_shim_hit_counters() -> dict[str, int]:
     Process-local: each replica reports its own count. Aggregate across
     replicas at read time.
     """
-    with _shim_hit_counter_lock:
-        return dict(_shim_hit_counter)
+    return _provider().shim_hit_counters()
 
 
 def _reset_shim_hit_counters_for_tests() -> None:
@@ -333,9 +290,7 @@ def _reset_shim_hit_counters_for_tests() -> None:
     code must never reset the counter (doing so would lie to operators
     about shim usage during the v2.0b soak window).
     """
-    with _shim_hit_counter_lock:
-        for purpose in _shim_hit_counter:
-            _shim_hit_counter[purpose] = 0
+    _provider()._reset_shim_hits()
 
 
 def get_total_call_counters() -> dict[str, int]:
@@ -351,8 +306,7 @@ def get_total_call_counters() -> dict[str, int]:
     Process-local: each replica reports its own count. Aggregate across
     replicas at read time.
     """
-    with _total_call_counter_lock:
-        return dict(_total_call_counter)
+    return _provider().total_call_counters()
 
 
 def _reset_total_call_counters_for_tests() -> None:
@@ -362,9 +316,7 @@ def _reset_total_call_counters_for_tests() -> None:
     code must never reset this counter (it pairs with the shim counter
     as the denominator for v2.0b preflight gating).
     """
-    with _total_call_counter_lock:
-        for purpose in _total_call_counter:
-            _total_call_counter[purpose] = 0
+    _provider()._reset_totals()
 
 
 def get_first_call_timestamps() -> dict[str, float | None]:
@@ -389,8 +341,7 @@ def get_first_call_timestamps() -> dict[str, float | None]:
     MIN-non-None across replicas as the cluster-wide first-call,
     since the soak window starts from the earliest call anywhere).
     """
-    with _first_call_at_lock:
-        return dict(_first_call_at)
+    return _provider().first_call_timestamps()
 
 
 def _reset_first_call_timestamps_for_tests() -> None:
@@ -400,6 +351,11 @@ def _reset_first_call_timestamps_for_tests() -> None:
     these (doing so would lie to operators about how long the soak
     window has actually been running).
     """
-    with _first_call_at_lock:
-        for purpose in _first_call_at:
-            _first_call_at[purpose] = None
+    _provider()._reset_first_call()
+
+
+# Re-export internal helper used by the test suite via direct import.
+# Pre-v2.1 ``_hkdf_sha256`` lived in this module; v2.1 moved it to
+# ``key_provider`` but tests + the HKDFKeyProvider both reference the
+# function. Re-export keeps the historical import path working.
+from .key_provider import _hkdf_sha256  # noqa: E402, F401 — re-export for test compat
