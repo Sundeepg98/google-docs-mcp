@@ -63,15 +63,37 @@ def client_config():
 
 
 @pytest.fixture
-def signing_key():
-    # v2.0b (PR #34 Option A.1): oauth_state.sign_state / verify_state
-    # take signing_key as bytes (matches keys.get_key("oauth_state")'s
-    # return type post-HKDF-strict-flip). The unit-test fixtures
-    # (test_oauth_state.py, test_oauth_google.py) were swept in A.1;
-    # this integration fixture was missed and silently failed every
-    # test in this file with TypeError from hmac.new(). Fixed in
-    # follow-up after R34 investigation.
+def signing_key_bytes() -> bytes:
+    """The primary form of the test signing key — bytes.
+
+    v2.0b (PR #34 Option A.1) made oauth_state.sign_state /
+    verify_state / get_credentials_for_user / exchange_code_for_credentials
+    take signing_key as bytes, matching keys.get_key("oauth_state")'s
+    return type post-HKDF-strict-flip. The unit-test fixtures
+    (test_oauth_state.py, test_oauth_google.py) were swept in A.1;
+    this integration file was missed (fixed in PR #81 for 4/5 tests).
+
+    The 5th test (test_oauth_callback_endpoint_strips_operator_secrets_in_production)
+    also needs the same value as a STR for monkeypatch.setenv on
+    MCP_BEARER_TOKEN — pytest's setenv requires str and was coercing
+    bytes to its repr form `"b'test-signing-key-...'"`, which then
+    didn't match what sign_state produced. The split into
+    signing_key_bytes + signing_key_str (below) gives each consumer
+    the right type without forcing either to do the conversion.
+    """
     return b"test-signing-key-fresh-user-flow"
+
+
+@pytest.fixture
+def signing_key_str(signing_key_bytes: bytes) -> str:
+    """The str form of the test signing key — for env-var consumers.
+
+    Derived from signing_key_bytes so the two fixtures can never
+    drift apart: changing the bytes value automatically updates the
+    str view, and downstream consumers can pick the right type at
+    their use site rather than the fixture having to guess.
+    """
+    return signing_key_bytes.decode("utf-8")
 
 
 @pytest.fixture
@@ -122,7 +144,7 @@ def _mock_flow_returning(refresh_token: str, access_token: str, scopes: list[str
 
 
 def test_first_tool_call_with_no_creds_raises_needs_reauth(
-    client_config, signing_key, base_url
+    client_config, signing_key_bytes, base_url
 ):
     """Fresh user with no row in user_store: the credentials resolver must
     raise ``NeedsReauthError`` carrying a clickable auth_url, not a
@@ -135,7 +157,7 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
         get_credentials_for_user(
             "fresh-user-sub-001",
             client_config=client_config,
-            signing_key=signing_key,
+            signing_key=signing_key_bytes,
             base_url=base_url,
         )
 
@@ -158,7 +180,7 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
 
 
 def test_fresh_user_full_oauth_dance_persists_usable_creds(
-    client_config, signing_key, base_url, nonce_store
+    client_config, signing_key_bytes, base_url, nonce_store
 ):
     """The big one: drive a fresh user from no-creds to usable creds via
     the same code paths the production HTTP server calls.
@@ -183,7 +205,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
         get_credentials_for_user(
             user_id,
             client_config=client_config,
-            signing_key=signing_key,
+            signing_key=signing_key_bytes,
             base_url=base_url,
         )
     auth_url = exc.value.auth_url
@@ -209,7 +231,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
             authorization_response_url=callback_url,
             base_url=base_url,
             client_config=client_config,
-            signing_key=signing_key,
+            signing_key=signing_key_bytes,
             nonce_store=nonce_store,
         )
 
@@ -227,7 +249,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
     creds = get_credentials_for_user(
         user_id,
         client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key_bytes,
         base_url=base_url,
     )
     assert creds.token == "ACCESS_FROM_GOOGLE"
@@ -239,7 +261,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
 
 
 def test_fresh_user_persisted_state_strips_operator_secrets(
-    client_config, signing_key, base_url, nonce_store
+    client_config, signing_key_bytes, base_url, nonce_store
 ):
     """Regression guard: ``save_credentials_json`` must never persist the
     operator's ``client_id``/``client_secret`` to the per-user row.
@@ -257,7 +279,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
     user_id = "fresh-user-sub-003"
     auth_url = build_authorization_url(
         user_id, base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key_bytes,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -274,7 +296,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
             ),
             base_url=base_url,
             client_config=client_config,
-            signing_key=signing_key,
+            signing_key=signing_key_bytes,
             nonce_store=nonce_store,
         )
 
@@ -296,7 +318,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
 
 
 def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
-    client_config, signing_key, base_url, monkeypatch,
+    client_config, signing_key_bytes, signing_key_str, base_url, monkeypatch,
 ):
     """End-to-end guard against the v2.0.3 regression.
 
@@ -334,7 +356,22 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
     # GOOGLE_OAUTH_CLIENT_SECRETS_JSON (as the operator OAuth client
     # config) from env. Match the values our handcrafted state and the
     # mocked Flow expect.
-    monkeypatch.setenv("MCP_BEARER_TOKEN", signing_key)
+    #
+    # MCP_BEARER_TOKEN uses signing_key_str: env vars must be str (pytest
+    # warns and repr-coerces bytes, which then mismatches what the
+    # handler reads). signing_key_str is derived from signing_key_bytes
+    # via decode("utf-8") so the two views can never drift apart.
+    #
+    # OAUTH_STATE_SIGNING_KEY: post-PR #34 HKDF strict-flip, the handler's
+    # keys.get_key("oauth_state") routes via HKDF-SHA256 derivation of
+    # MCP_BEARER_TOKEN unless the per-purpose override is set. Without
+    # the override the handler would HMAC-verify with HKDF-derived bytes
+    # — completely different from the raw signing_key_bytes the test
+    # used to sign. Setting the override pins the handler to the same
+    # bytes the test holds. This mirrors RUNBOOK §3.6 operator workflow
+    # and the same pattern in tests/unit/test_api_convert_multitenancy.py.
+    monkeypatch.setenv("MCP_BEARER_TOKEN", signing_key_str)
+    monkeypatch.setenv("OAUTH_STATE_SIGNING_KEY", signing_key_str)
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRETS_JSON", json.dumps(client_config))
     monkeypatch.setenv("GOOGLE_OAUTH_BASE_URL", base_url)
 
@@ -342,7 +379,11 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
     # The handler's _NONCE_STORE is module-level; it has not seen this
     # nonce, so consume() will succeed on first call. No PKCE verifier
     # for this test -- the mocked Flow does not exercise PKCE.
-    state = sign_state(user_id, signing_key)
+    #
+    # sign_state takes bytes (PR #34 A.1 contract); pass signing_key_bytes
+    # so the HMAC computed here matches what the handler will compute
+    # when it reads MCP_BEARER_TOKEN and routes through HKDF.
+    state = sign_state(user_id, signing_key_bytes)
 
     # Build a minimal Starlette app with ONLY the callback route. Avoids
     # spinning up FastMCP + bearer middleware + trusted-host middleware
@@ -407,7 +448,7 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
 
 
 def test_replayed_callback_state_cannot_overwrite_existing_creds(
-    client_config, signing_key, base_url, nonce_store
+    client_config, signing_key_bytes, base_url, nonce_store
 ):
     """An attacker who captures a victim's state token (browser history /
     access logs) MUST NOT be able to re-use it to plant alternate creds
@@ -424,7 +465,7 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
 
     auth_url = build_authorization_url(
         "victim-sub", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key_bytes,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -442,7 +483,7 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
                 f"{base_url}/oauth/google/api/callback?state={state}&code=X"
             ),
             base_url=base_url, client_config=client_config,
-            signing_key=signing_key, nonce_store=nonce_store,
+            signing_key=signing_key_bytes, nonce_store=nonce_store,
         )
         # Second redemption (attacker replay) must fail loudly — the
         # NonceStore consumed the nonce on first use.
@@ -453,5 +494,5 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
                     f"{base_url}/oauth/google/api/callback?state={state}&code=Y"
                 ),
                 base_url=base_url, client_config=client_config,
-                signing_key=signing_key, nonce_store=nonce_store,
+                signing_key=signing_key_bytes, nonce_store=nonce_store,
             )
