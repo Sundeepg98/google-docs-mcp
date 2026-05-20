@@ -87,7 +87,11 @@ def test_middleware_stashes_user_id_on_request_state_for_signed_url():
     app = Starlette(
         routes=[Route("/api/echo", echo_uid, methods=["GET"])],
         middleware=[Middleware(
-            BearerTokenMiddleware, token=os.environ["MCP_BEARER_TOKEN"],
+            BearerTokenMiddleware,
+            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            signed_url_key=os.environ.get(
+                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
+            ),
         )],
     )
     client = TestClient(app)
@@ -115,7 +119,11 @@ def test_middleware_rejects_pre_v21_signed_url_without_uid():
     app = Starlette(
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
-            BearerTokenMiddleware, token=os.environ["MCP_BEARER_TOKEN"],
+            BearerTokenMiddleware,
+            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            signed_url_key=os.environ.get(
+                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
+            ),
         )],
     )
     client = TestClient(app)
@@ -149,7 +157,11 @@ def test_middleware_rejects_swapped_uid_cross_tenant_attack():
     app = Starlette(
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
-            BearerTokenMiddleware, token=os.environ["MCP_BEARER_TOKEN"],
+            BearerTokenMiddleware,
+            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            signed_url_key=os.environ.get(
+                "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
+            ),
         )],
     )
     client = TestClient(app)
