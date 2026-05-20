@@ -190,8 +190,13 @@ def resolve_runtime_oauth_config() -> dict:
     # v2.0b strict-flip activates HKDF-derivation for OAuth state HMACs
     # without further edits here. _master() inside get_key raises with
     # the existing operator-config message if MCP_BEARER_TOKEN is unset.
+    # v2.0b: keys.get_key() returns bytes; pass through to sign_state /
+    # verify_state without the pre-flip .decode("utf-8") (which crashed
+    # on HKDF output that isn't UTF-8 in general). The returned dict's
+    # ``signing_key`` is now bytes; downstream consumers (credentials.
+    # get_credentials_for_user → sign_state) accept bytes directly.
     try:
-        signing_key = _keys.get_key("oauth_state").decode("utf-8")
+        signing_key = _keys.get_key("oauth_state")
     except RuntimeError as e:
         # Preserve the historical message wording so callers /
         # integration tests that match on it keep working.
@@ -262,7 +267,7 @@ def build_authorization_url(
     *,
     base_url: str,
     client_config: dict,
-    signing_key: str,
+    signing_key: bytes,
     scopes: list[str] | None = None,
     ttl_seconds: int = 600,
 ) -> str:
@@ -311,7 +316,7 @@ def exchange_code_for_credentials(
     authorization_response_url: str,
     base_url: str,
     client_config: dict,
-    signing_key: str,
+    signing_key: bytes,
     nonce_store: NonceStore,
     scopes: list[str] | None = None,
 ) -> tuple[str, str]:

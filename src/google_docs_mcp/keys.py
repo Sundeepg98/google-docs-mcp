@@ -35,12 +35,21 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-# Purposes that return raw master via the back-compat shim. Removal of
-# any entry constitutes a breaking change requiring CHANGELOG note +
-# major bump. See v2.0+ release plan.
-_BACK_COMPAT_RAW_MASTER: frozenset[str] = frozenset(
-    {"api_bearer", "oauth_state", "signed_url"}
-)
+# v2.0b: shim removed. All 3 derived keys now go through HKDF unless
+# overridden via MCP_API_BEARER_KEY / OAUTH_STATE_SIGNING_KEY /
+# SIGNED_URL_SIGNING_KEY env vars (per v1.5.1).
+#
+# The symbol is preserved as an empty frozenset (rather than deleted)
+# so importers — including is_shim_active(), key_provenance(), the
+# get_key() conditional, and any external code that import-tests
+# against its existence — continue to work without rewrite. The empty
+# set means the `purpose in _BACK_COMPAT_RAW_MASTER` branch in
+# get_key() never fires; every call falls through to HKDF derivation
+# (or to the v1.5.1 env-var override path if set).
+#
+# DO NOT re-populate without major version bump + CHANGELOG note: any
+# entry here resurrects mass-invalidation risk at the next removal.
+_BACK_COMPAT_RAW_MASTER: frozenset[str] = frozenset()
 
 # v1.5 observability: per-purpose hit counter for the shim path. Surfaced
 # via gdocs_server_info().key_back_compat_shim_active_hits so operators

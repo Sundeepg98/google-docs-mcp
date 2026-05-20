@@ -114,7 +114,7 @@ def get_credentials_for_user(
     user_id: str,
     *,
     client_config: dict,
-    signing_key: str,
+    signing_key: bytes,
     base_url: str,
     required_scopes: list[str] | None = None,
 ) -> Credentials:
@@ -234,7 +234,7 @@ def _check_scopes_or_raise(
     user_id: str,
     required_scopes: list[str] | None,
     client_config: dict,
-    signing_key: str,
+    signing_key: bytes,
     base_url: str,
 ) -> Credentials:
     """If any required scope is missing, raise NeedsReauthError.
@@ -276,7 +276,7 @@ def _is_invalid_grant(e: RefreshError) -> bool:
 def _auth_url(
     user_id: str,
     client_config: dict,
-    signing_key: str,
+    signing_key: bytes,
     base_url: str,
     *,
     scopes: list[str] | None = None,

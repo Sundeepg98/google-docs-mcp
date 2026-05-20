@@ -12,6 +12,7 @@ Companion in-flight items — distinct version targets, called out individually 
 
 - **A1 `/api/convert` multi-tenancy** (#60, targets **v2.1.0**) — signed-URL canonical string bound to user_id; per-user creds resolution at the endpoint. The version bump (v2.0.x → v2.1.0) reflects the contract-level change to the signed-URL format.
 - **B1 v14 keys.get_key() wire-up** (#57, targets **v2.6** — separate version target) — closes the long-standing keys.get_key() bypass class flagged by R7→R20. Unblocks PR #34 (v2.0b HKDF strict-flip). Stranded by an earlier coding session; R20 ground-truth caught the un-pushed branch.
+- **v2.0b HKDF strict-flip** (#34, targets **v2.0.0 (post-soak)** — see the named-version block below) — removes the `_BACK_COMPAT_RAW_MASTER` shim. Ships after operator preflight-soak passes.
 
 ### Security
 
@@ -71,6 +72,129 @@ Backlog rationalization across R17–R29 trimmed the candidate set down to what 
 - **R23–R26** fresh-eyes audits on `retrofit.py`, `cli.py`, `setup_state.py`, and `resources.py` confirmed no missed HIGH-severity findings in those modules.
 - **R28** peer-review of PR #53 tightened the CI guard from a 500-char byte window to atomic-unit (table-row / prose-paragraph) coupling + a HMAC+AppsScript co-occurrence catch-all; also folded in `docs/PRIVACY.md` for auto-activation when PR #44 merges.
 - **R29** peer-review of this CHANGELOG block surfaced 4 items: 2 valid (this commit addresses Item 1: B1 explicit naming + v2.0.6 vs v2.6 disambiguation; Item 4: header date-format is correct for `[Unreleased]` and gets the date at release-cut), 2 dismissed after orchestrator cross-check against current main (Item 2: B4 already-shipped claim is accurate per re-verification above; Item 3: SHA pin `ed8efb3` matches the post-#51-merge `deploy.yml`).
+- **R30** verified PR #34 (v2.0b strict-flip) is READY pending operator soak — code change is 1 substantive line (`_BACK_COMPAT_RAW_MASTER = frozenset()`); CHANGELOG block for `[2.0.0] — TBD (post-soak)` sits below this `[Unreleased]` block as a separate named-future-version entry per Keep a Changelog ordering.
+
+## [2.0.0] — TBD (post-soak)
+
+### BREAKING
+
+- Removed `_BACK_COMPAT_RAW_MASTER` shim from `keys.py`. All 3 derived
+  keys (`api_bearer`, `oauth_state`, `signed_url`) now use HKDF-SHA256
+  derivation by default. Operators can still pin individual purposes
+  via `MCP_API_BEARER_KEY` / `OAUTH_STATE_SIGNING_KEY` /
+  `SIGNED_URL_SIGNING_KEY` env vars (per v1.5.1).
+
+  **Impact:** every in-flight signed URL + OAuth state token minted
+  under v1.x simultaneously invalidates at deploy. Mitigated by:
+  - Pre-flight script (`scripts/preflight_strict_flip.sh`) verifies
+    zero shim hits before flip
+  - In-flight tokens have hard 1-hour TTL ceiling — wait 1h30min-2h
+    post-deploy of v1.5.x before running v2.0b deploy
+
+  See `docs/RUNBOOK.md` §3.5 (recovery if symptoms surface) + §3.6
+  (preflight procedure).
+
+- **`MCP_BEARER_TOKEN` must be ≥32 chars.** The pre-flip shim path
+  had no length check and silently accepted shorter values (the
+  legacy 16-char form documented in v1.0–v1.3); HKDF derivation has
+  a 32-char minimum and refuses shorter masters at the first
+  ``keys.get_key()`` call with the existing
+  ``MCP_BEARER_TOKEN must be ≥32 chars`` error message. Operators
+  on a token shorter than 32 chars MUST rotate to a longer value
+  BEFORE flipping (typically: `python -c "import secrets;
+  print(secrets.token_hex(32))"` and set as the new
+  ``MCP_BEARER_TOKEN`` + each ``*_KEY`` override). The preflight
+  script does not directly check master length; the next bearer-
+  authed request after deploy raises if the master is short.
+
+- **Signing keys propagate as `bytes` end-to-end** (was `str` under
+  the shim). ``keys.get_key()`` has always returned ``bytes``; the
+  shim-era consumers performed a ``.decode("utf-8")`` →
+  ``.encode("utf-8")`` round-trip across ``http_server.py``,
+  ``server.py``, ``oauth_google.py``, ``crypto.py``, and
+  ``oauth_state.py``. The decode worked because the shim returned
+  the operator's UTF-8 master verbatim; HKDF returns 32 random
+  bytes which fail UTF-8 decoding for ~99.96% of master values.
+  This release drops the round-trip: ``signing_key`` parameters
+  are typed ``bytes`` throughout the chain and flow directly into
+  ``hmac.new()``. The bearer-header comparison in
+  ``BearerTokenMiddleware`` now uses ``hmac.compare_digest`` on
+  bytes (was f-string equality on ``str``) — semantically
+  equivalent for operator-set overrides, correct for HKDF output.
+
+  External consumers calling ``crypto.sign_upload_url``,
+  ``crypto.verify_signed_params``, ``oauth_state.sign_state``,
+  ``oauth_state.verify_state``, ``credentials.get_credentials_for_user``,
+  ``oauth_google.build_authorization_url``, or
+  ``oauth_google.exchange_code_for_credentials`` directly (rather
+  than via the production wire-up) must pass ``bytes`` for
+  ``signing_key`` — typically ``my_str_key.encode("utf-8")``.
+
+- **`BearerTokenMiddleware.__init__` now takes ``bytes`` for both
+  ``bearer_token`` and ``signed_url_key``** (was ``str``). Same
+  rationale as above; mirrors the production callsite
+  (``keys.get_key()`` returns bytes natively).
+
+- **OPERATOR FOOT-GUN — bearer header bytes (R31).** If you SKIP the
+  per-purpose overrides (RUNBOOK §3.6 step 1) and let HKDF derive
+  the bearer key from your master, ``keys.get_key("api_bearer")``
+  returns 32 HKDF-derived random bytes. Those bytes are intentionally
+  non-printable and most HTTP clients (curl, requests, fetch) cannot
+  submit them as ``Authorization: Bearer <value>`` — the bearer
+  header path will reject every request, even though the server
+  itself boots fine and ``/health`` keeps returning 200. Operators
+  who skip overrides strand their own clients. Mitigation: set
+  ``MCP_API_BEARER_KEY`` to a printable UTF-8 string (typically the
+  current ``MCP_BEARER_TOKEN`` value) BEFORE flipping. The override
+  path keeps the bearer header UTF-8-safe; the HKDF-direct path
+  does not. Same applies to ``OAUTH_STATE_SIGNING_KEY`` /
+  ``SIGNED_URL_SIGNING_KEY`` if any external client needs to mint
+  state tokens or sign URLs out-of-band (rare; production usually
+  has the server itself do both, so HKDF bytes are fine internally).
+
+### Fixed
+
+- **Latent production crash class surfaced + closed:** 5 production
+  sites (`server.py:1872`, `http_server.py:239`/`:672`/`:673`,
+  `oauth_google.py:194`) did ``keys.get_key(...).decode("utf-8")``.
+  Under the shim this was a pointless round-trip; under HKDF it
+  would have crashed every OAuth callback, signed-URL mint, and
+  bearer-auth request with ``UnicodeDecodeError`` for ~99.96% of
+  operator deployments. R30 audit caught this during PR #34's
+  rebase + Option A.1 fixture investigation; ship state pre-A.1
+  would have broken v2.0.0 on first call. See R30 row in the
+  ``[Unreleased] — v2.0.5`` audit-trail provenance.
+
+- **Latent bypass-pattern gap closed:** `http_server.py:420`
+  (signed-URL convert endpoint resolving per-user creds) read
+  ``os.environ.get("MCP_BEARER_TOKEN", "")`` directly — a
+  comma-default form that PR #57's ``_BYPASS_PATTERNS``
+  architectural guard missed. The site now routes through
+  ``keys.get_key("oauth_state")`` and the guard's pattern list is
+  widened to catch ``"<env>", "<default>"`` shapes so future
+  refactors of this class can't reintroduce the bypass.
+
+- **Preflight gate** (`scripts/preflight_strict_flip.sh`, R32) —
+  replaced the over-strict ``TOTAL >= 100`` threshold with a
+  ``TOTAL >= 3 AND each_purpose >= 1`` gate. The 100-call floor
+  was set against a wrong mental model (assumed per-request
+  ``get_key()`` calls); the actual wrapper architecture resolves
+  each purpose ONCE at process init and caches the bytes, which
+  is the correct shape for a key-derivation wrapper (HKDF on every
+  request would burn CPU for zero value). The old gate was
+  unsatisfiable in steady state — a healthy boot produces
+  ``{api_bearer:1, oauth_state:1, signed_url:1}`` = 3 total and
+  stays there indefinitely without synthetic traffic. The new
+  per-purpose check directly proves wire-up of each callsite
+  (what the 100-call floor was actually trying to test) AND
+  catches a wire-up regression in any single purpose that would
+  otherwise hide behind other purposes' counters. Smoke-tested
+  against synthetic ``/info`` shapes for all 4 gate paths
+  (exit-0 happy, exit-3 wire-up, exit-3 total-too-low, exit-4
+  shim-active). Exit-code semantics for code 3 widened from
+  "insufficient signal" to "wire-up regression"; RUNBOOK §3.6
+  guidance about "drive synthetic traffic" no longer applies and
+  is implicitly dropped.
 
 ## [1.5.0] — 2026-05-19
 

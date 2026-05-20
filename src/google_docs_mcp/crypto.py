@@ -57,7 +57,7 @@ def _canonical(exp: int, nonce: str, max_bytes: int, user_id: str) -> str:
 def sign_upload_url(
     *,
     base_url: str,
-    signing_key: str,
+    signing_key: bytes,
     user_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
@@ -65,6 +65,14 @@ def sign_upload_url(
     """Mint a fresh signed upload URL bound to ``user_id``.
 
     Returns ``{"url", "expires_at", "max_bytes", "nonce", "user_id"}``.
+
+    ``signing_key`` is bytes (matches ``keys.get_key("signed_url")``'s
+    return type). v2.0b strict-flip: HKDF returns raw 32-byte keys
+    that aren't generally valid UTF-8 — passing them as ``str`` (with
+    a ``.decode("utf-8")`` round-trip at the call site) would crash
+    ~99.96% of derived-key deployments. Passing bytes through to
+    ``hmac.new`` directly avoids the round-trip and is correct for
+    all key sources (override / shim / HKDF).
 
     ``user_id`` MUST identify the user whose Google credentials should
     service the eventual ``/api/convert`` POST. The server-side verify
@@ -81,7 +89,7 @@ def sign_upload_url(
     nonce = secrets.token_urlsafe(16)
     canonical = _canonical(exp, nonce, max_bytes, user_id)
     sig = hmac.new(
-        signing_key.encode("utf-8"),
+        signing_key,
         canonical.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -131,7 +139,7 @@ class NonceStore:
 
 def verify_signed_params(
     *,
-    signing_key: str,
+    signing_key: bytes,
     exp: str,
     nonce: str,
     max_bytes: str,
@@ -140,6 +148,9 @@ def verify_signed_params(
     nonce_store: NonceStore,
 ) -> tuple[bool, str | None, int | None, str | None]:
     """Validate a signed-URL query-string and consume the nonce.
+
+    ``signing_key`` is bytes — see ``sign_upload_url`` docstring for
+    the v2.0b rationale (HKDF output isn't UTF-8 in general).
 
     Returns ``(ok, error_message_if_not_ok, max_bytes_int_if_ok,
     user_id_if_ok)``.
@@ -164,7 +175,7 @@ def verify_signed_params(
 
     canonical = _canonical(exp_i, nonce, max_i, user_id)
     expected = hmac.new(
-        signing_key.encode("utf-8"),
+        signing_key,
         canonical.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()

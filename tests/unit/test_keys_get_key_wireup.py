@@ -179,8 +179,25 @@ def test_site_3_resolve_runtime_oauth_config_routes_through_get_key_oauth_state(
     from google_docs_mcp.oauth_google import resolve_runtime_oauth_config
     cfg = resolve_runtime_oauth_config()
 
-    assert cfg["signing_key"] == _TEST_MASTER, (
-        "resolver returned the wrong signing key — get_key path is wrong"
+    # v2.0b: resolve_runtime_oauth_config() returns signing_key as
+    # bytes (was str pre-flip, which crashed on HKDF output). Post-
+    # flip the value depends on which path keys.get_key resolves to:
+    #   - override (MCP_OAUTH_STATE_SIGNING_KEY set): the override
+    #     bytes (UTF-8 encoded)
+    #   - shim (purpose in _BACK_COMPAT_RAW_MASTER): the master bytes
+    #   - HKDF: 32 random bytes
+    # The test fixture sets MCP_BEARER_TOKEN but no override, AND
+    # _BACK_COMPAT_RAW_MASTER is empty post-flip, so HKDF runs and
+    # the bytes are non-deterministic-looking. Equality against
+    # _TEST_MASTER was only correct under the shim; assert just the
+    # contract (bytes, non-empty) plus the counter increment below.
+    assert isinstance(cfg["signing_key"], bytes), (
+        f"signing_key must be bytes (v2.0b post-flip), got "
+        f"{type(cfg['signing_key']).__name__}"
+    )
+    assert len(cfg["signing_key"]) >= 16, (
+        f"signing_key suspiciously short ({len(cfg['signing_key'])} "
+        f"bytes) — get_key path may have returned a default"
     )
     totals = keys.get_total_call_counters()
     assert totals["oauth_state"] >= 1, (
@@ -237,18 +254,27 @@ _ALLOWED_FILES_FOR_RAW_MCP_BEARER_TOKEN_READ = {
 
 
 _BYPASS_PATTERNS = (
-    # The two canonical bypass shapes. Docstrings / comments / error
-    # messages mentioning the env var by NAME are NOT caught — they're
-    # load-bearing (operators grep error logs for the env var name).
-    # Only real os.environ reads of MCP_BEARER_TOKEN are flagged.
+    # Canonical bypass shapes. Docstrings / comments / error messages
+    # mentioning the env var by NAME are NOT caught — they're load-
+    # bearing (operators grep error logs for the env var name). Only
+    # real os.environ reads of MCP_BEARER_TOKEN are flagged.
     'os.environ.get("MCP_BEARER_TOKEN")',
     "os.environ.get('MCP_BEARER_TOKEN')",
     'os.environ["MCP_BEARER_TOKEN"]',
     "os.environ['MCP_BEARER_TOKEN']",
+    # v2.0b: the comma-default form was missed by the original PR #57
+    # pattern list — surfaced when strict-flip turned http_server.py:420
+    # `os.environ.get("MCP_BEARER_TOKEN", "")` from a latent str/bytes
+    # type bug into a real production crash. Catch both quote styles
+    # of the default form.
+    'os.environ.get("MCP_BEARER_TOKEN",',
+    "os.environ.get('MCP_BEARER_TOKEN',",
     # Aliased form used in oauth_google.py historically:
     # `import os as _os; _os.environ.get(...)`
     '_os.environ.get("MCP_BEARER_TOKEN")',
     "_os.environ.get('MCP_BEARER_TOKEN')",
+    '_os.environ.get("MCP_BEARER_TOKEN",',
+    "_os.environ.get('MCP_BEARER_TOKEN',",
 )
 
 

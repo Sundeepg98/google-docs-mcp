@@ -31,7 +31,18 @@ def isolated_state(tmp_path, monkeypatch):
     """Isolate user_store DB + config dir across tests."""
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(tmp_path / "user_state.db"))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MCP_BEARER_TOKEN", "test-signing-key-32-characters-long")
+    # v2.0b: post-strict-flip the bearer-header path needs the
+    # operator-known token bytes, not HKDF output. Mirror the RUNBOOK
+    # §3.6 operator workflow by pinning all 3 purpose overrides to
+    # the master value — this is exactly what the preflight expects
+    # operators to do BEFORE merging the strict-flip. Without these
+    # overrides, get_key('api_bearer') returns HKDF(master) bytes
+    # which the test client has no way to know.
+    master = "test-signing-key-32-characters-long"
+    monkeypatch.setenv("MCP_BEARER_TOKEN", master)
+    monkeypatch.setenv("MCP_API_BEARER_KEY", master)
+    monkeypatch.setenv("OAUTH_STATE_SIGNING_KEY", master)
+    monkeypatch.setenv("SIGNED_URL_SIGNING_KEY", master)
     monkeypatch.setenv("TRUSTED_HOSTS", "testserver,localhost")
     yield
 
@@ -56,9 +67,14 @@ def _build_app_under_test():
 
 def _mint_signed_url_for(user_id: str, *, base="http://testserver/api/convert") -> str:
     from google_docs_mcp.crypto import sign_upload_url
+    # v2.0b: sign_upload_url expects signing_key as bytes (matches
+    # keys.get_key("signed_url") return type). The fixture's
+    # MCP_BEARER_TOKEN value is a str; encode to bytes here at the
+    # test boundary (production code calls get_key(), which returns
+    # bytes natively).
     minted = sign_upload_url(
         base_url=base,
-        signing_key=os.environ["MCP_BEARER_TOKEN"],
+        signing_key=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
         user_id=user_id,
     )
     return minted["url"]
@@ -88,10 +104,14 @@ def test_middleware_stashes_user_id_on_request_state_for_signed_url():
         routes=[Route("/api/echo", echo_uid, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
+            # (matches keys.get_key()'s return type). Encode the
+            # fixture str at the test boundary; production code calls
+            # get_key() which returns bytes natively.
+            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
             signed_url_key=os.environ.get(
                 "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ),
+            ).encode("utf-8"),
         )],
     )
     client = TestClient(app)
@@ -120,10 +140,14 @@ def test_middleware_rejects_pre_v21_signed_url_without_uid():
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
+            # (matches keys.get_key()'s return type). Encode the
+            # fixture str at the test boundary; production code calls
+            # get_key() which returns bytes natively.
+            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
             signed_url_key=os.environ.get(
                 "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ),
+            ).encode("utf-8"),
         )],
     )
     client = TestClient(app)
@@ -158,10 +182,14 @@ def test_middleware_rejects_swapped_uid_cross_tenant_attack():
         routes=[Route("/api/echo", ok, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            bearer_token=os.environ["MCP_BEARER_TOKEN"],
+            # v2.0b: BearerTokenMiddleware now takes bytes-typed keys
+            # (matches keys.get_key()'s return type). Encode the
+            # fixture str at the test boundary; production code calls
+            # get_key() which returns bytes natively.
+            bearer_token=os.environ["MCP_BEARER_TOKEN"].encode("utf-8"),
             signed_url_key=os.environ.get(
                 "SIGNED_URL_SIGNING_KEY", os.environ["MCP_BEARER_TOKEN"],
-            ),
+            ).encode("utf-8"),
         )],
     )
     client = TestClient(app)

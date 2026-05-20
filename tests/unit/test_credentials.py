@@ -48,7 +48,9 @@ def runtime_oauth(client_config):
     """Bundle the env-derived OAuth config the resolver needs."""
     return {
         "client_config": client_config,
-        "signing_key": "test-signing-key",
+        # v2.0b: get_credentials_for_user takes signing_key as bytes
+        # (matches keys.get_key("oauth_state") return type).
+        "signing_key": b"test-signing-key",
         "base_url": "https://example.fly.dev",
     }
 

@@ -55,12 +55,16 @@ def _build_info_app() -> Starlette:
     # _TEST_BEARER as both so tests use the existing fixture without
     # standing up a 2nd token. The signed-URL path isn't exercised
     # here — the bearer header path is.
+    # v2.0b: BearerTokenMiddleware takes bytes (matches
+    # keys.get_key()'s return type). Encode the str fixture at the
+    # test boundary.
+    bearer_bytes = _TEST_BEARER.encode("utf-8")
     return Starlette(
         routes=[Route("/info", info_endpoint, methods=["GET"])],
         middleware=[Middleware(
             BearerTokenMiddleware,
-            bearer_token=_TEST_BEARER,
-            signed_url_key=_TEST_BEARER,
+            bearer_token=bearer_bytes,
+            signed_url_key=bearer_bytes,
         )],
     )
 

@@ -21,7 +21,9 @@ def fresh_nonce_store():
 
 @pytest.fixture
 def signing_key():
-    return "test-signing-key-do-not-use-in-prod"
+    # v2.0b: oauth_state.sign_state / verify_state take bytes (matches
+    # keys.get_key("oauth_state") return type post-strict-flip).
+    return b"test-signing-key-do-not-use-in-prod"
 
 
 def test_sign_then_verify_roundtrip(signing_key, fresh_nonce_store):
@@ -95,7 +97,7 @@ def test_wrong_signing_key_rejected(signing_key, fresh_nonce_store):
     from google_docs_mcp.oauth_state import sign_state, verify_state
 
     state = sign_state("user-sub-jkl", signing_key)
-    ok, _, err, _ = verify_state(state, "different-key", fresh_nonce_store)
+    ok, _, err, _ = verify_state(state, b"different-key", fresh_nonce_store)
     assert ok is False
     assert err == "signature mismatch"
 
