@@ -19,9 +19,32 @@ historical variants. Per-test cost: ~four dict clears, well under 1ms.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
+
+# --- Worktree-src shadow guard --------------------------------------------
+# If a developer has `pip install -e .` against the main checkout and then
+# runs pytest from a git worktree, Python imports `google_docs_mcp` from
+# the main checkout's `src/` rather than the worktree's. Test files
+# referencing modules added in worktree commits (or merged PRs the main
+# checkout hasn't fast-forwarded to) then fail with
+# ``ModuleNotFoundError: No module named 'google_docs_mcp.<new_module>'``
+# even though the source is right there on disk.
+#
+# Prepending this worktree's `src/` to sys.path before any
+# ``google_docs_mcp`` import resolves the shadow. Idempotent — has no
+# effect when the editable install already points at the worktree (e.g.
+# in CI), and harmless even then.
+_WORKTREE_SRC = (Path(__file__).resolve().parent.parent / "src").resolve()
+if _WORKTREE_SRC.is_dir() and str(_WORKTREE_SRC) not in sys.path:
+    sys.path.insert(0, str(_WORKTREE_SRC))
+    # Invalidate any cached negative-import results from prior pytest runs
+    # in the same interpreter session (matters for `pytest --reload-`-style
+    # plugins; benign no-op for the standard runner).
+    import importlib
+    importlib.invalidate_caches()
 
 
 @pytest.fixture(autouse=True)
