@@ -193,7 +193,9 @@ def get_credentials_for_user(
     )
 
 
-def _credentials_from_state(state: dict, client_config: dict) -> Credentials:
+def _credentials_from_state(
+    state: user_store.UserState, client_config: dict
+) -> Credentials:
     """Reconstruct ``Credentials`` from stored JSON + runtime client_config.
 
     ``client_id`` and ``client_secret`` are NEVER read from the stored
@@ -204,8 +206,19 @@ def _credentials_from_state(state: dict, client_config: dict) -> Credentials:
     ``Credentials.to_json()`` produces) and reconstituted to a naive
     UTC datetime here — that's the shape ``Credentials.expired``
     compares against.
+
+    Precondition: the caller MUST have verified
+    ``"google_creds_json" in state`` before reaching this function.
+    Every call site does (see line ~133 in
+    ``get_credentials_for_user``); the asserts here make the
+    invariant load-bearing for type-checkers.
     """
-    raw = json.loads(state["google_creds_json"])
+    creds_json = state.get("google_creds_json")
+    assert creds_json is not None, (
+        "_credentials_from_state called without google_creds_json — "
+        "caller must check `'google_creds_json' in state` first"
+    )
+    raw = json.loads(creds_json)
     client_block = client_config.get("web") or client_config.get("installed") or {}
 
     expiry = raw.get("expiry")

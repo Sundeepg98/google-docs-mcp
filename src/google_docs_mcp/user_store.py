@@ -187,9 +187,11 @@ class StorageBackend(Protocol):
 
     def init_schema(self) -> None:
         """Lazy first-call init. Idempotent. Must be safe under concurrency."""
+        ...
 
     def get_state(self, user_id: str) -> dict[str, Any]:
         """Return the full row as a dict (no NULL/None values), or {} if absent."""
+        ...
 
     def save_state(self, user_id: str, updates: dict[str, Any]) -> None:
         """Merge ``updates`` into the user's row.
@@ -200,9 +202,11 @@ class StorageBackend(Protocol):
         and rejecting unknown columns BEFORE calling this method —
         backends trust their inputs.
         """
+        ...
 
     def clear_state(self, user_id: str) -> None:
         """Delete the user's row. Idempotent — no error if absent."""
+        ...
 
 
 class SqliteBackend:

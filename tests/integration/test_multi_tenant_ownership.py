@@ -35,11 +35,10 @@ def test_doc_is_owned_by_authorizing_account(live_creds, created_docs):
     latter requires userinfo.email which our runtime SCOPES don't
     include by default.
     """
-    from googleapiclient.discovery import build
-
     from google_docs_mcp.docs_api import make_doc_with_tabs
+    from google_docs_mcp.google_clients import get_service
 
-    drive = build("drive", "v3", credentials=live_creds)
+    drive = get_service("drive", "v3", credentials=live_creds)
 
     # Step 1: identify who the loaded creds belong to via Drive's
     # own "about" endpoint (no extra scopes needed).

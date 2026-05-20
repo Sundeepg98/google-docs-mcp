@@ -91,7 +91,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
@@ -134,7 +134,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
@@ -170,7 +170,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
@@ -227,7 +227,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 

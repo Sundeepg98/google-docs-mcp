@@ -11,6 +11,7 @@ Client config discovery order (first match wins):
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
@@ -106,7 +107,12 @@ def load_credentials(
 
     client_config = find_client_config(creds_dir)
     flow = InstalledAppFlow.from_client_secrets_file(str(client_config), required)
-    creds = flow.run_local_server(port=0)
+    # google_auth_oauthlib types run_local_server as returning the union
+    # `external_account.Credentials | oauth2.Credentials`. In practice
+    # an InstalledAppFlow always returns oauth2.Credentials (external-
+    # account flows use a different Flow subclass). Cast to narrow the
+    # return type to what this function actually returns.
+    creds = cast(Credentials, flow.run_local_server(port=0))
     token_file.write_text(creds.to_json())
     return creds
 
