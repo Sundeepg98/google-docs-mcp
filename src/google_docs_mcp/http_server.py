@@ -41,6 +41,7 @@ from starlette.routing import Mount, Route
 
 from . import keys, user_store
 from .auth import default_data_dir, load_credentials
+from .credentials import NeedsReauthError, get_credentials_for_user
 from .crypto import NonceStore, verify_signed_params
 from .docx_import import convert_docx_to_tabbed_doc as _convert_docx
 from .errors import friendly_http_error_message
@@ -400,8 +401,44 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         tmp.write(contents)
         tmp_path = Path(tmp.name)
 
+    # v2.1 multi-tenant dispatch:
+    #   - signed-URL callers: per-user creds via request.state.signed_url_user_id
+    #     (set by BearerTokenMiddleware after verify_signed_params).
+    #   - bearer-header callers: operator creds (legacy). Header-auth means
+    #     the caller is whoever holds MCP_BEARER_TOKEN — typically the
+    #     operator running smoke tests or a server-to-server caller; they
+    #     get the operator's local Drive on purpose. NOT a multi-tenant
+    #     path; cloud-chat users go through signed URLs.
+    signed_uid = getattr(request.state, "signed_url_user_id", None)
     try:
-        creds = load_credentials(default_data_dir())
+        if signed_uid is not None:
+            client_config = _resolve_client_config()
+            signing_key = os.environ.get("MCP_BEARER_TOKEN", "")
+            base_url = _resolve_base_url(request)
+            try:
+                creds = get_credentials_for_user(
+                    signed_uid,
+                    client_config=client_config,
+                    signing_key=signing_key,
+                    base_url=base_url,
+                )
+            except NeedsReauthError as e:
+                # Surface a clean error with the re-auth URL so cloud-chat
+                # can re-mint after the user re-authorizes. 401 because
+                # the per-user creds are absent/revoked, not because of a
+                # signed-URL flaw.
+                return JSONResponse(
+                    {
+                        "error": e.reason,
+                        "auth_url": e.auth_url,
+                        "user_id": signed_uid,
+                    },
+                    status_code=401,
+                )
+        else:
+            # Bearer-header path — operator creds, single-tenant. Same
+            # behavior as v2.0.
+            creds = load_credentials(default_data_dir())
         # Pass icons_by_title INTO the convert pipeline so they're
         # applied between Apps Script restructure and placeholder
         # delete. Calling set_tab_icons AFTER delete races against
@@ -416,6 +453,7 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             placeholder_title=placeholder_title_raw,
             placeholder_icon=placeholder_icon_raw,
             replace_doc_id=replace_doc_id,
+            user_id=signed_uid,
         )
         return JSONResponse(result)
     except FileNotFoundError as e:
@@ -516,15 +554,21 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         # are present and the header matches.
         qp = request.query_params
         if all(k in qp for k in ("exp", "nonce", "max", "sig")):
-            ok, err, _max = verify_signed_params(
+            # v2.1: ``uid`` is required. verify_signed_params returns the
+            # validated user_id; stash it on request.state so the
+            # downstream handler can resolve per-user creds without
+            # re-parsing the query string.
+            ok, err, _max, user_id = verify_signed_params(
                 signing_key=self._signing_key,
                 exp=qp["exp"],
                 nonce=qp["nonce"],
                 max_bytes=qp["max"],
                 sig=qp["sig"],
+                user_id=qp.get("uid"),
                 nonce_store=_NONCE_STORE,
             )
             if ok:
+                request.state.signed_url_user_id = user_id
                 return await call_next(request)
             return JSONResponse(
                 {"error": f"signed URL rejected: {err}"}, status_code=401

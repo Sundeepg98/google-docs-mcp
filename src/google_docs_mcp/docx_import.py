@@ -81,6 +81,7 @@ def convert_docx_to_tabbed_doc(
     placeholder_icon: str = DEFAULT_PLACEHOLDER_ICON,
     replace_doc_id: str | None = None,
     docx_drive_file_id: str | None = None,  # deprecated alias for drive_file_id
+    user_id: str | None = None,
 ) -> dict:
     """Convert a .docx OR a Google Doc into a Google Doc with native nested tabs.
 
@@ -118,12 +119,16 @@ def convert_docx_to_tabbed_doc(
             "(got both, or neither)."
         )
 
-    webapp_url = _resolve_webapp_url()
+    webapp_url = _resolve_webapp_url(user_id=user_id)
     if not webapp_url:
         # Mode-specific guidance — telling a cloud chat user to "run the
         # CLI" is useless, and telling a stdio user to "run the MCP tool"
-        # is the wrong setup path.
-        if current_user_id_or_none() is not None:
+        # is the wrong setup path. Three modes:
+        #   (a) explicit user_id (REST /api/convert signed-URL caller),
+        #   (b) MCP context user (cloud chat MCP tool caller), and
+        #   (c) no user_id at all (stdio / operator-bearer REST caller).
+        # (a) and (b) both want the MCP tool guidance.
+        if user_id is not None or current_user_id_or_none() is not None:
             raise RuntimeError(
                 "Apps Script Web App not yet set up for your account. "
                 "Run the gdocs_setup_apps_script tool first; it deploys "
@@ -327,23 +332,23 @@ def convert_docx_to_tabbed_doc(
     return result
 
 
-def _resolve_webapp_url() -> str | None:
+def _resolve_webapp_url(*, user_id: str | None = None) -> str | None:
     """HTTP mode: per-user URL from user_store. Stdio mode: local config.
 
-    The HTTP path (multi-tenant cloud) reads the calling user's row
-    from user_store, populated by ``gdocs_setup_apps_script``. The
-    stdio path (single-tenant local) reads the operator's URL from
-    ``~/.google-docs-mcp/config.json``, populated by the CLI
-    ``setup-apps-script`` command.
-
-    REST endpoint callers (bearer-token-authed, not MCP) land here
-    too — and fall through to the stdio path. That's intentional for
-    v1.1: the REST endpoint stays operator-only. Multi-tenant REST
-    is a future concern.
+    Resolution order:
+      1. Explicit ``user_id`` argument — v2.1 REST signed-URL callers
+         pass this in (extracted from the validated ``uid`` query param).
+         Closes the v1.x deferral where REST always landed on the
+         operator's URL.
+      2. ``current_user_id_or_none()`` — MCP tool callers in HTTP mode
+         have a FastMCP auth context; pull the Google ``sub`` from there.
+      3. Fall through to ``get_webapp_url()`` — operator's local config,
+         used by stdio MCP and by REST bearer-header callers (intentional;
+         see ``convert_endpoint`` for the dispatch rationale).
     """
-    user_id = current_user_id_or_none()
-    if user_id is not None:
-        return user_store.get_state(user_id).get("apps_script_url")
+    effective_user_id = user_id or current_user_id_or_none()
+    if effective_user_id is not None:
+        return user_store.get_state(effective_user_id).get("apps_script_url")
     return get_webapp_url()
 
 

@@ -5,13 +5,24 @@ The MCP tool ``get_signed_upload_url`` mints these; the
 ``Authorization: Bearer`` header. The signing key is the same
 ``MCP_BEARER_TOKEN`` already provisioned for header-based auth.
 
-URL shape::
+URL shape (v2.1 — user_id bound)::
 
-    /api/convert?exp=<unix_seconds>&nonce=<uuid4>&max=<bytes>&sig=<hex_hmac>
+    /api/convert?exp=<unix>&nonce=<uuid4>&max=<bytes>&uid=<user_id>&sig=<hex_hmac>
 
-``sig`` is HMAC-SHA256 over the canonical string ``{exp}.{nonce}.{max}``.
-The server validates: signature matches, ``exp`` is in the future, and
-the nonce hasn't been redeemed yet (single-use, in-process LRU).
+``sig`` is HMAC-SHA256 over the canonical string
+``{exp}.{nonce}.{max}.{user_id}``.
+
+The server validates: signature matches, ``exp`` is in the future, the
+nonce hasn't been redeemed yet (single-use, in-process LRU), AND the
+``uid`` from the URL identifies the user whose Google credentials
+(and Apps Script Web App URL) are used to service the request. Closes
+the v1.x/v2.0 deferral where ``/api/convert`` always wrote into the
+operator's Drive regardless of who minted the URL.
+
+**Schema cutoff:** v2.1 strictly rejects URLs without ``uid``.
+Pre-v2.1 signed URLs become invalid on deploy; they have a 10-minute
+default TTL, so the practical impact is limited to the deploy window
+and in-flight sandbox uploads will simply mint a fresh URL.
 """
 from __future__ import annotations
 
@@ -29,41 +40,60 @@ DEFAULT_TTL_SECONDS = 600  # 10 minutes
 MAX_TTL_SECONDS = 3600  # 1 hour ceiling
 
 
-def _canonical(exp: int, nonce: str, max_bytes: int) -> str:
-    return f"{exp}.{nonce}.{max_bytes}"
+def _canonical(exp: int, nonce: str, max_bytes: int, user_id: str) -> str:
+    """v2.1 canonical: include user_id so a signed URL is bound to one tenant.
+
+    Without user_id in the canonical, an attacker who possessed any
+    valid signed URL could in principle re-purpose it to write into a
+    different user's Drive once the server learned to do per-user
+    auth — and even pre-v2.1, the URL was operator-bound de facto.
+    Binding user_id at the crypto layer makes the property explicit
+    and verifiable at the middleware boundary, before any handler
+    runs.
+    """
+    return f"{exp}.{nonce}.{max_bytes}.{user_id}"
 
 
 def sign_upload_url(
     *,
     base_url: str,
     signing_key: str,
+    user_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = 50 * 1024 * 1024,
 ) -> dict:
-    """Mint a fresh signed upload URL.
+    """Mint a fresh signed upload URL bound to ``user_id``.
 
-    Returns ``{"url", "expires_at", "max_bytes", "nonce"}``.
+    Returns ``{"url", "expires_at", "max_bytes", "nonce", "user_id"}``.
+
+    ``user_id`` MUST identify the user whose Google credentials should
+    service the eventual ``/api/convert`` POST. The server-side verify
+    refuses to dispatch a request whose URL was signed for a different
+    user (because the canonical wouldn't match and HMAC would fail).
     """
+    if not isinstance(user_id, str) or not user_id:
+        raise ValueError("user_id must be a non-empty string")
     if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
         raise ValueError(
             f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}], got {ttl_seconds}"
         )
     exp = int(time.time()) + ttl_seconds
     nonce = secrets.token_urlsafe(16)
-    canonical = _canonical(exp, nonce, max_bytes)
+    canonical = _canonical(exp, nonce, max_bytes, user_id)
     sig = hmac.new(
         signing_key.encode("utf-8"),
         canonical.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     query = urlencode(
-        {"exp": exp, "nonce": nonce, "max": max_bytes, "sig": sig}
+        {"exp": exp, "nonce": nonce, "max": max_bytes, "uid": user_id, "sig": sig}
     )
     return {
         "url": f"{base_url.rstrip('/')}?{query}",
         "expires_at": exp,
         "max_bytes": max_bytes,
         "nonce": nonce,
+        "user_id": user_id,
     }
 
 
@@ -106,31 +136,42 @@ def verify_signed_params(
     nonce: str,
     max_bytes: str,
     sig: str,
+    user_id: str | None,
     nonce_store: NonceStore,
-) -> tuple[bool, str | None, int | None]:
+) -> tuple[bool, str | None, int | None, str | None]:
     """Validate a signed-URL query-string and consume the nonce.
 
-    Returns ``(ok, error_message_if_not_ok, max_bytes_int_if_ok)``.
+    Returns ``(ok, error_message_if_not_ok, max_bytes_int_if_ok,
+    user_id_if_ok)``.
+
+    ``user_id`` is the ``uid`` query param from the request URL. v2.1
+    strictly requires it; a missing or empty ``uid`` is rejected before
+    the HMAC compare even runs. The HMAC compare itself is over the
+    canonical including user_id, so any tamper of ``uid`` after signing
+    fails signature verification.
     """
+    if not user_id:
+        # v2.1 strict cutoff — pre-v2.1 URLs lack uid and are rejected.
+        return False, "missing 'uid' query param (v2.1+ required)", None, None
     try:
         exp_i = int(exp)
         max_i = int(max_bytes)
     except (TypeError, ValueError):
-        return False, "exp and max must be integers", None
+        return False, "exp and max must be integers", None, None
 
     if exp_i <= int(time.time()):
-        return False, "URL has expired", None
+        return False, "URL has expired", None, None
 
-    canonical = _canonical(exp_i, nonce, max_i)
+    canonical = _canonical(exp_i, nonce, max_i, user_id)
     expected = hmac.new(
         signing_key.encode("utf-8"),
         canonical.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     if not hmac.compare_digest(expected, sig):
-        return False, "signature mismatch", None
+        return False, "signature mismatch", None, None
 
     if not nonce_store.consume(nonce, exp_i):
-        return False, "URL already used", None
+        return False, "URL already used", None, None
 
-    return True, None, max_i
+    return True, None, max_i, user_id

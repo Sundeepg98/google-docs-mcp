@@ -194,11 +194,22 @@ def test_site_3_resolve_runtime_oauth_config_routes_through_get_key_oauth_state(
 # ---------------------------------------------------------------------
 
 
-def test_site_4_signed_upload_url_routes_through_get_key_signed_url():
+def test_site_4_signed_upload_url_routes_through_get_key_signed_url(monkeypatch):
     """Drive gdocs_get_signed_upload_url(); it must resolve its HMAC
-    key via keys.get_key('signed_url')."""
-    from google_docs_mcp import keys
+    key via keys.get_key('signed_url').
+
+    v2.1 (PR #60) made the tool refuse to mint outside an MCP auth
+    context, since signed URLs are now bound to user_id. To keep this
+    site-4 wireup guard focused on its actual purpose (proving the
+    keys.get_key('signed_url') counter increments), we mock the
+    current-user lookup so the tool reaches the get_key call.
+    """
+    from google_docs_mcp import keys, server
     from google_docs_mcp.server import gdocs_get_signed_upload_url
+
+    # Mock the MCP auth-context lookup so the v2.1 user_id check
+    # doesn't short-circuit before get_key('signed_url') runs.
+    monkeypatch.setattr(server, "current_user_id_or_none", lambda: "test-user-sub")
 
     # The tool returns a Markdown response by default; we don't care
     # about the URL itself, only that the counter incremented.
