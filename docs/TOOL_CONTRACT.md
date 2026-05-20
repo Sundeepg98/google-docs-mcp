@@ -65,7 +65,7 @@ Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference `src/go
 
 No tool-surface migrations needed across v1 → v2: zero tools removed, zero tool-argument shapes tightened, zero return-shape breakages. The v2.0.1-cleanup PR (#37) walked back the previously-planned `gdocs_update_tabs` / `gdocs_set_trashed` superseders, so the v1.x tool surface is preserved in full under v2.x.
 
-The v2.x cutover has operator-side migration steps (HKDF strict-flip + `apps_script_hmac_key` backfill) but those are deploy concerns, not consumer-contract concerns. Operators: see `docs/MIGRATION_v1_to_v2.md`. Consumers (LLMs, tool-routing layers): no contract changes between v1 and v2.
+The v2.x cutover has operator-side migration steps (HKDF strict-flip + `apps_script_hmac_key` schema backfill — note: backfill is schema-only; the verify-path lands in v2.0c) but those are deploy concerns, not consumer-contract concerns. Operators: see `docs/MIGRATION_v1_to_v2.md`. Consumers (LLMs, tool-routing layers): no contract changes between v1 and v2.
 
 For the broader policy on what counts as a breaking change and what does not, see `docs/COMPATIBILITY_POLICY.md`.
 

@@ -11,7 +11,7 @@ Stdio (Claude Desktop / Claude Code) users do not need to read this. The stdio s
 - **Security.** v2.0b ships the HKDF strict-flip: the back-compat shim that returned the raw `MCP_BEARER_TOKEN` for `api_bearer`, `oauth_state`, and `signed_url` purposes is removed. After the flip, all three keys are derived via HKDF-SHA256 from the master with purpose-specific `info` strings. This closes the shim-derived-token attack class (THREAT_MODEL §5).
 - **New tools.** v2.2b added `gdocs_help(error_message)` for LLM-callable error-recovery lookup. v2.3 (planned) adds `gdocs_admin_audit` for cross-tenant incident investigation (RUNBOOK §2.8).
 - **Better observability.** Shim-hit counter, denominator (`key_call_totals`) counter, and the `preflight_strict_flip.sh` script that asserts both halves of the soak signal before the flip is safe to merge.
-- **Per-user Apps Script HMAC.** v2.0a's `apps_script_hmac_key` schema lets the server sign outbound POSTs to each user's Apps Script Web App with a per-user key, closing THREAT_MODEL §4 row 5's "anyone with the user's /exec URL can mutate any doc the user owns" gap.
+- **Per-user Apps Script HMAC (SCHEMA ONLY in v2.0a; runtime verify deferred to v2.0c).** The `apps_script_hmac_key` column lands in v2.0a so the row shape is forward-compatible. **No runtime behavior change in v2.0a/b** — the verify-path in `restructure.gs` + server-side signing in `_call_webapp` ship in v2.0c. Until v2.0c, THREAT_MODEL §4 row 5 remains OPEN; mitigated only by `/exec` URL secrecy.
 - **Reliability.** v2.0.2's `auto_stop_machines = "off"` flip eliminates the stuck-stopped Fly machine failure mode (see CHANGELOG; +$1.30/mo for always-on).
 
 ## 2. Breaking changes
@@ -25,11 +25,11 @@ Once v2.0b activates, every signed upload URL and every OAuth callback state tok
 
 To avoid both, run the preflight script (§3 step 5) and only flip when it confirms zero in-flight traffic.
 
-### 2.2 `apps_script_hmac_key` becomes required for all users
+### 2.2 `apps_script_hmac_key` schema becomes required for all users (verify-path deferred to v2.0c)
 
-The v2.0a migration adds the `apps_script_hmac_key` column to `user_state` and starts provisioning a fresh 64-char hex key per user at `gdocs_setup_apps_script` time. Existing users (rows that pre-date v2.0a) have `NULL` in this column — the migration script (`scripts/migrate_existing_users.py`) backfills them.
+The v2.0a migration adds the `apps_script_hmac_key` column to `user_state` and starts provisioning a fresh 64-char hex key per user at `gdocs_setup_apps_script` time. Existing users (rows that pre-date v2.0a) have `NULL` in this column — the migration script (`scripts/migrate_existing_users.py`) backfills them. **This is schema-only**: the key is stored on each row but **not yet consumed at runtime** in v2.0a/b. `restructure.gs` has no `Utilities.computeHmacSha256Signature` call and `_call_webapp` does not sign. The verify-path lands in v2.0c.
 
-If you skip the migration step and deploy v2.0b directly, existing users will hit a `ToolError("user is missing apps_script_hmac_key; re-run gdocs_setup_apps_script")` on their next retrofit call. Inconvenient, not data-destructive.
+If you skip the migration step and deploy v2.0b directly, existing users will hit a `ToolError("user is missing apps_script_hmac_key; re-run gdocs_setup_apps_script")` on their next retrofit call **once the v2.0c verify-path ships**. Today (v2.0a/b) the missing column is harmless at runtime; running the migration just prepares the row shape so v2.0c can roll out without a second migration. Inconvenient if skipped, not data-destructive.
 
 ### 2.3 Removed tools
 
@@ -56,7 +56,7 @@ cd /app
 python scripts/migrate_existing_users.py --dry-run
 ```
 
-The dry-run prints which `user_state` rows would receive a backfilled `apps_script_hmac_key` and exits without writing. Capture the output — the row count tells you how many users need the backfill.
+The dry-run prints which `user_state` rows would receive a backfilled `apps_script_hmac_key` (schema population; not yet consumed at runtime — see §2.2) and exits without writing. Capture the output — the row count tells you how many users need the backfill.
 
 ### Step 3 — stop the server (per-user-lock is in-process)
 
@@ -75,7 +75,7 @@ cd /app
 python scripts/migrate_existing_users.py --apply
 ```
 
-The script provisions one 64-char hex `apps_script_hmac_key` per legacy user, writes back to `user_state.db`, and prints `migrated: <count> users`. Verify the row count matches the dry-run from Step 2.
+The script provisions one 64-char hex `apps_script_hmac_key` per legacy user (stored but not yet consumed; verify-path in v2.0c), writes back to `user_state.db`, and prints `migrated: <count> users`. Verify the row count matches the dry-run from Step 2.
 
 ### Step 5 — restart and run the preflight
 
