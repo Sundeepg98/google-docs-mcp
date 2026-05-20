@@ -36,7 +36,7 @@ dependencies = [
     # and commit the lockfile. The Dockerfile uses `uv sync --frozen`
     # so any drift fails CI before deploy.
     "cryptography>=46.0.7,<47",  # CVE-2026-26007, -34073, -39892
-    "pyjwt>=2.12.0,<3",          # CVE-2026-32597
+    "pyjwt>=2.12.1,<3",          # CVE-2026-32597
     "urllib3>=2.7.0,<3",         # CVE-2026-44431, -44432
     "requests>=2.33.0,<3",       # CVE-2026-25645
 ]
