@@ -1,7 +1,7 @@
 # Architecture — Hex Foundation for the Google Workspace MCP
 
-**Version:** v2.0.6 (foundation in flight; M1a POC on `ship/key-provider-port-poc`)
-**Last updated:** 2026-05-20
+**Version:** v2.1.2 (M1a landed v2.1.0/v2.1.1; M1b skipped; M2 in flight on `ship-d1`)
+**Last updated:** 2026-05-20 (v2.1.2 M1b-skipped revision)
 **Audience:** maintainers, reviewers of refactor PRs, contributors adding a new Google service
 
 ## 1. Context
@@ -51,26 +51,50 @@ The 4 ports below are the candidate set. Promotion order is by **risk × evidenc
   - centralizing the per-user `creds` injection that's currently re-derived at every call site.
 - **Risk:** LOW. The chokepoint is already enforced; promoting to Protocol is a refinement, not a restructure.
 
-### 3.3 `KeyProvider` — 3 MECHANISMS ALREADY, M1a POC IN FLIGHT
+### 3.3 `KeyProvider` — LANDED v2.1.0 (M1a complete)
 
-- **Status:** POC on branch `ship/key-provider-port-poc` (M1a milestone). 493 LOC in `key_provider.py`, 331 LOC of unit tests, `keys.py` rewired against the Protocol.
-- **File (POC):** `src/google_docs_mcp/key_provider.py`
+- **Status:** Shipped in v2.1.0 (PR #88). Consumer test migration + HKDF golden-value regression landed in v2.1.1 (PR #90).
+- **File:** `src/google_docs_mcp/key_provider.py` — Protocol + 3 adapters + `InMemoryKeyProvider` for tests + `with_key_provider()` context manager (mirrors the `with_backend()` shape from v2.1).
 - **Three mechanisms already coexist:**
   1. Raw master via `MCP_BEARER_TOKEN` env (legacy shim, removed in v2.0b strict-flip).
   2. Per-purpose env override (`MCP_API_BEARER_KEY`, `OAUTH_STATE_SIGNING_KEY`, `SIGNED_URL_SIGNING_KEY` — v1.5.1).
   3. HKDF-SHA256 derivation from the master (default post-v2.0b).
 - **Why promote:** three implementations already coexist in `keys.py` as branching `if` chains. The Protocol replaces the branching with adapter selection at boot; new mechanisms (e.g. KMS-backed keys for the SaaS deploy variant) become new adapters instead of new `if` branches.
-- **Risk:** MEDIUM. The keys path is security-critical; the POC must demonstrate behavioral equivalence before promotion past M1a.
+- **Risk (retrospective):** MEDIUM at design time — keys path is security-critical. Landed clean: HKDF golden-value regression test + 3-mechanism behavioral-equivalence parity confirmed across PR #88 + #90.
 
-### 3.4 `CredentialStore` — RISKIEST, DECISION DEFERRED TO M1b
+### 3.4 `CredentialStore` — DECIDED: M1b SKIPPED (v2.1.2)
 
-- **Status:** UNDECIDED. Will be re-evaluated after M1a (KeyProvider POC) ships and we've absorbed the lessons.
-- **Today:** `credentials.py` (stdio mode, single-user) + per-user credential resolution in `http_server.py` (multi-tenant mode) + `setup_state.py` (operator's deploy-time scratchpad). Three call patterns, one logical concept.
-- **Two candidate shapes:**
-  - **(a)** Split into 3 narrow ports — `OperatorCredentialStore`, `UserCredentialStore`, `SetupCredentialStore` — each modeling one of the three call patterns above. Higher upfront cost, clear separation.
-  - **(b)** Leave as plain functions, do nothing. The current shape is messy but works; promoting it to a Protocol may be premature abstraction if the next service doesn't actually need the swap.
-- **Decision criterion (set at M1b, NOT before):** does the Gmail or Sheets integration need a non-default credential adapter? If yes → (a). If no → (b). Defer until we have one real second consumer; until then we're guessing.
-- **Why this is the RISKIEST port:** credential handling is where bugs become security incidents. Premature Protocol promotion that ships with a subtly wrong default is worse than the current open-coded approach.
+- **Status:** RESOLVED — leave `credentials.py` as plain functions. See §3.4.1 below.
+- **Today:** `credentials.py` exposes `get_credentials_for_user(user_id, ...)` — a single function that does lookup → validate → refresh → check-scopes against `user_store` + Google's OAuth2 `Credentials` class. The earlier framing in this section ("three call patterns, one logical concept") overcounted: HTTP-mode per-user resolution and stdio-mode single-user resolution are the SAME function with different `user_id` resolution at the call site, and `setup_state.py` is a separate deploy-time concern that doesn't touch the credential refresh path.
+- **The decision criterion from the prior version of this section** — "does the next service need a non-default credential adapter?" — was answered NO once we actually examined the function. See §3.4.1 for the full reasoning.
+
+#### 3.4.1 Why we did NOT promote `CredentialStore` to a port
+
+The original 4-port roadmap considered `CredentialStore` (with a possible split into `CredentialStore` + `CredentialRefresher` + `AuthorizationUrlMinter`). After M1a (KeyProvider) shipped and we reviewed `credentials.get_credentials_for_user` against the Hex-applicability criteria, the verdict was **leave it as plain functions**.
+
+**Reasoning.** The 4 concerns inside `get_credentials_for_user` (per-user threading lock, `invalid_grant` revocation handling, `NeedsReauthError` minting, incremental-scope check) are NOT 4 cross-cutting concerns to abstract. They are **4 steps of one coherent protocol**:
+
+1. Lookup credentials via `user_store.get_state`
+2. Validate / refresh (may raise `RefreshError` → revocation → `clear_state` side-effect → re-raise as `NeedsReauthError`)
+3. Check granted scopes against required scopes (may raise `NeedsReauthError`)
+4. Return usable `Credentials`
+
+The steps share a user-scoped lock. The failure modes interleave (revocation discovered DURING refresh causes a `clear_state` side-effect BEFORE raise). This is a **transaction script**, not a collection of services.
+
+**The split-into-3-ports option (call it option B) was evaluated and rejected:**
+
+| Proposed port | Why the port leaks |
+|---|---|
+| `CredentialStore.load` | Needs `client_config` to reconstruct `Credentials` — the port would either carry operator config (leaks the abstraction) or hand back a half-built object that's still the caller's problem to finish. |
+| `CredentialRefresher.refresh` | Google's `Credentials.refresh()` mutates in-place per its contract. A `Protocol` claiming "returns refreshed credentials" would be lying about the side-effect; a `Protocol` claiming "mutates in-place" leaks Google's implementation detail. |
+| `AuthorizationUrlMinter.mint` | Needs `signing_key + base_url + client_config + scopes` — 4 of the original function's 5 params relocated. The "port" is the function in a class hat. |
+| Per-user lock | Belongs to NONE of the three ports — it guards the sequence, not any single step. A coordinating `CredentialOrchestrator` re-introduces the fat object that IS the original function, with extra indirection. |
+
+**Hex earns its keep when there's a swap candidate.** There is no credible "alternative refresh flow" implementation — only Google's OAuth2 + `google.oauth2.credentials.Credentials` class. KMS-backed key storage is a `KeyProvider` adapter concern (M1a) and a `StorageBackend` adapter concern (v2.1), not a `CredentialStore` concern. Adding ports without swap candidates is over-decomposition.
+
+**Test architecture is already adequate.** `tests/unit/test_credentials.py` uses `with_backend(InMemoryBackend())` (from v2.1's StorageBackend port) for persistence fakes + `patch.object(Credentials, "refresh", ...)` for Google's refresh — a single-line patch at the actual integration seam. An `InMemoryCredentialStore` adapter wouldn't add coverage; worse, it would **lose** coverage of the interleaved failure modes (revocation-during-refresh → `clear_state` side-effect → re-raise sequence) because a fake `Protocol` returning `Credentials` doesn't model the side-effect chain.
+
+**If this decision is re-litigated in a future session, the trigger should be a CONCRETE alternative implementation** — for example, session-based auth instead of stored refresh tokens, or a SaaS-deploy variant where credentials live in a vendor's identity service rather than `user_state.db`. At that point the right refactor is a new module (e.g. `session_credentials.py` with its own function), not new adapters under speculative ports promoted today. The criterion remains: real swap candidate first, port second.
 
 ## 4. Infrastructure NOT promoted (YAGNI)
 
@@ -134,28 +158,28 @@ Concretely, the `unittest.mock.patch("googleapiclient.discovery.build")` calls s
 
 ## 7. Sequencing
 
-Milestones below are independent ship units. PAUSE between M1a and M1b is deliberate.
+Milestones below are independent ship units. M1b was evaluated and skipped (see §3.4.1); the revised sequence is 4 milestones, not 5.
 
 ```
-M1a (in flight) → PAUSE → M1b → M2 → M3 → M4
-   ↓                ↓        ↓     ↓     ↓     ↓
-KeyProvider     decide    Cred-   Google  per-  @work-
-POC             on Cred-  Store   API-    serv  space_
-                Store     adopt   Client  ice   tool
-                shape     (if a)  Proto   fold  rename
-                                  promot  ers
+M1a (done) → M1b (skipped) → M2 → M3 → M4
+   ↓             ↓             ↓     ↓     ↓
+KeyProvider   Credential-    Google  per-  @gdocs_tool
+LANDED        Store NOT      API-    serv  → @workspace_
+v2.1.0        promoted —     Client  ice   tool rename
+              transaction    Proto   fold
+              script, not    (aiogoogle
+              ports          swap)
 ```
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M1a** | `KeyProvider` Protocol + 3 adapters + `InMemoryKeyProvider` for tests | POC on `ship/key-provider-port-poc` — landing as v2.1.0 |
-| **PAUSE** | Soak M1a in production. Validate the Hex pattern works for a security-critical port before committing to more. | Triggered post-M1a merge |
-| **M1b** | `CredentialStore` decision (split-into-3 vs leave-as-functions). Driven by what the next service actually needs. | Pending M1a + first second-service POC |
-| **M2** | `GoogleAPIClient` promoted to Protocol. Migrate consumers from `get_service` calls to `client.docs()`, `client.drive()`, etc. | After M1a/M1b lessons absorbed |
+| **M1a** | `KeyProvider` Protocol + 3 adapters + `InMemoryKeyProvider` for tests | LANDED v2.1.0 (PR #88) + test migration v2.1.1 (PR #90) |
+| ~~**M1b**~~ | ~~`CredentialStore` decision~~ | **SKIPPED v2.1.2.** `credentials.py` is a transaction script with no credible swap candidate. See §3.4.1. |
+| **M2** | `GoogleAPIClient` promoted to Protocol. Migrate consumers from `get_service` calls to `client.docs()`, `client.drive()`, etc. Real swap candidate: `aiogoogle` for async (in-flight Gmail integration needs streaming + concurrent message fetches). | In flight on `ship-d1` parallel worktree |
 | **M3** | Service-layer folder restructure. Move `docs_api.py` → `services/docs/api.py`, etc. Pure file moves + import updates; no semantic change. | After M2 |
-| **M4** | Rename `@gdocs_tool` → `@workspace_tool` to reflect the multi-service reality. Backward-compat alias kept for one release. | After M3 — cosmetic capstone |
+| **M4** | Rename `@gdocs_tool` → `@workspace_tool(service=...)` to reflect the multi-service reality. Backward-compat alias kept for one release. | After M3 — cosmetic capstone |
 
-**Why this order:** M1a is the highest-leverage / lowest-risk port (3 mechanisms already exist, ports earn-their-keep is most visible). It establishes the pattern. Everything after M1a is conditional on M1a actually working in production — if the POC reveals a problem with the Protocol shape, that problem flows to all later ports, and we'd rather discover it once.
+**Why this order:** M1a was the highest-leverage / lowest-risk port (3 mechanisms already existed, ports-earn-their-keep was most visible). It established the pattern and proved the Protocol shape works for a security-critical surface. M1b was the planned soak-and-decide checkpoint; the soak surfaced that `credentials.py` doesn't fit the Hex pattern (one coherent protocol, not 4 cross-cutting concerns) and the milestone collapsed to "documented why, no code change." M2 is now the next concrete ship — `aiogoogle` is a real alternative implementation, which makes `GoogleAPIClient` the next port that earns its keep.
 
 ## 8. Research provenance
 
@@ -163,22 +187,24 @@ Three research agents pressure-tested this plan over the 2026-05-20 session. Key
 
 - **Research agent #1** (Hex applicability review) — initially proposed promoting `HTTPServer` and `UrlSigner` as well. Rejected for the reasons in §4; the agent's revised recommendation matches the final 4-port set in §3.
 - **Research agent #2** (sequencing review) — initially proposed M1a → M2 with no PAUSE. Corrected to add the PAUSE after surfacing the "if M1a's Protocol shape is wrong, M2/M3/M4 all inherit the bug" argument. The PAUSE is now the explicit sequencing decision in §7.
-- **Research agent #3** (CredentialStore deep-dive) — initially proposed (a) (split into 3 narrow ports) as the obvious answer. Walked back to "defer to M1b" after surfacing that we don't yet have a concrete second consumer to drive the shape. The walk-back is the M1b decision criterion in §3.4.
+- **Research agent #3** (CredentialStore deep-dive, initial pass) — initially proposed (a) (split into 3 narrow ports) as the obvious answer. Walked back to "defer to M1b" after surfacing that we don't yet have a concrete second consumer to drive the shape. The walk-back was the M1b decision criterion that was active until v2.1.2.
+- **Research agent #3 re-ping** (post-M1a, v2.1.2 M1b decision) — re-pinged after M1a landed to make the M1b call. Verdict: **C — leave `credentials.py` as plain functions; SKIP M1b entirely.** The key insight that survived the round: the 4 concerns inside `get_credentials_for_user` are 4 STEPS of one coherent protocol, not 4 cross-cutting concerns to abstract. The split-into-3-ports option (B) was evaluated explicitly and each proposed port was shown to leak (port shape doesn't match the actual surface — `CredentialStore.load` needs `client_config`, `CredentialRefresher.refresh` mutates in-place, the per-user lock belongs to none of the three). Test architect noted that an `InMemoryCredentialStore` adapter wouldn't catch the interleaved-failure-mode sequence bugs (revocation-during-refresh → `clear_state` → re-raise) — a fake Protocol returning `Credentials` doesn't model the side-effect chain. Full reasoning in §3.4.1. **This decision can flip only on a concrete alternative-refresh-flow trigger** (session auth, vendor identity service, etc.) — not on speculation.
 
-Documenting these so the next reviewer doesn't re-litigate them from scratch. If the criteria in §3.4 (concrete second consumer) materialize, the M1b decision can flip; the rest of this plan stays.
+Documenting these so the next reviewer doesn't re-litigate them from scratch. The §3.4.1 re-litigation criterion is concrete: a real alternative refresh-flow implementation, not a generic "second consumer." The earlier "second consumer materializes" framing in v2.0.6 was looser; v2.1.2 sharpened it.
 
 ## 9. What this doc is not
 
 - **Not a roadmap.** Roadmap lives in GitHub Issues + release planning. This doc only covers the foundation refactor.
 - **Not a tutorial.** New-contributor onboarding lives in `CONTRIBUTING.md` + `docs/USER_GUIDE.md`. This doc assumes you already know what an MCP tool is.
-- **Not immutable.** Architecture decisions are reversible. If M1a's POC reveals the Protocol shape is wrong, this doc gets revised — preferably with a §X "what changed and why" section so the prior thinking is preserved.
+- **Not immutable.** Architecture decisions are reversible. The v2.1.2 revision of §3.4 (M1b skipped) is a concrete example: the v2.0.6 cut had `CredentialStore` as port #4 with deferral language; the v2.1.2 cut documents why the port doesn't earn its keep. Future revisions should follow the same pattern — flip the decision in place, preserve the prior reasoning so reviewers can audit the change.
 
 ## 10. References
 
-- `src/google_docs_mcp/user_store.py` — proven Hex pattern (StorageBackend).
-- `src/google_docs_mcp/key_provider.py` (on branch `ship/key-provider-port-poc`) — M1a POC.
-- `src/google_docs_mcp/google_clients.py` — chokepoint wrapper (pre-M2).
+- `src/google_docs_mcp/user_store.py` — proven Hex pattern (StorageBackend, v2.1).
+- `src/google_docs_mcp/key_provider.py` — M1a port (v2.1.0); `with_key_provider()` helper mirrors `with_backend()`.
+- `src/google_docs_mcp/credentials.py` — the transaction script that §3.4.1 explains we deliberately did NOT promote to a port.
+- `src/google_docs_mcp/google_clients.py` — chokepoint wrapper; M2 promotion in flight.
 - `src/google_docs_mcp/decorators.py` — `@gdocs_tool` (target of M4 rename).
 - `taylorwilsdon/google_workspace_mcp` (GitHub) — inspiration for the per-service folder pattern.
-- `docs/THREAT_MODEL.md` — security model the KeyProvider + CredentialStore ports must preserve.
-- `CHANGELOG.md` v2.0.6 — the consolidated session that motivated this doc.
+- `docs/THREAT_MODEL.md` — security model the KeyProvider port preserves; the M1b-skipped decision in §3.4.1 means the credential refresh path keeps its current threat-model coverage unchanged.
+- `CHANGELOG.md` v2.0.6 — the original session that motivated this doc; v2.1.0/v2.1.1/v2.1.2 — M1a landing + test cash-in + M1b decision.
