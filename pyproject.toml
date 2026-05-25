@@ -35,7 +35,7 @@ dependencies = [
     # After modifying any line below, regenerate uv.lock via `uv sync`
     # and commit the lockfile. The Dockerfile uses `uv sync --frozen`
     # so any drift fails CI before deploy.
-    "cryptography>=46.0.7,<47",  # CVE-2026-26007, -34073, -39892
+    "cryptography>=48.0.0,<49",  # CVE-2026-26007, -34073, -39892
     # pyjwt: transitive via mcp[crypto] only — we don't import jwt directly
     # anywhere in src/. Pin kept because CVE-2026-32597 (RFC 7515 §4.1.11
     # `crit` header validation, fixed in 2.12.0) is real + active; without
