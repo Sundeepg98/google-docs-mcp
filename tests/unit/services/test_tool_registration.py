@@ -305,3 +305,150 @@ def test_gdocs_get_tab_url_works_through_registration():
         "tab_id": "TAB456",
         "url": "https://docs.google.com/document/d/DOC123/edit?tab=TAB456",
     }
+
+
+# ---------------------------------------------------------------------
+# M4 (v2.2.0) — service= annotation invariant
+# ---------------------------------------------------------------------
+#
+# @workspace_tool(service=...) is now the canonical decorator (the
+# old @gdocs_tool is preserved as a deprecation-warning shim that
+# delegates to workspace_tool(service="docs", ...)). Every registered
+# tool MUST carry a service= value on its ToolAnnotations so future
+# telemetry / per-service routing / observability can branch on it
+# without a separate registry sweep.
+#
+# The expected mapping is per-file (Hex specialist's "service= is a
+# constant per file" guidance): tools defined in services/<svc>/tools.py
+# get service="<svc>"; tools that stay in server.py (admin /
+# introspection / auth / signed URLs) all get service="admin"
+# (single bucket — see PR body for the "why not split into 3" reasoning).
+
+
+# The expected service= for every tool, derived from the per-file
+# partition above. Pinning the full mapping explicitly catches both
+# "tool moved to wrong file" AND "tool tagged with wrong service".
+_EXPECTED_SERVICE_BY_TOOL: dict[str, str] = {
+    **{name: "docs" for name in DOCS_SERVICE_TOOLS},
+    **{name: "drive" for name in DRIVE_SERVICE_TOOLS},
+    **{name: "gas_deploy" for name in GAS_DEPLOY_SERVICE_TOOLS},
+    # M4 judgment call: all 7 stay-in-server tools share service="admin".
+    # The 3-way split (introspection / admin / auth) was considered and
+    # rejected — adds enum values without behavioral payoff. See PR body.
+    **{name: "admin" for name in NON_SERVICE_TOOLS},
+}
+
+
+def _registered_tools_by_name() -> dict:
+    """Snapshot of every registered tool, keyed by name."""
+    from google_docs_mcp.server import mcp
+    tools = asyncio.run(mcp.list_tools())
+    return {t.name: t for t in tools}
+
+
+def test_every_tool_carries_service_annotation():
+    """M4 invariant: every registered tool MUST have a ``service=`` value
+    on its ToolAnnotations. Without this, future per-service telemetry /
+    routing / observability features can't branch on which service a
+    tool belongs to without re-deriving the partition from filesystem
+    layout — which the per-service-folder refactor exists to AVOID.
+
+    ToolAnnotations is pydantic-backed with ``extra: "allow"``, so the
+    field rides as an extra attribute and round-trips via ``getattr``.
+    """
+    registered = _registered_tools_by_name()
+    missing_service: list[str] = []
+    for tool_name in EXPECTED_TOOLS:
+        tool = registered[tool_name]
+        # ``getattr`` returns ``None`` when the field is genuinely absent;
+        # an empty string also counts as "not set" for our purposes.
+        service = getattr(tool.annotations, "service", None)
+        if not service:
+            missing_service.append(tool_name)
+    assert not missing_service, (
+        f"Tools missing service= annotation: {sorted(missing_service)}. "
+        f"M4 (v2.2.0) made service= REQUIRED on @workspace_tool — any "
+        f"tool registered without it broke the M4 invariant. Most likely "
+        f"cause: a new tool was added with @workspace_tool(...) but the "
+        f"author forgot the service= kwarg, OR a tool was migrated to a "
+        f"per-service folder without flipping its decorator from "
+        f"@gdocs_tool to @workspace_tool."
+    )
+
+
+def test_service_annotation_matches_expected_per_file_partition():
+    """The service= value of every tool MUST match the per-file mapping.
+
+    Catches three bug classes:
+
+    1. Tool tagged with wrong service= literal (e.g.
+       services/drive/tools.py site decorated with
+       ``service="docs"``). Pure copy-paste hazard.
+    2. Tool moved to wrong per-service folder (e.g. a docs tool ends
+       up in services/drive/tools.py and gets service="drive" by
+       Hex-specialist-recommended per-file-constant rule).
+    3. ``@gdocs_tool`` deprecation shim accidentally invoked on a
+       non-docs tool — it delegates to ``service="docs"``, which is
+       only correct if the caller's intent really was docs. Anywhere
+       else, the test fires.
+    """
+    registered = _registered_tools_by_name()
+    mismatches: list[str] = []
+    for tool_name in EXPECTED_TOOLS:
+        expected = _EXPECTED_SERVICE_BY_TOOL[tool_name]
+        actual = getattr(registered[tool_name].annotations, "service", None)
+        if actual != expected:
+            mismatches.append(
+                f"{tool_name}: expected service={expected!r}, got {actual!r}"
+            )
+    assert not mismatches, (
+        "service= annotations don't match the per-file expected partition:\n  "
+        + "\n  ".join(mismatches)
+        + "\nFix the offending @workspace_tool(service=...) call site, or "
+        "(if the move was intentional) update _EXPECTED_SERVICE_BY_TOOL "
+        "in this file."
+    )
+
+
+def test_no_in_repo_callers_use_deprecated_gdocs_tool_decorator():
+    """No in-repo source file MAY still use the deprecated ``@gdocs_tool``.
+
+    M4 ships ``@gdocs_tool`` as a one-release backward-compat shim
+    (delegates to ``workspace_tool(service="docs", ...)`` and emits
+    a DeprecationWarning at call time). Every in-repo call site has
+    been migrated to ``@workspace_tool(service=..., ...)``. This test
+    makes the migration completeness explicit so a future regression
+    — someone re-adding ``@gdocs_tool`` to a tools.py file — is
+    caught instantly.
+
+    Static lint approach (vs. runtime warning-capture): a runtime
+    test that does ``importlib.reload`` plus ``warnings.catch_warnings``
+    has to nuke the ``sys.modules`` cache for ``google_docs_mcp.*``,
+    which then breaks ``test_google_api_client.py`` (and similar)
+    that depend on stable module-level singletons set up earlier in
+    the test session. The static-grep approach has identical coverage
+    for this specific invariant (any file with ``@gdocs_tool(``
+    fires the shim when imported) without the cross-test pollution.
+    """
+    import pathlib
+
+    src_root = pathlib.Path(__file__).resolve().parents[3] / "src" / "google_docs_mcp"
+    offenders: list[str] = []
+    for path in src_root.rglob("*.py"):
+        # decorators.py legitimately defines ``def gdocs_tool(...)`` as
+        # the deprecation shim — that's not a decoration call site.
+        # The pattern we're banning is the AT-prefix usage that
+        # actually invokes the shim.
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("@gdocs_tool("):
+                rel = path.relative_to(src_root.parent)
+                offenders.append(f"{rel}:{lineno}")
+    assert not offenders, (
+        f"Deprecated @gdocs_tool decoration call sites still present "
+        f"in src/: {offenders}. M4 (v2.2.0) migrated all 24 call sites "
+        f"to @workspace_tool(service=..., ...). Migrate the offender "
+        f"and add the required service= kwarg (per-file constant per "
+        f"the layout: docs / drive / gas_deploy / admin)."
+    )

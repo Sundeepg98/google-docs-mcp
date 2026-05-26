@@ -40,7 +40,7 @@ from typing import Literal
 
 from fastmcp.exceptions import ToolError
 
-from google_docs_mcp.decorators import gdocs_tool
+from google_docs_mcp.decorators import workspace_tool
 from google_docs_mcp.docx_import import convert_docx_to_tabbed_doc as _convert_docx
 from google_docs_mcp.preview import preview_tab_split as _preview_tab_split
 from google_docs_mcp.retrofit import retrofit_existing_docx as _retrofit_existing_docx
@@ -112,7 +112,8 @@ _validate_title = _get_validate_title()
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Create a new tabbed Google Doc",
     readonly=False, destructive=False, idempotent=False, external=True,
     creds=True,
@@ -197,7 +198,8 @@ def gdocs_make_tabbed_doc(creds, title: str, tabs: list[TabSpec]) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Append tabs to an existing Google Doc",
     readonly=False, destructive=False, idempotent=False, external=True,
     creds=True,
@@ -255,7 +257,8 @@ def gdocs_add_tabs(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Read doc outline (tab structure only)",
     readonly=True, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -299,7 +302,8 @@ def gdocs_get_doc_outline(creds, doc_id: str) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Read full text content of a Google Doc",
     readonly=True, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -353,7 +357,8 @@ def gdocs_read_doc(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Append content to an existing tab",
     readonly=False, destructive=False, idempotent=False, external=True,
     creds=True,
@@ -399,7 +404,8 @@ def gdocs_append_to_tab(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Convert .docx or existing Doc into tabbed Google Doc",
     readonly=False, destructive=False, idempotent=False, external=True,
     creds=True,
@@ -578,7 +584,8 @@ def gdocs_tab_existing_doc(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Rename a tab and/or change its icon",
     readonly=False, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -630,7 +637,8 @@ def gdocs_rename_tab(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Build deep-link URL to a specific tab",
     readonly=True, destructive=False, idempotent=True, external=True,
     output_schema=GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
@@ -666,7 +674,8 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Delete a tab from a Google Doc",
     readonly=False, destructive=True, idempotent=True, external=True,
     creds=True,
@@ -699,7 +708,8 @@ def gdocs_delete_tab(creds, doc_id: str, tab_id: str) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Replace all matching text in a doc",
     readonly=False, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -748,7 +758,8 @@ def gdocs_replace_all_text(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Set emoji icons on tabs",
     readonly=False, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -804,7 +815,8 @@ def gdocs_set_tab_icons(creds, doc_id: str, icons_by_title: dict[str, str]) -> d
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="docs",
     title="Preview how a doc would split into tabs (dry-run)",
     readonly=True, destructive=False, idempotent=True, external=True,
     # creds=False: this tool fetches creds CONDITIONALLY (only when

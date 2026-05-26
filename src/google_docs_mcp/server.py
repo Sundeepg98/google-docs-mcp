@@ -171,12 +171,24 @@ mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
 from ._tool_helpers import _format_http_error, _get_credentials  # noqa: F401
 
 
-# v2.0.6 (R28 deferral close): wire @gdocs_tool now that the mcp instance
-# and both helpers (_get_credentials, _format_http_error) exist. After
-# register(), the 24 tool decorators below can use @gdocs_tool(...) in
-# place of the @mcp.tool + ToolAnnotations + try/except boilerplate.
+# M4 / v2.2.0: wire @workspace_tool (the canonical decorator post-M4)
+# now that the mcp instance and both helpers (_get_credentials,
+# _format_http_error) exist. After register(), the per-service
+# tools.py files and the 7 stay-in-server tools below can use
+# @workspace_tool(service=..., ...) in place of the @mcp.tool +
+# ToolAnnotations + try/except boilerplate.
+#
+# Module alias is `_gdocs_decorators` (unchanged) for git-blame
+# continuity with v2.0.6's R28 deferral close. The decorators module
+# itself exposes both ``workspace_tool`` (canonical) and ``gdocs_tool``
+# (deprecation shim — slated for removal in v2.2.x).
 from . import decorators as _gdocs_decorators
 _gdocs_decorators.register(mcp, _get_credentials, _format_http_error)
+workspace_tool = _gdocs_decorators.workspace_tool
+# Backward-compat re-export: a few in-tree call sites and external
+# downstream forks still reference ``server.gdocs_tool``. The shim
+# emits a DeprecationWarning at call time and delegates to
+# ``workspace_tool(service="docs", ...)``. Planned removal in v2.2.x.
 gdocs_tool = _gdocs_decorators.gdocs_tool
 
 
@@ -226,8 +238,9 @@ def _validate_title(title, *, field: str = "title") -> None:
 # The remaining 12 tools (drive, gas_deploy, admin, introspection,
 # auth) stay in this file until the next M3 phase. See
 # docs/ARCHITECTURE.md §5.1 for the migration plan.
-@gdocs_tool(
+@workspace_tool(
     title="Server identity + tool inventory",
+    service="admin",
     readonly=True, destructive=False, idempotent=True, external=True,
     output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
 )
@@ -486,8 +499,9 @@ def _read_mutation_check() -> dict:
     }
 
 
-@gdocs_tool(
+@workspace_tool(
     title="List CI test manifest",
+    service="admin",
     readonly=True, destructive=False, idempotent=True, external=True,
     output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
 )
@@ -585,8 +599,9 @@ def gdocs_test_manifest() -> dict:
     }
 
 
-@gdocs_tool(
+@workspace_tool(
     title="Orientation guide (local, no API)",
+    service="admin",
     readonly=True, destructive=False, idempotent=True, external=False,
     output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA,
 )
@@ -786,8 +801,9 @@ def gdocs_guide() -> dict:
 # The remaining 8 tools (admin, introspection, auth, gas_deploy) stay
 # in this file until the next M3 phase. See docs/ARCHITECTURE.md §5.1
 # for the migration plan.
-@gdocs_tool(
+@workspace_tool(
     title="Mint a one-shot signed upload URL",
+    service="admin",
     readonly=False, destructive=False, idempotent=False, external=True,
     # creds=False: this tool mints an HMAC URL; no Google API call here.
     # It handles its own user_id check via current_user_id_or_none().
@@ -904,8 +920,9 @@ def gdocs_get_signed_upload_url(
 # NeedsReauthError → structured-response handling).
 
 
-@gdocs_tool(
+@workspace_tool(
     title="Reset user authorization / revoke tokens",
+    service="admin",
     readonly=False, destructive=True, idempotent=True, external=True,
     # creds=False: this tool DELETES creds (it's the inverse of the
     # usual auth path). Wrapping with the standard creds injection
@@ -1104,8 +1121,9 @@ from . import resources as _llm_recovery_resources  # noqa: E402,F401
 from .resources import _RECOVERY_TABLE  # noqa: E402
 
 
-@gdocs_tool(
+@workspace_tool(
     title="Help for an error message (local, no API)",
+    service="admin",
     readonly=True, destructive=False, idempotent=True, external=False,
     output_schema=GDOCS_HELP_OUTPUT_SCHEMA,
 )
@@ -1262,8 +1280,9 @@ def _check_admin_token(provided: object) -> None:
         raise ToolError("admin_token does not match MCP_ADMIN_TOKEN")
 
 
-@gdocs_tool(
+@workspace_tool(
     title="Admin: query user_state forensic timeline (admin-token gated)",
+    service="admin",
     readonly=True, destructive=False, idempotent=True, external=True,
     # creds=False: this tool reads user_store SQLite ledger directly,
     # gated by an admin token (not user OAuth). No Google API call.
