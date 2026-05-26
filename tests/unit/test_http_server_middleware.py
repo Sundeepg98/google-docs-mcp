@@ -212,3 +212,132 @@ def test_oauth_pages_csp_allows_inline_style():
         assert "style-src 'unsafe-inline'" in csp, (
             f"inline <style> requires style-src 'unsafe-inline'; got {csp!r}"
         )
+
+
+# ---------------------------------------------------------------------
+# HealthExemptTrustedHostMiddleware (v2.3.3 — Fly internal probe fix)
+# ---------------------------------------------------------------------
+#
+# Regression context: PR #77 (v2.0.6) added `<app>.internal` and
+# `*.internal` to the TrustedHost allowlist to make Fly deploy-gate
+# probes pass. v89 (deployed via PR #122's revived free-builder)
+# surfaced fresh `400 Bad Request` from probes at
+# `172.19.24.105:*` — a raw-IP Host header that the hostname
+# allowlist can't match. Fly's probe IPs rotate per deploy, so
+# pinning specific IPs is unmaintainable.
+#
+# Option B (per the v2.3.3 brief): exempt /health from TrustedHost
+# entirely. Health endpoints are infra probes by convention; gating
+# them on Host validation breaks the gate's primary use case.
+# ---------------------------------------------------------------------
+
+
+def _build_app_with_health_exempt(allowed_hosts):
+    """A minimal Starlette app wired only with the new health-exempt
+    TrustedHost middleware, plus a /health route and an /other route
+    so we can prove the exemption is route-scoped."""
+    from google_docs_mcp.http_server import HealthExemptTrustedHostMiddleware
+
+    async def health(_request):
+        return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+
+    async def other(_request):
+        return JSONResponse({"other": True})
+
+    return Starlette(
+        routes=[
+            Route("/health", health, methods=["GET"]),
+            Route("/other", other, methods=["GET"]),
+        ],
+        middleware=[
+            Middleware(
+                HealthExemptTrustedHostMiddleware,
+                allowed_hosts=allowed_hosts,
+            ),
+        ],
+    )
+
+
+def test_health_accepts_fly_internal_probe_with_raw_ip_host():
+    """Regression: PR #77's hostname-allowlist fix did NOT cover Fly's
+    raw-IP probe path. v89 deploy logs (2026-05-27):
+
+        172.19.24.105:46588 → GET /health → 400 Bad Request
+
+    The HealthExemptTrustedHostMiddleware bypasses Host validation
+    on /health so probes with any Host header (including raw IPs)
+    succeed."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    client = TestClient(app)
+    resp = client.get("/health", headers={"Host": "172.19.24.105"})
+    assert resp.status_code == 200, (
+        f"Fly probe would still be rejected: {resp.status_code} "
+        f"{resp.text[:200]!r}"
+    )
+    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+
+
+def test_health_accepts_any_raw_ip_host_header():
+    """Generalize beyond Fly's specific 172.19.24.x range — the
+    exemption is unconditional on /health."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    client = TestClient(app)
+    for probe_host in ("10.0.0.1", "192.168.1.1", "[::1]", "anything.example"):
+        resp = client.get("/health", headers={"Host": probe_host})
+        assert resp.status_code == 200, (
+            f"/health rejected probe with Host={probe_host!r}: "
+            f"{resp.status_code} {resp.text[:200]!r}"
+        )
+
+
+def test_non_health_routes_still_reject_bad_host():
+    """Critical security invariant: every NON-/health route must
+    still go through the full TrustedHost gate. The exemption is
+    scoped to /health only — bypassing it on / or /api/* would
+    open up Host-header attacks against routes that actually echo
+    or branch on the Host."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    client = TestClient(app)
+    resp = client.get("/other", headers={"Host": "evil.example"})
+    assert resp.status_code == 400, (
+        f"/other accepted bad Host (security regression!): "
+        f"{resp.status_code} {resp.text[:200]!r}"
+    )
+
+
+def test_non_health_routes_accept_allowed_host():
+    """Sanity: with a valid Host, non-/health routes pass."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    client = TestClient(app)
+    resp = client.get("/other", headers={"Host": "my-app.fly.dev"})
+    assert resp.status_code == 200
+    assert resp.json() == {"other": True}
+
+
+def test_health_accepts_canonical_host_too():
+    """Sanity: the exemption doesn't break the canonical hostname
+    path. External requests to https://<app>.fly.dev/health still
+    work."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    client = TestClient(app)
+    resp = client.get("/health", headers={"Host": "my-app.fly.dev"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+
+
+def test_health_exempt_middleware_passes_lifespan_through():
+    """ASGI lifespan messages must reach the underlying app — without
+    this, FastMCP's StreamableHTTPSessionManager (which depends on
+    lifespan startup) would never receive its startup signal and the
+    first /mcp request would 500.
+
+    This is the canary that the pure-ASGI implementation correctly
+    handles non-http scopes, not just the http path we route in
+    __call__."""
+    app = _build_app_with_health_exempt(["my-app.fly.dev"])
+    with TestClient(app) as client:
+        # TestClient triggers lifespan startup on context enter and
+        # shutdown on exit. If lifespan messages got swallowed by the
+        # middleware, the `with` block would raise.
+        resp = client.get("/health")
+        assert resp.status_code == 200

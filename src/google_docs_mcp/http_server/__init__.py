@@ -55,6 +55,7 @@ from .app import build_app, run_http
 from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,
+    HealthExemptTrustedHostMiddleware,
     derive_trusted_hosts,
 )
 
@@ -84,6 +85,7 @@ __all__ = [
     # Middleware
     "BearerTokenMiddleware",
     "BodySizeLimitMiddleware",
+    "HealthExemptTrustedHostMiddleware",
     "derive_trusted_hosts",
     # Page helpers (test surface)
     "_CSP_HEADER",
