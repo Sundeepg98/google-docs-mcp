@@ -63,7 +63,7 @@ test = [
     # pytest.ini (currently 55%, set by the Py 3.11 outlier on Linux
     # which measures 55.21% vs 56.5%+ on every other version).
     # Ratchet policy in docs/COVERAGE.md (+1pp/release toward 80%).
-    "pytest-cov>=4.1",
+    "pytest-cov>=7.1.0",
     # === v2.2.2: property-based testing (R1 prediction / R5 audit Gap #6) ===
     # Hypothesis powers the property tests in
     # tests/unit/services/docs/test_tab_tree.py + test_markdown_render.py.
