@@ -759,6 +759,7 @@ lint = [
     { name = "ruff" },
 ]
 test = [
+    { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -772,6 +773,7 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.196.0" },
     { name = "google-auth", specifier = ">=2.53.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.4.0" },
+    { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.115" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
     { name = "pyjwt", specifier = ">=2.12.1,<3" },
     { name = "pyright", marker = "extra == 'lint'", specifier = ">=1.1.400" },
@@ -865,6 +867,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
+]
+
+[[package]]
+name = "hypothesis"
+version = "6.153.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/92/918fb03318c7ff9a271d7cad8eceb359d1069f17e84f5191d52c2970f18f/hypothesis-6.153.0.tar.gz", hash = "sha256:11616e5158fc485d62bae19d9cc69333237faa8050ad44a45218254a1ef272bb", size = 474030, upload-time = "2026-05-26T05:19:05.468Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/20/96dc2387cf29a0ec75b427d62d3dde1f44c924719503babaac4c96806223/hypothesis-6.153.0-py3-none-any.whl", hash = "sha256:2aeda9bbb44ae0ee0bfa67ef744a25be05c1f804dca4eb6479c63518dc9f2900", size = 540326, upload-time = "2026-05-26T05:19:02.861Z" },
 ]
 
 [[package]]
@@ -1986,6 +2001,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
+]
+
+[[package]]
+name = "sortedcontainers"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
 ]
 
 [[package]]

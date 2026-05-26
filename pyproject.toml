@@ -64,6 +64,14 @@ test = [
     # which measures 55.21% vs 56.5%+ on every other version).
     # Ratchet policy in docs/COVERAGE.md (+1pp/release toward 80%).
     "pytest-cov>=4.1",
+    # === v2.2.2: property-based testing (R1 prediction / R5 audit Gap #6) ===
+    # Hypothesis powers the property tests in
+    # tests/unit/services/docs/test_tab_tree.py + test_markdown_render.py.
+    # Generates random inputs against module invariants (depth-first
+    # ordering, path uniqueness, insertText-index monotonicity, etc.).
+    # The R6 UTF-16 bug class is the headline unblock — once the source
+    # is fixed, the hypothesis tests pin the fix permanently.
+    "hypothesis>=6.115",
 ]
 # === v2.0.6: lint extras (closes pyright/ruff CI gap) ===
 # e2e.yml's `lint` job invokes `uv run pyright src/` and
