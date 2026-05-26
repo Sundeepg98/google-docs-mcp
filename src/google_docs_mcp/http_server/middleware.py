@@ -250,3 +250,87 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
                     status_code=413,
                 )
         return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Health-exempt TrustedHost wrapper (v2.3.3 — Fly internal probe fix)
+# ---------------------------------------------------------------------------
+
+
+class HealthExemptTrustedHostMiddleware:
+    """Wrap Starlette's TrustedHostMiddleware but bypass it for /health.
+
+    **Why this exists.** Fly's internal health probe runs on a private
+    IPv6/IPv4 address in the 172.19.x.x / fdaa::/64 range and sends an
+    HTTP/1.1 request with ``Host: <raw-ip>:<port>`` (the probe doesn't
+    resolve the app's public DNS name — it talks to the machine
+    directly). Starlette's stock ``TrustedHostMiddleware`` matches a
+    fixed allowlist of host *names*; it does NOT accept IP literals
+    unless they're individually listed, and Fly's probe IP rotates per
+    deploy (172.19.24.105 on v89, different on the next machine), so
+    pinning specific IPs is unmaintainable.
+
+    PR #77 (v2.0.6) added ``<app>.internal`` and ``*.internal`` to the
+    allowlist to cover DNS-based probes. That worked for some Fly probe
+    paths but NOT the raw-IP path that v89's deploy logs surface:
+
+        172.19.24.105:46588 → GET /health → 400 Bad Request
+        172.19.24.105:46600 → GET /health → 400 Bad Request
+        172.19.24.105:46604 → GET /health → 400 Bad Request
+
+    The cleaner fix (Option B in the v2.3.3 brief): exempt /health from
+    Host validation entirely. Health endpoints are infrastructure
+    probes by convention; they're hit by load balancers, orchestrators,
+    and Fly's internal prober that may not know — or care about — the
+    canonical hostname. Validating Host on /health gates a critical
+    operational signal on a check the prober cannot satisfy.
+
+    **Security posture preserved.** /health returns only
+    ``{"ok": true, "service": "google-docs-mcp"}`` — no sensitive
+    state, no auth context, no caller-controlled output. Bypassing
+    TrustedHost on this single endpoint does NOT enable Host-header
+    attacks (those rely on links/redirects/cache-poisoning against
+    endpoints that echo the Host); the only effect is that a request
+    with any Host header gets a 200 from /health instead of a 400
+    from the middleware.
+
+    Every OTHER route still goes through the full TrustedHost gate.
+
+    Implementation: pure-ASGI (not ``BaseHTTPMiddleware``-based) so
+    we can decide route by inspecting ``scope["path"]`` and either
+    call the downstream ``app`` directly (bypass) OR delegate to the
+    wrapped Starlette ``TrustedHostMiddleware`` (which itself wraps
+    the same downstream ``app``). ``allowed_hosts`` is captured at
+    construction time; the bypass path has zero per-request overhead
+    beyond a single string equality check.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        allowed_hosts: list[str],
+    ) -> None:
+        # Local import to keep this module's top-level import block free
+        # of the Starlette internal — only this middleware needs it.
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+        self._app = app
+        # Build the wrapped TrustedHostMiddleware once. It is itself an
+        # ASGI app wrapping `app`, so non-/health requests funnel
+        # through it and then reach the same downstream pipeline.
+        self._guarded = TrustedHostMiddleware(app, allowed_hosts=allowed_hosts)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        # Lifespan / websocket scopes have no path-routing concept here;
+        # forward them through the guarded path so Starlette's lifespan
+        # protocol still reaches the app correctly.
+        if scope.get("type") == "http" and scope.get("path") == "/health":
+            # Bypass TrustedHost — call the wrapped app directly.
+            # Same downstream pipeline TrustedHostMiddleware would have
+            # called on a successful match; the only difference is the
+            # Host check is skipped.
+            await self._app(scope, receive, send)
+            return
+        # All other paths: through the full Host-validation gate.
+        await self._guarded(scope, receive, send)

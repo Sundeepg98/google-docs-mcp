@@ -14,7 +14,6 @@ import uvicorn
 from fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.routing import Mount, Route
 
 from google_docs_mcp import keys
@@ -22,6 +21,7 @@ from google_docs_mcp.oauth_google import CALLBACK_PATH
 from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,
+    HealthExemptTrustedHostMiddleware,
     derive_trusted_hosts,
 )
 from .routes.convert import convert_endpoint
@@ -63,7 +63,14 @@ def build_app(mcp: FastMCP) -> Starlette:
     trusted_hosts = derive_trusted_hosts()
     body_max = int(os.environ.get("MCP_BODY_MAX_BYTES", 10 * 1024 * 1024))
     middleware = [
-        Middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts),
+        # v2.3.3: HealthExemptTrustedHostMiddleware bypasses Host
+        # validation on /health so Fly's internal probe (which sends
+        # Host: <raw-ip>) can reach the handler. See the middleware's
+        # docstring for the v89 deploy-log evidence.
+        Middleware(
+            HealthExemptTrustedHostMiddleware,
+            allowed_hosts=trusted_hosts,
+        ),
         Middleware(
             BearerTokenMiddleware,
             bearer_token=bearer_token,
