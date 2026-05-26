@@ -58,6 +58,12 @@ READONLY_TOOLS = {
     # ``gsheets_create_spreadsheet`` (creates a new resource) are
     # NOT readonly.
     "gsheets_read_range",
+    # v2.3.2: Slides presentations.get — pure read of the deck's
+    # structure + per-slide text. Sister tools
+    # ``gslides_replace_all_text`` (mutates text across slides) and
+    # ``gslides_create_presentation`` (creates a new deck) are NOT
+    # readonly.
+    "gslides_get_outline",
 }
 
 

@@ -34,6 +34,12 @@ SCOPES = [
     # pattern that handled the earlier drive.readonly + Apps Script
     # scope additions); no forced re-consent.
     "https://www.googleapis.com/auth/spreadsheets",
+    # v2.3.2 — Slides read + batchUpdate (replaceAllText) + create for
+    # the 3rd new service. Same incremental-consent semantics as the
+    # Sheets scope addition (PR #119) — existing users get the new
+    # scope automatically on next token refresh via the include-
+    # granted-scopes flow. No forced re-consent.
+    "https://www.googleapis.com/auth/presentations",
 ]
 
 

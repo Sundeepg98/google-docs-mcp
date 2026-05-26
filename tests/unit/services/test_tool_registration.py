@@ -1,4 +1,4 @@
-"""Multi-service tool-registration guards (M3 + Gap #7 + v2.3.0 + v2.3.1).
+"""Multi-service tool-registration guards (M3 + Gap #7 + v2.3.0 + v2.3.1 + v2.3.2).
 
 These tests verify the central M3 invariant: importing
 ``google_docs_mcp`` (and therefore ``server.py``) registers every
@@ -17,29 +17,33 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after v2.3.1 Sheets 2nd-new-service** (sum must equal 29):
+**Partition state after v2.3.2 Slides 3rd-new-service** (sum must equal 32):
 
   DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS      =  6  (Phase B + v2.3.0, services/drive/tools.py)
   GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C,  services/gas_deploy/tools.py)
   ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
   SHEETS_SERVICE_TOOLS     =  3  (v2.3.1,   services/sheets/tools.py)
+  SLIDES_SERVICE_TOOLS     =  3  (v2.3.2,   services/slides/tools.py)
   NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
                                    contains NO tool definitions)
                            ─────
-  EXPECTED_TOOLS           = 29
+  EXPECTED_TOOLS           = 32
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
 
-v2.3.1 (this PR) adds the 3 minimal Sheets tools as the 2nd new
-service, proving the per-service-folder template scales beyond a
-single-folder bolt-on. The Sheets ``batchUpdate`` tagged-union (40+
-request types: formatting, charts, pivots, conditional formats, etc.)
-is deferred to a follow-up PR per the multi-service feasibility
-audit's "pattern stretch" note. The count drift is the only partition
-surface change; the PR #117 papercut fix means no test-assertion
-literals require updating.
+v2.3.1 (PR #119) added the 3 Sheets tools (2nd new service) and proved
+the OAuth-scope-addition infra absorbs new scopes non-breakingly via
+``include_granted_scopes=true``.
+
+v2.3.2 (this PR) adds the 3 Slides tools as the 3rd new service.
+The single-request-type ``replaceAllText`` carve-out (using
+``presentations.batchUpdate`` with one request type, NOT the full
+~40-type tagged-union) shows the pattern can absorb the most common
+batchUpdate use cases without committing to the full abstraction —
+same approach Sheets took. The PR #117 papercut fix continues to
+pay off; no count-literal updates required.
 
 Consumer tests under ``tests/unit/services/<svc>/`` use
 ``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
@@ -129,6 +133,20 @@ SHEETS_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gsheets_create_spreadsheet",
 })
 
+# Slides-service tools — v2.3.2 (this PR). 3rd new service after Sheets
+# (PR #119). Minimal start: outline read + cross-slide find/replace +
+# create. The Slides ``batchUpdate`` tagged-union (~40 request types
+# for addSlide / replaceImage / updateTextStyle / etc.) is deferred
+# per the same "wait for actual need" approach Sheets used. The
+# single-request-type ``replaceAllText`` carve-out shows the most
+# common write use case can be exposed without committing to the
+# full tagged-union abstraction.
+SLIDES_SERVICE_TOOLS: frozenset[str] = frozenset({
+    "gslides_get_outline",
+    "gslides_replace_all_text",
+    "gslides_create_presentation",
+})
+
 # Gap #7 emptied this set: every tool now belongs to a service folder.
 # Kept as an empty frozenset (not deleted) so existing callers /
 # external test sweeps that import the name keep working. If a future
@@ -144,6 +162,7 @@ NON_DOCS_TOOLS: frozenset[str] = (
     | GAS_DEPLOY_SERVICE_TOOLS
     | ADMIN_SERVICE_TOOLS
     | SHEETS_SERVICE_TOOLS
+    | SLIDES_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -153,6 +172,7 @@ EXPECTED_TOOLS: frozenset[str] = (
     | GAS_DEPLOY_SERVICE_TOOLS
     | ADMIN_SERVICE_TOOLS
     | SHEETS_SERVICE_TOOLS
+    | SLIDES_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -421,6 +441,36 @@ def test_sheets_service_tools_register_from_services_sheets_tools_module():
         )
 
 
+def test_slides_service_tools_register_from_services_slides_tools_module():
+    """v2.3.2: the 3 slides-service tools must be defined in
+    ``services/slides/tools.py``, NOT in server.py. Symmetric to the
+    sheets registration guard (v2.3.1) — same ``__module__`` +
+    no-shadow invariants.
+
+    Catches a regression where someone re-adds a slides tool to
+    server.py by accident, OR where ``server.py`` ever loses its
+    ``from .services.slides import tools as _slides_tools`` line
+    (the tool registration would silently fail).
+    """
+    from google_docs_mcp.services.slides import tools as slides_tools
+
+    for tool_name in SLIDES_SERVICE_TOOLS:
+        assert hasattr(slides_tools, tool_name), (
+            f"{tool_name} not found in services.slides.tools — "
+            f"v2.3.2 added it; ensure it's defined there."
+        )
+        fn = getattr(slides_tools, tool_name)
+        assert fn.__module__ == "google_docs_mcp.services.slides.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.slides.tools'."
+        )
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. Slides tools live in services/slides/tools.py."
+        )
+
+
 # ---------------------------------------------------------------------
 # Sanity: a docs-service tool is callable through the live registry
 # ---------------------------------------------------------------------
@@ -474,6 +524,8 @@ _EXPECTED_SERVICE_BY_TOOL: dict[str, str] = {
     **{name: "admin" for name in ADMIN_SERVICE_TOOLS},
     # v2.3.1: 2nd new service. Sheets tools carry service="sheets".
     **{name: "sheets" for name in SHEETS_SERVICE_TOOLS},
+    # v2.3.2: 3rd new service. Slides tools carry service="slides".
+    **{name: "slides" for name in SLIDES_SERVICE_TOOLS},
 }
 
 
