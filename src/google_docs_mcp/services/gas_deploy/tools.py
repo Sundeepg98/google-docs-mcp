@@ -40,7 +40,7 @@ from google_docs_mcp.credentials import (
     get_credentials_for_user,
 )
 from google_docs_mcp.oauth_google import resolve_runtime_oauth_config
-from google_docs_mcp.server import gdocs_tool
+from google_docs_mcp.server import workspace_tool
 from google_docs_mcp.services.gas_deploy import GAS_DEPLOY_SCOPES
 from google_docs_mcp.setup_apps_script import (
     setup_apps_script_auto,
@@ -49,8 +49,9 @@ from google_docs_mcp.setup_apps_script import (
 from google_docs_mcp.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
 
 
-@gdocs_tool(
+@workspace_tool(
     title="Provision per-user Apps Script project",
+    service="gas_deploy",
     readonly=False, destructive=False, idempotent=True, external=True,
     # creds=False: this tool has its own NeedsReauthError → structured
     # response handling (returns status="needs_authorization" with

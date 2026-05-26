@@ -1,4 +1,4 @@
-"""``@gdocs_tool`` — composite tool decorator (v2.0.6 / R28 deferral close).
+"""``@workspace_tool`` — composite tool decorator (canonical post-M4).
 
 The pre-v2.0.6 boilerplate for every Google-API-touching MCP tool:
 
@@ -18,29 +18,45 @@ The pre-v2.0.6 boilerplate for every Google-API-touching MCP tool:
             raise ToolError(_format_http_error(e)) from e
 
 repeated 15 times for the API-touching tools + 9 more annotations-only
-blocks for the local tools. ``@gdocs_tool`` collapses the repetitive
-parts:
+blocks for the local tools. ``@workspace_tool`` collapses the repetitive
+parts AND adds a required ``service=`` parameter (M4 / v2.2.0):
 
-    @gdocs_tool(
+    @workspace_tool(
         title="<human-readable>",
+        service="docs",        # M4: per-tool service tag (required)
         readonly=True,
         destructive=False,
         idempotent=True,
         external=True,         # openWorldHint
-        creds=True,             # inject creds + wrap HttpError
+        creds=True,            # inject creds + wrap HttpError
     )
     def gdocs_xxx(creds, ...) -> dict:
         return <work>(creds, ...)
 
+The ``service=`` value:
+
+- Matches the per-service-folder layout (``"docs"`` for tools in
+  ``services/docs/tools.py``, ``"drive"`` for ``services/drive/tools.py``,
+  ``"gas_deploy"`` for ``services/gas_deploy/tools.py``).
+- Tags the 7 stay-in-server admin / introspection / auth tools with
+  ``service="admin"`` (single bucket; the split into 3 buckets was
+  considered and rejected — see PR #N body's "judgment call" section
+  for the reasoning).
+- Lives on the ``ToolAnnotations`` instance as an extra field (the
+  ``ToolAnnotations`` pydantic model has ``extra: "allow"``). Read it
+  back via ``tool.annotations.service`` from ``mcp.list_tools()``.
+- Lights up future telemetry / per-service routing without needing
+  another schema migration.
+
 Migration semantics (R28 deferral context, see CHANGELOG v1.4.2 +
-server.py:208 comment):
+server.py comment):
 
 - For tools that opt into ``creds=True``, the decorator injects
   ``creds`` as the FIRST positional argument and wraps the body in
   ``try/except HttpError → ToolError(_format_http_error(e))``. The
-  comment at server.py:208 warned about NeedsReauthError → ToolError
-  DOUBLE-mapping — this decorator does NOT touch NeedsReauthError;
-  the existing single mapping inside ``_get_credentials`` is preserved.
+  v1.x comment warned about NeedsReauthError → ToolError DOUBLE-mapping
+  — this decorator does NOT touch NeedsReauthError; the existing
+  single mapping inside ``_get_credentials`` is preserved.
 
 - For tools that need custom credential / response shaping
   (``gdocs_setup_apps_script``, ``gdocs_reset_authorization``,
@@ -53,9 +69,15 @@ server.py:208 comment):
 
 **Why a separate module?** Keeps server.py focused on tool bodies
 and makes the decorator independently testable
-(``test_gdocs_tool_decorator.py``). Mirrors the
+(``test_workspace_tool_decorator.py``). Mirrors the
 ``tool_schemas.py`` split (PR #80) and the ``google_clients.py``
 seam (PR #48 / #75).
+
+**Deprecation:** ``@gdocs_tool`` is preserved as a deprecation-warning
+shim that delegates to ``workspace_tool(service="docs", ...)``.
+One-release window; planned removal in v2.2.x per Hex specialist
+Round 2 guidance ("give a one-release deprecation window, then
+remove"). New code should use ``@workspace_tool`` directly.
 """
 from __future__ import annotations
 
@@ -95,9 +117,10 @@ def register(
     _format_http_error_fn = format_http_error
 
 
-def gdocs_tool(
+def workspace_tool(
     *,
     title: str,
+    service: str,
     readonly: bool,
     destructive: bool,
     idempotent: bool,
@@ -105,11 +128,25 @@ def gdocs_tool(
     output_schema: dict | None = None,
     creds: bool = False,
 ) -> Callable[[F], F]:
-    """Composite decorator: ``@mcp.tool`` + ``ToolAnnotations`` + optional creds.
+    """Composite decorator: ``@mcp.tool`` + ``ToolAnnotations`` + service tag.
+
+    Canonical post-M4 form. ``@gdocs_tool`` is preserved as a
+    deprecation-warning shim that delegates to
+    ``workspace_tool(service="docs", ...)``.
 
     Args:
         title: Human-readable label for MCP client UI (becomes
             ``ToolAnnotations.title``).
+        service: Per-service tag (M4 / v2.2.0). REQUIRED. Stored on
+            the ``ToolAnnotations`` instance as an extra field so
+            ``tool.annotations.service`` round-trips through
+            ``mcp.list_tools()``. Canonical values:
+            ``"docs"``, ``"drive"``, ``"gas_deploy"``, ``"admin"``.
+            The first three match ``services/<svc>/tools.py`` folders;
+            ``"admin"`` is the single bucket for the 7 stay-in-server
+            tools (admin / introspection / auth / signed URLs).
+            Future Workspace services (Sheets, Slides, Gmail, Calendar)
+            will register additional values as they land.
         readonly: True for read-only tools (``readOnlyHint``).
         destructive: True for tools that delete / revoke state
             (``destructiveHint``).
@@ -135,12 +172,13 @@ def gdocs_tool(
 
     Returns:
         A decorator that registers the function with the FastMCP
-        instance, attaches ``ToolAnnotations``, and (optionally) wraps
-        the body with creds injection + HttpError translation.
+        instance, attaches ``ToolAnnotations`` (including ``service``
+        as an extra field), and (optionally) wraps the body with
+        creds injection + HttpError translation.
     """
     if _mcp_instance is None:
         raise RuntimeError(
-            "gdocs_tool used before register() — call decorators.register("
+            "workspace_tool used before register() — call decorators.register("
             "mcp, _get_credentials, _format_http_error) in server.py first."
         )
 
@@ -150,6 +188,11 @@ def gdocs_tool(
         destructiveHint=destructive,
         idempotentHint=idempotent,
         openWorldHint=external,
+        # M4 / v2.2.0: pydantic ToolAnnotations has extra="allow" so
+        # this round-trips through model_dump + attribute access.
+        # Verified: tool.annotations.service is readable from
+        # mcp.list_tools() at the receiving end.
+        service=service,
     )
 
     # Build the kwargs dict for @mcp.tool once; passing output_schema=None
@@ -199,3 +242,68 @@ def gdocs_tool(
         return _mcp_instance.tool(**tool_kwargs)(wrapper)
 
     return decorator
+
+
+# ---------------------------------------------------------------------
+# Deprecation shim — keep @gdocs_tool callable for one release.
+# ---------------------------------------------------------------------
+#
+# M4 (v2.2.0) renames the canonical decorator from ``@gdocs_tool`` to
+# ``@workspace_tool(service=...)``. ``@gdocs_tool`` is preserved as a
+# deprecation-warning shim that delegates to
+# ``workspace_tool(service="docs", ...)`` — that ``service="docs"`` is
+# the right default because every pre-M4 ``@gdocs_tool`` site in the
+# repo was either in ``services/docs/tools.py`` or in ``server.py``
+# during a state where docs was the only service. Per Hex specialist
+# Round 2: one-release deprecation window, then remove. Planned
+# removal in v2.2.x.
+#
+# IMPORTANT: this shim does NOT fire during normal import or test
+# collection — all in-repo callers have been migrated to
+# ``@workspace_tool``. The shim exists for downstream forks or
+# external code that still imports ``gdocs_tool``. Verified at M4
+# ship time by running pytest with ``-W error::DeprecationWarning``.
+
+
+def gdocs_tool(
+    *,
+    title: str,
+    readonly: bool,
+    destructive: bool,
+    idempotent: bool,
+    external: bool,
+    output_schema: dict | None = None,
+    creds: bool = False,
+) -> Callable[[F], F]:
+    """DEPRECATED — use ``@workspace_tool(service="docs", ...)`` instead.
+
+    Preserved as a thin compatibility shim that delegates to
+    ``workspace_tool`` with ``service="docs"``. Emits a
+    ``DeprecationWarning`` at call time so any remaining downstream
+    callers see the migration path.
+
+    Planned removal in v2.2.x per Hex specialist Round 2 guidance
+    ("one-release deprecation window, then remove"). New code MUST
+    use ``@workspace_tool(service=..., ...)`` directly with an
+    explicit service tag.
+    """
+    import warnings
+
+    warnings.warn(
+        "@gdocs_tool is deprecated since v2.2.0; use "
+        "@workspace_tool(service=\"<svc>\", ...) instead. The bare "
+        "@gdocs_tool form will be removed in v2.2.x. See "
+        "docs/ARCHITECTURE.md §5.2.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return workspace_tool(
+        title=title,
+        service="docs",
+        readonly=readonly,
+        destructive=destructive,
+        idempotent=idempotent,
+        external=external,
+        output_schema=output_schema,
+        creds=creds,
+    )

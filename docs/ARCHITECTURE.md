@@ -272,6 +272,28 @@ The `asyncio.run(mcp.list_tools())` pattern matches the existing precedent in `t
 
 PAUSE between A and B is deliberate — same rationale as M1a → M1b (the pattern set in Phase A flows to B/C/D; better to discover shape problems once than three times).
 
+### 5.2 `@workspace_tool` — canonical decorator post-M4 (v2.2.0)
+
+M4 renames the composite tool decorator from `@gdocs_tool` to `@workspace_tool(service=...)` and adds a required `service=` parameter that tags each tool with its owning service.
+
+**Why the rename:** when this repo adds its first non-docs Workspace service (Sheets, Slides, Gmail, Calendar — see the long-term vision note), `@gdocs_tool` would be misleading on tools that have nothing to do with Google Docs. `@workspace_tool(service=...)` carries the per-service tag explicitly and survives the expansion without another rename.
+
+**Service tag canon (post-M4):**
+
+| `service=` value | Tools | File |
+|---|---|---|
+| `"docs"` | 12 | `services/docs/tools.py` |
+| `"drive"` | 4 | `services/drive/tools.py` |
+| `"gas_deploy"` | 1 | `services/gas_deploy/tools.py` |
+| `"admin"` | 7 | `server.py` (admin / introspection / auth / signed URLs) |
+| | **24 total** | |
+
+**Where the tag lives at runtime:** `ToolAnnotations` is pydantic-backed with `extra: "allow"`, so the `service` value rides as an extra attribute on every registered tool. Access via `tool.annotations.service` from `mcp.list_tools()`. Verified by `tests/unit/services/test_tool_registration.py::test_every_tool_carries_service_annotation` + `::test_service_annotation_matches_expected_per_file_partition`.
+
+**Deprecation window for `@gdocs_tool`:** the old name is preserved as a thin shim that emits `DeprecationWarning` and delegates to `workspace_tool(service="docs", ...)`. Planned removal in v2.2.x per Hex specialist Round 2 ("one-release deprecation window, then remove"). New code MUST use `@workspace_tool(service=..., ...)` with an explicit tag.
+
+**The `service="admin"` judgment call:** the 7 stay-in-server tools (`gdocs_admin_audit`, `gdocs_get_signed_upload_url`, `gdocs_guide`, `gdocs_help`, `gdocs_reset_authorization`, `gdocs_server_info`, `gdocs_test_manifest`) all share `service="admin"` as a single bucket. The 3-way split (`introspection` / `admin` / `auth`) was considered and rejected because it added enum values without behavioral payoff at this scale — operations parlance already treats "operates on the MCP server itself or its meta-state" as admin. Re-visit if a new tool genuinely fits one of those splits and is awkward under `"admin"`.
+
 ## 6. Test architecture impact
 
 | Today (v2.0.6) | After Hex foundation (v2.x+) |

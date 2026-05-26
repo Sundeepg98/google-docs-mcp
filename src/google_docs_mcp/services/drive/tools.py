@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from fastmcp.exceptions import ToolError
 
-from google_docs_mcp.decorators import gdocs_tool
+from google_docs_mcp.decorators import workspace_tool
 from google_docs_mcp.services.drive.api import (
     find_doc_by_title as _find_doc_by_title,
     move_to_folder as _move_to_folder,
@@ -115,7 +115,8 @@ def _run_batch(items: list[str], fn, success_key: str) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="drive",
     title="Find a Google Doc by title (search)",
     readonly=True, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -182,7 +183,8 @@ def gdocs_find_doc_by_title(
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="drive",
     title="Move a file into a Drive folder",
     readonly=False, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -231,7 +233,8 @@ def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="drive",
     title="Restore a file from Drive trash",
     readonly=False, destructive=False, idempotent=True, external=True,
     creds=True,
@@ -279,7 +282,8 @@ def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
 # ---------------------------------------------------------------------
 
 
-@gdocs_tool(
+@workspace_tool(
+    service="drive",
     title="Move a Drive file to trash",
     readonly=False, destructive=True, idempotent=True, external=True,
     creds=True,
