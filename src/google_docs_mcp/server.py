@@ -266,6 +266,11 @@ from .services.docs import tools as _docs_tools  # noqa: F401, E402 — side-eff
 from .services.drive import tools as _drive_tools  # noqa: F401, E402 — side-effect import
 from .services.gas_deploy import tools as _gas_deploy_tools  # noqa: F401, E402 — side-effect import
 from .services.admin import tools as _admin_tools  # noqa: F401, E402 — side-effect import
+# v2.3.1: 2nd new service after Drive sharing — Sheets minimal start
+# (range read/write + create). Same registration pattern, no new
+# infrastructure required. Empirically validates that Sheets fits
+# the per-service-folder template that Drive sharing (PR #117) proved.
+from .services.sheets import tools as _sheets_tools  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

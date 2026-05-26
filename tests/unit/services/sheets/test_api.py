@@ -1,0 +1,349 @@
+"""Co-located tests for services/sheets/api.py (v2.3.1).
+
+Mirrors ``tests/unit/services/drive/test_sharing.py`` (PR #117):
+exercise the module via ``with_google_api_client(InMemoryGoogleAPIClient)``
+so the real ``get_service`` chokepoint runs but Sheets' HTTP boundary
+is stubbed. No real OAuth, no real Sheets round-trip.
+
+Tests cover three surfaces:
+
+1. **Module-level constants** — pin ``DEFAULT_RANGE`` as the public
+   surface; a stray edit (e.g. shrinking to ``"A1:A100"``) would
+   surprise callers depending on the documented default.
+2. **Pre-API validation** — ``write_range``'s ``ValueError`` branches
+   for empty / non-list-of-lists values; ``create_spreadsheet``'s
+   blank-title rejection.
+3. **Sheets call shape** — the right method chain
+   (``sheets.spreadsheets().values().get`` / ``.update`` /
+   ``sheets.spreadsheets().create``) receives the right kwargs:
+   ``valueInputOption="USER_ENTERED"`` on writes (pinned so a
+   future "let me try RAW for a second" experiment fires the
+   guard), the ``fields`` mask on ``create``, the body shape on
+   each call.
+4. **Response envelope shape** — the flat ``{range, values}`` /
+   ``{updated_range, updated_cells}`` / ``{spreadsheet_id, url,
+   title}`` envelopes the tool layer surfaces.
+
+The empirical-validation framing of v2.3.1: this test file is the
+proof that the M2 chokepoint + per-service-folder pattern + M4
+``@workspace_tool`` annotation surface scale to a NEW Google service
+without infrastructure rework. Drive sharing (PR #117) was the
+single-folder-bolt-on proof; sheets is the new-service proof.
+"""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from google_docs_mcp.google_api_client import (
+    InMemoryGoogleAPIClient,
+    with_google_api_client,
+)
+from google_docs_mcp.services.sheets.api import (
+    DEFAULT_RANGE,
+    create_spreadsheet,
+    read_range,
+    write_range,
+)
+
+
+# ---------------------------------------------------------------------
+# Module-level constants — public surface canary
+# ---------------------------------------------------------------------
+
+
+def test_default_range_is_A1_through_Z1000():
+    """A1:Z1000 = 26 columns × 1000 rows. Pinned so a stray edit
+    that shrinks the default doesn't silently break callers who
+    rely on the documented size."""
+    assert DEFAULT_RANGE == "A1:Z1000"
+
+
+# ---------------------------------------------------------------------
+# read_range — Sheets call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_read():
+    """A Sheets v4 Resource stub whose
+    spreadsheets().values().get().execute() returns a plausible
+    Sheets response. Enough to let read_range complete and let us
+    inspect its call args + response envelope."""
+    sheets = MagicMock(name="sheets-v4-stub-read")
+    sheets.spreadsheets().values().get().execute.return_value = {
+        "range": "Sheet1!A1:Z1000",
+        "majorDimension": "ROWS",
+        "values": [["a", "b"], ["c", "d"]],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_get_kwargs(sheets: MagicMock) -> dict:
+    """The kwargs of the most recent values().get(...) call that
+    actually carried a ``spreadsheetId``. Mirrors the helper pattern
+    from ``test_sharing.py::_last_create_kwargs``."""
+    for call in reversed(sheets.spreadsheets().values().get.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no values().get() call captured spreadsheetId")
+
+
+def test_read_range_passes_spreadsheetId_to_sheets(stub_sheets_for_read):
+    """The Sheets call must target the spreadsheet_id the caller passed."""
+    read_range(MagicMock(), "SPREAD-ABC")
+    kw = _last_get_kwargs(stub_sheets_for_read)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+
+
+def test_read_range_default_range_when_caller_omits(stub_sheets_for_read):
+    """Omitted range falls back to DEFAULT_RANGE — A1:Z1000."""
+    read_range(MagicMock(), "SPREAD1")
+    kw = _last_get_kwargs(stub_sheets_for_read)
+    assert kw["range"] == DEFAULT_RANGE
+
+
+def test_read_range_passes_caller_supplied_range_through(stub_sheets_for_read):
+    """Explicit range is forwarded verbatim — including sheet-prefixed
+    forms like ``Sheet2!B2:D10``."""
+    read_range(MagicMock(), "SPREAD1", "Sheet2!B2:D10")
+    kw = _last_get_kwargs(stub_sheets_for_read)
+    assert kw["range"] == "Sheet2!B2:D10"
+
+
+def test_read_range_returns_flat_envelope(stub_sheets_for_read):
+    """The returned dict is the flat ``{range, values}`` envelope —
+    ``range`` echoes back the Sheets-canonical form (which may differ
+    from the requested form when Sheets normalizes)."""
+    result = read_range(MagicMock(), "SPREAD-ABC", "A1:B2")
+    assert result == {
+        "range": "Sheet1!A1:Z1000",  # the stubbed Sheets canonical form
+        "values": [["a", "b"], ["c", "d"]],
+    }
+
+
+def test_read_range_returns_empty_values_for_blank_range(stub_sheets_for_read):
+    """Sheets omits the ``values`` key entirely for a fully-blank
+    range; the envelope defaults to ``[]`` rather than missing key.
+    Consumers can iterate ``result["values"]`` without a KeyError."""
+    stub_sheets_for_read.spreadsheets().values().get().execute.return_value = {
+        "range": "Sheet1!A1:Z1000",
+        "majorDimension": "ROWS",
+        # No ``values`` key — what Sheets returns for an empty range.
+    }
+    result = read_range(MagicMock(), "SPREAD1", "A1:Z1000")
+    assert result["values"] == []
+
+
+def test_read_range_returns_range_fallback_when_sheets_omits_it(
+    stub_sheets_for_read,
+):
+    """Defensive: if Sheets ever omits ``range`` from the response
+    (shouldn't, but the SDK contract permits it), the envelope falls
+    back to the requested range rather than KeyError."""
+    stub_sheets_for_read.spreadsheets().values().get().execute.return_value = {
+        "values": [["x"]],
+    }
+    result = read_range(MagicMock(), "SPREAD1", "A1:A1")
+    assert result["range"] == "A1:A1"
+
+
+# ---------------------------------------------------------------------
+# write_range — pre-API validation + Sheets call shape + envelope
+# ---------------------------------------------------------------------
+
+
+def test_write_range_rejects_empty_values():
+    """Empty ``values`` is a caller bug — Sheets would 400 with a
+    less-helpful message. Reject client-side."""
+    with pytest.raises(ValueError, match="values cannot be empty"):
+        write_range(MagicMock(), "SPREAD1", "A1", [])
+
+
+def test_write_range_rejects_non_list_of_lists():
+    """A flat list (forgetting the outer wrapper) is the most common
+    caller mistake. Reject with a message that explains the 2D shape."""
+    with pytest.raises(ValueError, match="2D row-major"):
+        write_range(MagicMock(), "SPREAD1", "A1", ["a", "b", "c"])
+
+
+def test_write_range_rejects_mixed_row_types():
+    """A list-of-lists with one non-list entry buried inside is also
+    a 2D-shape violation — caught by the ``all(isinstance(...))``
+    check."""
+    with pytest.raises(ValueError, match="2D row-major"):
+        write_range(MagicMock(), "SPREAD1", "A1", [["a"], "not-a-row", ["b"]])
+
+
+@pytest.fixture
+def stub_sheets_for_write():
+    sheets = MagicMock(name="sheets-v4-stub-write")
+    sheets.spreadsheets().values().update().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "updatedRange": "Sheet1!A1:B2",
+        "updatedRows": 2,
+        "updatedColumns": 2,
+        "updatedCells": 4,
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_update_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().values().update.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no values().update() call captured spreadsheetId")
+
+
+def test_write_range_passes_spreadsheetId_and_range(stub_sheets_for_write):
+    write_range(MagicMock(), "SPREAD-XYZ", "A1:B2", [["a", "b"], ["c", "d"]])
+    kw = _last_update_kwargs(stub_sheets_for_write)
+    assert kw["spreadsheetId"] == "SPREAD-XYZ"
+    assert kw["range"] == "A1:B2"
+
+
+def test_write_range_uses_USER_ENTERED_value_input_option(stub_sheets_for_write):
+    """PINNED INVARIANT: ``valueInputOption="USER_ENTERED"`` is the
+    semantic difference between "formulas / dates parse as the user
+    typed them" (intended) and "everything is a literal string"
+    (RAW mode). A future "try RAW for a second" experiment that
+    silently breaks formula support fires this guard."""
+    write_range(MagicMock(), "SPREAD1", "A1", [["=SUM(B1:B10)"]])
+    kw = _last_update_kwargs(stub_sheets_for_write)
+    assert kw["valueInputOption"] == "USER_ENTERED"
+
+
+def test_write_range_wraps_values_in_body(stub_sheets_for_write):
+    """The Sheets API expects ``body={"values": [[...]]}`` — the
+    values list goes UNDER the ``values`` key, not at body root.
+    A misplaced wrapper would cause Sheets to write nothing
+    (and not error — silent data loss)."""
+    write_range(MagicMock(), "SPREAD1", "A1:B1", [["x", "y"]])
+    kw = _last_update_kwargs(stub_sheets_for_write)
+    assert kw["body"] == {"values": [["x", "y"]]}
+
+
+def test_write_range_returns_flat_envelope(stub_sheets_for_write):
+    """The response envelope maps Sheets' ``updatedRange`` →
+    ``updated_range`` and ``updatedCells`` → ``updated_cells``
+    (snake_case in the public surface)."""
+    result = write_range(MagicMock(), "SPREAD1", "A1:B2", [["a", "b"], ["c", "d"]])
+    assert result == {
+        "updated_range": "Sheet1!A1:B2",
+        "updated_cells": 4,
+    }
+
+
+def test_write_range_returns_zero_cells_when_sheets_omits_field(
+    stub_sheets_for_write,
+):
+    """Defensive: if Sheets ever omits ``updatedCells`` from the
+    response, the envelope defaults to 0 rather than KeyError."""
+    stub_sheets_for_write.spreadsheets().values().update().execute.return_value = {
+        "updatedRange": "Sheet1!A1:A1",
+    }
+    result = write_range(MagicMock(), "SPREAD1", "A1", [["x"]])
+    assert result == {"updated_range": "Sheet1!A1:A1", "updated_cells": 0}
+
+
+# ---------------------------------------------------------------------
+# create_spreadsheet — pre-API validation + Sheets call shape + envelope
+# ---------------------------------------------------------------------
+
+
+def test_create_spreadsheet_rejects_blank_title():
+    """Empty / whitespace title rejected client-side. Sheets would
+    accept it (the new spreadsheet would just have an empty Drive
+    name), but that's never what an MCP caller wants."""
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        create_spreadsheet(MagicMock(), "")
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        create_spreadsheet(MagicMock(), "   ")
+
+
+@pytest.fixture
+def stub_sheets_for_create():
+    sheets = MagicMock(name="sheets-v4-stub-create")
+    sheets.spreadsheets().create().execute.return_value = {
+        "spreadsheetId": "NEW-SHEET-ID-001",
+        "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/NEW-SHEET-ID-001/edit",
+        "properties": {"title": "My Sheet"},
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_create_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().create.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no spreadsheets().create() call captured body")
+
+
+def test_create_spreadsheet_builds_properties_title_body(stub_sheets_for_create):
+    """The create call body must wrap the title inside
+    ``{"properties": {"title": ...}}`` — Sheets' documented shape."""
+    create_spreadsheet(MagicMock(), "My Sheet")
+    kw = _last_create_kwargs(stub_sheets_for_create)
+    assert kw["body"] == {"properties": {"title": "My Sheet"}}
+
+
+def test_create_spreadsheet_strips_whitespace_from_title(stub_sheets_for_create):
+    """Leading / trailing whitespace stripped before the Sheets call,
+    so the created spreadsheet's Drive name + tab name don't have
+    surprise spaces."""
+    create_spreadsheet(MagicMock(), "  My Sheet  ")
+    kw = _last_create_kwargs(stub_sheets_for_create)
+    assert kw["body"]["properties"]["title"] == "My Sheet"
+
+
+def test_create_spreadsheet_requests_minimal_fields_mask(stub_sheets_for_create):
+    """The ``fields`` mask limits the Sheets response to what the
+    envelope needs (id + title + URL). Sheets returns a much larger
+    object by default."""
+    create_spreadsheet(MagicMock(), "My Sheet")
+    kw = _last_create_kwargs(stub_sheets_for_create)
+    assert kw["fields"] == "spreadsheetId,properties.title,spreadsheetUrl"
+
+
+def test_create_spreadsheet_returns_flat_envelope(stub_sheets_for_create):
+    """Maps Sheets' ``spreadsheetId`` → ``spreadsheet_id`` (snake_case)
+    and ``spreadsheetUrl`` → ``url`` (shortened name) so the caller
+    doesn't have to learn Sheets' vocabulary."""
+    result = create_spreadsheet(MagicMock(), "My Sheet")
+    assert result == {
+        "spreadsheet_id": "NEW-SHEET-ID-001",
+        "url": "https://docs.google.com/spreadsheets/d/NEW-SHEET-ID-001/edit",
+        "title": "My Sheet",
+    }
+
+
+def test_create_spreadsheet_synthesizes_url_when_sheets_omits_it(
+    stub_sheets_for_create,
+):
+    """Defensive: if Sheets ever omits ``spreadsheetUrl``, the
+    envelope synthesizes the canonical URL from the ID rather than
+    leaving a missing key."""
+    stub_sheets_for_create.spreadsheets().create().execute.return_value = {
+        "spreadsheetId": "ABC123",
+        "properties": {"title": "T"},
+    }
+    result = create_spreadsheet(MagicMock(), "T")
+    assert result["url"] == "https://docs.google.com/spreadsheets/d/ABC123/edit"
+
+
+def test_create_spreadsheet_falls_back_to_input_title_when_omitted(
+    stub_sheets_for_create,
+):
+    """Defensive: if Sheets ever omits the title from its response,
+    the envelope falls back to the (stripped) input title."""
+    stub_sheets_for_create.spreadsheets().create().execute.return_value = {
+        "spreadsheetId": "ABC123",
+        "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/ABC123/edit",
+        # No ``properties`` key.
+    }
+    result = create_spreadsheet(MagicMock(), "  Fallback Title  ")
+    assert result["title"] == "Fallback Title"

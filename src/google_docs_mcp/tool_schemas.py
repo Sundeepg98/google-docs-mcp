@@ -248,6 +248,39 @@ GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA = _object(
 
 
 # ---------------------------------------------------------------------
+# Sheets (services/sheets/) — v2.3.1 minimal start (2nd new service)
+# ---------------------------------------------------------------------
+
+
+GSHEETS_READ_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "range": {"type": "string"},
+        "values": {"type": "array"},
+    },
+    required=["range", "values"],
+)
+
+
+GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "updated_range": {"type": "string"},
+        "updated_cells": {"type": "integer", "minimum": 0},
+    },
+    required=["updated_range", "updated_cells"],
+)
+
+
+GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "title": {"type": "string"},
+    },
+    required=["spreadsheet_id", "url", "title"],
+)
+
+
+# ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
 
@@ -453,6 +486,10 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_untrash_file": GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
     "gdocs_share_file": GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     "gdocs_list_permissions": GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
+    # v2.3.1 — Sheets (2nd new service, minimal start)
+    "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
+    "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
+    "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
