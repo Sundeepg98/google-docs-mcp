@@ -7,7 +7,7 @@ import time
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ... import keys
+from google_docs_mcp import keys
 
 
 async def health(_request: Request) -> JSONResponse:
@@ -37,7 +37,7 @@ async def info_endpoint(_request: Request) -> JSONResponse:
     # Local import avoids a circular at module load time
     # (server.py imports from this module; this would re-trigger that
     # import chain on http_server.py module load).
-    from ... import __version__ as _pkg_version
+    from google_docs_mcp import __version__ as _pkg_version
 
     first_call_at = keys.get_first_call_timestamps()
     now = time.time()

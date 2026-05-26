@@ -7,15 +7,20 @@ import logging
 from starlette.requests import Request
 from starlette.responses import Response
 
-from ... import keys, user_store
-from ...oauth_google import (
+from google_docs_mcp import keys, user_store
+from google_docs_mcp.http_server import _state  # late-bound access to
+                                                # _state._NONCE_STORE so test
+                                                # reassignments propagate
+                                                # (tests reset between cases)
+from google_docs_mcp.http_server._helpers import (
+    _resolve_base_url,
+    _resolve_client_config,
+)
+from google_docs_mcp.http_server._pages import _error_page, _success_page
+from google_docs_mcp.oauth_google import (
     OAuthCallbackError,
     exchange_code_for_credentials,
 )
-from .. import _state  # late-bound access to _state._NONCE_STORE so test
-                       # reassignments propagate (tests reset between cases)
-from .._helpers import _resolve_base_url, _resolve_client_config
-from .._pages import _error_page, _success_page
 
 log = logging.getLogger("google_docs_mcp.http")
 

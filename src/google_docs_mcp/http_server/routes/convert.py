@@ -10,12 +10,15 @@ from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ... import keys
-from ...auth import default_data_dir, load_credentials
-from ...credentials import NeedsReauthError, get_credentials_for_user
-from ...docx_import import convert_docx_to_tabbed_doc as _convert_docx
-from ...errors import friendly_http_error_message
-from .._helpers import _resolve_base_url, _resolve_client_config
+from google_docs_mcp import keys
+from google_docs_mcp.auth import default_data_dir, load_credentials
+from google_docs_mcp.credentials import NeedsReauthError, get_credentials_for_user
+from google_docs_mcp.docx_import import convert_docx_to_tabbed_doc as _convert_docx
+from google_docs_mcp.errors import friendly_http_error_message
+from google_docs_mcp.http_server._helpers import (
+    _resolve_base_url,
+    _resolve_client_config,
+)
 
 
 async def convert_endpoint(request: Request) -> JSONResponse:

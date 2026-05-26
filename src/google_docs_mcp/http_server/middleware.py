@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from ..crypto import verify_signed_params
+from google_docs_mcp.crypto import verify_signed_params
 from . import _state  # late-bound access to _state._NONCE_STORE so test
                       # reassignments propagate (tests reset between cases)
 
