@@ -127,7 +127,7 @@ def gdocs_find_doc_by_title(
     query: str,
     exact: bool = False,
     include_trashed: bool = False,
-    verify_writable: bool = True,
+    verify_writable: bool = False,
 ) -> dict:
     """Look up a Google Doc / .docx by title — find a file_id from a name.
 
@@ -135,7 +135,8 @@ def gdocs_find_doc_by_title(
     from a past session) and need its file_id to call any other tool.
 
     Matches return newest-first by modified_time. Each match flags
-    ``trashed`` and ``owned_by_app``:
+    ``trashed`` and (optionally, via ``verify_writable=True``)
+    ``owned_by_app``:
     - ``trashed: true`` means the file is in Drive Trash (hidden from
       the user's Drive UI; recoverable for 30 days)
     - ``owned_by_app: true`` means this OAuth app's drive.file scope
@@ -150,23 +151,36 @@ def gdocs_find_doc_by_title(
             ("contains") match.
         include_trashed: False (default) excludes trashed files from
             results.
-        verify_writable: True (default) probes each match with a
-            batched no-op update to determine actual writability under
-            this app's drive.file scope. Pass False to skip the probe
-            (faster, but ``owned_by_app`` will be ``None`` and the
-            caller must verify before mutating).
+        verify_writable: False (default; v2.2.1+) — pure read; result
+            ``owned_by_app`` is ``None`` (unknown). Pass True to opt
+            into a batched no-op-update PROBE per match that triggers
+            Drive's drive.file scope check, populating ``owned_by_app``
+            as ``True``/``False``. Cost: one extra batched HTTP
+            request AND a Drive audit-log entry per probed match (the
+            no-op update is a write at the API level even though the
+            value doesn't change).
+
+            **Default flipped to False in v2.2.1 (R33 audit Gap #3 /
+            CQRS):** this tool is annotated ``readonly=True``, so its
+            default behavior MUST be a pure read. Pre-v2.2.1 the
+            default was True, which silently performed Drive writes
+            on every call — a CQRS violation.
 
     Returns:
         ``{"matches": [{file_id, name, mimeType, modified_time,
         trashed, owned_by_app}, ...], "count": int}``.
         ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
-        ``verify_writable=False``.
+        ``verify_writable=False`` (the default).
 
     Choreography: returns a ``file_id`` that feeds straight into
     ``gdocs_tab_existing_doc`` (drive_file_id), ``gdocs_move_to_folder``,
     ``gdocs_trash_file``, ``gdocs_read_doc`` (as doc_id for Google
-    Docs), and ``gdocs_get_doc_outline``. Check ``owned_by_app``
-    before any write — others fail with app_not_authorized.
+    Docs), and ``gdocs_get_doc_outline``. To gate writes on actual
+    app-ownership without attempting them first, call again with
+    ``verify_writable=True`` (writes the audit log) — otherwise
+    ``trash_file`` / ``untrash_file`` / ``move_to_folder`` return a
+    structured ``app_not_authorized`` soft-failure response that
+    callers can branch on.
     """
     if not query.strip():
         raise ToolError("query cannot be empty")

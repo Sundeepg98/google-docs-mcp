@@ -285,12 +285,12 @@ def find_doc_by_title(
     exact: bool = False,
     include_trashed: bool = False,
     page_size: int = 50,
-    verify_writable: bool = True,
+    verify_writable: bool = False,
 ) -> dict:
     """Search Drive for Google Docs / .docx files matching a title.
 
     Newest-first by modified_time. Each match includes whether it's
-    trashed and (if ``verify_writable``) whether this OAuth app's
+    trashed and (if ``verify_writable=True``) whether this OAuth app's
     drive.file scope can actually write to it — which is the same
     test that determines whether ``trash_drive_file`` /
     ``untrash_drive_file`` / ``move_to_folder`` will succeed.
@@ -301,20 +301,26 @@ def find_doc_by_title(
             (``name contains 'X'``).
         include_trashed: False (default) excludes trashed files.
         page_size: max results to return (Drive API caps at 100).
-        verify_writable: True (default) probes each match with a
-            batched no-op update to determine actual writability under
-            this app's drive.file scope. Costs one extra batched HTTP
-            request per call but guarantees ``owned_by_app`` agrees
-            with what trash/untrash/move will actually do. Pass False
-            to skip the probe and leave ``owned_by_app`` as ``None``
-            (unknown) — faster but the caller must then verify by
-            attempting the write.
+        verify_writable: False (default; v2.2.1+) — pure read; result
+            ``owned_by_app`` is ``None`` (unknown). Pass True to opt
+            into a batched no-op-update PROBE per match that triggers
+            Drive's drive.file scope check (the SAME check that
+            trash/untrash/move runs), populating ``owned_by_app`` as
+            ``True``/``False``. Costs one extra batched HTTP request
+            per call AND mutates the Drive audit log (the probe is a
+            write at the API level even if the value doesn't change).
+
+            **Default flipped to False in v2.2.1 (R33 audit Gap #3 /
+            CQRS):** the tool wrapping this function is annotated
+            ``readonly=True``, so the default behavior MUST be a pure
+            read. Callers who genuinely need the writability check can
+            opt in explicitly.
 
     Returns:
         ``{"matches": [{file_id, name, mimeType, modified_time,
         trashed, owned_by_app}, ...], "count": int}``.
         ``owned_by_app`` is ``True``/``False`` if probed, ``None`` if
-        ``verify_writable=False``.
+        ``verify_writable=False`` (the default).
     """
     drive = get_service("drive", "v3", credentials=creds)
 

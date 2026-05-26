@@ -206,7 +206,14 @@ def test_owned_by_app_agrees_with_trash_outcome(mock_drive):
 
     # ---- Scenario 1: app-owned file. Probe + trash both succeed. ----
     setup_drive_state(probe_succeeds=True, trash_succeeds=True)
-    search = find_doc_by_title(MagicMock(), "test.docx", exact=True)
+    # v2.2.1 (R33 Gap #3): verify_writable default flipped to False so
+    # the read-only tool stops silently writing the Drive audit log
+    # on every call. This test exercises the probe path on purpose
+    # (the whole point is owned_by_app must agree with the live trash
+    # outcome), so it opts in explicitly.
+    search = find_doc_by_title(
+        MagicMock(), "test.docx", exact=True, verify_writable=True,
+    )
     owned_by_app_1 = search["matches"][0]["owned_by_app"]
     trash_result_1 = trash_drive_file(MagicMock(), "F")
     trash_succeeded_1 = trash_result_1.get("reason") is None
@@ -220,7 +227,12 @@ def test_owned_by_app_agrees_with_trash_outcome(mock_drive):
 
     # ---- Scenario 2: external file. Probe + trash both 403. ----
     setup_drive_state(probe_succeeds=False, trash_succeeds=False)
-    search = find_doc_by_title(MagicMock(), "test.docx", exact=True)
+    # Same v2.2.1 opt-in as Scenario 1 — the cross-tool consistency
+    # check needs owned_by_app populated, which only happens with
+    # verify_writable=True.
+    search = find_doc_by_title(
+        MagicMock(), "test.docx", exact=True, verify_writable=True,
+    )
     owned_by_app_2 = search["matches"][0]["owned_by_app"]
     trash_result_2 = trash_drive_file(MagicMock(), "F")
     trash_succeeded_2 = trash_result_2.get("reason") is None

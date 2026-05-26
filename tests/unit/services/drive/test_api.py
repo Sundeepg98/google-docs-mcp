@@ -294,3 +294,147 @@ def test_find_doc_by_title_returns_empty_matches_on_no_results(
         MagicMock(), "nothing matches this", verify_writable=False,
     )
     assert result == {"matches": [], "count": 0}
+
+
+# ---------------------------------------------------------------------
+# CQRS invariant (R33 audit Gap #3 — v2.2.1)
+#
+# The tool wrapping this function is annotated ``readonly=True``. The
+# default behavior MUST be a pure Drive READ. Pre-v2.2.1 the default
+# was ``verify_writable=True``, which performed a "batched no-op
+# update" probe per match — a Drive WRITE operation that creates an
+# audit-log entry on every call. The CQRS violation: a tool annotated
+# read-only silently wrote on every default invocation.
+#
+# These tests pin the v2.2.1 fix: with default args, no probe runs.
+# Pass ``verify_writable=True`` explicitly to opt into the probe.
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stubbed_drive_with_one_match():
+    """A Drive Resource stub whose files().list().execute() returns a
+    single match. We need at least one match to trigger the probe
+    branch (the post-list block guards ``if verify_writable and matches``,
+    so empty matches doesn't exercise the probe call at all)."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {
+        "files": [{
+            "id": "FILE_ID_1",
+            "name": "match.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document",
+            "modifiedTime": "2026-05-26T00:00:00.000Z",
+            "trashed": False,
+        }],
+    }
+    # The probe path uses drive.new_batch_http_request() + .add() +
+    # .execute(). Stub a batch that records its add() calls so we can
+    # assert on whether the probe ran. We never want the probe to
+    # actually invoke the callback (the test doesn't care about probe
+    # results — only whether the probe was constructed at all).
+    batch = MagicMock()
+    drive.new_batch_http_request.return_value = batch
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def test_find_doc_by_title_default_does_not_perform_drive_writes(
+    stubbed_drive_with_one_match,
+):
+    """CQRS guard (R33 Gap #3): default invocation (no verify_writable
+    kwarg) must NOT run the writability probe. The tool is annotated
+    ``readonly=True``; if the default fires the probe, every default
+    call writes to the Drive audit log even though no state changes.
+
+    Pre-v2.2.1 default was ``verify_writable=True``. v2.2.1 flips
+    that to False so default == read-only behavior matches the
+    ``readonly=True`` annotation.
+    """
+    result = find_doc_by_title(MagicMock(), "match")
+
+    # The list() call is the pure-read step; it MUST have happened.
+    assert stubbed_drive_with_one_match.files().list.called, (
+        "list() not called — query didn't reach Drive at all"
+    )
+
+    # The probe path goes through drive.new_batch_http_request() +
+    # batch.add() + batch.execute(). NONE of those may fire under the
+    # default invocation. Pre-v2.2.1 ALL THREE would fire.
+    assert not stubbed_drive_with_one_match.new_batch_http_request.called, (
+        "new_batch_http_request() called under default args — the "
+        "writability probe is running on a tool annotated readonly=True. "
+        "This is the R33 audit Gap #3 CQRS violation. v2.2.1 changed "
+        "verify_writable's default to False to fix this; if you're "
+        "seeing this failure, the default got flipped back."
+    )
+    # The matched file must still come back from the list() — the
+    # data path is unchanged; only the probe is suppressed.
+    assert result["count"] == 1
+    assert result["matches"][0]["file_id"] == "FILE_ID_1"
+    # And owned_by_app is None (unknown) because no probe ran. The
+    # caller can either re-call with verify_writable=True (opt-in
+    # write) OR attempt the write directly and branch on the
+    # structured ``app_not_authorized`` soft-failure response.
+    assert result["matches"][0]["owned_by_app"] is None, (
+        f"owned_by_app should be None when verify_writable defaults "
+        f"to False; got {result['matches'][0]['owned_by_app']!r}. "
+        f"If you're seeing this, the probe ran (the only code path "
+        f"that sets owned_by_app to True/False)."
+    )
+
+
+def test_find_doc_by_title_explicit_verify_writable_runs_probe(
+    stubbed_drive_with_one_match,
+):
+    """Verify the opt-in path still works post-CQRS-fix. With
+    ``verify_writable=True``, the probe MUST run — that's the whole
+    point of the kwarg. Callers who explicitly opt in still get the
+    pre-v2.2.1 owned_by_app behavior.
+    """
+    # The probe's batched HTTP request needs a callback registered
+    # via .add(callback=...). Stub the batch to invoke each callback
+    # with no exception so the probe records ``True`` for the file.
+    batch = stubbed_drive_with_one_match.new_batch_http_request.return_value
+    add_calls: list = []
+    def fake_add(request, callback):
+        add_calls.append((request, callback))
+        # Simulate the request succeeding. The production callback's
+        # positional signature is ``(request_id, response, exception)``
+        # — matching googleapiclient.http.BatchHttpRequest's calling
+        # convention. Pass positionally to mirror it.
+        callback("req-1", MagicMock(), None)
+    batch.add.side_effect = fake_add
+
+    result = find_doc_by_title(
+        MagicMock(), "match", verify_writable=True,
+    )
+
+    # The probe path MUST have fired.
+    assert stubbed_drive_with_one_match.new_batch_http_request.called, (
+        "new_batch_http_request() not called even though "
+        "verify_writable=True was passed — the opt-in probe path is "
+        "broken."
+    )
+    assert batch.add.called, "batch.add() not called — probe not built"
+    assert batch.execute.called, "batch.execute() not called — probe not run"
+    # And the probe's success path populates owned_by_app=True.
+    assert result["matches"][0]["owned_by_app"] is True
+
+
+def test_find_doc_by_title_no_matches_skips_probe_regardless_of_verify_writable():
+    """Defensive: when there are zero matches, there's nothing to probe.
+    Both verify_writable=True AND verify_writable=False must skip the
+    probe path entirely (the guard is ``if verify_writable and matches``).
+    Pre-v2.2.1 this already held; pinning it so it doesn't regress."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {"files": []}
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        for verify in (True, False):
+            drive.new_batch_http_request.reset_mock()
+            find_doc_by_title(MagicMock(), "no-match", verify_writable=verify)
+            assert not drive.new_batch_http_request.called, (
+                f"new_batch_http_request() called with verify_writable={verify} "
+                f"and zero matches — probe should be guarded by "
+                f"``and matches`` clause."
+            )

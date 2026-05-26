@@ -26,8 +26,14 @@ def test_owned_by_app_agrees_with_trash_outcome(live_creds):
     doc_id = created["doc_id"]
 
     try:
-        # Find by title with verify_writable on (the default).
-        search = find_doc_by_title(live_creds, unique_title, exact=True)
+        # Find by title with verify_writable explicitly on. v2.2.1
+        # flipped the default to False (R33 audit Gap #3 / CQRS — the
+        # tool is annotated readonly=True so its default must be a
+        # pure read). This test needs the probe-populated owned_by_app
+        # value for the cross-check below, so it opts in explicitly.
+        search = find_doc_by_title(
+            live_creds, unique_title, exact=True, verify_writable=True,
+        )
         match = next(
             (m for m in search["matches"] if m["file_id"] == doc_id), None
         )
