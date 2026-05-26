@@ -61,15 +61,20 @@ MUTATIONS: list[Mutation] = [
         guard="test_trash_file_id_accepts_str_or_list",
         test_path="tests/unit/test_tool_schemas.py::test_trash_file_id_accepts_str_or_list[gdocs_trash_file]",
         description="revert `file_id: str | list[str]` -> `file_id: str` on gdocs_trash_file",
-        file="src/google_docs_mcp/server.py",
-        find="def gdocs_trash_file(file_id: str | list[str]) -> dict:",
-        replace="def gdocs_trash_file(file_id: str) -> dict:",
+        # M3 moved this from server.py to services/drive/tools.py and
+        # added a `creds` first parameter (PR #103/#104).
+        file="src/google_docs_mcp/services/drive/tools.py",
+        find="def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:",
+        replace="def gdocs_trash_file(creds, file_id: str) -> dict:",
     ),
     Mutation(
         guard="test_deploy_webapp_body_does_not_include_entryPoints",
-        test_path="tests/unit/test_gas_deploy.py::test_deploy_webapp_body_does_not_include_entryPoints",
+        # M3 moved this from tests/unit/test_gas_deploy.py to the
+        # service-co-located tests/unit/services/gas_deploy/test_api.py.
+        test_path="tests/unit/services/gas_deploy/test_api.py::test_deploy_webapp_body_does_not_include_entryPoints",
         description="re-add entryPoints to deployments.create body (v1.1.1 bug)",
-        file="src/google_docs_mcp/gas_deploy/client.py",
+        # M3 moved gas_deploy/client.py -> services/gas_deploy/api.py.
+        file="src/google_docs_mcp/services/gas_deploy/api.py",
         find='                    "description": description,\n                },\n            )',
         replace='                    "description": description,\n                    "entryPoints": [{"entryPointType": "WEB_APP"}],\n                },\n            )',
     ),
@@ -77,7 +82,9 @@ MUTATIONS: list[Mutation] = [
         guard="test_tool_descriptions_truthful",
         test_path="tests/unit/test_tool_schemas.py::test_tool_descriptions_truthful",
         description="inject 'works without setup' into a tool description (no OAuth clarifier nearby)",
-        file="src/google_docs_mcp/server.py",
+        # M3 moved gdocs_make_tabbed_doc from server.py to
+        # services/docs/tools.py.
+        file="src/google_docs_mcp/services/docs/tools.py",
         find='"""DEFAULT tool for building a tabbed Google Doc from text content.',
         replace='"""DEFAULT tabbed Google Doc builder. Works without setup.',
     ),
@@ -115,7 +122,8 @@ MUTATIONS: list[Mutation] = [
         guard="test_owned_by_app_agrees_with_trash_outcome",
         test_path="tests/unit/test_soft_failure_contracts.py::test_owned_by_app_agrees_with_trash_outcome",
         description="flip 403-probe branch from False to True -> probe lies about writability",
-        file="src/google_docs_mcp/drive_api.py",
+        # M3 moved drive_api.py -> services/drive/api.py.
+        file="src/google_docs_mcp/services/drive/api.py",
         find='                elif isinstance(exception, HttpError) and exception.status_code == 403:\n                    # Any 403 means we can\'t write. The specific\n                    # reason we care about is appNotAuthorizedToFile,\n                    # but any 403 is "not writable for our purposes."\n                    write_results[fid] = False',
         replace='                elif isinstance(exception, HttpError) and exception.status_code == 403:\n                    # Any 403 means we can\'t write. The specific\n                    # reason we care about is appNotAuthorizedToFile,\n                    # but any 403 is "not writable for our purposes."\n                    write_results[fid] = True',
     ),
