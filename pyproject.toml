@@ -81,7 +81,7 @@ test = [
 # avoid surprise lint-rule churn between local + CI; bump on a separate
 # PR when ready to absorb new findings.
 lint = [
-    "pyright>=1.1.400",
+    "pyright>=1.1.409",
     "ruff>=0.7",
 ]
 
