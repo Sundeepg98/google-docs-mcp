@@ -117,6 +117,93 @@ def register(
     _format_http_error_fn = format_http_error
 
 
+def _resolve_credentials_for_scopes(scopes: list[str] | None) -> Any:
+    """Resolve OAuth credentials for the calling user, optionally with extra scopes.
+
+    Two branches:
+
+    - ``scopes is None`` (the default for ``@workspace_tool(creds=True)``
+      sites that don't declare per-tool scopes): delegate to the
+      bound ``_get_credentials_fn`` (which is
+      ``_tool_helpers._get_credentials`` in production). Preserves the
+      existing standard envelope behavior bit-for-bit; existing tools
+      and tests are unaffected.
+
+    - ``scopes`` is a non-empty list (PR A / Gmail-style per-tool scope
+      declaration): perform explicit two-mode resolution inline with
+      the scopes asserted. Stdio mode passes ``extra_scopes`` to
+      ``auth.load_credentials``; HTTP mode passes ``required_scopes``
+      to ``credentials.get_credentials_for_user`` (which internally
+      calls ``_check_scopes_or_raise`` → ``NeedsReauthError`` with a
+      re-auth URL on partial grant). The ``NeedsReauthError`` is
+      mapped to ``ToolError`` with a Markdown auth-URL link — same
+      exact shape the standard ``_get_credentials`` uses, just
+      threaded with the scope assertion.
+
+    This is the precise pattern ``services/gas_deploy/tools.py`` uses
+    explicitly (creds=False + body-level resolution). The decorator
+    absorbs that boilerplate for the standard ``creds=True`` envelope
+    so per-tool scope declarations (Gmail tri-scope, Calendar future
+    scopes, etc.) live at the decorator site, not in tool bodies.
+
+    Imports are deferred to call time to avoid pulling
+    ``_tool_helpers`` / ``credentials`` / ``auth`` into the module
+    load graph of every consumer that imports
+    ``google_docs_mcp.decorators`` (e.g. ``register()`` callers in
+    test scaffolding that don't need the runtime resolution path).
+    """
+    if scopes is None:
+        # Existing behavior — delegate. Asserts narrow the type so
+        # pyright sees the call site as well-typed.
+        assert _get_credentials_fn is not None
+        return _get_credentials_fn()
+
+    # Deferred import to keep the decorator module free of a top-level
+    # dependency on credentials/auth (mirrors the deferred binding
+    # pattern documented in register()'s docstring).
+    from fastmcp.exceptions import ToolError as _ToolError
+
+    from .auth import default_data_dir, load_credentials
+    from .credentials import (
+        NeedsReauthError,
+        current_user_id_or_none,
+        get_credentials_for_user,
+    )
+    from .oauth_google import resolve_runtime_oauth_config
+
+    user_id = current_user_id_or_none()
+
+    if user_id is None:
+        # Stdio / single-tenant: extra_scopes adds to the baseline.
+        # load_credentials handles the cache-vs-fresh-consent dance,
+        # including deleting a stale token whose granted scopes don't
+        # cover the new required set (forces a fresh OAuth consent).
+        return load_credentials(default_data_dir(), extra_scopes=scopes)
+
+    # HTTP / multi-tenant: required_scopes triggers the explicit
+    # _check_scopes_or_raise inside get_credentials_for_user. On a
+    # partial grant (e.g. user previously consented to gmail.readonly
+    # but this tool needs gmail.send), it raises NeedsReauthError
+    # carrying a fresh auth_url that includes the missing scope via
+    # include_granted_scopes=true.
+    try:
+        return get_credentials_for_user(
+            user_id,
+            required_scopes=scopes,
+            **resolve_runtime_oauth_config(),
+        )
+    except NeedsReauthError as e:
+        # Identical shape to the standard envelope mapping in
+        # _tool_helpers._get_credentials so the user experience
+        # (clickable Markdown re-auth link) is uniform whether the
+        # tool declared scopes or not.
+        raise _ToolError(
+            f"Google API access required.\n\n"
+            f"**[Click here to authorize]({e.auth_url})**\n\n"
+            f"After granting access, re-run this tool."
+        ) from e
+
+
 def workspace_tool(
     *,
     title: str,
@@ -127,6 +214,7 @@ def workspace_tool(
     external: bool,
     output_schema: dict | None = None,
     creds: bool = False,
+    scopes: list[str] | None = None,
 ) -> Callable[[F], F]:
     """Composite decorator: ``@mcp.tool`` + ``ToolAnnotations`` + service tag.
 
@@ -169,12 +257,37 @@ def workspace_tool(
             tools that need custom credential / response shaping (e.g.
             ``gdocs_setup_apps_script`` with NeedsReauthError →
             structured response) opt out and handle their own auth.
+        scopes: Optional list of OAuth scope URLs the tool requires
+            BEYOND ``auth.SCOPES`` baseline. Only consulted when
+            ``creds=True``. When set, the wrapper resolves credentials
+            with the scopes asserted: stdio mode passes ``extra_scopes``
+            to ``auth.load_credentials``; HTTP mode passes
+            ``required_scopes`` to ``credentials.get_credentials_for_user``
+            (which calls ``_check_scopes_or_raise`` — raises
+            ``NeedsReauthError`` with a re-auth URL on partial grant).
+            The existing ``NeedsReauthError → ToolError(markdown
+            auth URL)`` mapping handles the user-facing recovery
+            response; no per-tool boilerplate needed.
+
+            The scope list is ALSO stamped onto ``ToolAnnotations`` as
+            an extra ``scopes`` field — same plumbing as ``service=``.
+            ``tool.annotations.scopes`` is then machine-readable from
+            ``mcp.list_tools()`` for observability / dynamic consent
+            UI / lint of per-tool scope creep.
+
+            Pattern matches ``services/gas_deploy/tools.py``'s explicit
+            ``required_scopes=GAS_DEPLOY_SCOPES`` resolution; the
+            decorator absorbs that boilerplate for the standard
+            ``creds=True`` envelope so future per-tool scope-narrow
+            additions (Gmail tri-scope: ``gmail.readonly`` / send /
+            modify) can declare scopes at the decorator site rather
+            than reach back into ``credentials.py``.
 
     Returns:
         A decorator that registers the function with the FastMCP
         instance, attaches ``ToolAnnotations`` (including ``service``
-        as an extra field), and (optionally) wraps the body with
-        creds injection + HttpError translation.
+        and optional ``scopes`` as extra fields), and (optionally)
+        wraps the body with creds injection + HttpError translation.
     """
     if _mcp_instance is None:
         raise RuntimeError(
@@ -189,17 +302,34 @@ def workspace_tool(
     #
     # pyright doesn't know about pydantic's extra="allow" — the
     # generated stub for ToolAnnotations lists only the 5 declared
-    # fields (title + 4 *Hint), so passing ``service=`` trips
-    # reportCallIssue. The runtime accepts it; the silencer is
+    # fields (title + 4 *Hint), so passing ``service=`` / ``scopes=``
+    # trips reportCallIssue. The runtime accepts both; the silencer is
     # narrowly scoped to this specific call (any future named-arg
     # typo on the 5 declared fields will still fire normally).
+    #
+    # ``scopes`` is stamped here even when ``creds=False`` so the
+    # annotation reflects intent uniformly (a creds=False tool with
+    # scopes= declared would still surface scope info to clients —
+    # though it's expected to be a no-op since the wrapper does the
+    # actual scope assertion). In practice, every site that passes
+    # scopes= will also pass creds=True; the declaration is the
+    # SRP-aligned half (annotation) and the wrapping is the
+    # imperative half (resolution).
+    annotation_kwargs: dict[str, Any] = {
+        "title": title,
+        "readOnlyHint": readonly,
+        "destructiveHint": destructive,
+        "idempotentHint": idempotent,
+        "openWorldHint": external,
+        "service": service,
+    }
+    if scopes is not None:
+        # Freeze into a tuple to discourage downstream mutation of the
+        # annotation surface. ToolAnnotations' pydantic model serializes
+        # it as a JSON array either way.
+        annotation_kwargs["scopes"] = tuple(scopes)
     annotations = ToolAnnotations(
-        title=title,
-        readOnlyHint=readonly,
-        destructiveHint=destructive,
-        idempotentHint=idempotent,
-        openWorldHint=external,
-        service=service,  # pyright: ignore[reportCallIssue]  # extra="allow"
+        **annotation_kwargs,  # pyright: ignore[reportCallIssue]  # extra="allow"
     )
 
     # Build the kwargs dict for @mcp.tool once; passing output_schema=None
@@ -212,6 +342,12 @@ def workspace_tool(
     def decorator(fn: F) -> F:
         if not creds:
             # Pure passthrough — only attach the annotations + register.
+            # scopes= without creds=True is a no-op for resolution but
+            # still gets stamped into ToolAnnotations above so the
+            # declaration is honest. (No-op-with-declaration is
+            # preferred over silent-drop — a future creds=False tool
+            # that does its own resolution can read its own annotation
+            # to discover the declared scopes.)
             return _mcp_instance.tool(**tool_kwargs)(fn)
 
         # creds=True: wrap the body with the standard creds + HttpError
@@ -220,10 +356,9 @@ def workspace_tool(
         # signature-derived input schema stays correct.
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            assert _get_credentials_fn is not None  # narrowing
             assert _format_http_error_fn is not None
             try:
-                creds_obj = _get_credentials_fn()
+                creds_obj = _resolve_credentials_for_scopes(scopes)
                 return fn(creds_obj, *args, **kwargs)
             except HttpError as e:
                 raise ToolError(_format_http_error_fn(e)) from e
@@ -281,6 +416,7 @@ def gdocs_tool(
     external: bool,
     output_schema: dict | None = None,
     creds: bool = False,
+    scopes: list[str] | None = None,
 ) -> Callable[[F], F]:
     """DEPRECATED — use ``@workspace_tool(service="docs", ...)`` instead.
 
@@ -313,4 +449,5 @@ def gdocs_tool(
         external=external,
         output_schema=output_schema,
         creds=creds,
+        scopes=scopes,
     )
