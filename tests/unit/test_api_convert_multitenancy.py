@@ -435,10 +435,10 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
     write into the operator's Drive."""
     from fastmcp.exceptions import ToolError
 
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
         return_value=None,
     ):
         with pytest.raises(ToolError, match="authenticated MCP session"):
@@ -448,10 +448,10 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
 def test_gdocs_get_signed_upload_url_binds_to_caller_user_id():
     """When called inside an MCP auth context, the minted URL embeds the
     caller's Google sub as ``uid``."""
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
         return_value="user-A",
     ):
         result = gdocs_get_signed_upload_url()

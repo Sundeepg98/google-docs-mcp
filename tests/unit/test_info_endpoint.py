@@ -199,7 +199,7 @@ def test_info_endpoint_response_matches_gdocs_server_info(monkeypatch):
     MCP tool reports a problem (or vice versa).
     """
     from google_docs_mcp import keys
-    from google_docs_mcp.server import gdocs_server_info as _info_tool
+    from google_docs_mcp.services.admin.tools import gdocs_server_info as _info_tool
 
     # Land at least one call so both surfaces have non-zero state to
     # compare. The shape contract is what matters; the exact values

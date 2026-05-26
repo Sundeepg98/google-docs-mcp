@@ -236,13 +236,16 @@ def test_signed_url_from_mcp_tool_roundtrips_through_convert_endpoint():
     URL the tool emits ever drifts from what BearerTokenMiddleware
     accepts — different param names, different signing base, key-
     derivation mismatch — this test fails."""
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
 
     user_id = "roundtrip-user-A"
 
     # --- Step 1: mint via the production MCP tool. ---
+    # v2.2.2 (Gap #7): gdocs_get_signed_upload_url moved from server.py
+    # to services/admin/tools.py; the current_user_id_or_none binding
+    # the tool consults lives in that module now.
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
         return_value=user_id,
     ), patch.dict(
         os.environ, {"PUBLIC_BASE_URL": "http://testserver"},

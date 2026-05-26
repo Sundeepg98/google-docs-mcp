@@ -234,7 +234,7 @@ def test_gdocs_help_matches_known_pattern():
     JSON-wire form the LLM sees. Round-trip via ``json.dumps`` to
     mirror what MCP transport actually produces.
     """
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
 
     # Mirror the wire form: tool returns a dict, MCP json-encodes
     # it before handing it to the client.
@@ -260,7 +260,7 @@ def test_gdocs_help_matches_known_pattern():
 def test_gdocs_help_no_match_returns_available():
     """Totally unrelated input must return matched=False + suggestion."""
     from google_docs_mcp.resources import _RECOVERY_TABLE
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
 
     result = gdocs_help("the quick brown fox jumps over the lazy dog")
 
@@ -277,7 +277,7 @@ def test_gdocs_help_no_match_returns_available():
 
 def test_gdocs_help_matches_429_rate_limit():
     """Sanity guard: rate_limited pattern works on a real-shaped string."""
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
 
     result = gdocs_help("Google API error: 429 Too Many Requests. quota...")
 
@@ -297,7 +297,7 @@ def test_gdocs_help_is_case_insensitive():
     case-insensitive matching keeps gdocs_help symmetric with the
     rest of the error-handling code.
     """
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
 
     # Lowercased version of the rate_limited pattern.
     result_lower = gdocs_help("google api error: 429 too many requests")
@@ -380,7 +380,7 @@ def test_round_trip_realistic_response_matches(key):
     strings) skip the ``json.dumps`` step — they're already string
     on the wire.
     """
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
 
     response = _REALISTIC_RESPONSES[key]
     if isinstance(response, str):

@@ -29,7 +29,7 @@ async def test_gdocs_server_info_handles_list_tools_failure():
     well-formed dict — never propagate the underlying exception to
     the caller (where FastMCP would surface it as a 500 with a stack
     trace embedded in the response body)."""
-    from google_docs_mcp.server import gdocs_server_info
+    from google_docs_mcp.services.admin.tools import gdocs_server_info
 
     boom = AsyncMock(side_effect=RuntimeError("boom-secret-internal-state"))
     with patch("google_docs_mcp.server.mcp.list_tools", boom):
@@ -71,7 +71,7 @@ async def test_gdocs_server_info_is_async_so_future_async_guards_apply():
     fires to force a re-design of the leak protection."""
     import inspect
 
-    from google_docs_mcp.server import gdocs_server_info
+    from google_docs_mcp.services.admin.tools import gdocs_server_info
 
     assert inspect.iscoroutinefunction(gdocs_server_info), (
         "gdocs_server_info was async — the R23 B2 leak-protection "
