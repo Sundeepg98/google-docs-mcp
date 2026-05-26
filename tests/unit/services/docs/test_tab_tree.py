@@ -198,3 +198,138 @@ def test_find_tab_by_title_exact_match_only_no_substring():
     ]
     assert _find_tab_by_title(tabs, "Hello") is None
     assert _find_tab_by_title(tabs, "Hello World") is not None
+
+
+# ---------------------------------------------------------------------
+# Hypothesis property tests — _flatten_tab_tree (R1 prediction / R5 Gap #6)
+#
+# Round 1 test architect: "A hypothesis-based property test on
+# _flatten_tab_tree would catch entire bug classes including any
+# off-by-one in the path-tracking — for ~30 LOC." R14 #8 split now
+# unblocks this (pre-split api.py at 1,050 LOC made strategy-driven
+# tests prohibitive; the 99-LOC tab_tree.py is the right granularity).
+#
+# The 4 properties below pin the function's full contract:
+#   1. flat-list length == total tree node count
+#   2. every emitted path is unique (no duplicates)
+#   3. emitted depth == len(path) - 1 (the docstring's stated invariant)
+#   4. pre-order = parent immediately precedes its first child
+#
+# Strategy: recursive dict with random ASCII titles + a small child
+# fanout. ``max_leaves=10`` keeps each generated tree bounded so the
+# 100-example default runs in <1s per test.
+# ---------------------------------------------------------------------
+from hypothesis import given, settings  # noqa: E402 — keep imports near use
+from hypothesis import strategies as st  # noqa: E402
+
+# Bounded recursive strategy: depth typically ≤4, fanout ≤3, leaf
+# count ≤10. Hypothesis shrinks failing trees to their minimum form
+# (e.g. a 2-node tree) on failure, which makes diagnosis trivial.
+_tab_strategy = st.recursive(
+    st.fixed_dictionaries({"title": st.text(min_size=1, max_size=10)}),
+    lambda children: st.fixed_dictionaries({
+        "title": st.text(min_size=1, max_size=10),
+        "children": st.lists(children, max_size=3),
+    }),
+    max_leaves=10,
+)
+
+
+def _count_nodes(tree: dict) -> int:
+    """Count every node in a tree (including the root)."""
+    return 1 + sum(_count_nodes(c) for c in tree.get("children") or [])
+
+
+@given(tree=_tab_strategy)
+def test_property_flatten_tab_tree_preserves_node_count(tree):
+    """Property: ``len(flatten) == total node count`` for any input tree.
+
+    Catches: missing/double-yielding nodes in the recursion, off-by-one
+    in the ``for i, spec in enumerate(specs)`` loop, accidental filter.
+    """
+    flat = _flatten_tab_tree([tree])
+    assert len(flat) == _count_nodes(tree)
+
+
+@given(tree=_tab_strategy)
+def test_property_flatten_tab_tree_no_duplicate_paths(tree):
+    """Property: every emitted ``path`` tuple is unique.
+
+    Paths are constructed from sibling-index tuples; a duplicate would
+    mean the walker visited the same node twice. Catches: parent_path
+    not being threaded correctly, indices being reused across siblings.
+    """
+    flat = _flatten_tab_tree([tree])
+    paths = [path for _depth, path, _spec in flat]
+    assert len(paths) == len(set(paths)), (
+        f"duplicate path(s) in flatten output: paths={paths!r}"
+    )
+
+
+@given(tree=_tab_strategy)
+def test_property_flatten_tab_tree_depth_matches_path_length(tree):
+    """Property: the docstring states ``depth == len(path) - 1``.
+
+    The implementation computes both independently (``depth`` from the
+    recursion's depth tracker, ``len(path)`` from the parent_path chain);
+    a divergence between the two would be a stale-state bug. Pinning
+    the equality forces both code paths to agree forever.
+    """
+    flat = _flatten_tab_tree([tree])
+    for depth, path, _spec in flat:
+        assert depth == len(path) - 1, (
+            f"depth={depth} but len(path)={len(path)} for path={path!r}"
+        )
+
+
+@given(tree=_tab_strategy)
+def test_property_flatten_tab_tree_is_pre_order(tree):
+    """Property: pre-order traversal — every child's emission position
+    comes AFTER its parent's. Catches: post-order regression, breadth-
+    first regression, accidental sort.
+
+    Concretely: for every emitted (path), check that every strict
+    prefix of that path (i.e. its ancestors) appears EARLIER in the
+    flat list. ``()`` (the synthetic root) isn't emitted, so the only
+    prefix that matters for a root-level path ``(i,)`` is empty —
+    auto-satisfied.
+    """
+    flat = _flatten_tab_tree([tree])
+    positions = {path: idx for idx, (_depth, path, _spec) in enumerate(flat)}
+    for path, pos in positions.items():
+        # Every non-empty prefix of ``path`` must already have been
+        # emitted before ``pos``. Skip the empty prefix (synthetic root).
+        for prefix_len in range(1, len(path)):
+            ancestor = path[:prefix_len]
+            assert ancestor in positions, (
+                f"ancestor {ancestor!r} of {path!r} missing from output"
+            )
+            assert positions[ancestor] < pos, (
+                f"ancestor {ancestor!r} (pos {positions[ancestor]}) "
+                f"emitted AFTER descendant {path!r} (pos {pos}) — "
+                f"pre-order violated"
+            )
+
+
+# Hypothesis @settings for the multi-tree variant: bumping to 50
+# examples gives broader coverage on the list-of-trees shape without
+# blowing up runtime. Default 100 × multi-tree fanout would be slow.
+@given(forest=st.lists(_tab_strategy, max_size=5))
+@settings(max_examples=50)
+def test_property_flatten_tab_tree_handles_multi_root_forests(forest):
+    """Property: passing a LIST of top-level trees yields the union of
+    their per-tree flattens with sibling-index paths starting at the
+    forest position. ``_flatten_tab_tree`` is documented as accepting
+    a list; this checks the documented contract on multi-root input.
+    """
+    flat = _flatten_tab_tree(forest)
+    total = sum(_count_nodes(t) for t in forest)
+    assert len(flat) == total
+
+    # Root-level paths must be ``(0,), (1,), ...`` in order — no gaps,
+    # no duplicates, monotonically increasing root indices.
+    root_paths = [path for _d, path, _s in flat if len(path) == 1]
+    expected_roots = [(i,) for i in range(len(forest))]
+    assert root_paths == expected_roots, (
+        f"root-level paths expected {expected_roots!r}, got {root_paths!r}"
+    )
