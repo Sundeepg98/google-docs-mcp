@@ -1,6 +1,7 @@
 """Phase 6 mode-branching tests.
 
-server._get_credentials() and docx_import._resolve_webapp_url() must
+server._get_credentials() (re-exported from _tool_helpers.py since
+M3 Phase C / v2.1.5) and docx_import._resolve_webapp_url() must
 branch correctly on transport mode:
 
 - HTTP / multi-tenant (current_user_id_or_none() returns sub):
@@ -11,6 +12,12 @@ branch correctly on transport mode:
 Without these guards a multi-tenant Fly deploy would route every
 cloud chat user's API calls through the operator's Google identity
 and Apps Script Web App — i.e. exactly the v1.0 broken state.
+
+**M3 Phase C note:** ``_get_credentials`` moved to
+``google_docs_mcp._tool_helpers`` (the 3-consumer extraction trigger:
+docs + drive + gas_deploy all want it). ``server._get_credentials``
+is now a re-export. Patches target ``_tool_helpers`` namespace —
+that's where the function reads its dependencies from.
 """
 from __future__ import annotations
 
@@ -26,13 +33,14 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
 
-    # Clear server.py's module-level creds cache so each test starts clean.
-    import google_docs_mcp.server as server_mod
-    server_mod._creds_cache = None
+    # Clear the module-level creds cache so each test starts clean.
+    # The cache moved from server.py to _tool_helpers.py in M3 Phase C.
+    import google_docs_mcp._tool_helpers as helpers_mod
+    helpers_mod._creds_cache = None
 
     yield tmp_path
 
-    server_mod._creds_cache = None
+    helpers_mod._creds_cache = None
 
 
 # ---------------------------------------------------------------
@@ -46,11 +54,11 @@ def test_get_credentials_stdio_mode_uses_load_credentials(isolated_state):
 
     fake_creds = MagicMock(valid=True)
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none", return_value=None,
+        "google_docs_mcp._tool_helpers.current_user_id_or_none", return_value=None,
     ), patch(
-        "google_docs_mcp.server.load_credentials", return_value=fake_creds,
+        "google_docs_mcp._tool_helpers.load_credentials", return_value=fake_creds,
     ) as load_mock, patch(
-        "google_docs_mcp.server.get_credentials_for_user"
+        "google_docs_mcp._tool_helpers.get_credentials_for_user"
     ) as per_user_mock:
         result = server._get_credentials()
 
@@ -65,19 +73,19 @@ def test_get_credentials_http_mode_uses_per_user_resolver(isolated_state):
 
     fake_creds = MagicMock()
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "google_docs_mcp._tool_helpers.current_user_id_or_none",
         return_value="user-sub-abc",
     ), patch(
-        "google_docs_mcp.server.resolve_runtime_oauth_config",
+        "google_docs_mcp._tool_helpers.resolve_runtime_oauth_config",
         return_value={
             "client_config": {"web": {"client_id": "X", "client_secret": "Y"}},
             "signing_key": "K",
             "base_url": "https://example.fly.dev",
         },
     ), patch(
-        "google_docs_mcp.server.get_credentials_for_user", return_value=fake_creds,
+        "google_docs_mcp._tool_helpers.get_credentials_for_user", return_value=fake_creds,
     ) as per_user_mock, patch(
-        "google_docs_mcp.server.load_credentials"
+        "google_docs_mcp._tool_helpers.load_credentials"
     ) as load_mock:
         result = server._get_credentials()
 
@@ -100,12 +108,12 @@ def test_get_credentials_http_mode_NeedsReauth_raises_ToolError_with_url(
     from google_docs_mcp.credentials import NeedsReauthError
 
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none", return_value="user-1",
+        "google_docs_mcp._tool_helpers.current_user_id_or_none", return_value="user-1",
     ), patch(
-        "google_docs_mcp.server.resolve_runtime_oauth_config",
+        "google_docs_mcp._tool_helpers.resolve_runtime_oauth_config",
         return_value={"client_config": {}, "signing_key": "K", "base_url": "B"},
     ), patch(
-        "google_docs_mcp.server.get_credentials_for_user",
+        "google_docs_mcp._tool_helpers.get_credentials_for_user",
         side_effect=NeedsReauthError(
             "user-1",
             auth_url="https://accounts.google.com/o/oauth2/auth?fake",

@@ -39,7 +39,8 @@ from .tool_schemas import (
     GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
     GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
     GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
-    GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+    # GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA: now imported by
+    # services/gas_deploy/tools.py (M3 Phase C extraction).
     GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
@@ -51,7 +52,8 @@ from .credentials import (
     current_user_id_or_none,
     get_credentials_for_user,
 )
-from .gas_deploy import GAS_DEPLOY_SCOPES
+# GAS_DEPLOY_SCOPES: now imported by services/gas_deploy/tools.py
+# (M3 Phase C — gdocs_setup_apps_script moved out of server.py).
 from .keys import (
     get_first_call_timestamps,
     get_key,
@@ -59,10 +61,8 @@ from .keys import (
     get_total_call_counters,
 )
 from .oauth_google import resolve_runtime_oauth_config
-from .setup_apps_script import (
-    setup_apps_script_auto,
-    setup_apps_script_for_user,
-)
+# setup_apps_script_auto / setup_apps_script_for_user: now imported by
+# services/gas_deploy/tools.py (M3 Phase C extraction).
 
 _SERVER_INSTRUCTIONS = """\
 google-docs-fly — create, edit, read, and manage Google Docs with
@@ -162,62 +162,13 @@ mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
 # without auth middleware. HTTP transport sets mcp.auth = GoogleProvider
 # at startup via configure_auth_for_http() — see main() and Phase 7.
 
-# Lazy module-level cache for the stdio/no-auth-context path. HTTP
-# mode bypasses this entirely — see _get_credentials() below.
-_creds_cache = None
-
-
-def _get_credentials():
-    """Return valid Google API Credentials for the caller.
-
-    Two modes, transparently:
-
-    - **HTTP / multi-tenant** (FastMCP has an auth provider, calling
-      user identified by ``get_access_token().claims["sub"]``):
-      resolve via ``credentials.get_credentials_for_user``. Refreshes
-      per-user, persists back to user_store. On NeedsReauthError,
-      raises ToolError with a Markdown link to the consent URL — the
-      Claude client renders the URL as clickable.
-
-    - **Stdio / single-tenant** (no auth context, local trust model):
-      operator's cached OAuth token at ``~/.google-docs-mcp/token.json``,
-      lazy-loaded and cached in-process. Preserves the v1.0 stdio
-      experience bit-for-bit.
-
-    The mode branch is observable via ``current_user_id_or_none()``
-    returning a value vs None. Until Phase 7 wires GoogleProvider, the
-    HTTP path is dormant and all callers fall into the stdio branch.
-    """
-    user_id = current_user_id_or_none()
-
-    if user_id is None:
-        global _creds_cache
-        if _creds_cache is None or not _creds_cache.valid:
-            _creds_cache = load_credentials(default_data_dir())
-        return _creds_cache
-
-    try:
-        return get_credentials_for_user(
-            user_id, **resolve_runtime_oauth_config(),
-        )
-    except NeedsReauthError as e:
-        # PRESERVE THIS BLOCK through v1.5.0. The v1.5 @gdocs_tool
-        # decorator will also map NeedsReauthError → ToolError; ONE
-        # of the two layers must be removed to avoid double-mapping
-        # (ToolError raised → wrapped as ToolError again, losing the
-        # auth_url markdown link). Removal plan: v1.5.0 deletes this
-        # block when the decorator subsumes it. Until then, this is
-        # the load-bearing mapping for the HTTP-mode auth-required
-        # path. See R27 audit surprise #2.
-        raise ToolError(
-            f"Google API access required.\n\n"
-            f"**[Click here to authorize]({e.auth_url})**\n\n"
-            f"After granting access, re-run this tool."
-        ) from e
-
-
-def _format_http_error(e: HttpError) -> str:
-    return friendly_http_error_message(e)
+# v2.1.5 M3 Phase C: ``_get_credentials`` and ``_format_http_error``
+# moved to ``_tool_helpers.py`` per the 3-consumer extraction trigger
+# (docs + drive + gas_deploy all need them). Re-exported here as
+# module-level names so ``server.<helper>`` attribute access still
+# works (matters for the few callers that imported them off ``server``
+# directly, and for the decorator wiring below).
+from ._tool_helpers import _format_http_error, _get_credentials  # noqa: F401
 
 
 # v2.0.6 (R28 deferral close): wire @gdocs_tool now that the mcp instance
@@ -946,114 +897,11 @@ def gdocs_get_signed_upload_url(
 # can share it without circular imports.
 
 
-@gdocs_tool(
-    title="Provision per-user Apps Script project",
-    readonly=False, destructive=False, idempotent=True, external=True,
-    # creds=False: this tool has its own NeedsReauthError → structured
-    # response handling (returns status="needs_authorization" with
-    # auth_url instead of raising ToolError). The standard decorator
-    # path would lose that structured shape.
-    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
-)
-def gdocs_setup_apps_script() -> dict:
-    """One-shot setup of the Apps Script Web App needed for lossless retrofit.
-
-    Run this once per user (cloud) or once per machine (local stdio)
-    to enable ``gdocs_tab_existing_doc`` — the path that uses Apps
-    Script for lossless content moves (preserving drawings, equations,
-    tables, cell shading that no REST request type can re-emit).
-
-    Without this setup, ``gdocs_tab_existing_doc`` fails with "Apps
-    Script Web App URL not configured." Other tools
-    (``gdocs_make_tabbed_doc``, edit tools, read tools) do not need
-    this Apps-Script-specific setup — but, like all tools in this
-    server, they DO require the one-time Google OAuth authorization
-    grant (Drive + Docs scopes). The OAuth grant happens automatically
-    on first tool call: any tool that needs creds returns
-    ``status: "needs_authorization"`` with a click-to-authorize URL;
-    after consent, all subsequent tools in the session work without
-    further prompts. Only ``gdocs_tab_existing_doc``'s lossless
-    retrofit path additionally needs THIS tool
-    (``gdocs_setup_apps_script``) to have been run once.
-
-    Idempotent: safe to retry if interrupted; resumes from the last
-    successful step. The user_store row (cloud) or
-    ``~/.google-docs-mcp/setup-state.json`` (local) keeps the ledger.
-
-    Returns ``{status, url, script_id, deployment_id, message}`` on
-    success. On cloud-mode auth failure, returns
-    ``{status: "needs_authorization", auth_url, message}`` — emit
-    the message verbatim so Claude renders the URL as a clickable link.
-
-    Choreography: required ONCE before
-    ``gdocs_tab_existing_doc(markers=[...])`` (retrofit path) and the
-    Apps-Script-backed retrofit pipeline in general. After successful
-    setup, run any retrofit conversion freely.
-
-    NOTE: First call typically returns ``needs_authorization`` with a
-    URL the user MUST open in a browser — Google OAuth consent
-    cannot be automated. After consent, re-run this tool to complete
-    the Web App deploy.
-    """
-    user_id = current_user_id_or_none()
-
-    if user_id is None:
-        # Stdio / no-auth-context mode: local CLI behavior.
-        # Uses the operator's cached OAuth token at ~/.google-docs-mcp/.
-        try:
-            deployment = setup_apps_script_auto()
-        except Exception as e:  # noqa: BLE001
-            raise ToolError(f"Apps Script setup failed: {e}") from e
-        return {
-            "status": "ready",
-            "url": deployment.url,
-            "script_id": deployment.script_id,
-            "deployment_id": deployment.deployment_id,
-            "message": (
-                "Apps Script Web App is deployed. You can now use "
-                "gdocs_tab_existing_doc."
-            ),
-        }
-
-    # HTTP / multi-tenant mode: per-user creds, per-user user_store ledger.
-    try:
-        oauth_cfg = resolve_runtime_oauth_config()
-    except RuntimeError as e:
-        raise ToolError(f"Server OAuth config error: {e}") from e
-
-    try:
-        creds = get_credentials_for_user(
-            user_id,
-            required_scopes=GAS_DEPLOY_SCOPES,
-            **oauth_cfg,
-        )
-    except NeedsReauthError as e:
-        return {
-            "status": "needs_authorization",
-            "auth_url": e.auth_url,
-            "message": (
-                f"Google API access required to set up your Apps Script "
-                f"Web App.\n\n**[Click here to authorize]({e.auth_url})**"
-                f"\n\nAfter granting access, re-run this tool."
-            ),
-        }
-
-    try:
-        deployment = setup_apps_script_for_user(creds, user_id)
-    except Exception as e:  # noqa: BLE001
-        raise ToolError(f"Apps Script setup failed: {e}") from e
-
-    return {
-        "status": "ready",
-        "url": deployment.url,
-        "script_id": deployment.script_id,
-        "deployment_id": deployment.deployment_id,
-        "message": (
-            "Apps Script Web App is deployed under your Google account. "
-            "You can now use gdocs_tab_existing_doc and other tools "
-            "that need lossless content moves."
-        ),
-    }
+# gdocs_setup_apps_script: extracted to services/gas_deploy/tools.py
+# in M3 Phase C (v2.1.5). The side-effect import at the bottom of
+# this module triggers its @gdocs_tool registration. The creds=False
+# opt-out is preserved at the new site (the tool has its own
+# NeedsReauthError → structured-response handling).
 
 
 @gdocs_tool(
@@ -1158,8 +1006,11 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
 
     # Bust the module-level creds cache so the next tool call doesn't
     # return the in-memory token that we just deleted from disk.
-    global _creds_cache
-    _creds_cache = None
+    # M3 Phase C (v2.1.5): the cache moved with _get_credentials to
+    # _tool_helpers.py; reset via module attribute since `global`
+    # only declares names from THIS module's scope.
+    from . import _tool_helpers
+    _tool_helpers._creds_cache = None
 
     return {
         "status": "reset",
@@ -1193,6 +1044,7 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
 #   Phase C (next):           gas_deploy/ (1 tool) — pending user review
 from .services.docs import tools as _docs_tools  # noqa: F401, E402 — side-effect import
 from .services.drive import tools as _drive_tools  # noqa: F401, E402 — side-effect import
+from .services.gas_deploy import tools as _gas_deploy_tools  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

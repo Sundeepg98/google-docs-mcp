@@ -35,7 +35,7 @@ def mock_setup():
         client = MagicMock()
         client_class.return_value = client
 
-        from google_docs_mcp.gas_deploy.client import WebAppDeployment
+        from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
         client.script_exists.return_value = True
         client.create_project.return_value = "SCRIPT_ID_NEW"
         client.create_version.return_value = 1
@@ -276,8 +276,12 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
     user_store.save_state(user_id, {"google_creds_json": _json.dumps(payload)})
 
     # Force the cloud-mode branch by making the tool see a user_id.
+    # M3 Phase C (v2.1.5): gdocs_setup_apps_script now lives in
+    # services/gas_deploy/tools.py — patches target that module's
+    # namespace (where the tool reads its dependencies from), not
+    # server.py.
     monkeypatch.setattr(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "google_docs_mcp.services.gas_deploy.tools.current_user_id_or_none",
         lambda: user_id,
     )
 
@@ -295,7 +299,7 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
         },
     }
     monkeypatch.setattr(
-        "google_docs_mcp.server.resolve_runtime_oauth_config",
+        "google_docs_mcp.services.gas_deploy.tools.resolve_runtime_oauth_config",
         lambda: {
             "client_config": client_config,
             # v2.0b: resolve_runtime_oauth_config returns signing_key
@@ -306,7 +310,9 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
         },
     )
 
-    from google_docs_mcp.server import gdocs_setup_apps_script
+    # M3 Phase C (v2.1.5): gdocs_setup_apps_script moved from server.py
+    # to services/gas_deploy/tools.py per the per-service folder pattern.
+    from google_docs_mcp.services.gas_deploy.tools import gdocs_setup_apps_script
 
     result = gdocs_setup_apps_script()
 
@@ -330,7 +336,7 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
 
 # Helpers
 def _deployment(script_id: str, deployment_id: str, url: str):
-    from google_docs_mcp.gas_deploy.client import WebAppDeployment
+    from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
     return WebAppDeployment(
         script_id=script_id,
         deployment_id=deployment_id,

@@ -45,24 +45,19 @@ from google_docs_mcp.tool_schemas import (
 )
 
 
-def _get_server_helpers():
-    """Return (``_get_credentials``, ``_format_http_error``).
-
-    Module-load-time lookup of server.py helpers. Called once at import
-    so the per-call cost is one tuple-unpack, not a fresh attribute
-    lookup. ``server`` is fully loaded by the time ``tools.py`` is
-    imported (the import happens at the bottom of server.py).
-
-    Mirrors the shim in ``services/docs/tools.py``. Per Hex specialist
-    Round 2 guidance: do NOT extract this to ``_tool_helpers.py`` yet —
-    defer until Phase C also replicates the shim, then refactor when
-    the third consumer reveals the right abstraction.
-    """
-    from google_docs_mcp import server as _server
-    return _server._get_credentials, _server._format_http_error
-
-
-_get_credentials, _format_http_error = _get_server_helpers()
+# Tool-layer helpers — direct import from _tool_helpers.
+#
+# M3 Phase C (v2.1.5) extraction trigger landing: the Hex specialist's
+# Round 2 deferral ("don't extract until the third consumer reveals
+# the right abstraction") triggered when gas_deploy/tools.py also
+# needed the same 2 helpers. The 3-consumer subset
+# {_get_credentials, _format_http_error} now lives in
+# _tool_helpers.py — direct top-level import here replaces the
+# pre-Phase-C _get_server_helpers() shim. No server.py reach-back.
+from google_docs_mcp._tool_helpers import (
+    _format_http_error,
+    _get_credentials,
+)
 
 
 # ---------------------------------------------------------------------

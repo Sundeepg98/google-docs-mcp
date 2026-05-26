@@ -64,9 +64,10 @@ def isolated_db(tmp_path, monkeypatch):
       - ``keys._shim_hit_counter``         (per-purpose shim-path
         increments; if a prior test triggered the shim, a later
         test asserting ``shim_hits == 0`` would falsely fail)
-      - ``server._creds_cache``            (operator OAuth creds cache;
+      - ``_tool_helpers._creds_cache``     (operator OAuth creds cache;
         a prior stdio-mode test would leave creds in place and a
-        later HTTP-mode test would skip the per-user resolver)
+        later HTTP-mode test would skip the per-user resolver. Moved
+        from server.py to _tool_helpers.py in M3 Phase C / v2.1.5.)
 
     Also points ``user_store`` and ``default_data_dir()`` at ``tmp_path``
     via env-var override so no test touches ``~/.google-docs-mcp/``.
@@ -91,15 +92,16 @@ def _reset_shared_module_state() -> None:
     can call it explicitly. Imports are inside so importing conftest
     doesn't drag the package in for live-test-only collection.
     """
-    from google_docs_mcp import credentials, keys, user_store
-    from google_docs_mcp import server as server_mod
+    from google_docs_mcp import _tool_helpers, credentials, keys, user_store
 
     user_store._initialized_paths.clear()
     credentials._per_user_locks.clear()
     # keys.py exposes a public test helper that takes the right lock —
     # don't reach into the dict directly here.
     keys._reset_shim_hit_counters_for_tests()
-    server_mod._creds_cache = None
+    # M3 Phase C (v2.1.5): _creds_cache moved from server.py to
+    # _tool_helpers.py with _get_credentials.
+    _tool_helpers._creds_cache = None
 
 
 def pytest_addoption(parser):

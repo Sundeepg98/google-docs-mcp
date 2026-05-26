@@ -72,32 +72,39 @@ from google_docs_mcp.tool_schemas import (
     GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA,
 )
 
-# server.py helpers — imported lazily inside each function to avoid the
-# top-level circular reference. ``server.py`` imports THIS module at
-# its bottom, so when tools.py is first parsed, server.py module-level
-# code has already executed and these names are available.
+# Tool-layer helpers.
 #
-# Lazy via a single deferred binding instead of inline imports
-# everywhere — done once at module load below.
+# M3 Phase C (v2.1.5) split the pre-existing _get_server_helpers()
+# 3-tuple shim because the 3-consumer extraction trigger fired
+# (docs + drive + gas_deploy all want the same 2 of the 3 helpers).
+# Direct top-level imports from _tool_helpers replace the shim for
+# _get_credentials + _format_http_error — they have ZERO server.py
+# dependency, so no circular-import risk.
+#
+# _validate_title is docs-only (TabSpec titles, Drive file names);
+# it STAYS in server.py. Lazy-imported here via a single-purpose
+# shim because server.py imports THIS module at its bottom — so a
+# top-level "from google_docs_mcp.server import _validate_title"
+# would circular at import time.
+from google_docs_mcp._tool_helpers import (
+    _format_http_error,
+    _get_credentials,
+)
 
 
-def _get_server_helpers():
-    """Return (``_validate_title``, ``_get_credentials``, ``_format_http_error``).
+def _get_validate_title():
+    """Module-load-time lookup of server._validate_title.
 
-    Module-load-time lookup of server.py helpers. Called once at import
-    so the per-call cost is one tuple-unpack, not a fresh attribute
-    lookup. ``server`` is fully loaded by the time ``tools.py`` is
-    imported (the import happens at the bottom of server.py).
+    server.py imports tools.py at its bottom — by the time tools.py
+    is parsed, server.py module-level code has finished executing and
+    _validate_title is available. Single attribute lookup at module
+    load; per-call cost is zero.
     """
     from google_docs_mcp import server as _server
-    return (
-        _server._validate_title,
-        _server._get_credentials,
-        _server._format_http_error,
-    )
+    return _server._validate_title
 
 
-_validate_title, _get_credentials, _format_http_error = _get_server_helpers()
+_validate_title = _get_validate_title()
 
 
 # ---------------------------------------------------------------------
