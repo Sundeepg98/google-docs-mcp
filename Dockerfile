@@ -19,18 +19,37 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.5.0 /uv /uvx /usr/local/bin/
 
 # Order matters for layer caching: lockfile + manifest first (rarely
-# change beyond dep-bump PRs), then source. A code-only edit reuses
-# the dep-install layer; a dep-bump invalidates from the COPY of the
-# lockfile downward.
+# change beyond dep-bump PRs), then dep install, THEN source. The two
+# `uv sync` invocations split the work so a code-only edit reuses the
+# heavy deps layer:
+#
+#   1. COPY pyproject.toml + uv.lock + README.md       (changes on
+#      dep bumps only — buildx GHA cache keeps this layer warm)
+#   2. uv sync --no-install-project --frozen --no-dev  (installs ONLY
+#      third-party deps; CACHED unless step 1 invalidates)
+#   3. COPY src                                         (changes every
+#      app-code edit — busts everything below, but NOT step 2)
+#   4. uv sync --no-editable --frozen --no-dev          (now installs
+#      just our package into the existing venv; ~1-2s)
+#
+# v2.3.3: this split is what makes the new GitHub-Actions free
+# builder + buildx GHA cache hit ~3-5 min on warm cache vs ~10 min
+# cold. The pre-v2.3.3 version did a single `uv sync` AFTER
+# `COPY src`, which forced the full dep resolve on every code edit.
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
 
 # --frozen: error if uv.lock and pyproject.toml drift (we want that).
 # --no-dev: skip [project.optional-dependencies] test extras (pytest
 #   etc. don't belong in the runtime image).
-# --no-editable: install the package itself non-editably into the
-#   venv, so the final image doesn't depend on the source layout
-#   matching exactly between build and run.
+# --no-install-project: install dependencies into /app/.venv but do
+#   NOT install the project itself yet (we don't have src/ on disk).
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY src ./src
+
+# Same flags as above, with --no-editable so the project is built as
+# a wheel and installed non-editably. The dep layer is reused; only
+# the project install runs (fast, no network).
 RUN uv sync --frozen --no-dev --no-editable
 
 # Put the venv's bin dir on PATH so `google-docs-mcp` (the
