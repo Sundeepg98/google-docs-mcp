@@ -82,10 +82,19 @@ def env_overrides(monkeypatch, tmp_path):
 def reset_nonce_store():
     """Each test starts with a fresh process-global nonce store so
     nonces from prior tests don't collide. Mirrors the pattern from
-    test_api_convert_multitenancy.py."""
+    test_api_convert_multitenancy.py.
+
+    v2.2.1: the canonical binding lives in ``http_server._state``;
+    middleware + oauth route both access it via late binding through
+    that module, so reassigning the package-level ``_NONCE_STORE``
+    re-export alone would NOT propagate.
+    """
     from google_docs_mcp import http_server
     from google_docs_mcp.crypto import NonceStore
-    http_server._NONCE_STORE = NonceStore()
+    from google_docs_mcp.http_server import _state
+    fresh = NonceStore()
+    _state._NONCE_STORE = fresh
+    http_server._NONCE_STORE = fresh  # keep the re-export in sync
     yield
 
 
@@ -264,13 +273,13 @@ def test_signed_url_from_mcp_tool_roundtrips_through_convert_endpoint():
     client = TestClient(app)
 
     with patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
         side_effect=fake_get_creds_for_user,
     ), patch(
-        "google_docs_mcp.http_server._convert_docx",
+        "google_docs_mcp.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
         return_value=_client_config(),
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -354,7 +363,7 @@ def test_invalid_grant_at_bottom_surfaces_as_401_with_auth_url_through_convert()
             "{'error': 'invalid_grant'})"
         ),
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
         return_value=_client_config(),
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
