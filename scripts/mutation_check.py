@@ -131,7 +131,9 @@ MUTATIONS: list[Mutation] = [
         guard="test_tool_discoverability_via_server_info",
         test_path="tests/unit/test_tool_schemas.py::test_tool_discoverability_via_server_info",
         description="drop alphabetically-first tool from server_info.tools via slice",
-        file="src/google_docs_mcp/server.py",
+        # v2.2.2/PR #114 moved gdocs_server_info from server.py to the
+        # new services/admin/ folder along with the other 6 admin tools.
+        file="src/google_docs_mcp/services/admin/tools.py",
         find="        tool_names = sorted(t.name for t in tools)",
         replace="        tool_names = sorted(t.name for t in tools)[1:]",
         # server_info.tool_count derives from the same list; dropping
@@ -182,6 +184,14 @@ def run_full_unit_suite() -> tuple[int, list[str]]:
     We need the whole suite, not just the targeted test, so we can
     distinguish "the targeted guard caught it" (clean catch) from
     "the patch broke unrelated tests too" (imprecise_patch).
+
+    Hypothesis seed is pinned (--hypothesis-seed=0) so property-based
+    tests in tests/unit/test_docx_import.py and similar generate the
+    SAME inputs every run. Without this, hypothesis picks a fresh
+    random seed per invocation, which means a mutation that's truly
+    unrelated to a property test can still trip it via input drift
+    and surface as a spurious `imprecise_patch` (this is what was
+    keeping deploy red after v2.2.2/PR #114).
     """
     import os
     fd, json_path = tempfile.mkstemp(suffix=".json", prefix="mutation_pytest_")
@@ -193,6 +203,7 @@ def run_full_unit_suite() -> tuple[int, list[str]]:
             [
                 "python", "-m", "pytest", "tests/unit",
                 "-q", "--tb=no", "--no-header",
+                "--hypothesis-seed=0",
                 "--json-report", f"--json-report-file={json_path}",
             ],
             capture_output=True, text=True,
