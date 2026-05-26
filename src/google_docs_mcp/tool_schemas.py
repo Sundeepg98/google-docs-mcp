@@ -226,6 +226,27 @@ GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA = _object(
 )
 
 
+# v2.3.0 — Drive sharing (services/drive/sharing.py)
+GDOCS_SHARE_FILE_OUTPUT_SCHEMA = _object(
+    properties={
+        "permission_id": {"type": "string"},
+        "role": {"type": "string"},
+        "granted_to": {"type": "string"},
+        "file_id": {"type": "string"},
+    },
+    required=["permission_id", "role", "file_id"],
+)
+
+
+GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA = _object(
+    properties={
+        "file_id": {"type": "string"},
+        "permissions": {"type": "array"},
+    },
+    required=["file_id", "permissions"],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -430,6 +451,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_move_to_folder": GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
     "gdocs_trash_file": GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     "gdocs_untrash_file": GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+    "gdocs_share_file": GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
+    "gdocs_list_permissions": GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,

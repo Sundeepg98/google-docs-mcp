@@ -7,17 +7,26 @@ the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
 decorator.
 
-**Tools registered here** (4 drive-service tools):
+**Tools registered here** (6 drive-service tools):
 
 1. ``gdocs_find_doc_by_title`` — look up a Google Doc / .docx by title (search)
 2. ``gdocs_move_to_folder``    — move a file into a Drive folder
 3. ``gdocs_untrash_file``      — restore a trashed file (single or batch)
 4. ``gdocs_trash_file``        — move a file to trash (single or batch)
+5. ``gdocs_share_file``        — grant a user permission on a file (v2.3.0)
+6. ``gdocs_list_permissions``  — list who has access to a file (v2.3.0)
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
 in this module since it's drive-specific). Soft-failure handling (404 /
 403 returned as data, not raised) is preserved bit-for-bit.
+
+The sharing tools (5, 6) delegate to ``services/drive/sharing.py`` —
+a separate sub-module per the multi-service feasibility audit
+("sharing model is a different mental domain"). They reuse the same
+``google_clients.get_service`` chokepoint and ``drive.file`` OAuth
+scope, so no auth surface change shipped with v2.3.0 — only new
+behavior on already-granted scopes.
 
 **Import discipline.** This module reaches back into ``server.py`` for
 ``_get_credentials`` + ``_format_http_error`` via the same
@@ -37,9 +46,15 @@ from google_docs_mcp.services.drive.api import (
     trash_drive_file as _trash_drive_file,
     untrash_drive_file as _untrash_drive_file,
 )
+from google_docs_mcp.services.drive.sharing import (
+    grant_permission as _grant_permission,
+    list_permissions as _list_permissions,
+)
 from google_docs_mcp.tool_schemas import (
     GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+    GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
     GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+    GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
 )
@@ -343,3 +358,132 @@ def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     if isinstance(file_id, list):
         return _run_batch(file_id, _trash_drive_file, "trashed")
     return _trash_drive_file(creds, file_id)
+
+
+# ---------------------------------------------------------------------
+# 5. gdocs_share_file (v2.3.0 — first new tool of the multi-service era)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Grant a user access to a Google Drive file",
+    readonly=False,
+    destructive=False,
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_share_file(
+    creds,
+    drive_file_id: str,
+    email: str,
+    role: str = "writer",
+    notify: bool = True,
+    message: str = "",
+) -> dict:
+    """Grant a user access to a Google Drive file (Doc, Sheet, Slide, .docx).
+
+    USE WHEN: you just created or converted a doc for the user and
+    they want to share it with a colleague / reviewer / external
+    recipient. Or when the agent needs to programmatically grant
+    access (e.g. a shared review folder, a course-distribution flow).
+
+    Uses Drive's ``permissions.create`` REST endpoint. Roles map to
+    Drive UI labels: ``"reader"`` = "Viewer", ``"writer"`` = "Editor"
+    (DEFAULT), ``"commenter"`` = "Commenter".
+
+    Args:
+        drive_file_id: The file to share. From a prior create call,
+            ``gdocs_find_doc_by_title``, or the user.
+        email: Recipient's email address. Drive validates the address
+            format and returns 400 on garbage input.
+        role: Permission level — ``"reader"`` / ``"writer"`` (default)
+            / ``"commenter"``. Other values rejected client-side.
+        notify: When True (default), Drive sends a notification email
+            to the recipient (Drive's standard "<owner> shared a doc
+            with you" template). False suppresses the email; the
+            permission still applies but the recipient has to learn
+            of the share through another channel.
+        message: Optional custom message included in the notification
+            email. Ignored when ``notify=False``.
+
+    Returns:
+        ``{permission_id, role, granted_to, file_id}``. Record the
+        ``permission_id`` if you might want to revoke the share later
+        (a future ``gdocs_revoke_permission`` tool will accept it).
+
+    Choreography: ``drive_file_id`` typically from a recent create
+    call (``gdocs_make_tabbed_doc`` / ``gdocs_tab_existing_doc``) or
+    from ``gdocs_find_doc_by_title``. Call ``gdocs_list_permissions``
+    afterward to verify the share landed.
+
+    NOTE: same app-ownership constraint as the trash / move tools —
+    only works on files THIS app's ``drive.file`` scope can write to.
+    Sharing a file the app didn't create returns HTTP 403
+    ``appNotAuthorizedToFile``; the file's owner must grant access
+    via the Drive UI instead.
+    """
+    return _grant_permission(
+        creds,
+        drive_file_id=drive_file_id,
+        email=email,
+        role=role,
+        notify=notify,
+        message=message,
+    )
+
+
+# ---------------------------------------------------------------------
+# 6. gdocs_list_permissions (v2.3.0)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="List who has access to a Google Drive file",
+    # Pure read — no writes, no audit-log side-effects (unlike
+    # find_doc_by_title's optional verify_writable probe). The CQRS
+    # lesson from R33 audit Gap #3 / PR #107 is preserved by default.
+    readonly=True,
+    destructive=False,
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
+)
+def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
+    """List who has access to a Google Drive file — the share roster.
+
+    USE WHEN: confirming a share landed (after ``gdocs_share_file``),
+    auditing who can see / edit a sensitive doc, or before a
+    teardown to enumerate revoke targets.
+
+    Uses Drive's ``permissions.list`` REST endpoint. Returns the raw
+    Drive shape per entry with the four most useful fields surfaced:
+    ``id`` (the permission_id — input to a future revoke), ``role``
+    (reader / writer / commenter / owner), ``type`` (user / group /
+    domain / anyone), ``emailAddress`` (present for user / group;
+    absent for domain / anyone shares).
+
+    Args:
+        drive_file_id: The file whose permissions to enumerate.
+
+    Returns:
+        ``{file_id, permissions: [{id, emailAddress, role, type}, ...]}``.
+        ``permissions`` is empty when the file is private (only the
+        owner can see it). The owner ALWAYS appears in the list with
+        ``role="owner"``.
+
+    Choreography: pair with ``gdocs_share_file`` for verify-after-grant.
+    The ``permission_id`` on each entry is the handle a future
+    ``gdocs_revoke_permission`` tool will accept.
+
+    NOTE: same app-ownership constraint as the rest of the drive
+    tools — ``drive.file`` scope limits visibility to files this app
+    created. Files created by other apps return HTTP 403
+    ``appNotAuthorizedToFile``; the file's owner must share / inspect
+    via the Drive UI instead.
+    """
+    return _list_permissions(creds, drive_file_id)

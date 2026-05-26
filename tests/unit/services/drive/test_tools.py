@@ -5,12 +5,14 @@ not delivered for the drive service either. Sister file to
 ``tests/unit/services/docs/test_tools.py``, applying the same canonical
 pattern (PR #103 → PR #110 → here) at the drive surface.
 
-The 4 drive tools:
+The 6 drive tools:
 
   1. gdocs_find_doc_by_title — title search; q= DSL construction
   2. gdocs_move_to_folder    — addParents/removeParents
   3. gdocs_trash_file        — single-ID + list-batch trash
   4. gdocs_untrash_file      — single-ID + list-batch untrash
+  5. gdocs_share_file        — permissions.create (v2.3.0)
+  6. gdocs_list_permissions  — permissions.list (v2.3.0)
 
 The trash/untrash tools accept either a single ``file_id`` (str) or
 a list (batch); a happy-path test for each form exercises the
@@ -297,3 +299,70 @@ def test_gdocs_trash_file_invokes_get_credentials_fn(
         "_get_credentials_fn was not called exactly once — the "
         "decorator envelope may have changed or the fixture missed."
     )
+
+
+# ---------------------------------------------------------------------
+# 5. gdocs_share_file — happy-path (v2.3.0)
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_share_file_happy_path_returns_flat_envelope(with_drive_stub):
+    """The tool delegates to ``sharing.grant_permission`` and surfaces
+    its ``{permission_id, role, granted_to, file_id}`` envelope through
+    the standard ``@workspace_tool(creds=True)`` boundary."""
+    with_drive_stub.permissions().create().execute.return_value = {
+        "id": "PERM-001",
+        "emailAddress": "bob@example.com",
+        "role": "writer",
+        "type": "user",
+    }
+    result = tools.gdocs_share_file(
+        drive_file_id="FILE-ABC",
+        email="bob@example.com",
+        role="writer",
+    )
+    assert result == {
+        "permission_id": "PERM-001",
+        "role": "writer",
+        "granted_to": "bob@example.com",
+        "file_id": "FILE-ABC",
+    }
+
+
+def test_gdocs_share_file_rejects_invalid_role_via_sharing_module(
+    with_drive_stub,
+):
+    """The ``role`` allowlist is enforced by the sharing module's
+    pre-API validation. The tool layer passes inputs through verbatim,
+    so an invalid role bubbles up as ValueError (which the decorator
+    envelope wraps into a structured response for cloud-chat callers)."""
+    with pytest.raises(ValueError, match="role must be one of"):
+        tools.gdocs_share_file(
+            drive_file_id="FILE1",
+            email="u@e.com",
+            role="editor",  # Drive UI label, NOT a valid API literal
+        )
+
+
+# ---------------------------------------------------------------------
+# 6. gdocs_list_permissions — happy-path (v2.3.0)
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_list_permissions_happy_path_returns_envelope(with_drive_stub):
+    """The tool surfaces ``{file_id, permissions: [...]}`` from
+    Drive's ``permissions.list`` response. Demonstrates the standard
+    decorator envelope handles a pure-read drive-service tool with
+    no special-casing."""
+    with_drive_stub.permissions().list().execute.return_value = {
+        "permissions": [
+            {"id": "p-owner", "emailAddress": "owner@e.com",
+             "role": "owner", "type": "user"},
+            {"id": "p-1", "emailAddress": "alice@e.com",
+             "role": "writer", "type": "user"},
+        ],
+    }
+    result = tools.gdocs_list_permissions(drive_file_id="FILE-SHARED")
+    assert result["file_id"] == "FILE-SHARED"
+    assert len(result["permissions"]) == 2
+    assert result["permissions"][0]["role"] == "owner"
