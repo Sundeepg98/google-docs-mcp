@@ -63,10 +63,19 @@ def isolated_state(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_nonce_store():
     """Each test starts with a fresh process-global nonce store so
-    nonces from prior tests don't collide."""
+    nonces from prior tests don't collide.
+
+    v2.2.1: the canonical binding lives in ``http_server._state``;
+    middleware + oauth route both access it via late binding through
+    that module, so reassigning the package-level ``_NONCE_STORE``
+    re-export (in ``http_server.__init__``) would NOT propagate.
+    """
     from google_docs_mcp import http_server
     from google_docs_mcp.crypto import NonceStore
-    http_server._NONCE_STORE = NonceStore()
+    from google_docs_mcp.http_server import _state
+    fresh = NonceStore()
+    _state._NONCE_STORE = fresh
+    http_server._NONCE_STORE = fresh  # keep the re-export in sync for any test that reads it
     yield
 
 
@@ -249,16 +258,16 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
         side_effect=fake_get_creds_for_user,
     ), patch(
-        "google_docs_mcp.http_server.load_credentials",
+        "google_docs_mcp.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server._convert_docx",
+        "google_docs_mcp.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -291,10 +300,10 @@ def test_convert_endpoint_returns_401_with_auth_url_on_needs_reauth():
         )
 
     with patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
         side_effect=raise_needs_reauth,
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -327,13 +336,13 @@ def test_convert_endpoint_bearer_header_still_uses_operator_creds():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.load_credentials",
+        "google_docs_mcp.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
         side_effect=fail_get_per_user,
     ), patch(
-        "google_docs_mcp.http_server._convert_docx",
+        "google_docs_mcp.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ):
         resp = client.post(
