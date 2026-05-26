@@ -170,6 +170,104 @@ def test_default_scope_str_patched_on_private_attr():
     assert provider._default_scope_str == expected
 
 
+# ---------------------------------------------------------------------------
+# R16 F4 regression test — closes audit Gap #4 (R12 A.3, R16 F8, R30 named)
+# ---------------------------------------------------------------------------
+#
+# The two tests above (test_default_scopes_patched_on_client_registration_options
+# and test_default_scope_str_patched_on_private_attr) both use ``MagicMock``
+# for the provider. That patches OUR mutation logic but cannot catch the
+# upstream-breakage class: if FastMCP renames ``_default_scope_str`` in a
+# future minor version, MagicMock silently auto-creates the attribute on
+# write and both tests pass — while production code's same assignment line
+# becomes a silent no-op (the scope override stops applying; Claude Code's
+# CIMD flow falls back to identity-only and every Workspace tool call 401s
+# with insufficient scope).
+#
+# The tests below pin the contract by instantiating a REAL ``GoogleProvider``
+# from the pinned ``fastmcp`` and asserting the private attributes our
+# post-init patches target actually exist on a freshly-constructed instance.
+# If a fastmcp upgrade removes any of them, these tests turn red at CI
+# time — BEFORE the deploy that would silently break the OAuth flow.
+
+
+def test_fastmcp_GoogleProvider_still_has_default_scope_str_private_attr():
+    """Pin the FastMCP private-attr contract for ``_default_scope_str``.
+
+    ``oauth_google.py:162`` does an UNCONDITIONAL assignment to
+    ``provider._default_scope_str``. If FastMCP renames or removes
+    this private attribute, our assignment becomes a silent no-op
+    (Python allows setting arbitrary attributes on most objects),
+    and the CIMD-side scope override stops applying — Claude Code
+    clients fall back to identity-only and Workspace tool calls
+    401 in production.
+
+    Three audit rounds flagged this (R12 finding A.3, R16 F4/F8,
+    R30 in the named-version block). This test closes the gap at
+    near-zero cost: instantiate a real GoogleProvider with throw-
+    away creds and assert the attribute exists.
+
+    Failure mode (= what triggers this test red):
+      - fastmcp upgrade renames ``_default_scope_str`` to something
+        else (e.g. ``default_scope_str``, ``_scope_default_str``)
+      - fastmcp upgrade replaces the str-typed scope cache with a
+        method / property / removed slot
+
+    Recovery if this test goes red:
+      - (a) Pin fastmcp to the previous working minor version in
+        ``pyproject.toml`` until oauth_google.py can be refactored
+      - (b) Refactor oauth_google.py to use a public FastMCP scope
+        API (preferred long-term)
+    """
+    from fastmcp.server.auth.providers.google import GoogleProvider
+
+    # Real GoogleProvider, throwaway creds — we never actually issue
+    # tokens; we just need the constructed instance to inspect.
+    provider = GoogleProvider(
+        client_id="test",
+        client_secret="test",
+        base_url="http://test",
+    )
+    assert hasattr(provider, "_default_scope_str"), (
+        "FastMCP GoogleProvider lost the ``_default_scope_str`` private "
+        "attribute. oauth_google.py:162 still ASSIGNS to it (silently no-op "
+        "on a missing attr in Python); the CIMD scope-override path is now "
+        "broken. Fix: pin fastmcp to the prior working version OR refactor "
+        "oauth_google.py to use a public scope API. See test docstring."
+    )
+
+
+def test_fastmcp_GoogleProvider_still_has_client_registration_options_attr():
+    """Pin the FastMCP attribute contract for ``client_registration_options``.
+
+    Companion to ``test_fastmcp_GoogleProvider_still_has_default_scope_str_private_attr``.
+    ``oauth_google.py:156`` reads ``client_registration_options`` via
+    ``getattr(provider, "client_registration_options", None)`` and patches
+    its ``default_scopes`` — the DCR-side scope override that Claude.ai's
+    connector consumes. The ``getattr`` makes the production code defensive
+    against the attribute disappearing (it would silently skip the patch
+    and 401 every Claude.ai Workspace call), so this test pins the contract
+    explicitly: if FastMCP renames this, we want the failure at CI time,
+    not in production telemetry.
+
+    Same recovery options as the sister test.
+    """
+    from fastmcp.server.auth.providers.google import GoogleProvider
+
+    provider = GoogleProvider(
+        client_id="test",
+        client_secret="test",
+        base_url="http://test",
+    )
+    assert hasattr(provider, "client_registration_options"), (
+        "FastMCP GoogleProvider lost ``client_registration_options``. "
+        "oauth_google.py:156 silently skips its DCR-side scope patch when "
+        "this attr is missing — Claude.ai's connector then only requests "
+        "identity scopes and every Workspace tool call 401s. Same fix "
+        "options as the ``_default_scope_str`` sister test."
+    )
+
+
 def test_insecure_transport_envvar_refused(monkeypatch):
     """Foot-gun guard: refuse to run if OAUTHLIB_INSECURE_TRANSPORT=1
     is set. This is for localhost HTTP dev only; on Fly (HTTPS) it
