@@ -1,4 +1,4 @@
-"""Multi-service tool-registration guards (M3 + Gap #7 + v2.3.0).
+"""Multi-service tool-registration guards (M3 + Gap #7 + v2.3.0 + v2.3.1).
 
 These tests verify the central M3 invariant: importing
 ``google_docs_mcp`` (and therefore ``server.py``) registers every
@@ -17,22 +17,29 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after v2.3.0 Drive-sharing bolt-on** (sum must equal 26):
+**Partition state after v2.3.1 Sheets 2nd-new-service** (sum must equal 29):
 
   DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS      =  6  (Phase B + v2.3.0, services/drive/tools.py)
   GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C,  services/gas_deploy/tools.py)
   ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
+  SHEETS_SERVICE_TOOLS     =  3  (v2.3.1,   services/sheets/tools.py)
   NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
                                    contains NO tool definitions)
                            ─────
-  EXPECTED_TOOLS           = 26
+  EXPECTED_TOOLS           = 29
 
-v2.3.0 added ``gdocs_share_file`` + ``gdocs_list_permissions`` to the
-drive service, both backed by the new ``services/drive/sharing.py``
-sub-module. This was the first empirical bolt-on validating the
-per-service-folder pattern's "1-folder, no foundation rework" claim.
-The 24 → 26 count drift is the only partition surface change.
+v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
+to the drive service (1st empirical bolt-on).
+
+v2.3.1 (this PR) adds the 3 minimal Sheets tools as the 2nd new
+service, proving the per-service-folder template scales beyond a
+single-folder bolt-on. The Sheets ``batchUpdate`` tagged-union (40+
+request types: formatting, charts, pivots, conditional formats, etc.)
+is deferred to a follow-up PR per the multi-service feasibility
+audit's "pattern stretch" note. The count drift is the only partition
+surface change; the PR #117 papercut fix means no test-assertion
+literals require updating.
 
 Consumer tests under ``tests/unit/services/<svc>/`` use
 ``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
@@ -109,6 +116,19 @@ ADMIN_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_reset_authorization",
 })
 
+# Sheets-service tools — v2.3.1 (this PR). 2nd new service after the
+# Drive sharing bolt-on (PR #117). Minimal start: range read/write +
+# create. The Sheets ``batchUpdate`` tagged-union (40+ request types
+# for formatting / charts / pivots / etc.) is deferred to a follow-up
+# PR per the multi-service feasibility audit's "pattern stretch" note —
+# this PR proves the foundation extends to a NEW Google service, not
+# the design of the batchUpdate abstraction itself.
+SHEETS_SERVICE_TOOLS: frozenset[str] = frozenset({
+    "gsheets_read_range",
+    "gsheets_write_range",
+    "gsheets_create_spreadsheet",
+})
+
 # Gap #7 emptied this set: every tool now belongs to a service folder.
 # Kept as an empty frozenset (not deleted) so existing callers /
 # external test sweeps that import the name keep working. If a future
@@ -123,6 +143,7 @@ NON_DOCS_TOOLS: frozenset[str] = (
     DRIVE_SERVICE_TOOLS
     | GAS_DEPLOY_SERVICE_TOOLS
     | ADMIN_SERVICE_TOOLS
+    | SHEETS_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -131,6 +152,7 @@ EXPECTED_TOOLS: frozenset[str] = (
     | DRIVE_SERVICE_TOOLS
     | GAS_DEPLOY_SERVICE_TOOLS
     | ADMIN_SERVICE_TOOLS
+    | SHEETS_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -367,6 +389,38 @@ def test_gas_deploy_service_tools_register_from_services_gas_deploy_tools_module
         )
 
 
+def test_sheets_service_tools_register_from_services_sheets_tools_module():
+    """v2.3.1: the 3 sheets-service tools must be defined in
+    ``services/sheets/tools.py``, NOT in server.py. Symmetric to the
+    docs / drive / gas_deploy / admin registration guards — same
+    ``__module__`` + no-shadow invariants applied uniformly.
+
+    Catches a regression where someone re-adds a sheets tool to
+    server.py by accident (e.g. a copy-paste from a pre-v2.3.1
+    commit). Also catches the "side-effect import missing" landmine
+    if ``server.py`` ever loses its
+    ``from .services.sheets import tools as _sheets_tools`` line —
+    the tool registration would silently fail.
+    """
+    from google_docs_mcp.services.sheets import tools as sheets_tools
+
+    for tool_name in SHEETS_SERVICE_TOOLS:
+        assert hasattr(sheets_tools, tool_name), (
+            f"{tool_name} not found in services.sheets.tools — "
+            f"v2.3.1 added it; ensure it's defined there."
+        )
+        fn = getattr(sheets_tools, tool_name)
+        assert fn.__module__ == "google_docs_mcp.services.sheets.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.sheets.tools'."
+        )
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. Sheets tools live in services/sheets/tools.py."
+        )
+
+
 # ---------------------------------------------------------------------
 # Sanity: a docs-service tool is callable through the live registry
 # ---------------------------------------------------------------------
@@ -418,6 +472,8 @@ _EXPECTED_SERVICE_BY_TOOL: dict[str, str] = {
     # The 3-way split (introspection / admin / auth) was considered and
     # rejected — adds enum values without behavioral payoff. See PR body.
     **{name: "admin" for name in ADMIN_SERVICE_TOOLS},
+    # v2.3.1: 2nd new service. Sheets tools carry service="sheets".
+    **{name: "sheets" for name in SHEETS_SERVICE_TOOLS},
 }
 
 

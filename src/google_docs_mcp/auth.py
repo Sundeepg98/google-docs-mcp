@@ -25,6 +25,15 @@ SCOPES = [
     # chat's Drive connector). Required for the ``docx_drive_file_id``
     # input path on convert_docx_to_tabbed_doc.
     "https://www.googleapis.com/auth/drive.readonly",
+    # v2.3.1 — Sheets read/write/create for the 2nd new service. The
+    # full ``spreadsheets`` scope (not the narrower
+    # ``spreadsheets.readonly``) is needed because gsheets_write_range
+    # and gsheets_create_spreadsheet mutate the sheet. Existing users
+    # pick this up automatically on next token refresh via the
+    # ``include_granted_scopes=true`` incremental-consent flow (same
+    # pattern that handled the earlier drive.readonly + Apps Script
+    # scope additions); no forced re-consent.
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 

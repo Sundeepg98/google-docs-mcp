@@ -53,6 +53,11 @@ READONLY_TOOLS = {
     # side-effects. Sister tool ``gdocs_share_file`` is NOT here
     # (it mutates the ACL via permissions.create).
     "gdocs_list_permissions",
+    # v2.3.1: Sheets values.get — pure read of cell values. Sister
+    # tools ``gsheets_write_range`` (overwrites cells) and
+    # ``gsheets_create_spreadsheet`` (creates a new resource) are
+    # NOT readonly.
+    "gsheets_read_range",
 }
 
 

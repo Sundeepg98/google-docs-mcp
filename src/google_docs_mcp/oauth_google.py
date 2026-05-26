@@ -53,6 +53,11 @@ GOOGLE_API_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive.readonly",
+    # v2.3.1: Sheets read/write/create for the 2nd new service.
+    # See auth.py:SCOPES for the rationale + non-breaking note.
+    # Mirrored here so HTTP/cloud-mode users get the same consent
+    # screen as stdio-mode users.
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 CALLBACK_PATH = "/oauth/google/api/callback"
