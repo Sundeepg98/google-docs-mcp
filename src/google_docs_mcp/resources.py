@@ -179,19 +179,18 @@ _RECOVERY_TABLE: dict[str, RecoveryEntry] = {
         "planned": True,
         "do": (
             "PLANNED v2.0 entry — no current code path emits this "
-            "string. When v2.0 ships, the Apps Script Web App "
-            "attached to the user will be hash-checked; an out-of-"
-            "band edit will surface this error. Recovery: call "
-            "gdocs_setup_apps_script to regenerate the deployment "
+            "string. When v2.0 ships, the Workspace automation "
+            "runtime attached to the user will be hash-checked; an "
+            "out-of-band edit will surface this error. Recovery: "
+            "call gdocs_install_automation to re-install the runtime "
             "and refresh cached state, then retry the original "
             "tool once."
         ),
         "user_message": (
-            "Your Apps Script helper was changed outside this "
-            "connection. I am re-deploying a fresh copy now — one "
-            "moment."
+            "Your Workspace automation runtime was changed outside "
+            "this connection. I am re-installing it now — one moment."
         ),
-        "related_tool": "gdocs_setup_apps_script",
+        "related_tool": "gdocs_install_automation",
     },
     "rate_limited": {
         # Real emitter: errors.py:69 ``friendly_http_error_message``

@@ -4,6 +4,37 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — PR-α reframe
+
+Strategic copy + naming change. Positions the Apps-Script-backed
+installer as the headline **Workspace Automation runtime** install
+rather than as hidden infrastructure plumbing. Same underlying
+behavior; new user-facing framing.
+
+### Added
+
+- **`gdocs_install_automation` MCP tool** — canonical, user-facing name for the Workspace Automation runtime installer. One-time per-user install that enables Claude to build persistent workflows in the user's Workspace: time-driven jobs, custom menus inside docs/sheets/slides, reactive automations that fire when data changes. After install, automations live in the user's account and run on Google's infrastructure without Claude in the loop. Returns the same `{status, url, script_id, deployment_id, message}` envelope as the old name; the consent and success messages now describe the capability being unlocked rather than the deployment mechanics.
+
+### Changed
+
+- **`gdocs_setup_apps_script` is now a deprecation alias** for `gdocs_install_automation`. The old name remains a registered MCP tool — existing user prompts, saved automations, and external integrations that reference the old name continue to work — but calling it emits a `DeprecationWarning` instructing the caller to migrate. Both tools delegate to a single shared `_install_automation_runtime()` helper in `services/gas_deploy/tools.py`; the no-divergence invariant is pinned by a structural test (`test_alias_and_canonical_share_underlying_implementation`).
+- **User-facing consent + success copy reframed** to lead with the capability (automation runtime install) rather than the mechanism (Apps Script Web App deploy). The `needs_authorization` message reads "Install your custom Workspace automation runtime — Google will ask you to authorize the workflow installer" instead of "Google API access required to set up your Apps Script Web App." Success messages explain what was unlocked (scheduled jobs, custom menus, reactive workflows) rather than what was deployed (a Web App URL). Copy is asserted by tests so a future "let me revert this for clarity" change can't slip in unnoticed.
+- **LLM_RECOVERY entry `apps_script_modified` rewritten** to recommend `gdocs_install_automation` for runtime re-install + use the "Workspace automation runtime" framing in the user-facing message.
+- **Retrofit error message in `docx_import.py` reframed** — when the runtime isn't installed yet and a user hits the retrofit path, the error now reads "Workspace automation runtime not yet installed for your account. Run the gdocs_install_automation tool first…" instead of the prior Apps-Script-Web-App phrasing.
+- **`gdocs_guide()` orientation surface** — the `setup_and_auth` group lists `gdocs_install_automation` as the canonical entry; the deprecation alias is intentionally omitted from the user-facing group so the orientation surface stays clean.
+- **README + USER_GUIDE + TOOL_CONTRACT + LLM_RECOVERY** updated to the new canonical name. USER_GUIDE explicitly notes that the old name still works and will be removed in v3.0 (so any cached user knowledge of `gdocs_setup_apps_script` continues to find a working tool and a clear migration message).
+
+### Deprecated
+
+- **`gdocs_setup_apps_script`** — use `gdocs_install_automation` instead. Planned removal in **v3.0**. The alias emits a `DeprecationWarning` on every call.
+
+### Out of scope (deferred to follow-up PRs)
+
+- No change to the underlying Apps Script template (`restructure.gs`) — next PR's scope.
+- No new tools beyond the rename + alias — separate PR.
+- No change to the OAuth scope set in `services/gas_deploy/scopes.py` — same scopes, new copy.
+- No sidebar HTML / progress UI — separate PR.
+
 ## [2.0.6] — 2026-05-20
 
 Eight-PR consolidation wave (#78–#85). Closes the silent e2e CI gap that had been hiding integration-test + chaos-harness + pip-audit + pyright + ruff failures since v1.4.0c (PR #26): the `e2e.yml` workflow had been broken by an invalid `runner.temp` reference in job-level `env`, rejected by GitHub's validator with HTTP 422, since the day it shipped — none of the gated tests ever actually ran in CI. PR #82 fixes that; the rest of this wave is the work that landed clean once CI was actually validating it. Also lays the `@gdocs_tool` decorator groundwork for the multi-service `@workspace_tool` rename (see `docs/ARCHITECTURE.md` §7 M4).

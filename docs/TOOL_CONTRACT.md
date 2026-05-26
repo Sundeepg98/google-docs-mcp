@@ -50,7 +50,7 @@ tabs: list[TabSpec]              # ≥1 item
 
 ### 3.2–3.22
 
-Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference `src/google_docs_mcp/server.py` for the live docstrings + contract versions for: `gdocs_tab_existing_doc`, `gdocs_preview_tab_split`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_delete_tab`, `gdocs_get_doc_outline`, `gdocs_read_doc`, `gdocs_replace_all_text`, `gdocs_get_tab_url`, `gdocs_find_doc_by_title`, `gdocs_move_to_folder`, `gdocs_trash_file`, `gdocs_untrash_file`, `gdocs_get_signed_upload_url`, `gdocs_setup_apps_script`, `gdocs_reset_authorization`, `gdocs_guide`, `gdocs_server_info`, `gdocs_test_manifest`.
+Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference `src/google_docs_mcp/server.py` for the live docstrings + contract versions for: `gdocs_tab_existing_doc`, `gdocs_preview_tab_split`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_delete_tab`, `gdocs_get_doc_outline`, `gdocs_read_doc`, `gdocs_replace_all_text`, `gdocs_get_tab_url`, `gdocs_find_doc_by_title`, `gdocs_move_to_folder`, `gdocs_trash_file`, `gdocs_untrash_file`, `gdocs_get_signed_upload_url`, `gdocs_install_automation` (and its deprecated alias `gdocs_setup_apps_script`), `gdocs_reset_authorization`, `gdocs_guide`, `gdocs_server_info`, `gdocs_test_manifest`.
 
 (NOTE: this is the abbreviated version of the full doc. The full per-tool table is documented inline in `server.py` and queryable via `gdocs_guide()`. Future PRs will expand this doc with full per-tool entries for each.)
 

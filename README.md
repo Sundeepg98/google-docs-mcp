@@ -65,7 +65,7 @@ on a live server to get the authoritative list with descriptions.
 | **Move into a folder** | `gdocs_move_to_folder(file_id, folder_id)` |
 | **Get deep link to a tab** | `gdocs_get_tab_url(doc_id, tab_id)` |
 | **Sandbox upload URL** (cloud chat) | `gdocs_get_signed_upload_url()` |
-| **Set up Apps Script Web App** (per-user) | `gdocs_setup_apps_script()` |
+| **Install Workspace automation runtime** (per-user, one-time) | `gdocs_install_automation()` |
 | **Reset / revoke OAuth credentials** (force re-consent) | `gdocs_reset_authorization(full?)` |
 | **Server identity + CI test status** | `gdocs_server_info()` |
 | **CI test inventory + per-test outcomes** | `gdocs_test_manifest()` |
