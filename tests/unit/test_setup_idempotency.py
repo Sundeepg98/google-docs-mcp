@@ -77,7 +77,7 @@ def mock_setup(tmp_path):
         cfg_mod.save.return_value = None
 
         # Sensible default returns for a cold-start happy path.
-        from google_docs_mcp.gas_deploy.client import WebAppDeployment
+        from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
         client.script_exists.return_value = True
         client.create_project.return_value = "SCRIPT_ID_NEW"
         client.create_version.return_value = 1
@@ -155,7 +155,7 @@ def test_resume_after_failure_at_deploy_webapp_step(mock_setup):
     with pytest.raises(RuntimeError, match="deploy timeout"):
         setup_apps_script_auto(data_dir=mock_setup["data_dir"])
 
-    from google_docs_mcp.gas_deploy.client import WebAppDeployment
+    from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
     mock_setup["client"].deploy_webapp.side_effect = None
     mock_setup["client"].deploy_webapp.return_value = WebAppDeployment(
         script_id="SCRIPT_ID_NEW", deployment_id="DEPLOY2", version=1,

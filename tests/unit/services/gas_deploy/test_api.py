@@ -1,10 +1,16 @@
-"""Unit tests for the gas_deploy sub-package (Apps Script REST wrapper).
+"""Co-located unit tests for services/gas_deploy/api.py (Apps Script REST wrapper).
 
 Pure-mock coverage of the create -> push -> version -> deploy flow,
 including the response-parsing edge cases that would be painful to
 notice live (e.g. ``deploy_webapp`` raises if the response is missing
 ``entryPoints[].webApp.url`` — Apps Script API has reshuffled fields
 before).
+
+**M3 Phase C (v2.1.5):** moved from ``tests/unit/test_gas_deploy.py``
+to its co-located home at ``tests/unit/services/gas_deploy/test_api.py``
+when the corresponding source file moved from ``gas_deploy/client.py``
+to ``services/gas_deploy/api.py``. Mirrors the layout established by
+PR #95 (docs) and PR #96 (drive).
 """
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ def mock_script_svc():
     """Yield a fake script_v1 service via the M2 GoogleAPIClient port.
 
     **v2.1.2 (M2)**: pre-v2.1.2 this fixture used
-    ``patch("google_docs_mcp.gas_deploy.client.get_service")``, which
+    ``patch("google_docs_mcp.services.gas_deploy.api.get_service")``, which
     required knowing exactly which module imported ``get_service``.
     The ``with_google_api_client`` + ``InMemoryGoogleAPIClient``
     pattern (introduced in this PR's M2 port) routes through the
@@ -38,7 +44,7 @@ def mock_script_svc():
 
 
 def test_create_project_returns_script_id(mock_script_svc):
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().create().execute.return_value = {
         "scriptId": "ABC123", "title": "foo"
@@ -49,7 +55,7 @@ def test_create_project_returns_script_id(mock_script_svc):
 
 def test_push_files_sends_manifest_plus_files(mock_script_svc):
     """The pushed payload must include the manifest as JSON + every file as SERVER_JS."""
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().updateContent().execute.return_value = {}
     client = AppsScriptClient(MagicMock())
@@ -75,7 +81,7 @@ def test_push_files_sends_manifest_plus_files(mock_script_svc):
 
 
 def test_create_version_returns_int(mock_script_svc):
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().versions().create().execute.return_value = {
         "versionNumber": 3
@@ -85,7 +91,7 @@ def test_create_version_returns_int(mock_script_svc):
 
 
 def test_deploy_webapp_extracts_url_from_entry_points(mock_script_svc):
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().deployments().create().execute.return_value = {
         "deploymentId": "DEP123",
@@ -112,7 +118,7 @@ def test_deploy_webapp_raises_when_url_missing(mock_script_svc):
     that's an API contract break — fail loudly, don't silently produce
     an empty URL.
     """
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().deployments().create().execute.return_value = {
         "deploymentId": "DEP123",
@@ -136,7 +142,7 @@ def test_deploy_webapp_body_does_not_include_entryPoints(mock_script_svc):
     push_files. The deployment body must carry ONLY versionNumber,
     manifestFileName, and description.
     """
-    from google_docs_mcp.gas_deploy import AppsScriptClient
+    from google_docs_mcp.services.gas_deploy import AppsScriptClient
 
     mock_script_svc.projects().deployments().create().execute.return_value = {
         "deploymentId": "D", "entryPoints": [{"webApp": {"url": "u"}}],
@@ -161,7 +167,7 @@ def test_gas_deploy_scopes_constant_lists_required_scopes():
     scopes we know are required, and the drive.file scope projects.create
     needs.
     """
-    from google_docs_mcp.gas_deploy import GAS_DEPLOY_SCOPES
+    from google_docs_mcp.services.gas_deploy import GAS_DEPLOY_SCOPES
 
     required_fragments = ["script.projects", "script.deployments", "drive.file"]
     for fragment in required_fragments:

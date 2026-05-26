@@ -1,21 +1,40 @@
-"""Per-service docs/ tool registration + import tests (v2.1.3 / M3 POC).
+"""Multi-service tool-registration guards (M3 — last updated v2.1.5 / Phase C).
 
-These tests verify the M3 POC's central invariant: importing
-``google_docs_mcp`` (and therefore ``server.py``) registers all 12
-docs-service tools via the side-effect import at the bottom of
-server.py. The Round 1 landmine the spec warned about — "if a
-services/X/tools.py is missing from the chain, its tools silently
-don't register" — is caught by this file's fixture-discovery test.
+These tests verify the central M3 invariant: importing
+``google_docs_mcp`` (and therefore ``server.py``) registers every
+expected tool from its expected source file via the side-effect
+imports at the bottom of server.py. The Round 1 landmine the spec
+called out — "if a ``services/X/tools.py`` is missing from the
+registration chain, its tools silently don't register" — is caught
+by ``test_all_24_tools_register_from_correct_locations`` below.
 
-After M3 expands to drive/ + gas_deploy/, the test architect's
-critique applies: consumer tests under tests/unit/services/<svc>/
-use ``with_google_api_client(InMemoryGoogleAPIClient({...}))``
-(M2 / PR #92). Per-credential isolation tests (e.g.
+**File location:** lives at ``tests/unit/services/test_tool_registration.py``
+(NOT ``tests/unit/services/docs/test_tools.py``) as of Phase C —
+test architect Round 4 flagged that the pre-rename location no
+longer reflected contents once drive's registration guard moved in
+during Phase B. Multi-service registration guards now have an honest
+home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy}/``)
+hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
+need a multi-service view.
+
+**Partition state after Phase C** (sum must equal 24):
+
+  DOCS_SERVICE_TOOLS      = 12  (Phase A, services/docs/tools.py)
+  DRIVE_SERVICE_TOOLS     =  4  (Phase B, services/drive/tools.py)
+  GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C, services/gas_deploy/tools.py)
+  NON_SERVICE_TOOLS       =  7  (still in server.py — admin /
+                                  introspection / auth / signed URLs)
+                          ─────
+  EXPECTED_TOOLS          = 24
+
+Consumer tests under ``tests/unit/services/<svc>/`` use
+``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
+M2 pattern (PR #92). Per-credential isolation tests (e.g.
 ``test_distinct_credentials_get_distinct_resources``) STAY in
 ``tests/unit/test_google_clients.py`` against the production adapter
 — ``InMemoryGoogleAPIClient`` deliberately does NOT key on
-credentials, since the per-credential behavior is a production-adapter
-concern not a port-shape concern.
+credentials, since per-credential behavior is a production-adapter
+concern, not a port-shape concern.
 """
 from __future__ import annotations
 
@@ -50,11 +69,17 @@ DRIVE_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_untrash_file",
 })
 
-# Remaining tools — still in server.py for M3 Phase B. After gas_deploy/
-# migrates in Phase C, this set shrinks again.
-NON_SERVICE_TOOLS: frozenset[str] = frozenset({
-    # gas_deploy (next to migrate in Phase C)
+# Gas-deploy-service tools — moved to ``services/gas_deploy/tools.py``
+# in M3 Phase C (v2.1.5). Just the one tool today; the per-service
+# folder pattern still applies for consistency with docs + drive.
+GAS_DEPLOY_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_setup_apps_script",
+})
+
+# Remaining tools — still in server.py after Phase C. These are admin
+# / introspection / auth / signed-URL tools that don't fit a
+# Google-API-service folder; staying in server.py is intentional.
+NON_SERVICE_TOOLS: frozenset[str] = frozenset({
     # admin / introspection / local-only
     "gdocs_server_info",
     "gdocs_test_manifest",
@@ -67,12 +92,18 @@ NON_SERVICE_TOOLS: frozenset[str] = frozenset({
 })
 
 # Backward-compat alias for any external readers / future test sweeps.
-# ``NON_DOCS_TOOLS`` was the Phase A name; Phase B partitions it into
-# ``DRIVE_SERVICE_TOOLS`` (moved) + ``NON_SERVICE_TOOLS`` (still in server.py).
-NON_DOCS_TOOLS: frozenset[str] = DRIVE_SERVICE_TOOLS | NON_SERVICE_TOOLS
+# Pre-Phase-B ``NON_DOCS_TOOLS`` covered everything outside docs;
+# Phase B + C partitioned it into per-service sets plus the
+# stay-in-server remainder.
+NON_DOCS_TOOLS: frozenset[str] = (
+    DRIVE_SERVICE_TOOLS | GAS_DEPLOY_SERVICE_TOOLS | NON_SERVICE_TOOLS
+)
 
 EXPECTED_TOOLS: frozenset[str] = (
-    DOCS_SERVICE_TOOLS | DRIVE_SERVICE_TOOLS | NON_SERVICE_TOOLS
+    DOCS_SERVICE_TOOLS
+    | DRIVE_SERVICE_TOOLS
+    | GAS_DEPLOY_SERVICE_TOOLS
+    | NON_SERVICE_TOOLS
 )
 
 
@@ -89,9 +120,12 @@ def _registered_tool_names() -> set[str]:
 
 
 def test_all_24_tools_register_from_correct_locations():
-    """Importing ``google_docs_mcp.server`` MUST register all 24 tools —
-    12 from ``services/docs/tools.py`` (via the side-effect import at
-    the bottom of server.py) and 12 from server.py's own decorators.
+    """Importing ``google_docs_mcp.server`` MUST register all 24 tools.
+
+    Post-Phase-C source split: 12 from ``services/docs/tools.py`` +
+    4 from ``services/drive/tools.py`` + 1 from
+    ``services/gas_deploy/tools.py`` (via side-effect imports at the
+    bottom of server.py) + 7 still in server.py's own decorators.
 
     Catches the Round 1 landmine the M3 POC spec called out: if a
     services/X/tools.py is missing from the registration chain (e.g.
@@ -156,15 +190,17 @@ def test_docs_service_tools_register_from_services_docs_tools_module():
 
 
 def test_non_service_tools_still_register_from_server_py():
-    """The remaining (non-service-folder) tools must STILL be defined in
-    server.py. After each M3 phase migrates another service group, this
-    test's ``NON_SERVICE_TOOLS`` set shrinks.
+    """The 7 stay-in-server tools must STILL be defined in server.py.
 
     Phase A (v2.1.3) moved 12 docs tools.
-    Phase B (v2.1.4) moved 4 drive tools + ``_run_batch`` helper.
-    Phase C (next) will move 1 gas_deploy tool — at which point the
-    Phase-C author updates ``DRIVE_SERVICE_TOOLS``/``NON_SERVICE_TOOLS``
-    here to add ``GAS_DEPLOY_SERVICE_TOOLS``.
+    Phase B (v2.1.4) moved 4 drive tools + the ``_run_batch`` helper.
+    Phase C (v2.1.5) moved the 1 gas_deploy tool.
+
+    The remaining 7 (admin / introspection / auth / signed-URL) don't
+    fit a Google-API-service folder; staying in server.py is the
+    intended end-state, not a deferred migration. If a future PR adds
+    a NEW Google-API service, this set may shrink further; otherwise
+    it stops here.
     """
     from google_docs_mcp import server
 
@@ -209,6 +245,44 @@ def test_drive_service_tools_register_from_services_drive_tools_module():
         assert not hasattr(server, tool_name), (
             f"{tool_name} ALSO exists in server.py — duplicate "
             f"definition. M3 Phase B removed the server.py copy; ensure "
+            f"the deletion is complete."
+        )
+
+
+def test_gas_deploy_service_tools_register_from_services_gas_deploy_tools_module():
+    """M3 Phase C (v2.1.5): the 1 gas_deploy-service tool must be defined
+    in ``services/gas_deploy/tools.py``, NOT in server.py. Symmetric to
+    the docs + drive registration guards.
+
+    Critically, this guard ALSO verifies the gas_deploy/tools.py site
+    preserves ``creds=False`` (the tool's own NeedsReauthError →
+    structured-response path is load-bearing for the cloud-mode
+    first-run UX; the standard ``creds=True`` envelope would silently
+    break it). The ``__module__`` assertion catches a partial migration;
+    the creds-opt-out check is asserted via the decorator's wrapper
+    behavior in ``tests/unit/services/gas_deploy/test_tools.py``."""
+    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+
+    for tool_name in GAS_DEPLOY_SERVICE_TOOLS:
+        # The tool function must exist as a module-level attribute of
+        # services/gas_deploy/tools.py.
+        assert hasattr(gas_deploy_tools, tool_name), (
+            f"{tool_name} not found in services.gas_deploy.tools — "
+            f"M3 Phase C moved it; ensure it's defined there."
+        )
+        fn = getattr(gas_deploy_tools, tool_name)
+        # The function's __module__ must point at services.gas_deploy.tools.
+        assert fn.__module__ == "google_docs_mcp.services.gas_deploy.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.gas_deploy.tools'. M3 Phase C "
+            f"moved this tool out of server.py."
+        )
+        # The function must NOT also exist at server module-level
+        # (that would be a half-finished migration).
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. M3 Phase C removed the server.py copy; ensure "
             f"the deletion is complete."
         )
 

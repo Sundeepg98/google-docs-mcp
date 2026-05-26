@@ -38,8 +38,8 @@ from .auth import (
     load_credentials,
     load_service_account_credentials,
 )
-from .gas_deploy import AppsScriptClient, GAS_DEPLOY_SCOPES
-from .gas_deploy.client import WebAppDeployment
+from .services.gas_deploy import AppsScriptClient, GAS_DEPLOY_SCOPES
+from .services.gas_deploy.api import WebAppDeployment
 
 # The .gs script ships in the package itself (the file copied into
 # the wheel by hatchling). Reading from __file__'s dir means it works
