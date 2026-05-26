@@ -42,6 +42,8 @@ EXPECTED_TOOLS = {
     "gdocs_tab_existing_doc",
     "gdocs_trash_file",
     "gdocs_untrash_file",
+    "gdocs_share_file",  # v2.3.0: Drive permissions.create
+    "gdocs_list_permissions",  # v2.3.0: Drive permissions.list
 }
 
 

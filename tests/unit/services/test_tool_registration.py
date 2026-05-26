@@ -1,4 +1,4 @@
-"""Multi-service tool-registration guards (M3 + Gap #7 — last updated v2.2.2).
+"""Multi-service tool-registration guards (M3 + Gap #7 + v2.3.0).
 
 These tests verify the central M3 invariant: importing
 ``google_docs_mcp`` (and therefore ``server.py``) registers every
@@ -17,16 +17,22 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after Gap #7** (sum must equal 24):
+**Partition state after v2.3.0 Drive-sharing bolt-on** (sum must equal 26):
 
   DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
-  DRIVE_SERVICE_TOOLS      =  4  (Phase B,  services/drive/tools.py)
+  DRIVE_SERVICE_TOOLS      =  6  (Phase B + v2.3.0, services/drive/tools.py)
   GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C,  services/gas_deploy/tools.py)
   ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
   NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
                                    contains NO tool definitions)
                            ─────
-  EXPECTED_TOOLS           = 24
+  EXPECTED_TOOLS           = 26
+
+v2.3.0 added ``gdocs_share_file`` + ``gdocs_list_permissions`` to the
+drive service, both backed by the new ``services/drive/sharing.py``
+sub-module. This was the first empirical bolt-on validating the
+per-service-folder pattern's "1-folder, no foundation rework" claim.
+The 24 → 26 count drift is the only partition surface change.
 
 Consumer tests under ``tests/unit/services/<svc>/`` use
 ``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
@@ -63,11 +69,18 @@ DOCS_SERVICE_TOOLS: frozenset[str] = frozenset({
 })
 
 # Drive-service tools — moved to ``services/drive/tools.py`` in M3 Phase B (v2.1.4).
+# v2.3.0 added 2 more (gdocs_share_file + gdocs_list_permissions) backed
+# by the new services/drive/sharing.py sub-module — the FIRST empirical
+# bolt-on that validates the per-service-folder pattern's "1-folder,
+# no foundation rework" claim from the 3-agent ~96% feasibility audit.
 DRIVE_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_find_doc_by_title",
     "gdocs_move_to_folder",
     "gdocs_trash_file",
     "gdocs_untrash_file",
+    # v2.3.0 — sharing sub-module
+    "gdocs_share_file",
+    "gdocs_list_permissions",
 })
 
 # Gas-deploy-service tools — moved to ``services/gas_deploy/tools.py``
@@ -134,13 +147,22 @@ def _registered_tool_names() -> set[str]:
 # ---------------------------------------------------------------------
 
 
-def test_all_24_tools_register_from_correct_locations():
-    """Importing ``google_docs_mcp.server`` MUST register all 24 tools.
+def test_all_expected_tools_register_from_correct_locations():
+    """Importing ``google_docs_mcp.server`` MUST register every tool in
+    EXPECTED_TOOLS (currently 26 after the v2.3.0 sharing bolt-on).
 
-    Post-Phase-C source split: 12 from ``services/docs/tools.py`` +
-    4 from ``services/drive/tools.py`` + 1 from
-    ``services/gas_deploy/tools.py`` (via side-effect imports at the
-    bottom of server.py) + 7 still in server.py's own decorators.
+    Post-v2.3.0 source split: 12 from ``services/docs/tools.py`` +
+    6 from ``services/drive/tools.py`` (4 file CRUD + 2 sharing) +
+    1 from ``services/gas_deploy/tools.py`` + 7 from
+    ``services/admin/tools.py`` (via side-effect imports at the
+    bottom of server.py). NON_SERVICE_TOOLS is empty since Gap #7.
+
+    The expected count is derived from ``EXPECTED_TOOLS`` (the union
+    of the partition sets) rather than a hard-coded literal — test
+    architect Round 4's "future-papercut" caveat fixed inline as
+    part of the v2.3.0 ship. New tools require only updating the
+    relevant ``<svc>_SERVICE_TOOLS`` frozenset; this assertion auto-
+    follows.
 
     Catches the Round 1 landmine the M3 POC spec called out: if a
     services/X/tools.py is missing from the registration chain (e.g.
@@ -163,11 +185,13 @@ def test_all_24_tools_register_from_correct_locations():
     assert not unexpected, (
         f"Unexpected tools registered (not in EXPECTED_TOOLS): {sorted(unexpected)}. "
         f"Either a new tool was added without updating this guard's "
-        f"DOCS_SERVICE_TOOLS / NON_DOCS_TOOLS set, or a tool was renamed."
+        f"DOCS_SERVICE_TOOLS / DRIVE_SERVICE_TOOLS / GAS_DEPLOY_SERVICE_TOOLS / "
+        f"ADMIN_SERVICE_TOOLS set, or a tool was renamed."
     )
-    assert len(registered) == 24, (
-        f"Tool count drift: expected 24, got {len(registered)}. "
-        f"Tools: {sorted(registered)}"
+    assert len(registered) == len(EXPECTED_TOOLS), (
+        f"Tool count drift: expected {len(EXPECTED_TOOLS)} "
+        f"(derived from the partition frozensets), got {len(registered)}. "
+        f"Registered: {sorted(registered)}"
     )
 
 

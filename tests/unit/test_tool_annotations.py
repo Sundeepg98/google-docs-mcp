@@ -49,6 +49,10 @@ READONLY_TOOLS = {
     "gdocs_help",
     "gdocs_preview_tab_split",
     "gdocs_admin_audit",
+    # v2.3.0: Drive permissions.list — pure read, no writes, no probe
+    # side-effects. Sister tool ``gdocs_share_file`` is NOT here
+    # (it mutates the ACL via permissions.create).
+    "gdocs_list_permissions",
 }
 
 
