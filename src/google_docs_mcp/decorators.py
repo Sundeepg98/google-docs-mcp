@@ -182,17 +182,24 @@ def workspace_tool(
             "mcp, _get_credentials, _format_http_error) in server.py first."
         )
 
+    # M4 / v2.2.0: pydantic ToolAnnotations has extra="allow" so
+    # ``service=service`` round-trips through model_dump + attribute
+    # access. Verified at M4 ship time: ``tool.annotations.service``
+    # is readable from ``mcp.list_tools()`` at the receiving end.
+    #
+    # pyright doesn't know about pydantic's extra="allow" — the
+    # generated stub for ToolAnnotations lists only the 5 declared
+    # fields (title + 4 *Hint), so passing ``service=`` trips
+    # reportCallIssue. The runtime accepts it; the silencer is
+    # narrowly scoped to this specific call (any future named-arg
+    # typo on the 5 declared fields will still fire normally).
     annotations = ToolAnnotations(
         title=title,
         readOnlyHint=readonly,
         destructiveHint=destructive,
         idempotentHint=idempotent,
         openWorldHint=external,
-        # M4 / v2.2.0: pydantic ToolAnnotations has extra="allow" so
-        # this round-trips through model_dump + attribute access.
-        # Verified: tool.annotations.service is readable from
-        # mcp.list_tools() at the receiving end.
-        service=service,
+        service=service,  # pyright: ignore[reportCallIssue]  # extra="allow"
     )
 
     # Build the kwargs dict for @mcp.tool once; passing output_schema=None
