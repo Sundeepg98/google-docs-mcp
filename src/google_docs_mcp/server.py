@@ -271,6 +271,12 @@ from .services.admin import tools as _admin_tools  # noqa: F401, E402 — side-e
 # infrastructure required. Empirically validates that Sheets fits
 # the per-service-folder template that Drive sharing (PR #117) proved.
 from .services.sheets import tools as _sheets_tools  # noqa: F401, E402 — side-effect import
+# v2.3.2: 3rd new service — Slides (outline read + replace_all_text +
+# create). Same registration pattern as Sheets PR #119; no infrastructure
+# changes. The Slides batchUpdate tagged-union surface is deliberately
+# deferred per the multi-service feasibility audit's "wait for actual
+# need" guidance (same approach as Sheets).
+from .services.slides import tools as _slides_tools  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

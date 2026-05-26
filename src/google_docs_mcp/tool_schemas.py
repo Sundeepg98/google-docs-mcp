@@ -281,6 +281,41 @@ GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA = _object(
 
 
 # ---------------------------------------------------------------------
+# Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
+# ---------------------------------------------------------------------
+
+
+GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "title": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "slides": {"type": "array"},
+    },
+    required=["presentation_id", "title", "url", "slides"],
+)
+
+
+GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "occurrences_changed": {"type": "integer", "minimum": 0},
+    },
+    required=["presentation_id", "occurrences_changed"],
+)
+
+
+GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "title": {"type": "string"},
+    },
+    required=["presentation_id", "url", "title"],
+)
+
+
+# ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
 
@@ -490,6 +525,10 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
     "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
+    # v2.3.2 — Slides (3rd new service, minimal start)
+    "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
+    "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,

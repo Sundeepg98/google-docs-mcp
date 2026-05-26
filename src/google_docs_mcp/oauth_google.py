@@ -58,6 +58,11 @@ GOOGLE_API_SCOPES = [
     # Mirrored here so HTTP/cloud-mode users get the same consent
     # screen as stdio-mode users.
     "https://www.googleapis.com/auth/spreadsheets",
+    # v2.3.2: Slides read + batchUpdate (replaceAllText) + create for
+    # the 3rd new service. Mirrored from auth.py:SCOPES for HTTP/cloud
+    # mode parity. Same incremental-consent path proven by previous
+    # additions.
+    "https://www.googleapis.com/auth/presentations",
 ]
 
 CALLBACK_PATH = "/oauth/google/api/callback"
