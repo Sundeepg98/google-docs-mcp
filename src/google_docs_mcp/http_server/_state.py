@@ -21,6 +21,6 @@ Lives in its own module rather than ``__init__.py`` so:
 """
 from __future__ import annotations
 
-from ..crypto import NonceStore
+from google_docs_mcp.crypto import NonceStore
 
 _NONCE_STORE = NonceStore()

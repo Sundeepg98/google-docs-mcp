@@ -17,8 +17,8 @@ from starlette.middleware import Middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.routing import Mount, Route
 
-from .. import keys
-from ..oauth_google import CALLBACK_PATH
+from google_docs_mcp import keys
+from google_docs_mcp.oauth_google import CALLBACK_PATH
 from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,

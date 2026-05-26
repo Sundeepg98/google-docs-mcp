@@ -16,8 +16,8 @@ from pathlib import Path
 
 from starlette.requests import Request
 
-from ..auth import default_data_dir
-from ..oauth_google import load_client_config
+from google_docs_mcp.auth import default_data_dir
+from google_docs_mcp.oauth_google import load_client_config
 
 
 def _resolve_client_config() -> dict:
@@ -43,7 +43,7 @@ def _resolve_client_config() -> dict:
     if path_str:
         return load_client_config(Path(path_str))
 
-    from ..auth import find_client_config
+    from google_docs_mcp.auth import find_client_config
     return load_client_config(find_client_config(default_data_dir()))
 
 
