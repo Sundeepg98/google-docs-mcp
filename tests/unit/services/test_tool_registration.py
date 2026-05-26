@@ -1,4 +1,4 @@
-"""Multi-service tool-registration guards (M3 — last updated v2.1.5 / Phase C).
+"""Multi-service tool-registration guards (M3 + Gap #7 — last updated v2.2.2).
 
 These tests verify the central M3 invariant: importing
 ``google_docs_mcp`` (and therefore ``server.py``) registers every
@@ -13,19 +13,20 @@ by ``test_all_24_tools_register_from_correct_locations`` below.
 test architect Round 4 flagged that the pre-rename location no
 longer reflected contents once drive's registration guard moved in
 during Phase B. Multi-service registration guards now have an honest
-home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy}/``)
+home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/``)
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after Phase C** (sum must equal 24):
+**Partition state after Gap #7** (sum must equal 24):
 
-  DOCS_SERVICE_TOOLS      = 12  (Phase A, services/docs/tools.py)
-  DRIVE_SERVICE_TOOLS     =  4  (Phase B, services/drive/tools.py)
-  GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C, services/gas_deploy/tools.py)
-  NON_SERVICE_TOOLS       =  7  (still in server.py — admin /
-                                  introspection / auth / signed URLs)
-                          ─────
-  EXPECTED_TOOLS          = 24
+  DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
+  DRIVE_SERVICE_TOOLS      =  4  (Phase B,  services/drive/tools.py)
+  GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C,  services/gas_deploy/tools.py)
+  ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
+  NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
+                                   contains NO tool definitions)
+                           ─────
+  EXPECTED_TOOLS           = 24
 
 Consumer tests under ``tests/unit/services/<svc>/`` use
 ``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
@@ -76,10 +77,14 @@ GAS_DEPLOY_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_setup_apps_script",
 })
 
-# Remaining tools — still in server.py after Phase C. These are admin
-# / introspection / auth / signed-URL tools that don't fit a
-# Google-API-service folder; staying in server.py is intentional.
-NON_SERVICE_TOOLS: frozenset[str] = frozenset({
+# Admin-service tools — moved to ``services/admin/tools.py`` in Gap #7
+# (v2.2.2). Closes Hex specialist 92% + SOLID specialist 78% audit
+# findings: server.py no longer holds tool definitions after this PR.
+# The grouping covers admin / introspection / auth / signed-URL tools
+# under one "non-Google-API-service" folder rather than minting a
+# 3-way split — the alternative (separate intro/admin/auth folders)
+# would over-fit the layout to 1-3 tools each.
+ADMIN_SERVICE_TOOLS: frozenset[str] = frozenset({
     # admin / introspection / local-only
     "gdocs_server_info",
     "gdocs_test_manifest",
@@ -91,18 +96,28 @@ NON_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gdocs_reset_authorization",
 })
 
+# Gap #7 emptied this set: every tool now belongs to a service folder.
+# Kept as an empty frozenset (not deleted) so existing callers /
+# external test sweeps that import the name keep working. If a future
+# tool genuinely cannot fit any service folder it gets added here.
+NON_SERVICE_TOOLS: frozenset[str] = frozenset()
+
 # Backward-compat alias for any external readers / future test sweeps.
 # Pre-Phase-B ``NON_DOCS_TOOLS`` covered everything outside docs;
-# Phase B + C partitioned it into per-service sets plus the
-# stay-in-server remainder.
+# Phase B / C / Gap #7 partitioned it into per-service sets plus the
+# (now-empty) stay-in-server remainder.
 NON_DOCS_TOOLS: frozenset[str] = (
-    DRIVE_SERVICE_TOOLS | GAS_DEPLOY_SERVICE_TOOLS | NON_SERVICE_TOOLS
+    DRIVE_SERVICE_TOOLS
+    | GAS_DEPLOY_SERVICE_TOOLS
+    | ADMIN_SERVICE_TOOLS
+    | NON_SERVICE_TOOLS
 )
 
 EXPECTED_TOOLS: frozenset[str] = (
     DOCS_SERVICE_TOOLS
     | DRIVE_SERVICE_TOOLS
     | GAS_DEPLOY_SERVICE_TOOLS
+    | ADMIN_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -189,28 +204,69 @@ def test_docs_service_tools_register_from_services_docs_tools_module():
         )
 
 
-def test_non_service_tools_still_register_from_server_py():
-    """The 7 stay-in-server tools must STILL be defined in server.py.
+def test_no_tool_definitions_remain_in_server_py():
+    """Gap #7 (v2.2.2): ``server.py`` must contain NO tool definitions.
 
-    Phase A (v2.1.3) moved 12 docs tools.
-    Phase B (v2.1.4) moved 4 drive tools + the ``_run_batch`` helper.
-    Phase C (v2.1.5) moved the 1 gas_deploy tool.
+    After Gap #7's admin extraction, every tool name in EXPECTED_TOOLS
+    must be missing from ``server.py``'s module-level surface — if any
+    name is found there, it's a half-finished migration (tool defined
+    in both server.py and services/X/tools.py).
 
-    The remaining 7 (admin / introspection / auth / signed-URL) don't
-    fit a Google-API-service folder; staying in server.py is the
-    intended end-state, not a deferred migration. If a future PR adds
-    a NEW Google-API service, this set may shrink further; otherwise
-    it stops here.
+    Phase A (v2.1.3)  moved 12 docs tools.
+    Phase B (v2.1.4)  moved 4 drive tools + the ``_run_batch`` helper.
+    Phase C (v2.1.5)  moved the 1 gas_deploy tool.
+    Gap #7  (v2.2.2)  moved the 7 admin/introspection/auth tools — and
+                      removed the admin-domain helpers (test-results
+                      parsing, admin-token gating). Closes Hex /
+                      SOLID specialists' ISP-asymmetry finding.
+
+    NON_SERVICE_TOOLS is now empty; this guard verifies the audit
+    finding remains closed for every tool.
     """
     from google_docs_mcp import server
 
-    for tool_name in NON_SERVICE_TOOLS:
-        assert hasattr(server, tool_name), (
-            f"{tool_name} not found in server.py — this tool was NOT "
-            f"slated for the current M3 phase migration. Either move it "
-            f"to the appropriate services/X/tools.py (and update "
-            f"NON_SERVICE_TOOLS here) or restore the definition in "
-            f"server.py."
+    leftover = [name for name in EXPECTED_TOOLS if hasattr(server, name)]
+    assert not leftover, (
+        f"Tools still defined in server.py: {leftover}. Gap #7 (v2.2.2) "
+        f"moved every tool into a service folder. Re-defining a tool in "
+        f"server.py reintroduces the ISP asymmetry the audit closed."
+    )
+
+
+def test_admin_service_tools_register_from_services_admin_tools_module():
+    """Gap #7 (v2.2.2): the 7 admin-service tools must be defined in
+    ``services/admin/tools.py``, NOT in server.py. Symmetric to the
+    docs / drive / gas_deploy registration guards.
+
+    Catches a regression where someone re-adds an admin tool to
+    server.py by accident (e.g. a copy-paste from a pre-Gap-#7
+    commit). Pins the no-shadow + ``__module__`` invariants the test
+    architect's review of Phase A called out — applied uniformly
+    across all 4 service folders.
+    """
+    from google_docs_mcp.services.admin import tools as admin_tools
+
+    for tool_name in ADMIN_SERVICE_TOOLS:
+        # The tool function must exist as a module-level attribute of
+        # services/admin/tools.py.
+        assert hasattr(admin_tools, tool_name), (
+            f"{tool_name} not found in services.admin.tools — "
+            f"Gap #7 moved it; ensure it's defined there."
+        )
+        fn = getattr(admin_tools, tool_name)
+        # The function's __module__ must point at services.admin.tools.
+        assert fn.__module__ == "google_docs_mcp.services.admin.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.admin.tools'. Gap #7 moved "
+            f"this tool out of server.py."
+        )
+        # The function must NOT also exist at server module-level
+        # (that would be a half-finished migration).
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. Gap #7 removed the server.py copy; ensure "
+            f"the deletion is complete."
         )
 
 
@@ -332,10 +388,12 @@ _EXPECTED_SERVICE_BY_TOOL: dict[str, str] = {
     **{name: "docs" for name in DOCS_SERVICE_TOOLS},
     **{name: "drive" for name in DRIVE_SERVICE_TOOLS},
     **{name: "gas_deploy" for name in GAS_DEPLOY_SERVICE_TOOLS},
-    # M4 judgment call: all 7 stay-in-server tools share service="admin".
+    # Gap #7 (v2.2.2): the 7 admin tools now live in services/admin/
+    # rather than server.py. The service="admin" annotation was already
+    # in place (set during M4); only the source-file location changed.
     # The 3-way split (introspection / admin / auth) was considered and
     # rejected — adds enum values without behavioral payoff. See PR body.
-    **{name: "admin" for name in NON_SERVICE_TOOLS},
+    **{name: "admin" for name in ADMIN_SERVICE_TOOLS},
 }
 
 

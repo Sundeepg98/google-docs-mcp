@@ -221,12 +221,15 @@ def test_site_4_signed_upload_url_routes_through_get_key_signed_url(monkeypatch)
     keys.get_key('signed_url') counter increments), we mock the
     current-user lookup so the tool reaches the get_key call.
     """
-    from google_docs_mcp import keys, server
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from google_docs_mcp import keys
+    from google_docs_mcp.services.admin import tools as admin_tools
+    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
 
     # Mock the MCP auth-context lookup so the v2.1 user_id check
     # doesn't short-circuit before get_key('signed_url') runs.
-    monkeypatch.setattr(server, "current_user_id_or_none", lambda: "test-user-sub")
+    # v2.2.2 (Gap #7): tool moved to services/admin/tools.py; patch
+    # target follows.
+    monkeypatch.setattr(admin_tools, "current_user_id_or_none", lambda: "test-user-sub")
 
     # The tool returns a Markdown response by default; we don't care
     # about the URL itself, only that the counter incremented.

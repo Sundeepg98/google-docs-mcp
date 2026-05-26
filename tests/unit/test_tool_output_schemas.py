@@ -158,7 +158,7 @@ def test_gdocs_get_tab_url_response_matches_schema():
 def test_gdocs_help_matched_response_matches_schema():
     """gdocs_help with a known pattern — exercises the ``matched: True``
     branch of the oneOf schema."""
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
     from google_docs_mcp.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
 
     # Use an error string that's likely to match — the table includes
@@ -173,7 +173,7 @@ def test_gdocs_help_matched_response_matches_schema():
 
 def test_gdocs_help_unmatched_response_matches_schema():
     """gdocs_help with garbage input — exercises ``matched: False``."""
-    from google_docs_mcp.server import gdocs_help
+    from google_docs_mcp.services.admin.tools import gdocs_help
     from google_docs_mcp.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
 
     result = gdocs_help("zzzz_nonexistent_pattern_xyzqwerty_9876543210")
@@ -185,7 +185,7 @@ def test_gdocs_help_unmatched_response_matches_schema():
 
 def test_gdocs_guide_response_matches_schema():
     """gdocs_guide is pure-local. Drive it + validate."""
-    from google_docs_mcp.server import gdocs_guide
+    from google_docs_mcp.services.admin.tools import gdocs_guide
     from google_docs_mcp.tool_schemas import GDOCS_GUIDE_OUTPUT_SCHEMA
 
     result = gdocs_guide()
@@ -195,7 +195,7 @@ def test_gdocs_guide_response_matches_schema():
 def test_gdocs_server_info_response_matches_schema():
     """gdocs_server_info reads from local registry — no API call. The
     function is async, so wrap in asyncio.run."""
-    from google_docs_mcp.server import gdocs_server_info
+    from google_docs_mcp.services.admin.tools import gdocs_server_info
     from google_docs_mcp.tool_schemas import GDOCS_SERVER_INFO_OUTPUT_SCHEMA
 
     result = asyncio.run(gdocs_server_info())
@@ -213,8 +213,8 @@ def test_gdocs_get_signed_upload_url_response_matches_schema(monkeypatch):
     key for ``signed_url`` directly — no env coupling, no incidental
     dependency on HKDF input length.
     """
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
-    from google_docs_mcp import server as server_mod
+    from google_docs_mcp.services.admin import tools as admin_tools
+    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
     from google_docs_mcp.key_provider import (
         InMemoryKeyProvider,
         with_key_provider,
@@ -223,8 +223,10 @@ def test_gdocs_get_signed_upload_url_response_matches_schema(monkeypatch):
         GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
     )
 
+    # v2.2.2 (Gap #7): tool moved to services/admin/tools.py; the
+    # current_user_id_or_none binding lives there now.
     monkeypatch.setattr(
-        server_mod, "current_user_id_or_none", lambda: "test-user-sub",
+        admin_tools, "current_user_id_or_none", lambda: "test-user-sub",
     )
 
     with with_key_provider(InMemoryKeyProvider({

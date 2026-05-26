@@ -62,7 +62,7 @@ def _call(admin_token, user_id, since_hours=24):
     without the wrapper so we can assert on raw return values + raises
     instead of fighting the wire-protocol layer.
     """
-    from google_docs_mcp.server import gdocs_admin_audit
+    from google_docs_mcp.services.admin.tools import gdocs_admin_audit
     fn = getattr(gdocs_admin_audit, "fn", gdocs_admin_audit)
     return fn(admin_token, user_id, since_hours)
 
@@ -228,7 +228,9 @@ def test_admin_audit_truncates_user_id_in_logs(monkeypatch, caplog):
     full_user_id = "1234567890abcdef-this-must-not-leak-in-full"
     _seed_user(full_user_id)
 
-    with caplog.at_level(logging.INFO, logger="google_docs_mcp.server"):
+    # v2.2.2 (Gap #7): _log moved with gdocs_admin_audit to
+    # services/admin/tools.py; logger name updated accordingly.
+    with caplog.at_level(logging.INFO, logger="google_docs_mcp.services.admin"):
         result = _call("secret", full_user_id, 24)
 
     # Sanity: the call succeeded.
