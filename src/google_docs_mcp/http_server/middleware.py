@@ -1,19 +1,25 @@
 """ASGI middlewares + trusted-hosts derivation.
 
-Three concerns:
+Five concerns:
+  - ``RequestIdMiddleware`` — assign/propagate ``X-Request-ID`` per request
+    (PR-Δ4 — correlation IDs for multi-tenant log debugging).
+  - ``HealthExemptTrustedHostMiddleware`` — host-allowlist with /health bypass.
   - ``BearerTokenMiddleware`` — bearer / signed-URL auth gate for /api/*.
   - ``BodySizeLimitMiddleware`` — Content-Length cap (defense-in-depth).
   - ``derive_trusted_hosts()`` — host-allowlist resolution for the
     ``TrustedHostMiddleware`` Starlette ships.
 
-``TrustedHostMiddleware`` itself comes from Starlette; we only
-configure its ``allowed_hosts`` here.
+Plus a logging filter (``RequestIdLogFilter``) + ContextVar
+(``_request_id_var``) that together let every ``logging`` call inside
+an HTTP request handler automatically include the active request_id.
 """
 from __future__ import annotations
 
+import contextvars
 import hmac
 import logging
 import os
+import uuid
 from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -25,6 +31,168 @@ from . import _state  # late-bound access to _state._NONCE_STORE so test
                       # reassignments propagate (tests reset between cases)
 
 log = logging.getLogger("google_docs_mcp.http")
+
+
+# ---------------------------------------------------------------------------
+# Request-ID propagation (PR-Δ4 — multi-tenant log correlation)
+# ---------------------------------------------------------------------------
+#
+# Multi-tenant debugging is the operational pain this closes. Pre-PR-Δ4 a
+# log line saying "convert failed for user-A" was un-correlatable with
+# upstream/downstream lines: was it the same request? a retry? a different
+# user's concurrent call? With every line stamped ``request_id=<uuid>``,
+# an operator scanning `flyctl logs` can grep one id and reconstruct the
+# entire request lifecycle.
+#
+# Why a ContextVar (not request.state) for the canonical store:
+#   1. ``logging.Filter`` can't reach ``request.state`` — it only sees the
+#      LogRecord. A module-level ContextVar IS visible to the filter.
+#   2. asyncio's contextvars.copy_context() means the value automatically
+#      flows into every awaited coroutine inside the request handler
+#      without manual plumbing.
+#   3. Threads use the same ContextVar, but each thread gets its own
+#      copy on entry — no leakage across concurrent requests.
+#
+# ``request.state.request_id`` is ALSO set so handlers that prefer the
+# explicit attribute don't have to import this module.
+
+
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "google_docs_mcp_request_id",
+    default="-",
+)
+
+
+def get_request_id() -> str:
+    """Return the request_id for the current async/thread context.
+
+    Returns ``"-"`` (the ContextVar default) when called outside a
+    request — e.g. from a stdio MCP tool or a background task — so
+    log lines have a non-empty placeholder rather than ``None``.
+    """
+    return _request_id_var.get()
+
+
+class RequestIdLogFilter(logging.Filter):
+    """Inject the active ``request_id`` into every LogRecord.
+
+    Install once per process at logging-config time (in ``run_http``).
+    The filter is a no-op when called outside an HTTP request — the
+    placeholder ``"-"`` is the default ContextVar value, NOT an error.
+
+    Usage in a formatter::
+
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)s [req=%(request_id)s] "
+            "%(name)s %(message)s"
+        )
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Do not overwrite an explicit request_id the caller may have
+        # set (e.g. a background task injecting a synthetic id).
+        if not hasattr(record, "request_id"):
+            record.request_id = _request_id_var.get()
+        return True
+
+
+# Header name per the de-facto convention. Echoed back to the client
+# in the same casing so curl users grepping for X-Request-ID can match
+# on either case.
+REQUEST_ID_HEADER = "x-request-id"
+# Cap on accepted inbound id length so a misbehaving upstream can't
+# blow out log lines. UUIDs are 36 chars; we accept up to 128 to allow
+# for prefixed conventions (e.g. ``cf-...`` from Cloudflare) without
+# letting an attacker DoS log storage with multi-kilobyte ids.
+_MAX_INBOUND_REQUEST_ID_LEN = 128
+
+
+def _sanitize_inbound_request_id(value: str | None) -> str | None:
+    """Accept an upstream id if it's reasonably-shaped; else None.
+
+    Reasonable = ASCII, no control chars, no spaces, length ≤ 128.
+    Anything else gets replaced by a fresh uuid4 — better to lose
+    correlation with a misbehaving upstream than to log an
+    attacker-controlled string verbatim.
+    """
+    if not value:
+        return None
+    if len(value) > _MAX_INBOUND_REQUEST_ID_LEN:
+        return None
+    # Reject control chars + spaces. Allow alphanumerics, dashes,
+    # underscores, dots, and colons (UUIDs + Cloudflare/AWS conventions).
+    if not all(c.isalnum() or c in "-_.:" for c in value):
+        return None
+    return value
+
+
+class RequestIdMiddleware:
+    """Assign/propagate ``X-Request-ID`` for every HTTP request.
+
+    Pure-ASGI (not ``BaseHTTPMiddleware``-based) so it works for the
+    full request lifecycle including streaming responses, and so it
+    can wrap the ASGI ``send`` callable to inject the header in the
+    response-start message without buffering the body.
+
+    Sits outermost in the middleware stack so the id is populated
+    BEFORE auth / Host / body-size checks run — that way even
+    rejected-at-middleware requests still get a correlatable log
+    line.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        # Lifespan + websocket scopes: forward unchanged. The
+        # ContextVar default ("-") is fine for any logging that
+        # happens during lifespan startup/shutdown.
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+
+        # Extract any upstream id from the request headers. ASGI
+        # headers are a list of (name_bytes, value_bytes) tuples;
+        # case-insensitive lookup per spec.
+        inbound: str | None = None
+        for k, v in scope.get("headers", []):
+            if k == REQUEST_ID_HEADER.encode("latin-1"):
+                inbound = _sanitize_inbound_request_id(
+                    v.decode("latin-1", errors="replace")
+                )
+                if inbound:
+                    break
+
+        request_id = inbound or str(uuid.uuid4())
+
+        # Set the ContextVar so logging.Filter + handler code can read it.
+        token = _request_id_var.set(request_id)
+
+        # Wrap `send` to inject the header into the response-start
+        # message. We mutate the headers list in place because Starlette
+        # passes it through unchanged for non-cached responses.
+        request_id_bytes = request_id.encode("latin-1")
+
+        async def send_with_header(message: dict) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                # Don't double-add if a downstream handler already set one.
+                if not any(
+                    h[0].lower() == REQUEST_ID_HEADER.encode("latin-1")
+                    for h in headers
+                ):
+                    headers.append(
+                        (REQUEST_ID_HEADER.encode("latin-1"), request_id_bytes)
+                    )
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            await self._app(scope, receive, send_with_header)
+        finally:
+            # Reset ContextVar so subsequent requests on this asyncio
+            # task / thread don't inherit a stale id.
+            _request_id_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

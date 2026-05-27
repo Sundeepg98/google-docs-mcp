@@ -315,6 +315,13 @@ def main() -> None:
         from .http_server import run_http
         from .oauth_google import configure_auth_for_http
 
+        # PR-Δ4: Sentry init runs BEFORE configure_auth_for_http /
+        # run_http so any exception thrown during HTTP-mode setup
+        # itself is captured. No-op when SENTRY_DSN is unset (stub-
+        # but-wired — operator flips by setting the Fly secret).
+        from .observability import init_sentry
+        init_sentry()
+
         # v1.1+: wire GoogleProvider so HTTP requests are per-user
         # authenticated. Stdio path below intentionally skips this —
         # local trust model, single user, no auth middleware.

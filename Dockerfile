@@ -1,3 +1,15 @@
+# PR-Δ4 (2026-05-27): Litestream binary fetch stage.
+# Litestream is a single static Go binary; we copy it from the
+# official image rather than installing via curl/apt to keep
+# provenance + bytes-pinned. The whole image is ~25 MB but we only
+# COPY the `/usr/local/bin/litestream` binary into the runtime layer
+# (~15 MB), so the multi-stage approach adds essentially nothing to
+# the final image size compared to fetching+extracting via curl.
+#
+# Pin to v0.3.13 (current stable as of 2026-05-22) for reproducible
+# builds. Dependabot's `docker` ecosystem tracks bumps.
+FROM litestream/litestream:0.3.13 AS litestream-binary
+
 # PR-Δ3 (2026-05-27): SHA-pin the base image digest.
 # Rationale: an unpinned ``python:3.13-slim`` lets the registry serve a
 # different upstream layer set at build time without any change in this
@@ -122,8 +134,31 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 #
 # ``--no-create-home`` + ``--shell /sbin/nologin``: this user is
 # strictly a runtime UID, never an interactive shell account.
+# PR-Δ4 (2026-05-27): Litestream binary + config + entrypoint.
+#
+# Copies the static litestream binary from the multi-stage builder
+# above (~15 MB), the repo's litestream.yml config, and a tiny shell
+# entrypoint that supervises BOTH processes:
+#
+#   1. ``litestream replicate -exec "google-docs-mcp"`` runs the
+#      server as a child of litestream so litestream can:
+#        - take a final WAL checkpoint when the server exits
+#        - exit with the same code as the server
+#        - propagate signals (SIGTERM from Fly's deploy/restart) so
+#          shutdown is graceful and the last replica is up to date
+#
+# The replicate path is GATED on ``LITESTREAM_BUCKET`` being set —
+# the entrypoint script falls through to plain ``google-docs-mcp``
+# when the env is unset (the stub-but-wired pattern: code is in
+# place, config is committed, operator activates by setting the
+# Fly secrets per docs/runbooks/backup-restore.md).
+COPY --from=litestream-binary /usr/local/bin/litestream /usr/local/bin/litestream
+COPY litestream.yml /etc/litestream.yml
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 RUN useradd --uid 10001 --user-group --no-create-home --shell /sbin/nologin app \
     && chown -R app:app /app /data
 USER app
 
-CMD ["google-docs-mcp"]
+CMD ["/usr/local/bin/entrypoint.sh"]
