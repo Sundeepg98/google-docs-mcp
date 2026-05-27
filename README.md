@@ -1,4 +1,6 @@
-# google-docs-mcp
+# appscriptly
+
+> **Workspace Automation MCP** — generates persistent workflows (time-driven jobs, custom menus, reactive automations) that live IN your Google Workspace and run on Google's infrastructure. Also covers Docs / Sheets / Slides / Drive create + edit + read + retrofit.
 
 [![tests](https://github.com/Sundeepg98/google-docs-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/Sundeepg98/google-docs-mcp/actions/workflows/test.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Sundeepg98/google-docs-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/Sundeepg98/google-docs-mcp)
@@ -10,7 +12,9 @@
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (STRIDE + bounded blast radius) ·
 [docs/asvs-level-1-checklist.md](docs/asvs-level-1-checklist.md) (OWASP ASVS L1 self-attestation).
 
-**google-docs-fly is the only [MCP](https://modelcontextprotocol.io/) server that creates and edits Google Docs with native sidebar Tabs (Google's October 2024 feature) AND losslessly retrofits existing `.docx` documents into tabbed format — preserving tables, drawings, and equations that text-only round-trips would destroy.**
+> **Note on the rename (2026-05-27):** this project was previously published as `google-docs-mcp`. The original name reflected the Docs-first v1.0 scope; subsequent releases grew to cover six Google services + Apps Script-backed automation, so the rename to `appscriptly` matches the positioning. The **Python module path stays at `google_docs_mcp`** (renaming would break every existing import); the **CLI binary** is now `appscriptly` with `google-docs-mcp` preserved as a backward-compat alias; **`gdocs_*` tool names are unchanged** (renaming would break existing claude.ai connector users); the Fly deployment is mid-migration with the legacy URL still live. See [docs/adr/2026-05-27-rename-to-appscriptly.md](docs/adr/2026-05-27-rename-to-appscriptly.md) for the staged plan.
+
+**appscriptly is the [MCP](https://modelcontextprotocol.io/) server that puts the Apps Script automation moat behind a Claude-friendly interface.** It creates and edits Google Docs with native sidebar Tabs (Google's October 2024 feature), losslessly retrofits existing `.docx` documents into tabbed format (preserving tables, drawings, and equations that text-only round-trips would destroy), and — the headline capability post-PR-α — installs a per-user **Workspace Automation runtime** so Claude can build persistent workflows that fire on a schedule, when data changes, or from a custom menu inside any of your docs / sheets / slides.
 
 Tabs are a Google-Docs-native concept; they do **not** exist in the `.docx` / OOXML spec. Any pipeline that round-trips through `.docx` collapses to one tab. The only way to create or preserve Tabs programmatically is to call the Google Docs API directly — which is what this server does, packaged as an MCP server for **Claude Desktop**, **Claude Code**, and **claude.ai** custom connectors.
 
@@ -142,14 +146,16 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ```json
 {
   "mcpServers": {
-    "google-docs": { "command": "google-docs-mcp" }
+    "appscriptly": { "command": "appscriptly" }
   }
 }
 ```
 
-For dev installs, point at the venv entry-point: `/abs/path/google-docs-mcp/.venv/bin/google-docs-mcp` (or `.venv\Scripts\google-docs-mcp.exe` on Windows).
+(The `"appscriptly"` key is the label that shows up in Claude's UI — pick whatever you want, the command must match the installed CLI binary. Pre-rename installs that use `"google-docs": { "command": "google-docs-mcp" }` keep working — both `appscriptly` and `google-docs-mcp` are installed as CLI binaries; see [`pyproject.toml`](pyproject.toml) `[project.scripts]`. The legacy `google-docs-mcp` alias stays through v3.0.)
 
-Restart Claude Desktop. The 23 `gdocs_*` tools should appear.
+For dev installs, point at the venv entry-point: `/abs/path/repo/.venv/bin/appscriptly` (or `.venv\Scripts\appscriptly.exe` on Windows).
+
+Restart Claude Desktop. The `gdocs_*` tools should appear.
 
 ### Wire to Claude Code
 

@@ -239,7 +239,7 @@ def _build_app_with_health_exempt(allowed_hosts):
     from google_docs_mcp.http_server import HealthExemptTrustedHostMiddleware
 
     async def health(_request):
-        return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+        return JSONResponse({"ok": True, "service": "appscriptly"})
 
     async def other(_request):
         return JSONResponse({"other": True})
@@ -274,7 +274,7 @@ def test_health_accepts_fly_internal_probe_with_raw_ip_host():
         f"Fly probe would still be rejected: {resp.status_code} "
         f"{resp.text[:200]!r}"
     )
-    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+    assert resp.json() == {"ok": True, "service": "appscriptly"}
 
 
 def test_health_accepts_any_raw_ip_host_header():
@@ -322,7 +322,7 @@ def test_health_accepts_canonical_host_too():
     client = TestClient(app)
     resp = client.get("/health", headers={"Host": "my-app.fly.dev"})
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+    assert resp.json() == {"ok": True, "service": "appscriptly"}
 
 
 def test_health_exempt_middleware_passes_lifespan_through():

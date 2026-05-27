@@ -12,7 +12,14 @@ from google_docs_mcp import keys
 
 
 async def health(_request: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+    # PR-Δ5.5 (2026-05-27): the ``service`` field carries the
+    # user-facing product name (``appscriptly`` post-rename) rather
+    # than the package distribution name or module path. Operators
+    # have monitoring + log-aggregation rules that may grep this
+    # field; the rename moves the canonical identifier forward
+    # without affecting Fly's health-probe contract (which only
+    # cares about the HTTP 200 + JSON-parseable body).
+    return JSONResponse({"ok": True, "service": "appscriptly"})
 
 
 # RFC 9116 §2.3 recommends an expiry no more than 1 year out. We hardcode

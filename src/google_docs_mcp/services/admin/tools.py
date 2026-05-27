@@ -346,11 +346,28 @@ async def gdocs_server_info() -> dict:
     # __version__ from the partially-loaded package at module-load
     # time). Reading from installed package metadata is also more
     # honest — it reflects the wheel that's actually deployed.
+    #
+    # PR-Δ5.5 (2026-05-27): the PyPI distribution name was renamed
+    # from ``google-docs-mcp`` to ``appscriptly``. New installs find
+    # the package under ``appscriptly``; older installs (pre-rename
+    # wheels still pinned via uv.lock at deploy time) find it under
+    # the legacy name. Try the new name first, fall back to the old,
+    # then "unknown". The fallback chain stays until the legacy
+    # ``google-docs-mcp`` PyPI artifact is fully retired — same
+    # horizon as the CLI-binary backward-compat alias.
+    from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _pkg_version
-    try:
-        ver = _pkg_version("google-docs-mcp")
-    except Exception:  # noqa: BLE001
-        ver = "unknown"
+    ver = "unknown"
+    for candidate in ("appscriptly", "google-docs-mcp"):
+        try:
+            ver = _pkg_version(candidate)
+            break
+        except PackageNotFoundError:
+            continue
+        except Exception:  # noqa: BLE001
+            # Defensive: any non-PackageNotFoundError from importlib
+            # bubbles to "unknown" rather than crashing server_info.
+            break
 
     # Append GIT_COMMIT as semver build metadata so every deploy from
     # a distinct commit reports a unique version string — without
