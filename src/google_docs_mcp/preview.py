@@ -17,6 +17,7 @@ from typing import Literal
 from docx import Document
 from docx.document import Document as DocumentT  # the class; `Document` itself is a factory function
 from google.oauth2.credentials import Credentials
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 from .services.drive.api import DOCX_MIME, GDOC_MIME
@@ -123,17 +124,34 @@ def _detect_split_titles(
 
 
 def _fetch_drive_as_docx(creds: Credentials, drive_file_id: str) -> io.BytesIO:
-    """Download a Drive file as .docx bytes (works for both .docx and Google Doc)."""
+    """Download a Drive file as .docx bytes (works for both .docx and Google Doc).
+
+    PR-Δ3.5: helper for ``preview_tab_split`` which is annotated
+    ``readonly=True``. All three Drive calls (metadata fetch, raw
+    media download, .docx export) wrapped with idempotent retry.
+    """
     drive = get_service("drive", "v3", credentials=creds)
-    meta = drive.files().get(fileId=drive_file_id, fields="mimeType").execute()
+    meta = execute_with_retry(
+        lambda: drive.files().get(fileId=drive_file_id, fields="mimeType").execute(),
+        idempotent=True,
+        op_name="drive.files.get.preview_meta",
+    )
     mime = meta.get("mimeType")
     if mime == DOCX_MIME:
-        buf = drive.files().get_media(fileId=drive_file_id).execute()
+        buf = execute_with_retry(
+            lambda: drive.files().get_media(fileId=drive_file_id).execute(),
+            idempotent=True,
+            op_name="drive.files.get_media.docx",
+        )
         return io.BytesIO(buf)
     if mime == GDOC_MIME:
-        buf = drive.files().export(
-            fileId=drive_file_id, mimeType=DOCX_MIME
-        ).execute()
+        buf = execute_with_retry(
+            lambda: drive.files().export(
+                fileId=drive_file_id, mimeType=DOCX_MIME
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.export.docx",
+        )
         return io.BytesIO(buf)
     raise ValueError(
         f"Drive file {drive_file_id!r} has mimeType {mime!r}. "

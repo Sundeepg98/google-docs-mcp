@@ -27,6 +27,7 @@ from typing import Any
 
 from google.oauth2.credentials import Credentials
 
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 # Re-export the pure helpers + the value types so callers that did
@@ -301,9 +302,14 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> dict:
     docs = get_service("docs", "v1", credentials=creds)
     # includeTabsContent must be True for the tabs[] field to be populated
     # at all; without it the response uses the legacy single-tab schema.
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
+    # PR-Δ3.5: gdocs_get_doc_outline is readonly=True, idempotent=True.
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.outline",
+    )
 
     tabs_out: list[dict] = []
 
@@ -354,9 +360,14 @@ def read_tab_content(
         raise ValueError("Provide either tab_id or tab_title")
 
     docs = get_service("docs", "v1", credentials=creds)
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
+    # PR-Δ3.5: gdocs_read_doc is readonly=True, idempotent=True.
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.read_tab",
+    )
     all_tabs = fetched.get("tabs") or []
 
     if tab_id:
@@ -456,9 +467,16 @@ def replace_all_text(
             raise ValueError("tab_ids list cannot be empty; omit to target all tabs")
         req["replaceAllText"]["tabsCriteria"] = {"tabIds": list(tab_ids)}
 
-    resp = docs.documents().batchUpdate(
-        documentId=doc_id, body={"requests": [req]}
-    ).execute()
+    # PR-Δ3.5: gdocs_replace_all_text is idempotent=True (replacing the
+    # same text twice is a no-op on the second pass — occurrencesChanged
+    # is 0 because the first pass already replaced everything).
+    resp = execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.replaceAllText",
+    )
     occurrences = (
         resp.get("replies", [{}])[0]
         .get("replaceAllText", {})
@@ -480,9 +498,14 @@ def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
     [{style, text}, ...]}, ...]}`` — tabs in pre-order traversal.
     """
     docs = get_service("docs", "v1", credentials=creds)
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
+    # PR-Δ3.5: read_all_tabs supports gdocs_read_doc (readonly=True path).
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.read_all",
+    )
 
     out: list[dict] = []
 
@@ -538,10 +561,18 @@ def delete_tab(creds: Credentials, doc_id: str, tab_id: str) -> None:
     deleting a tab cascades to its child tabs.
     """
     docs = get_service("docs", "v1", credentials=creds)
-    docs.documents().batchUpdate(
-        documentId=doc_id,
-        body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
-    ).execute()
+    # PR-Δ3.5: gdocs_delete_tab is destructive=True but idempotent=True
+    # (deleting an already-deleted tab returns 400 invalidArgument, which
+    # is in the non-retryable 4xx set — propagates to caller as the
+    # existing behavior).
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id,
+            body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.deleteTab",
+    )
 
 
 def rename_tab(
@@ -568,19 +599,25 @@ def rename_tab(
     if not fields:
         return
     docs = get_service("docs", "v1", credentials=creds)
-    docs.documents().batchUpdate(
-        documentId=doc_id,
-        body={
-            "requests": [
-                {
-                    "updateDocumentTabProperties": {
-                        "tabProperties": props,
-                        "fields": ",".join(fields),
+    # PR-Δ3.5: gdocs_rename_tab is idempotent=True (renaming to the same
+    # name twice yields the same end state).
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id,
+            body={
+                "requests": [
+                    {
+                        "updateDocumentTabProperties": {
+                            "tabProperties": props,
+                            "fields": ",".join(fields),
+                        }
                     }
-                }
-            ]
-        },
-    ).execute()
+                ]
+            },
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.updateTabProperties",
+    )
 
 
 def set_tab_icons(
@@ -602,9 +639,15 @@ def set_tab_icons(
         raise ValueError("icons_by_title cannot be empty")
 
     docs = get_service("docs", "v1", credentials=creds)
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
+    # PR-Δ3.5: gdocs_set_tab_icons is idempotent=True (setting the same
+    # emoji on the same tab twice is a no-op).
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.set_icons",
+    )
 
     # Collect all (tab_id, title) pairs across the nesting.
     all_tabs: list[tuple[str, str]] = []
@@ -644,9 +687,14 @@ def set_tab_icons(
                 break
 
     if requests:
-        docs.documents().batchUpdate(
-            documentId=doc_id, body={"requests": requests}
-        ).execute()
+        # PR-Δ3.5: same idempotence rationale as the fetch above.
+        execute_with_retry(
+            lambda: docs.documents().batchUpdate(
+                documentId=doc_id, body={"requests": requests}
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.batchUpdate.set_icons",
+        )
 
     unmatched = [k for k in icons_by_title if k not in matched]
     return {

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 if TYPE_CHECKING:
@@ -78,10 +79,16 @@ def read_range(
             propagate; the tool-layer envelope renders it.
     """
     sheets = get_service("sheets", "v4", credentials=creds)
-    resp = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=range_str,
-    ).execute()
+    # PR-Δ3.5: gsheets_read_range is readonly=True, idempotent=True;
+    # wrap to retry on 429/5xx.
+    resp = execute_with_retry(
+        lambda: sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=range_str,
+        ).execute(),
+        idempotent=True,
+        op_name="sheets.values.get",
+    )
     return {
         "range": resp.get("range", range_str),
         "values": resp.get("values", []),
@@ -138,12 +145,19 @@ def write_range(
         )
 
     sheets = get_service("sheets", "v4", credentials=creds)
-    resp = sheets.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=range_str,
-        valueInputOption="USER_ENTERED",
-        body={"values": values},
-    ).execute()
+    # PR-Δ3.5: gsheets_write_range is annotated idempotent=True (writing
+    # the same values to the same range twice is a no-op assuming the
+    # caller passes the same values). Wrap to retry on 429/5xx.
+    resp = execute_with_retry(
+        lambda: sheets.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=range_str,
+            valueInputOption="USER_ENTERED",
+            body={"values": values},
+        ).execute(),
+        idempotent=True,
+        op_name="sheets.values.update",
+    )
     return {
         "updated_range": resp.get("updatedRange", range_str),
         "updated_cells": resp.get("updatedCells", 0),

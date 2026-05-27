@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 if TYPE_CHECKING:
@@ -157,10 +158,15 @@ def list_permissions(
         scope is the entire point of drive.file vs. drive.full.
     """
     drive = get_service("drive", "v3", credentials=creds)
-    resp = drive.permissions().list(
-        fileId=drive_file_id,
-        fields="permissions(id,emailAddress,role,type)",
-    ).execute()
+    # PR-Δ3.5: gdocs_list_permissions is readonly=True, idempotent=True.
+    resp = execute_with_retry(
+        lambda: drive.permissions().list(
+            fileId=drive_file_id,
+            fields="permissions(id,emailAddress,role,type)",
+        ).execute(),
+        idempotent=True,
+        op_name="drive.permissions.list",
+    )
     return {
         "file_id": drive_file_id,
         "permissions": resp.get("permissions", []),
