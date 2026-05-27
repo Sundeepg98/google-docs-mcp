@@ -1,8 +1,14 @@
 # google-docs-mcp
 
 [![tests](https://github.com/Sundeepg98/google-docs-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/Sundeepg98/google-docs-mcp/actions/workflows/test.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Sundeepg98/google-docs-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/Sundeepg98/google-docs-mcp)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Security posture:** see [SECURITY.md](SECURITY.md) (disclosure policy) ·
+[docs/security-posture.md](docs/security-posture.md) (narrative) ·
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (STRIDE + bounded blast radius) ·
+[docs/asvs-level-1-checklist.md](docs/asvs-level-1-checklist.md) (OWASP ASVS L1 self-attestation).
 
 **google-docs-fly is the only [MCP](https://modelcontextprotocol.io/) server that creates and edits Google Docs with native sidebar Tabs (Google's October 2024 feature) AND losslessly retrofits existing `.docx` documents into tabbed format — preserving tables, drawings, and equations that text-only round-trips would destroy.**
 

@@ -30,6 +30,7 @@ from .routes.observability import (
     health,
     info_endpoint,
     oauth_protected_resource_metadata,
+    security_txt,
 )
 
 log = logging.getLogger("google_docs_mcp.http")
@@ -115,6 +116,15 @@ def build_app(mcp: FastMCP) -> Starlette:
         Route(
             "/.well-known/oauth-protected-resource",
             oauth_protected_resource_metadata,
+            methods=["GET"],
+        ),
+        # PR-Δ2 (v2.3.5): RFC 9116 security.txt — machine-readable
+        # vulnerability disclosure contact. Companion to /SECURITY.md
+        # in the repo. Same placement rule as the RFC 9728 endpoint
+        # above (MUST be declared BEFORE the Mount("/") catch-all).
+        Route(
+            "/.well-known/security.txt",
+            security_txt,
             methods=["GET"],
         ),
         # OAuth callback for the v1.1+ per-user Google API auth. Public
