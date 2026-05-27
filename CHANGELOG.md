@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes to `google-docs-mcp`.
+All notable changes to `appscriptly` (pre-PR-Δ5.5: `google-docs-mcp`).
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter + PR-Δ3.5 retry adoption + PR-Δ4 DR + observability + PR-Δ5 commercial-ready engineering
+## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter + PR-Δ3.5 retry adoption + PR-Δ4 DR + observability + PR-Δ5 commercial-ready engineering + PR-Δ5.5 rename to appscriptly
 
 Combined six related ships. PR-α surfaces the runtime install as
 headline functionality; PR-Δ1 bundles its scopes into the
@@ -40,7 +40,26 @@ env var), and multi-tenant defensive hardening (per-call tenant-bind
 assertion + structured `audit.tenant` log of every credential
 dispatch event). All three default off / no-op for personal users
 — the seams exist so commercial activation later is a config flip,
-not an architectural change.
+not an architectural change; **PR-Δ5.5 renames the project from
+`google-docs-mcp` to `appscriptly`** on the user-facing distribution
++ identity surfaces (PyPI distribution name, README + tagline,
+FastMCP server identity, health endpoint `service` field, CLI binary
++ legacy alias). The Python module path, all `gdocs_*` tool names,
+logger namespaces, cryptographic HKDF info bytes, `~/.google-docs-mcp/`
+user-data dir, and Fly production app name (`sundeepg98-docs-mcp`)
+are INTENTIONALLY unchanged — renaming any of them would break
+existing imports / tool calls / log routing / cached keys / OAuth
+tokens / live traffic. See `docs/adr/2026-05-27-rename-to-appscriptly.md`
+for the staged-rename rationale + the operator-action-pending
+checklist (PyPI publish, Fly cutover, repo transfer, OAuth Client
+display-name update).
+
+### Renamed
+
+- **Project name: `google-docs-mcp` → `appscriptly`** (PR-Δ5.5, `pyproject.toml` + `src/google_docs_mcp/__init__.py` + `src/google_docs_mcp/server.py` + `src/google_docs_mcp/http_server/routes/observability.py` + `src/google_docs_mcp/setup_apps_script.py` + `src/google_docs_mcp/services/admin/tools.py` + `README.md` + `docs/USER_GUIDE.md` + `fly.toml` + `docs/adr/2026-05-27-rename-to-appscriptly.md` + `docs/runbooks/pypi-publish-stub.md`). PyPI distribution name is now `appscriptly`; `uv.lock` regenerated (`Added appscriptly v1.5.1` / `Removed google-docs-mcp v1.5.1`). The FastMCP server identity (visible in claude.ai's connector picker + Claude Desktop's tool listing) renamed `FastMCP("google-docs", ...)` → `FastMCP("appscriptly", ...)`. The `_SERVER_INSTRUCTIONS` opening line (the system prompt the LLM sees) rewritten to position appscriptly as the **Workspace Automation MCP** (Apps Script-backed persistent workflows are the headline; Docs / Sheets / Slides / Drive coverage is the supporting infrastructure). Health endpoint `/health` now returns `{"service": "appscriptly"}`. `[project.scripts]` declares BOTH `appscriptly` (canonical) and `google-docs-mcp` (deprecated alias, planned removal in v3.0) — existing user shell scripts + install instructions + muscle memory keep working. The `gdocs_server_info` version-lookup uses a fallback chain (`appscriptly` first, `google-docs-mcp` second) so legacy installs still pinned via `uv.lock` at deploy time keep reporting their version correctly. New Apps Script projects created by `gdocs_install_automation` are titled `"appscriptly / restructure"` (existing projects retain their original Drive title — the title isn't part of the content_hash, so no churn). PyPI keywords extended with `appscript`, `apps-script-generator`, `workspace-automation`, `google-workspace`. Test assertion in `tests/unit/test_http_server_middleware.py` updated from `{"service": "google-docs-mcp"}` to `{"service": "appscriptly"}` to match the new health response.
+- **Intentionally NOT renamed** (with rationale): Python module path `src/google_docs_mcp/` (rename would break hundreds of imports); all `gdocs_*` tool names (rename would break every claude.ai connector user); logger namespaces `google_docs_mcp.*` (operators have monitoring + log-aggregation rules grepping these); HKDF info bytes `b"google-docs-mcp v1 ..."` in `keys.py` + `key_provider.py` (cryptographic primitive — renaming invalidates every derived key for every operator); `~/.google-docs-mcp/` user data dir paths (renaming orphans every existing user's OAuth tokens); `app = "sundeepg98-docs-mcp"` in `fly.toml` (production deploy — operator cutover scheduled separately per the 7-step plan documented in `fly.toml`'s top comment block); GitHub repo URLs `Sundeepg98/google-docs-mcp` (repo transfer to the `appscriptly` org is a separate scheduled operator decision). The CLI binary `google-docs-mcp` is preserved as a backward-compat alias alongside the new `appscriptly` entry-point. Full inventory + rationale in `docs/adr/2026-05-27-rename-to-appscriptly.md`.
+- **New tool prefix convention** (PR-Δ5.5): existing `gdocs_*` tools stay as-is through v3.0+ (no mass rename). New tools added in PR-Δ7+ use the `as_*` prefix (`as_create_trigger`, `as_install_menu`, etc.) — appscriptly-native functionality that doesn't have a 1:1 Google API analogue (typically tools that generate Apps Script code, install bound scripts, or wire up the persistent automation runtime). The PR-α deprecation-alias pattern (`gdocs_setup_apps_script` → `gdocs_install_automation`) remains the model for any future explicit per-tool rename.
+- **PyPI publish runbook** (PR-Δ5.5, `docs/runbooks/pypi-publish-stub.md` ~150 lines) — operator action to claim the `appscriptly` PyPI name as squat-protection. Walks through account creation, scoped-token generation, `uv build && uv publish`, TestPyPI smoke-test, post-publish token-scope tightening, and version-bump re-publish flow. Squat-protection only; the operator's call when to flip publishing fully (separate later runbook).
 
 ### Added
 

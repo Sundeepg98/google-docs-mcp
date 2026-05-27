@@ -62,7 +62,18 @@ log = logging.getLogger("google_docs_mcp.setup_apps_script")
 # whether installed via pipx, pip -e, or inside a Docker image.
 RESTRUCTURE_GS_PATH = Path(__file__).parent / "restructure.gs"
 
-PROJECT_TITLE = "google-docs-mcp / restructure"
+PROJECT_TITLE = "appscriptly / restructure"
+# PR-Δ5.5 (2026-05-27): renamed from ``"google-docs-mcp / restructure"``.
+# Affects NEW installs only — Apps Script project titles aren't part
+# of the content_hash (compute_content_hash takes only (manifest,
+# files)), so existing users' projects retain their original title
+# in Drive. The setup-state ledger keys by script_id, not by title,
+# so the rename has no behavioral effect on existing deploys; users
+# searching Drive for "appscriptly" after the rename see new installs
+# only. Existing users who care about Drive-title consistency can
+# manually rename via the Apps Script editor — not worth churning
+# every existing project automatically (a re-create would cost the
+# user re-authorization + the prior project's deployment URLs).
 SCRIPT_FILENAME = "Restructure"
 
 _BASE_MANIFEST = {

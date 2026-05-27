@@ -3,14 +3,32 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "google-docs-mcp"
+# PR-Δ5.5 (2026-05-27): renamed from ``google-docs-mcp`` to ``appscriptly``.
+# The Python module path ``src/google_docs_mcp/`` is INTENTIONALLY kept
+# at its original location — a full module rename would touch ~hundreds
+# of imports across src/, tests/, and every consumer's pinned imports.
+# The user-facing product name is ``appscriptly``; the implementation
+# package stays at ``google_docs_mcp`` until a separate planned ops
+# move addresses the module-path rename. See
+# ``docs/adr/2026-05-27-rename-to-appscriptly.md`` for the staged plan.
+#
+# The CLI binary ``google-docs-mcp`` is preserved as a backward-compat
+# alias alongside the new ``appscriptly`` entry-point (see
+# ``[project.scripts]`` below) so existing users' shell scripts /
+# install instructions / muscle memory don't break on the rename.
+name = "appscriptly"
 version = "1.5.1"
-description = "MCP server that creates Google Docs with native Tabs (Oct 2024 sidebar feature) — for Claude Desktop and Claude Code"
+description = "MCP server for Apps Script automation across Google Workspace — generates persistent workflows (time-driven jobs, custom menus, reactive automations) that live in your Workspace and run on Google's infrastructure"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Sundeep Gunda" }]
 requires-python = ">=3.10"
-keywords = ["mcp", "google-docs", "claude", "anthropic", "tabs"]
+keywords = [
+    "mcp", "claude", "anthropic",
+    "appscript", "apps-script-generator",
+    "workspace-automation", "google-workspace",
+    "google-docs", "tabs",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -88,13 +106,27 @@ lint = [
 ]
 
 [project.urls]
+# PR-Δ5.5: repository URLs unchanged for now — the repo transfer to
+# the ``appscriptly`` GitHub org (https://github.com/appscriptly) is a
+# separate operator-scheduled cutover. When that lands, update both
+# entries below + run a sweep on any hardcoded URL strings in docs/
+# + the OpenSSF Scorecard badge in README.md.
 Homepage = "https://github.com/Sundeepg98/google-docs-mcp"
 Issues = "https://github.com/Sundeepg98/google-docs-mcp/issues"
 
 [project.scripts]
+# PR-Δ5.5: ``appscriptly`` is the canonical CLI entry-point post-rename;
+# ``google-docs-mcp`` is preserved as a backward-compat alias so existing
+# user shell scripts / install instructions / muscle memory keep working.
+# Both delegate to the same ``main`` function — no behavior difference.
+# The alias stays until v3.0 (the same removal horizon as
+# ``gdocs_setup_apps_script`` → ``gdocs_install_automation`` per PR-α).
+appscriptly = "google_docs_mcp.server:main"
 google-docs-mcp = "google_docs_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
+# PR-Δ5.5: still points at ``src/google_docs_mcp`` because the module
+# path rename is deferred — see the ``[project]`` comment block above.
 packages = ["src/google_docs_mcp"]
 
 # ---------------------------------------------------------------------

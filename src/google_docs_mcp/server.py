@@ -65,8 +65,14 @@ from .oauth_google import resolve_runtime_oauth_config
 # services/gas_deploy/tools.py (M3 Phase C extraction).
 
 _SERVER_INSTRUCTIONS = """\
-google-docs-fly — create, edit, read, and manage Google Docs with
-native sidebar Tabs (October 2024+ feature). All tools prefixed gdocs_.
+appscriptly — Workspace Automation MCP. Generates persistent workflows
+(time-driven jobs, custom menus, reactive automations) that live IN
+your Google Workspace and run on Google's infrastructure. Also creates,
+edits, reads, and manages Google Docs with native sidebar Tabs
+(Google's October 2024 feature) plus Sheets, Slides, Drive, and Apps
+Script project management. All existing tools are prefixed ``gdocs_``
+(historical from the docs-first era); newer tools may use the ``as_``
+prefix (appscriptly-native).
 
 START HERE: call ``gdocs_guide()`` for the orientation as a structured
 payload, or ``gdocs_server_info()`` for build version + verified CI
@@ -157,7 +163,12 @@ gdocs_server_info() — version + verified CI test status (digest,
 gdocs_test_manifest() — full test inventory + per-test outcomes
 """
 
-mcp = FastMCP("google-docs", instructions=_SERVER_INSTRUCTIONS)
+mcp = FastMCP("appscriptly", instructions=_SERVER_INSTRUCTIONS)
+# PR-Δ5.5 (2026-05-27): FastMCP server identity renamed from
+# ``"google-docs"`` to ``"appscriptly"``. This is the string that
+# appears in MCP client UIs (e.g. claude.ai's connector picker) as
+# the server name. The underlying Python module path stays at
+# ``google_docs_mcp`` — see pyproject.toml's [project] comment block.
 # auth=None at construction so stdio (Claude Desktop / Code) runs
 # without auth middleware. HTTP transport sets mcp.auth = GoogleProvider
 # at startup via configure_auth_for_http() — see main() and Phase 7.
