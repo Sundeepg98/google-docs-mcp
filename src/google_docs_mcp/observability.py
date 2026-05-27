@@ -214,6 +214,15 @@ def init_sentry() -> bool:
         event_level=logging.ERROR,  # event threshold
     )
 
+    # ``_before_send`` is typed as ``(dict, dict) -> dict | None`` for
+    # test-friendliness — the scrubber walks generic dicts and unit
+    # tests construct shaped dicts directly. Sentry's actual
+    # ``EventProcessor`` type uses internal aliases (``Event``,
+    # ``Hint``) that ARE dicts at runtime but have stricter static
+    # types. ``cast`` silences pyright without weakening our runtime
+    # contract (the scrubber walks dicts; Sentry passes dicts; the
+    # runtime behavior is identical).
+    from typing import cast
     sentry_sdk.init(
         dsn=dsn,
         # Release identifier — uses the same env vars deploy.sh sets.
@@ -236,7 +245,7 @@ def init_sentry() -> bool:
         # in-depth: opt-out at the SDK level.
         send_default_pii=False,
         # Our scrubber runs LAST after the SDK's own pre-processing.
-        before_send=_before_send,
+        before_send=cast(Any, _before_send),
         integrations=[logging_integration],
     )
     log.info(
