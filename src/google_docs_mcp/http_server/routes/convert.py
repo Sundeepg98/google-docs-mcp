@@ -1,8 +1,12 @@
 """``POST /api/convert`` — REST wrapper around docx → tabbed-doc conversion."""
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from googleapiclient.errors import HttpError
@@ -19,6 +23,16 @@ from google_docs_mcp.http_server._helpers import (
     _resolve_base_url,
     _resolve_client_config,
 )
+
+
+# PR-Δ3 (2026-05-27): structured audit logger for upload sessions.
+#
+# Distinct namespace from ``google_docs_mcp.http`` so operators can
+# route audit events separately from request/middleware logs (e.g.
+# pipe to a SIEM, retain longer, ship to a different sink). The
+# per-session line is the smallest forensic primitive: who uploaded
+# what (by hash, never by content), when, in which session.
+_audit_log = logging.getLogger("google_docs_mcp.audit.upload")
 
 
 async def convert_endpoint(request: Request) -> JSONResponse:
@@ -119,6 +133,41 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         contents = await upload.read()
         tmp.write(contents)
         tmp_path = Path(tmp.name)
+
+    # PR-Δ3: structured audit log line per upload session.
+    #
+    # ``user_id``: the signed-URL ``uid`` if present (multi-tenant
+    # cloud-chat path); else ``anonymous_sandbox`` for the bearer-
+    # header / operator path. NEVER the raw OAuth ``sub`` if we have
+    # an alternative — pre-truncate to first 8 chars to limit
+    # correlation surface in long-retained logs (full sub stays in
+    # the per-user state DB, accessible to operators only).
+    # ``file_sha256``: hash, NOT content. Purpose is "did THIS bytes-
+    # equal file get uploaded twice?" — replay detection, dup-detection,
+    # forensic correlation — without retaining the bytes themselves.
+    # ``upload_session_id``: per-request UUID. Stable across the rest
+    # of THIS request's downstream logs once we propagate it (followup
+    # PR-Δ4 wires it through docx_import; for now, scoped here).
+    # ``ts``: UTC unix-seconds; operators correlate against Google's
+    # audit trail (which uses wall-clock too).
+    signed_uid_for_log = getattr(request.state, "signed_url_user_id", None)
+    audit_user_id = (
+        f"sub:{signed_uid_for_log[:8]}…"
+        if isinstance(signed_uid_for_log, str) and signed_uid_for_log
+        else "anonymous_sandbox"
+    )
+    upload_session_id = str(uuid.uuid4())
+    _audit_log.info(
+        "upload_session "
+        "session_id=%s user_id=%s file_size_bytes=%d "
+        "file_sha256=%s split_by=%s ts=%d",
+        upload_session_id,
+        audit_user_id,
+        len(contents),
+        hashlib.sha256(contents).hexdigest(),
+        split_by_raw,
+        int(time.time()),
+    )
 
     # v2.1 multi-tenant dispatch:
     #   - signed-URL callers: per-user creds via request.state.signed_url_user_id

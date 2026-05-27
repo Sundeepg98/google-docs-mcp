@@ -4,9 +4,9 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts
+## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter
 
-Combined three related ships. PR-α surfaces the runtime install as
+Combined four related ships. PR-α surfaces the runtime install as
 headline functionality; PR-Δ1 bundles its scopes into the
 first-consent screen and adds the spec-mandated OAuth discovery
 endpoint so claude.ai's connector reconnect flow lands precisely on
@@ -16,9 +16,22 @@ expanded threat model with STRIDE per component + bounded blast
 radius callout + honest-gaps catalog, OpenSSF Scorecard CI, and
 Sigstore-signed releases) for credibility — not as a CASA substitute,
 which is no longer the operational concern given Google's Testing-mode
-bypass applies to our user scope.
+bypass applies to our user scope; **PR-Δ3 closes the Hex specialist's
+remaining architectural gap** (no retry/backoff anywhere for Google's
+routine 429/5xx) and four DevOps specialist must-fix gaps in a single
+themed batch (non-root container, SHA-pinned base image, CODEOWNERS,
+key-rotation runbook, per-upload-session audit logging).
 
 ### Added
+
+- **`RetryingGoogleApiClientAdapter`** (PR-Δ3, `src/google_docs_mcp/google_api_client.py`) — composing adapter wrapping any inner `GoogleAPIClient` (production: `GoogleApiClientAdapter`; tests: `InMemoryGoogleAPIClient`). Adds `execute_with_retry(fn, *, idempotent: bool, op_name: str)` for explicit retry on Google's documented transient `HttpError` statuses (`{429, 500, 502, 503, 504}`). Built on `tenacity` (new dep, MIT-licensed, pinned `>=9.1.4`); exponential backoff + jitter (`initial=1s`, `max=8s`, 3 attempts), custom `_RetryAfterAwareWait` strategy honors `Retry-After` headers as the next-attempt floor, `reraise=True` so callers see the underlying `HttpError` not tenacity's `RetryError`. **Non-idempotent calls (`idempotent=False`) execute exactly once** — the safety floor against duplicate side effects from re-executing partial mutations. Module-level default `_active_client` now wires `RetryingGoogleApiClientAdapter(GoogleApiClientAdapter())`; the 14 existing `get_service` call sites are unchanged (pure delegation), retry is **opt-in per-callsite** via the new `execute_with_retry` facade. 22 new unit tests in `test_retrying_google_api_client.py` covering protocol conformance, pure-delegation, parameterized 429+5xx retry-success, non-idempotent-doesn't-retry safety floor, max-retries-exhausted-reraises-HttpError, 4xx-non-429-doesn't-retry, non-HttpError-doesn't-retry, Retry-After-honored-as-floor, facade-routing, and graceful-degradation when the active client is a bare `InMemoryGoogleAPIClient` (test opt-out).
+- **Non-root container user (uid 10001)** (PR-Δ3, `Dockerfile`) — `useradd --uid 10001 --user-group --no-create-home --shell /sbin/nologin app` + `chown -R app:app /app /data` + `USER app`. uid in the Distroless/Chainguard 10001 convention, above Debian's reserved 0-999 range. Fly Volumes preserve uid ownership across deploys, so the chown is idempotent after the first deploy. Drops attack surface against future hypothetical container-escape primitives.
+- **SHA-pinned `python:3.13-slim` base image** (PR-Δ3, `Dockerfile`) — content-addressable base image (manifest digest captured from Docker Hub 2026-05-22). Plus new Dependabot ecosystem `docker:` in `.github/dependabot.yml` so the digest is bumped weekly — without it, a SHA-pin is supply-chain-safe but rots (stale Debian base = unpatched libc/openssl CVEs).
+- **`.github/CODEOWNERS`** (PR-Δ3) — catch-all `* @Sundeepg98`. Enables GitHub's auto-review-request routing on PRs; future per-area rules go above the catch-all as contributors join.
+- **`docs/runbooks/key-rotation.md`** (PR-Δ3) — ~280-line authoritative runbook covering rotation of the HKDF master (`MCP_BEARER_TOKEN`), the OAuth client secret (`GOOGLE_CLIENT_CONFIG`), the Fly deploy token (`FLY_API_TOKEN`), and the per-purpose overrides used as the graceful-cutover tool. Includes both **graceful rotation** (pin per-purpose overrides at current derived values → swap master → unset overrides on TTL cadence so in-flight signed URLs and OAuth state tokens survive) and **emergency rotation** (skip the graceful steps, accept in-flight token invalidation as the price of stopping ongoing exploitation). Supersedes `RUNBOOK.md` §3.4's fragmentary notes.
+- **Per-upload-session audit log line** (PR-Δ3, `src/google_docs_mcp/http_server/routes/convert.py`) — dedicated logger namespace `google_docs_mcp.audit.upload` emits one line per `/api/convert` upload: `session_id=<uuid4> user_id=sub:<8char>… file_size_bytes=<n> file_sha256=<hex> split_by=<...> ts=<unix>`. **`file_sha256` is a hash of the bytes, not the content** — forensic primitive for "was this exact byte sequence uploaded twice?" without retaining the bytes themselves. `user_id` is the signed-URL `uid` truncated to 8 chars (limits correlation surface in long-retained logs) or `anonymous_sandbox` for the bearer-header / operator path. Distinct logger namespace so operators can route audit lines to a SIEM or longer-retention sink without dragging in every middleware log line.
+- **`docs/adr/2026-05-27-retry-backoff-and-hardening.md`** (PR-Δ3) — full ADR documenting the retry-adapter architectural decision (why a separate `execute_with_retry` method vs. wrapping every `HttpRequest`), production wiring, consequences (the adapter is **wired but not yet adopted** — opt-in adoption is a follow-up sweep), and roll-forward path.
+- **`tenacity>=9.1.4`** (PR-Δ3, `pyproject.toml` + `uv.lock`) — new runtime dependency for the retry adapter. Well-maintained, single-purpose, MIT-licensed.
 
 - **`GET /.well-known/security.txt` endpoint** (PR-Δ2) — RFC 9116 machine-readable vulnerability disclosure contact, served by `src/google_docs_mcp/http_server/routes/observability.py` next to the existing `/.well-known/oauth-protected-resource` (RFC 9728) endpoint. Contact field points at the GitHub Security Advisories form (canonical channel per `SECURITY.md`). `Expires:` field hardcoded to a conservative ~6-month window so a stale image deployment still serves a valid block; the integration test `test_security_txt_expires_is_rfc3339_and_in_future` is the canary that fires when renewal is needed. Public endpoint — the `BearerTokenMiddleware` already excludes `/.well-known/*`.
 - **`docs/security-posture.md`** (PR-Δ2) — human-readable narrative companion to the structured artifacts. Covers minimal-scope OAuth posture (`drive.file` primary + `drive.readonly` for explicit ingestion), per-user token storage + per-purpose HKDF key derivation, standards-compliant OAuth discovery (RFC 8414/9728/9116), the bounded-blast-radius architectural property, continuous posture monitoring (Scorecard + CodeQL + pip-audit + Sigstore), what we self-attest (ASVS L1) and what we explicitly do NOT claim (SOC 2, CASA, paid pen-test, ASVS L2/L3).

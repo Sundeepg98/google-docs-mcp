@@ -1,0 +1,11 @@
+# CODEOWNERS — GitHub uses this file to auto-request reviewers on PRs.
+#
+# Default owner: PRs touching any file get a review request to the
+# owner below unless a more specific rule fires.
+#
+# As contributors join, add per-area rules above this default — e.g.
+#     /docs/                    @docs-team
+#     /.github/workflows/       @ci-team
+#     /src/google_docs_mcp/services/admin/  @sundeepg98 @ops-lead
+# Specific rules take precedence over the catch-all.
+*       @Sundeepg98
