@@ -22,6 +22,8 @@ from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,
     HealthExemptTrustedHostMiddleware,
+    RequestIdLogFilter,
+    RequestIdMiddleware,
     derive_trusted_hosts,
 )
 from .routes.convert import convert_endpoint
@@ -68,6 +70,11 @@ def build_app(mcp: FastMCP) -> Starlette:
     trusted_hosts = derive_trusted_hosts()
     body_max = int(os.environ.get("MCP_BODY_MAX_BYTES", 10 * 1024 * 1024))
     middleware = [
+        # PR-Δ4: RequestIdMiddleware OUTERMOST so the request_id
+        # ContextVar is populated BEFORE any other middleware runs.
+        # Even auth-rejected (401) or Host-rejected (400) requests
+        # still emit a correlatable log line on the way out.
+        Middleware(RequestIdMiddleware),
         # v2.3.3: HealthExemptTrustedHostMiddleware bypasses Host
         # validation on /health so Fly's internal probe (which sends
         # Host: <raw-ip>) can reach the handler. See the middleware's
@@ -146,10 +153,23 @@ def build_app(mcp: FastMCP) -> Starlette:
 
 def run_http(mcp: FastMCP, *, port: int = 8080) -> None:
     """Boot the HTTP server on ``0.0.0.0:<port>``."""
+    # PR-Δ4: format string includes ``[req=%(request_id)s]`` and the
+    # ``RequestIdLogFilter`` injects the active ContextVar value into
+    # every LogRecord. Outside an HTTP request the placeholder ``-``
+    # appears (filter default) — that's intentional, not a bug, so
+    # operators can tell "no request in scope" from "request_id missing".
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format=(
+            "%(asctime)s %(levelname)s [req=%(request_id)s] "
+            "%(name)s %(message)s"
+        ),
     )
+    # Install the filter on the ROOT logger so every named logger
+    # (google_docs_mcp.http, .credentials, .audit.*, uvicorn.*, …)
+    # inherits it without per-logger setup.
+    logging.getLogger().addFilter(RequestIdLogFilter())
+
     app = build_app(mcp)
     log.info("starting HTTP MCP server on 0.0.0.0:%d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

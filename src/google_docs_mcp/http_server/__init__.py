@@ -56,7 +56,10 @@ from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,
     HealthExemptTrustedHostMiddleware,
+    RequestIdLogFilter,
+    RequestIdMiddleware,
     derive_trusted_hosts,
+    get_request_id,
 )
 
 # --- Route handlers ---
@@ -86,7 +89,10 @@ __all__ = [
     "BearerTokenMiddleware",
     "BodySizeLimitMiddleware",
     "HealthExemptTrustedHostMiddleware",
+    "RequestIdLogFilter",
+    "RequestIdMiddleware",
     "derive_trusted_hosts",
+    "get_request_id",
     # Page helpers (test surface)
     "_CSP_HEADER",
     "_OAUTH_SUCCESS_HTML",
