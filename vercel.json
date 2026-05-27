@@ -1,0 +1,89 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "_comment_top": [
+    "PR-Δ6 (Vercel pilot) — runtime config for the parallel Vercel deploy.",
+    "Fly stays primary; Vercel is purely additive. See",
+    "docs/adr/2026-05-27-vercel-pilot.md for the rollback story.",
+    "_comment_* keys are stripped from runtime; Vercel ignores unknown",
+    "top-level keys. JSON has no comment syntax, so we abuse keys."
+  ],
+  "functions": {
+    "api/index.py": {
+      "_comment_runtime": [
+        "Vercel auto-picks the latest stable Python (3.12 as of",
+        "2026-05-27 per https://vercel.com/docs/functions/runtimes/python).",
+        "Setting `runtime` explicitly future-proofs against silent",
+        "version bumps that could break our pinned cryptography /",
+        "pyjwt floors. Bump the pinned runtime via Dependabot's",
+        "github-actions ecosystem when a new stable lands."
+      ],
+      "runtime": "python3.12",
+      "_comment_memory": [
+        "1024 MB is Vercel's default. The app's working set during",
+        "cold-start (FastMCP + googleapiclient + restructure.gs file",
+        "load + tool registry) is ~180 MB; 1 GB gives generous",
+        "headroom for the multipart-upload path in /api/convert.",
+        "Increasing memory also increases vCPU allocation (Vercel's",
+        "Fluid Compute model), so smaller `memory` would slow cold",
+        "start AND reduce concurrent-request capacity. Defaults stay."
+      ],
+      "memory": 1024,
+      "_comment_max_duration": [
+        "60s is the Hobby tier's hard ceiling. Most tool calls finish",
+        "in <5s (per PR-Δ4's request-ID-correlated logs on Fly).",
+        "Long-tail: docx-import → Apps Script Web App round-trip for",
+        "large documents can approach 30-45s. The 60s cap is",
+        "sufficient for personal-tier traffic; if commercial",
+        "activation drives a Pro upgrade (300s max), bump this then."
+      ],
+      "maxDuration": 60
+    }
+  },
+  "_comment_regions": [
+    "Vercel Hobby tier allows ONE region. `iad1` (US East /",
+    "Washington DC) is the default and universally available;",
+    "selecting Mumbai (`bom1`) would minimize latency for the",
+    "operator's region but `bom1` availability on Hobby tier is",
+    "not guaranteed (Vercel docs are inconsistent — some routes",
+    "exclude it). Defaulting to `iad1` for predictability; the",
+    "operator can swap to `bom1` post-deploy if the Hobby tier",
+    "accepts it (test by setting `regions: ['bom1']` and watching",
+    "for a deploy-time region error).",
+    "",
+    "Migration to Vercel Pro unlocks multi-region; that's the",
+    "performance answer if/when commercial activation drives it."
+  ],
+  "regions": ["iad1"],
+  "_comment_env": [
+    "Env vars are bound via the Vercel dashboard or `vercel env",
+    "add` (the operator runbook walks through this). The list",
+    "below is documentation of what MUST be set for a working",
+    "deploy — Vercel doesn't enforce env-var presence at deploy",
+    "time, so a missing var surfaces as a function-runtime",
+    "error rather than a deploy-time error.",
+    "",
+    "REQUIRED for any deploy:",
+    "  - MCP_BEARER_TOKEN — same value Fly uses; the HKDF master.",
+    "  - GOOGLE_CLIENT_CONFIG — OAuth client secrets JSON.",
+    "  - GOOGLE_OAUTH_BASE_URL — set to the Vercel deploy URL",
+    "    (https://<project>-<hash>-<team>.vercel.app or the",
+    "    operator's custom domain).",
+    "  - STORAGE_BACKEND — MUST be `vercel_kv` for any per-user",
+    "    state to persist across cold starts (SqliteBackend on",
+    "    Vercel's ephemeral tmpfs loses every write).",
+    "  - KV_REST_API_URL + KV_REST_API_TOKEN — Vercel populates",
+    "    these automatically when KV is bound to the project. The",
+    "    operator binds KV via the Vercel dashboard (`Project →",
+    "    Storage → Create New → KV`) — one click; provisions the",
+    "    free 30 MB Hobby instance.",
+    "",
+    "OPTIONAL:",
+    "  - SENTRY_DSN — PR-Δ4 observability; same DSN as Fly.",
+    "  - LICENSE_KEY_ENFORCEMENT / MCP_LICENSE_KEY — PR-Δ5",
+    "    commercial-tier; default OFF for personal use.",
+    "  - GCP_PROJECT_NUMBER — PR-Δ5 GCP project linking for",
+    "    SOC 2 audit-trail. Optional.",
+    "  - TRUSTED_HOSTS — comma-separated list. On Vercel,",
+    "    `*.vercel.app,<custom-domain>` if applicable."
+  ]
+}

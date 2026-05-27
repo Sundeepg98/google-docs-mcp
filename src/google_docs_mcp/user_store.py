@@ -362,9 +362,48 @@ class InMemoryBackend:
 
 
 # Module-level default backend. SqliteBackend with the env-aware
-# path resolver = exact pre-v2.1 behavior.
+# path resolver = exact pre-v2.1 behavior. Preserved intentionally
+# so module-import-time test setup (auto-applied fixtures that
+# reach into _backend, _initialized_paths.clear(), etc.) keeps
+# working bit-for-bit.
+#
+# PR-Δ6 (Vercel pilot): operator entrypoints that need a different
+# backend (the Vercel ``api/index.py`` reads STORAGE_BACKEND=vercel_kv)
+# call ``init_default_backend_from_env()`` explicitly at startup,
+# AFTER module import. Tests never call it — they rely on
+# ``with_backend(InMemoryBackend())`` for explicit per-test
+# backend control.
 _backend: StorageBackend = SqliteBackend()
 _backend_lock = threading.Lock()  # guards set_backend / with_backend
+
+
+def init_default_backend_from_env() -> StorageBackend:
+    """Resolve the operator-configured backend from STORAGE_BACKEND env var.
+
+    Called once at process startup by operator entrypoints (Vercel's
+    ``api/index.py``, stdio CLI's ``server.main``) to honor the
+    deploy target's backend preference. Returns the resolved backend
+    (already activated via ``set_backend``) for caller convenience.
+
+    Tests do NOT call this — they want SqliteBackend by default and
+    use ``with_backend(InMemoryBackend())`` for explicit overrides.
+
+    Env-var matrix:
+      - unset / ``sqlite``: SqliteBackend (default; no-op).
+      - ``vercel_kv``: VercelKvBackend if KV_REST_API_URL +
+        KV_REST_API_TOKEN are set; else SqliteBackend with WARNING.
+      - unknown value: SqliteBackend with WARNING.
+
+    See ``google_docs_mcp.storage.backend_selector.select_backend``
+    for the resolution implementation.
+    """
+    # Lazy import — keeps the storage package off the import path
+    # for the default-SqliteBackend case (which is every test +
+    # every Fly deploy).
+    from google_docs_mcp.storage.backend_selector import select_backend
+    resolved = select_backend()
+    set_backend(resolved)
+    return resolved
 
 
 def get_backend() -> StorageBackend:

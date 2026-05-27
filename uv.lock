@@ -119,7 +119,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.15.0" },
     { name = "urllib3", specifier = ">=2.7.0,<3" },
 ]
-provides-extras = ["test", "lint"]
+provides-extras = ["test", "lint", "vercel"]
 
 [[package]]
 name = "attrs"
