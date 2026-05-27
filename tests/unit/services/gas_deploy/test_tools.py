@@ -5,21 +5,34 @@ tests live next to the service. Registration guards (the
 "is the tool registered?" check) live in the multi-service file
 ``tests/unit/services/test_tool_registration.py``; this file holds
 tests that exercise the tool's body shape — the things that are
-SPECIFIC to ``gdocs_setup_apps_script`` and don't belong in the
+SPECIFIC to the install-automation tools and don't belong in the
 registration guard.
+
+**Post-PR-α surface** (v2.3.4+): TWO MCP tools live here, sharing
+a single underlying installer:
+
+  1. ``gdocs_install_automation`` — canonical, user-facing
+  2. ``gdocs_setup_apps_script`` — deprecation alias; emits a
+     ``DeprecationWarning`` on call and delegates to the same
+     underlying ``_install_automation_runtime`` helper
+
+Both must satisfy the same invariants (creds=False, structured
+NeedsReauthError response, zero-arg signature). Tests below run on
+both via parametrize where the assertion is identical.
 
 **CRITICAL invariant verified here: ``creds=False`` preservation.**
 
-``gdocs_setup_apps_script`` is the one ``@gdocs_tool`` site that
-opts out of the standard creds-injection envelope. Its body has its
-own ``NeedsReauthError`` → structured-response path: on cloud-mode
-auth failure it returns ``{status: "needs_authorization", auth_url,
-message}`` rather than raising ``ToolError``. Re-applying the
-standard ``creds=True`` envelope would short-circuit at the credential-
-fetch step and lose that structured shape — silently breaking the
-OAuth-first-run UX in cloud chat. Phase C explicitly preserved this
-at the new site; this test pins it so a future "everything to
-creds=True for consistency" refactor can't quietly regress.
+Both tools opt out of the standard creds-injection envelope. The
+shared underlying body has its own ``NeedsReauthError`` →
+structured-response path: on cloud-mode auth failure it returns
+``{status: "needs_authorization", auth_url, message}`` rather than
+raising ``ToolError``. Re-applying the standard ``creds=True``
+envelope would short-circuit at the credential-fetch step and lose
+that structured shape — silently breaking the OAuth-first-run UX
+in cloud chat. Phase C explicitly preserved this at the new site;
+PR-α preserves it on the new canonical site AND on the alias; these
+tests pin both so a future "everything to creds=True for
+consistency" refactor can't quietly regress.
 """
 from __future__ import annotations
 
@@ -153,4 +166,228 @@ def test_gdocs_setup_apps_script_module_is_services_gas_deploy_tools():
     assert inspect.isfunction(gdocs_setup_apps_script), (
         f"gdocs_setup_apps_script is {type(gdocs_setup_apps_script)}, "
         f"expected a function. A decorator may have changed the type."
+    )
+
+
+# ---------------------------------------------------------------------
+# PR-α (v2.3.4) — reframe: gdocs_install_automation canonical surface
+# ---------------------------------------------------------------------
+#
+# The reframe is a copy + name change, not a behavior change. The
+# canonical tool MUST satisfy the same invariants as the deprecation
+# alias (zero-arg, creds=False structured response on NeedsReauthError,
+# __module__ in the service folder), AND its registered surface
+# (annotations title, returned message strings) MUST reflect the new
+# user-facing framing rather than the old infrastructure framing.
+
+
+def test_gdocs_install_automation_is_registered_and_zero_arg():
+    """The PR-α canonical tool MUST appear in mcp.list_tools() with
+    zero input args. Same invariant as the alias — both opt out of
+    the standard creds envelope via ``creds=False`` so the registered
+    signature is the function's own (zero params)."""
+    import asyncio
+    from google_docs_mcp.server import mcp
+
+    tools = asyncio.run(mcp.list_tools())
+    by_name = {t.name: t for t in tools}
+    assert "gdocs_install_automation" in by_name, (
+        "gdocs_install_automation not registered — PR-α added it as "
+        "the canonical user-facing surface for the Workspace automation "
+        "runtime installer. Check services/gas_deploy/tools.py."
+    )
+    tool = by_name["gdocs_install_automation"]
+    schema = tool.parameters or {}
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+    assert properties == {}, (
+        f"gdocs_install_automation registered with unexpected properties: "
+        f"{properties!r}. The tool is zero-arg by contract."
+    )
+    assert required == [], (
+        f"gdocs_install_automation registered with required args: "
+        f"{required!r}. The tool is zero-arg by contract."
+    )
+
+
+def test_gdocs_install_automation_module_is_services_gas_deploy_tools():
+    """Same defense-in-depth invariant as the alias — confirms the
+    canonical tool also lives in the per-service folder, not in
+    server.py. Symmetric with
+    ``test_gdocs_setup_apps_script_module_is_services_gas_deploy_tools``."""
+    from google_docs_mcp.services.gas_deploy.tools import gdocs_install_automation
+
+    assert gdocs_install_automation.__module__ == (
+        "google_docs_mcp.services.gas_deploy.tools"
+    ), (
+        f"gdocs_install_automation.__module__ is "
+        f"{gdocs_install_automation.__module__!r}; expected "
+        f"'google_docs_mcp.services.gas_deploy.tools'."
+    )
+    assert inspect.isfunction(gdocs_install_automation), (
+        f"gdocs_install_automation is {type(gdocs_install_automation)}, "
+        f"expected a function."
+    )
+
+
+def test_gdocs_install_automation_body_returns_structured_needs_authorization_on_needs_reauth(
+    monkeypatch,
+):
+    """The canonical tool MUST preserve the structured
+    ``{status: "needs_authorization", ...}`` response on
+    NeedsReauthError — identical contract to the alias. The reframe
+    is in the user-facing copy; the behavior is unchanged.
+
+    Bonus assertion: the returned ``message`` uses the PR-α reframe
+    copy (mentions "Install ... Workspace automation runtime" rather
+    than "set up your Apps Script Web App"). Catches a regression
+    where someone restores the old copy under the new tool name."""
+    from google_docs_mcp.credentials import NeedsReauthError
+    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+
+    monkeypatch.setattr(
+        gas_deploy_tools, "current_user_id_or_none", lambda: "cloud-user"
+    )
+    monkeypatch.setattr(
+        gas_deploy_tools,
+        "resolve_runtime_oauth_config",
+        lambda: {
+            "client_config": {"client_id": "X.apps.googleusercontent.com"},
+            "signing_key": b"x" * 32,
+            "base_url": "https://example.fly.dev",
+        },
+    )
+    fake_url = "https://accounts.google.com/o/oauth2/auth?fake=2"
+    def raises(*args, **kwargs):
+        raise NeedsReauthError(
+            "cloud-user", auth_url=fake_url, reason="missing scope"
+        )
+    monkeypatch.setattr(
+        gas_deploy_tools, "get_credentials_for_user", raises
+    )
+
+    result = gas_deploy_tools.gdocs_install_automation()
+    assert isinstance(result, dict)
+    assert result["status"] == "needs_authorization"
+    assert result["auth_url"] == fake_url
+    assert fake_url in result["message"]
+    # Reframe assertion: the user-facing copy frames this as
+    # installing an automation runtime, NOT as Apps-Script-Web-App
+    # setup. Two phrases that MUST appear; one phrase that MUST NOT.
+    msg_lower = result["message"].lower()
+    assert "workspace automation runtime" in msg_lower, (
+        f"PR-α reframe regression: needs_authorization message did "
+        f"not include 'Workspace automation runtime'. Message:\n"
+        f"{result['message']!r}"
+    )
+    assert "workflow installer" in msg_lower, (
+        f"PR-α reframe regression: needs_authorization message did "
+        f"not include 'workflow installer'. Message:\n"
+        f"{result['message']!r}"
+    )
+    assert "apps script web app" not in msg_lower, (
+        f"PR-α reframe regression: the old 'Apps Script Web App' "
+        f"copy leaked back into the needs_authorization message. "
+        f"Message:\n{result['message']!r}"
+    )
+
+
+def test_gdocs_setup_apps_script_alias_emits_deprecation_warning_and_returns_same_result(
+    monkeypatch,
+):
+    """PR-α regression: calling the deprecated ``gdocs_setup_apps_script``
+    alias MUST (a) emit a ``DeprecationWarning`` instructing the
+    caller to use ``gdocs_install_automation``, AND (b) return the
+    SAME structured response the canonical tool would (i.e. delegate
+    to the shared underlying installer rather than diverge).
+
+    Catches: a future refactor that splits the alias and canonical
+    into two separate implementations and lets them drift; or one
+    that removes the deprecation warning before the v3.0 removal
+    window closes; or one that swallows the warning silently."""
+    import warnings
+
+    from google_docs_mcp.credentials import NeedsReauthError
+    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+
+    # Same NeedsReauthError monkeypatch shape as the canonical test
+    # above so we can compare structured response equivalence.
+    monkeypatch.setattr(
+        gas_deploy_tools, "current_user_id_or_none", lambda: "cloud-user"
+    )
+    monkeypatch.setattr(
+        gas_deploy_tools,
+        "resolve_runtime_oauth_config",
+        lambda: {
+            "client_config": {"client_id": "X.apps.googleusercontent.com"},
+            "signing_key": b"x" * 32,
+            "base_url": "https://example.fly.dev",
+        },
+    )
+    fake_url = "https://accounts.google.com/o/oauth2/auth?fake=3"
+    def raises(*args, **kwargs):
+        raise NeedsReauthError(
+            "cloud-user", auth_url=fake_url, reason="missing scope"
+        )
+    monkeypatch.setattr(
+        gas_deploy_tools, "get_credentials_for_user", raises
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result_alias = gas_deploy_tools.gdocs_setup_apps_script()
+
+    # (a) DeprecationWarning was emitted, mentioning the new tool name.
+    deprecation_warnings = [
+        w for w in caught if issubclass(w.category, DeprecationWarning)
+    ]
+    assert deprecation_warnings, (
+        "Calling gdocs_setup_apps_script did not emit a "
+        "DeprecationWarning. PR-α requires the alias to nudge "
+        "callers toward gdocs_install_automation."
+    )
+    warning_text = str(deprecation_warnings[0].message)
+    assert "gdocs_install_automation" in warning_text, (
+        f"DeprecationWarning text did not name the canonical "
+        f"replacement (``gdocs_install_automation``). Message:\n"
+        f"{warning_text!r}"
+    )
+
+    # (b) Same structured response shape as the canonical tool.
+    assert result_alias["status"] == "needs_authorization"
+    assert result_alias["auth_url"] == fake_url
+    # And it carries the PR-α reframe copy — the alias delegates to
+    # the same shared helper, so the new copy reaches the alias path
+    # too. This is the load-bearing "no divergence" assertion: if a
+    # future refactor copies the body and lets the alias's copy drift
+    # back to the pre-PR-α wording, this fires.
+    assert "workspace automation runtime" in result_alias["message"].lower()
+
+
+def test_alias_and_canonical_share_underlying_implementation():
+    """``gdocs_setup_apps_script`` MUST delegate to the same
+    ``_install_automation_runtime`` helper the canonical tool uses.
+    Catches a regression where the two functions get copy-pasted
+    implementations that can drift over time.
+
+    Inspecting the function source is a structural check — if a
+    future refactor inlines the helper into each tool body, the
+    test fires and forces the author to either restore the shared
+    helper or update this guard with an explicit rationale."""
+    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+
+    canonical_src = inspect.getsource(gas_deploy_tools.gdocs_install_automation)
+    alias_src = inspect.getsource(gas_deploy_tools.gdocs_setup_apps_script)
+
+    assert "_install_automation_runtime" in canonical_src, (
+        "gdocs_install_automation no longer references the shared "
+        "_install_automation_runtime helper. If the body was inlined "
+        "for some reason, update this test with the rationale; "
+        "otherwise restore the shared helper so the alias can't drift."
+    )
+    assert "_install_automation_runtime" in alias_src, (
+        "gdocs_setup_apps_script no longer references the shared "
+        "_install_automation_runtime helper. The alias is supposed "
+        "to delegate; an independent implementation would let the "
+        "two responses drift over time."
     )

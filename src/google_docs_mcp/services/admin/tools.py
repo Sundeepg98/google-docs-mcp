@@ -687,7 +687,12 @@ def gdocs_guide() -> dict:
                 "gdocs_untrash_file",
             ],
             "setup_and_auth": [
-                "gdocs_setup_apps_script",
+                # PR-α canonical name. The deprecation alias
+                # gdocs_setup_apps_script is still registered for
+                # backward compatibility but is intentionally omitted
+                # from the user-facing groups so the orientation
+                # surface stays clean.
+                "gdocs_install_automation",
                 "gdocs_reset_authorization",
             ],
             "introspection": [

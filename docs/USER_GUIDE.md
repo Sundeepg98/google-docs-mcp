@@ -126,7 +126,7 @@ You say yes. Then:
 ### Limitations
 
 - The server can only convert `.docx` (or `.gdoc`) files it can read. Password-protected files fail. Files larger than ~100MB are likely to hit either the upload size limit or Google's own conversion timeout.
-- The "Apps Script Web App" the server uses for retrofit is a **per-user, one-time setup**. The first time you ask Claude to use Workflow B or C, it will tell you to run `gdocs_setup_apps_script` first (you'll see a message asking Claude to call that tool — say "yes, set it up" and Claude will run it, then re-do your original ask). Setup takes 10-30 seconds; every Workflow B or C after that runs without further setup.
+- The **Workspace automation runtime** that retrofit (and future workflow tools) need is a **per-user, one-time install**. The first time you ask Claude to use Workflow B or C, it will tell you to run `gdocs_install_automation` first (you'll see a message asking Claude to call that tool — say "yes, install it" and Claude will run it, then re-do your original ask). Install takes 10-30 seconds. After install, the runtime lives in your Google account and runs on Google's infrastructure; every Workflow B or C call after that runs without further setup, and Claude can also build persistent automations (scheduled jobs, custom menus, reactive workflows) on top of it. The older name `gdocs_setup_apps_script` is still accepted but deprecated and will be removed in v3.0.
 
 ---
 

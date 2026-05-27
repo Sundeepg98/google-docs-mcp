@@ -534,6 +534,11 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
     "gdocs_help": GDOCS_HELP_OUTPUT_SCHEMA,
     "gdocs_get_signed_upload_url": GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+    # PR-α / v2.3.4 — Workspace automation runtime install.
+    # gdocs_install_automation is canonical; gdocs_setup_apps_script
+    # is a deprecation alias kept registered for backward compatibility.
+    # BOTH share the same output schema (same underlying installer).
+    "gdocs_install_automation": GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
     "gdocs_setup_apps_script": GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
     "gdocs_reset_authorization": GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
     "gdocs_admin_audit": GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,

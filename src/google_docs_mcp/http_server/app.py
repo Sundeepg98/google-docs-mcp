@@ -26,7 +26,11 @@ from .middleware import (
 )
 from .routes.convert import convert_endpoint
 from .routes.oauth import oauth_google_api_callback
-from .routes.observability import health, info_endpoint
+from .routes.observability import (
+    health,
+    info_endpoint,
+    oauth_protected_resource_metadata,
+)
 
 log = logging.getLogger("google_docs_mcp.http")
 
@@ -99,6 +103,20 @@ def build_app(mcp: FastMCP) -> Starlette:
         # BearerTokenMiddleware dispatch path as /api/*.
         Route("/info", info_endpoint, methods=["GET"]),
         Route("/api/convert", convert_endpoint, methods=["POST"]),
+        # PR-Δ1 (v2.3.4): RFC 9728 OAuth Protected Resource Metadata.
+        # The companion RFC 8414 endpoint is wired by FastMCP's
+        # GoogleProvider; this is the OTHER MCP-Authorization-
+        # spec-mandated discovery endpoint. Public by design (claude.ai
+        # connector discovery probes it without any credential); the
+        # BearerTokenMiddleware already excludes /.well-known/*.
+        # MUST be declared BEFORE the catch-all Mount("/", ...) so
+        # Starlette resolves it before falling through to the FastMCP
+        # sub-app's 404.
+        Route(
+            "/.well-known/oauth-protected-resource",
+            oauth_protected_resource_metadata,
+            methods=["GET"],
+        ),
         # OAuth callback for the v1.1+ per-user Google API auth. Public
         # by design (browser hits it after Google redirect, no bearer
         # token available). Security via HMAC-signed state + single-use

@@ -130,9 +130,11 @@ def convert_docx_to_tabbed_doc(
         # (a) and (b) both want the MCP tool guidance.
         if user_id is not None or current_user_id_or_none() is not None:
             raise RuntimeError(
-                "Apps Script Web App not yet set up for your account. "
-                "Run the gdocs_setup_apps_script tool first; it deploys "
-                "a Web App into your Drive and remembers the URL."
+                "Workspace automation runtime not yet installed for your "
+                "account. Run the gdocs_install_automation tool first; "
+                "it provisions the runtime in your Workspace so Claude "
+                "can build persistent workflows (including the lossless "
+                "retrofit path this conversion needs)."
             )
         raise RuntimeError(
             "Apps Script Web App URL not configured. "

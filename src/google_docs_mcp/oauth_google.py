@@ -39,14 +39,21 @@ from .oauth_state import sign_state, verify_state
 
 # Default consent set requested at first authorization — mirrors what
 # the upstream stdio mode requests (auth.py:SCOPES) for ordinary
-# read/write Workspace operations. ``script.*`` scopes are NOT in this
-# list anymore (v1.x scope reduction, Issue #17): they are requested
-# incrementally only by ``gdocs_setup_apps_script``. The
-# ``_check_scopes_or_raise`` path uses ``include_granted_scopes=true``
-# (see ``build_authorization_url`` below), so consenting to the Apps
-# Script scopes later does NOT reset the user's existing grants — it
-# adds the missing ones. Pure-runtime users who never run the
-# Apps-Script setup never see those scopes on their consent screen.
+# read/write Workspace operations.
+#
+# **PR-Δ1 (v2.3.4)** added the Apps Script management scopes
+# (``script.projects``, ``script.deployments``) so the Workspace
+# automation runtime install (``gdocs_install_automation``, see PR-α
+# reframe) is bundled into the first-consent screen rather than
+# triggering a "scary second consent" later. Reverses the v1.x scope
+# reduction (Issue #17) — that reduction made sense when Apps Script
+# was hidden infrastructure; the PR-α reframe surfaces it as headline
+# functionality, so bundling is the right call.
+#
+# The ``_check_scopes_or_raise`` path uses ``include_granted_scopes=
+# true`` (see ``build_authorization_url`` below), so existing users
+# pick up the new baseline scopes automatically on next token refresh
+# — no forced re-consent.
 GOOGLE_API_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -63,6 +70,12 @@ GOOGLE_API_SCOPES = [
     # mode parity. Same incremental-consent path proven by previous
     # additions.
     "https://www.googleapis.com/auth/presentations",
+    # PR-Δ1 (v2.3.4): Apps Script management scopes promoted to baseline.
+    # See header comment for the rationale + the gas_deploy/tools.py
+    # discussion of the now-redundant-but-kept-for-documentation
+    # ``required_scopes=GAS_DEPLOY_SCOPES`` parameter.
+    "https://www.googleapis.com/auth/script.projects",
+    "https://www.googleapis.com/auth/script.deployments",
 ]
 
 CALLBACK_PATH = "/oauth/google/api/callback"

@@ -17,18 +17,18 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after v2.3.2 Slides 3rd-new-service** (sum must equal 32):
+**Partition state after PR-α reframe** (sum must equal 33):
 
   DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS      =  6  (Phase B + v2.3.0, services/drive/tools.py)
-  GAS_DEPLOY_SERVICE_TOOLS =  1  (Phase C,  services/gas_deploy/tools.py)
+  GAS_DEPLOY_SERVICE_TOOLS =  2  (Phase C + PR-α, services/gas_deploy/tools.py)
   ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
   SHEETS_SERVICE_TOOLS     =  3  (v2.3.1,   services/sheets/tools.py)
   SLIDES_SERVICE_TOOLS     =  3  (v2.3.2,   services/slides/tools.py)
   NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
                                    contains NO tool definitions)
                            ─────
-  EXPECTED_TOOLS           = 32
+  EXPECTED_TOOLS           = 33
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
@@ -37,13 +37,16 @@ v2.3.1 (PR #119) added the 3 Sheets tools (2nd new service) and proved
 the OAuth-scope-addition infra absorbs new scopes non-breakingly via
 ``include_granted_scopes=true``.
 
-v2.3.2 (this PR) adds the 3 Slides tools as the 3rd new service.
-The single-request-type ``replaceAllText`` carve-out (using
-``presentations.batchUpdate`` with one request type, NOT the full
-~40-type tagged-union) shows the pattern can absorb the most common
-batchUpdate use cases without committing to the full abstraction —
-same approach Sheets took. The PR #117 papercut fix continues to
-pay off; no count-literal updates required.
+v2.3.2 (PR #121) added the 3 Slides tools as the 3rd new service.
+
+PR-α (v2.3.4) reframed ``gdocs_setup_apps_script`` →
+``gdocs_install_automation`` to surface the Workspace-automation-
+runtime install as the headline feature rather than as infrastructure
+plumbing. The old name is kept registered as a deprecation alias —
+both names appear in ``GAS_DEPLOY_SERVICE_TOOLS`` and both share the
+same underlying installer (one function, two registrations). Planned
+removal of the alias in v3.0. The PR #117 papercut fix continues to
+pay off; the count is derived from ``len(EXPECTED_TOOLS)``.
 
 Consumer tests under ``tests/unit/services/<svc>/`` use
 ``with_google_api_client(InMemoryGoogleAPIClient({...}))`` per the
@@ -95,10 +98,14 @@ DRIVE_SERVICE_TOOLS: frozenset[str] = frozenset({
 })
 
 # Gas-deploy-service tools — moved to ``services/gas_deploy/tools.py``
-# in M3 Phase C (v2.1.5). Just the one tool today; the per-service
-# folder pattern still applies for consistency with docs + drive.
+# in M3 Phase C (v2.1.5). PR-α (v2.3.4) reframed the user-facing name
+# from "setup_apps_script" to "install_automation" and kept the old
+# name registered as a deprecation alias. BOTH names live in
+# ``services/gas_deploy/tools.py``; the alias delegates to the same
+# underlying installer via a shared helper.
 GAS_DEPLOY_SERVICE_TOOLS: frozenset[str] = frozenset({
-    "gdocs_setup_apps_script",
+    "gdocs_install_automation",   # PR-α canonical name
+    "gdocs_setup_apps_script",    # deprecated alias (planned removal in v3.0)
 })
 
 # Admin-service tools — moved to ``services/admin/tools.py`` in Gap #7
@@ -285,6 +292,12 @@ def test_no_tool_definitions_remain_in_server_py():
                       removed the admin-domain helpers (test-results
                       parsing, admin-token gating). Closes Hex /
                       SOLID specialists' ISP-asymmetry finding.
+    PR-α    (v2.3.4)  added ``gdocs_install_automation`` to the
+                      gas_deploy folder + kept the old
+                      ``gdocs_setup_apps_script`` registered as a
+                      deprecation alias (both names share one
+                      underlying installer; gas_deploy count went
+                      1 → 2).
 
     NON_SERVICE_TOOLS is now empty; this guard verifies the audit
     finding remains closed for every tool.
@@ -372,9 +385,14 @@ def test_drive_service_tools_register_from_services_drive_tools_module():
 
 
 def test_gas_deploy_service_tools_register_from_services_gas_deploy_tools_module():
-    """M3 Phase C (v2.1.5): the 1 gas_deploy-service tool must be defined
-    in ``services/gas_deploy/tools.py``, NOT in server.py. Symmetric to
-    the docs + drive registration guards.
+    """M3 Phase C (v2.1.5) + PR-α (v2.3.4): the gas_deploy-service tools
+    must be defined in ``services/gas_deploy/tools.py``, NOT in
+    server.py. Symmetric to the docs + drive registration guards.
+
+    Post-PR-α: TWO tools live here (canonical
+    ``gdocs_install_automation`` + deprecation alias
+    ``gdocs_setup_apps_script``). Both must satisfy the
+    ``__module__`` + no-shadow invariants for the partition to hold.
 
     Critically, this guard ALSO verifies the gas_deploy/tools.py site
     preserves ``creds=False`` (the tool's own NeedsReauthError →

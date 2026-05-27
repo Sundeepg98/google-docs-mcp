@@ -15,10 +15,13 @@ Layout:
 - ``api.py``    — ``AppsScriptClient`` + ``WebAppDeployment`` (relocated
                   from ``gas_deploy/client.py`` in Phase C).
 - ``scopes.py`` — ``GAS_DEPLOY_SCOPES`` constant for OAuth provisioning.
-- ``tools.py``  — ``@gdocs_tool``-decorated MCP tool functions for
-                  Apps Script setup (just ``gdocs_setup_apps_script``
-                  today). Imported explicitly from ``server.py`` AFTER
-                  the ``mcp`` instance is constructed.
+- ``tools.py``  — ``@workspace_tool``-decorated MCP tool functions
+                  for the Workspace automation runtime installer.
+                  PR-α (v2.3.4): registers both
+                  ``gdocs_install_automation`` (canonical) and
+                  ``gdocs_setup_apps_script`` (deprecation alias).
+                  Imported explicitly from ``server.py`` AFTER the
+                  ``mcp`` instance is constructed.
 
 Historical note: pre-Phase-C, the original ``gas_deploy/__init__.py``
 claimed "zero imports from google_docs_mcp" as a portability goal.

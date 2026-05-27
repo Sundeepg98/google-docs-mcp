@@ -146,17 +146,17 @@ in both emitter paths.
 **Severity:** error
 **Retriable:** true
 **Wait seconds:** null
-**Related tool:** `gdocs_setup_apps_script`
+**Related tool:** `gdocs_install_automation`
 **Planned:** true
 
 **Do:** PLANNED v2.0 entry — no current code path emits this string.
-When v2.0 ships, the Apps Script Web App attached to the user will
-be hash-checked; an out-of-band edit will surface this error.
-Recovery: call `gdocs_setup_apps_script` to regenerate the deployment
-and refresh cached state, then retry the original tool once.
+When v2.0 ships, the Workspace automation runtime attached to the
+user will be hash-checked; an out-of-band edit will surface this
+error. Recovery: call `gdocs_install_automation` to re-install the
+runtime and refresh cached state, then retry the original tool once.
 
-**User message:** "Your Apps Script helper was changed outside this
-connection. I am re-deploying a fresh copy now — one moment."
+**User message:** "Your Workspace automation runtime was changed
+outside this connection. I am re-installing it now — one moment."
 
 **Emitter:** none yet (planned for v2.0 strict-flip). Round-trip test
 skips `planned=true` entries because there's no real failure

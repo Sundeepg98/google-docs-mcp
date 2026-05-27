@@ -1,19 +1,38 @@
-"""Apps Script (gas_deploy) MCP tool registrations (M3 Phase C — v2.1.5).
+"""Workspace Automation runtime install — MCP tool registrations.
 
-This module defines the ``@gdocs_tool``-decorated tool function(s) for
-the Apps Script setup service. Importing this module triggers
+This module defines the ``@workspace_tool``-decorated tool function(s)
+that install the Apps-Script-backed Workspace Automation runtime into
+the calling user's Google account. Importing this module triggers
 registration with the live ``mcp`` instance — ``server.py`` performs
 the import at the bottom of its module, AFTER constructing ``mcp``
-and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
-decorator.
+and AFTER ``decorators.register(mcp, ...)`` wires the decorator.
 
-**Tools registered here** (1 gas_deploy-service tool):
+**Tools registered here** (2 surfaces, 1 underlying implementation):
 
-1. ``gdocs_setup_apps_script`` — provision the per-user Apps Script
-   Web App needed for ``gdocs_tab_existing_doc``'s lossless retrofit.
+1. ``gdocs_install_automation`` — CANONICAL (PR-α / v2.3.4+). User-
+   facing automation-install tool: provisions the per-user Workspace
+   Automation runtime so Claude can build persistent workflows
+   (time-driven jobs, custom menus inside docs/sheets/slides,
+   reactive automations).
 
-**CRITICAL: ``creds=False`` preserved.** Unlike most ``@gdocs_tool``
-sites, this tool has its own ``NeedsReauthError`` → structured
+2. ``gdocs_setup_apps_script`` — DEPRECATED ALIAS. Pre-v2.3.4 name.
+   Kept registered so existing user prompts / saved automations /
+   external integrations don't break. Emits a runtime
+   ``DeprecationWarning`` on call and instructs the caller to use
+   ``gdocs_install_automation`` instead. Planned removal in v3.0.
+
+Why the rename: the original ``setup_apps_script`` name framed this
+as infrastructure plumbing (a "second consent" for an "Apps Script
+management" scope users had to trust). PR-α reframes it as the
+headline automation feature — installing the runtime is the
+load-bearing capability, not a workaround. The user-facing consent
+copy now says "Install your Workspace automation runtime" rather
+than "Set up your Apps Script Web App," and the success message
+explains what was unlocked rather than what was deployed.
+
+**CRITICAL: ``creds=False`` preserved on BOTH registrations.** Both
+tools opt out of the standard creds-injection envelope because the
+underlying body has its own ``NeedsReauthError`` → structured-
 response path: on cloud-mode auth failure it returns
 ``{status: "needs_authorization", auth_url, message}`` rather than
 raising ``ToolError``. The standard decorator path (``creds=True``)
@@ -24,13 +43,13 @@ silently break the OAuth-first-run UX in cloud chat.
 **Import discipline.** Imports the 2 shared helpers
 (``_get_credentials``, ``_format_http_error``) directly from
 ``_tool_helpers`` — no deferred-binding shim, no server.py reach-back.
-This is the M3 Phase C 3-consumer extraction trigger landing: docs +
-drive + gas_deploy all want the same 2 helpers, so they live in
-``_tool_helpers.py`` rather than in ``server.py``. The decorator
-itself (``gdocs_tool``) still lives in ``server.py`` because it's
-bound to the live ``mcp`` instance; that import path is unchanged.
+The decorator itself (``workspace_tool``) still lives in ``server.py``
+because it's bound to the live ``mcp`` instance; that import path
+is unchanged.
 """
 from __future__ import annotations
+
+import warnings
 
 from fastmcp.exceptions import ToolError
 
@@ -49,56 +68,23 @@ from google_docs_mcp.setup_apps_script import (
 from google_docs_mcp.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
 
 
-@workspace_tool(
-    title="Provision per-user Apps Script project",
-    service="gas_deploy",
-    readonly=False, destructive=False, idempotent=True, external=True,
-    # creds=False: this tool has its own NeedsReauthError → structured
-    # response handling (returns status="needs_authorization" with
-    # auth_url instead of raising ToolError). The standard decorator
-    # path would lose that structured shape.
-    creds=False,
-    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
-)
-def gdocs_setup_apps_script() -> dict:
-    """One-shot setup of the Apps Script Web App needed for lossless retrofit.
+# ---------------------------------------------------------------------
+# Core implementation — shared by the canonical name AND the alias
+# ---------------------------------------------------------------------
 
-    Run this once per user (cloud) or once per machine (local stdio)
-    to enable ``gdocs_tab_existing_doc`` — the path that uses Apps
-    Script for lossless content moves (preserving drawings, equations,
-    tables, cell shading that no REST request type can re-emit).
 
-    Without this setup, ``gdocs_tab_existing_doc`` fails with "Apps
-    Script Web App URL not configured." Other tools
-    (``gdocs_make_tabbed_doc``, edit tools, read tools) do not need
-    this Apps-Script-specific setup — but, like all tools in this
-    server, they DO require the one-time Google OAuth authorization
-    grant (Drive + Docs scopes). The OAuth grant happens automatically
-    on first tool call: any tool that needs creds returns
-    ``status: "needs_authorization"`` with a click-to-authorize URL;
-    after consent, all subsequent tools in the session work without
-    further prompts. Only ``gdocs_tab_existing_doc``'s lossless
-    retrofit path additionally needs THIS tool
-    (``gdocs_setup_apps_script``) to have been run once.
+def _install_automation_runtime() -> dict:
+    """Underlying installer; both registered tools delegate here.
 
-    Idempotent: safe to retry if interrupted; resumes from the last
-    successful step. The user_store row (cloud) or
-    ``~/.google-docs-mcp/setup-state.json`` (local) keeps the ledger.
+    Extracted out of the decorated function bodies so the alias
+    (``gdocs_setup_apps_script``) can call exactly the same code
+    path without duplicating it. Both decorated wrappers do nothing
+    but: (a) optionally emit a deprecation warning, (b) call this.
 
-    Returns ``{status, url, script_id, deployment_id, message}`` on
-    success. On cloud-mode auth failure, returns
-    ``{status: "needs_authorization", auth_url, message}`` — emit
-    the message verbatim so Claude renders the URL as a clickable link.
-
-    Choreography: required ONCE before
-    ``gdocs_tab_existing_doc(markers=[...])`` (retrofit path) and the
-    Apps-Script-backed retrofit pipeline in general. After successful
-    setup, run any retrofit conversion freely.
-
-    NOTE: First call typically returns ``needs_authorization`` with a
-    URL the user MUST open in a browser — Google OAuth consent
-    cannot be automated. After consent, re-run this tool to complete
-    the Web App deploy.
+    The reframe (PR-α) is in the user-facing copy this function
+    returns — the underlying OAuth dance, Apps Script provisioning,
+    and Web App deploy are unchanged from the pre-PR ``setup_apps_script``
+    implementation.
     """
     user_id = current_user_id_or_none()
 
@@ -108,15 +94,17 @@ def gdocs_setup_apps_script() -> dict:
         try:
             deployment = setup_apps_script_auto()
         except Exception as e:  # noqa: BLE001
-            raise ToolError(f"Apps Script setup failed: {e}") from e
+            raise ToolError(
+                f"Workspace automation runtime install failed: {e}"
+            ) from e
         return {
             "status": "ready",
             "url": deployment.url,
             "script_id": deployment.script_id,
             "deployment_id": deployment.deployment_id,
             "message": (
-                "Apps Script Web App is deployed. You can now use "
-                "gdocs_tab_existing_doc."
+                "Workflow runtime installed. Claude can now build "
+                "custom automations in your Workspace."
             ),
         }
 
@@ -137,16 +125,20 @@ def gdocs_setup_apps_script() -> dict:
             "status": "needs_authorization",
             "auth_url": e.auth_url,
             "message": (
-                f"Google API access required to set up your Apps Script "
-                f"Web App.\n\n**[Click here to authorize]({e.auth_url})**"
-                f"\n\nAfter granting access, re-run this tool."
+                f"Install your custom Workspace automation runtime — "
+                f"Google will ask you to authorize the workflow "
+                f"installer.\n\n"
+                f"**[Click here to authorize]({e.auth_url})**\n\n"
+                f"After granting access, re-run this tool."
             ),
         }
 
     try:
         deployment = setup_apps_script_for_user(creds, user_id)
     except Exception as e:  # noqa: BLE001
-        raise ToolError(f"Apps Script setup failed: {e}") from e
+        raise ToolError(
+            f"Workspace automation runtime install failed: {e}"
+        ) from e
 
     return {
         "status": "ready",
@@ -154,8 +146,131 @@ def gdocs_setup_apps_script() -> dict:
         "script_id": deployment.script_id,
         "deployment_id": deployment.deployment_id,
         "message": (
-            "Apps Script Web App is deployed under your Google account. "
-            "You can now use gdocs_tab_existing_doc and other tools "
-            "that need lossless content moves."
+            "Workflow runtime installed under your Google account. "
+            "Claude can now build custom automations in your "
+            "Workspace — time-driven jobs, custom menus inside your "
+            "docs / sheets / slides, and reactive workflows that run "
+            "when your data changes."
         ),
     }
+
+
+# ---------------------------------------------------------------------
+# 1. gdocs_install_automation — CANONICAL (PR-α / v2.3.4+)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    title="Install Workspace automation runtime",
+    service="gas_deploy",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    # creds=False: this tool has its own NeedsReauthError → structured
+    # response handling (returns status="needs_authorization" with
+    # auth_url instead of raising ToolError). The standard decorator
+    # path would lose that structured shape. See module docstring.
+    creds=False,
+    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+)
+def gdocs_install_automation() -> dict:
+    """Install the Workspace Automation runtime into your Google account.
+
+    One-time setup that enables Claude to build persistent workflows
+    for you: time-driven jobs that run on a schedule, custom menus
+    inside your Google Docs / Sheets / Slides, and reactive
+    automations that fire when your data changes. After install, the
+    automations Claude creates live IN your Workspace and run on
+    Google's infrastructure — Claude doesn't need to be in the loop
+    for them to fire.
+
+    USE WHEN: the user asks for any persistent / scheduled / event-
+    driven automation in their Workspace, OR when any other tool
+    that needs the runtime (currently ``gdocs_tab_existing_doc``'s
+    lossless retrofit path) reports it isn't installed yet.
+
+    Other tools — ``gdocs_make_tabbed_doc``, edit tools, read tools,
+    Sheets/Slides tools — don't need this runtime to be installed.
+    They DO require the one-time Google OAuth grant (Drive + Docs +
+    related scopes), but that consent happens automatically on first
+    tool call. THIS tool is only needed for the persistent-workflow
+    layer (and, transitively, for ``gdocs_tab_existing_doc``'s
+    lossless content-move path which uses the runtime internally).
+
+    Consent shape: first call typically returns
+    ``status: "needs_authorization"`` with a Google consent URL the
+    user must open in a browser — Google OAuth cannot be automated.
+    The consent screen will mention "Apps Script" because Apps
+    Script IS the runtime Google provides; you're authorizing the
+    installer to drop a small Apps Script project into your account
+    that Claude can then write workflows into. After consent, re-
+    run this tool to complete the install.
+
+    Idempotent: safe to retry if interrupted. Resumes from the last
+    successful step. Per-user setup state is tracked in the
+    user_store row (cloud) or ``~/.google-docs-mcp/setup-state.json``
+    (stdio).
+
+    Returns ``{status, url, script_id, deployment_id, message}`` on
+    success. On cloud-mode auth failure, returns
+    ``{status: "needs_authorization", auth_url, message}`` — emit
+    the message verbatim so the consent URL renders as a clickable
+    link.
+
+    Choreography: required ONCE before any persistent-workflow tool
+    AND before ``gdocs_tab_existing_doc(markers=[...])``'s retrofit
+    mode. After successful install, all workflow + retrofit tools
+    run freely without further setup.
+    """
+    return _install_automation_runtime()
+
+
+# ---------------------------------------------------------------------
+# 2. gdocs_setup_apps_script — DEPRECATED ALIAS (pre-PR-α name)
+# ---------------------------------------------------------------------
+
+
+_SETUP_APPS_SCRIPT_DEPRECATION_MSG = (
+    "gdocs_setup_apps_script is deprecated since PR-α; use "
+    "gdocs_install_automation instead. The reframe surfaces this "
+    "as the headline automation-install feature rather than as "
+    "Apps-Script infrastructure plumbing. The underlying behavior "
+    "is identical — the rename is a copy change only. The old "
+    "name will be removed in v3.0."
+)
+
+
+@workspace_tool(
+    title="DEPRECATED — use gdocs_install_automation instead",
+    service="gas_deploy",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    # creds=False: same rationale as the canonical tool above. The
+    # alias MUST share this opt-out so the structured needs_authorization
+    # response shape is preserved on the deprecated surface too.
+    creds=False,
+    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+)
+def gdocs_setup_apps_script() -> dict:
+    """DEPRECATED — use ``gdocs_install_automation`` instead.
+
+    Pre-PR-α name for the Workspace Automation runtime installer.
+    Preserved as a deprecation alias so existing user prompts,
+    saved automations, and external integrations that reference
+    the old name keep working through v2.x.
+
+    Behavior is identical to ``gdocs_install_automation``: same
+    underlying OAuth dance, same Apps Script provisioning, same
+    Web App deploy, same structured response shape.
+
+    The reframe (PR-α): the original name framed this as an
+    "Apps Script setup" obligation; the new name frames it as
+    installing the automation capability. Same code path; different
+    headline.
+
+    Planned removal in v3.0. Migrate by replacing every call to
+    ``gdocs_setup_apps_script()`` with ``gdocs_install_automation()``.
+    """
+    warnings.warn(
+        _SETUP_APPS_SCRIPT_DEPRECATION_MSG,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _install_automation_runtime()

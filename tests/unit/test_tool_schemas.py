@@ -38,7 +38,8 @@ EXPECTED_TOOLS = {
     "gdocs_server_info",
     "gdocs_test_manifest",  # v1.1.3+: surface test inventory + outcomes
     "gdocs_set_tab_icons",
-    "gdocs_setup_apps_script",  # v1.1+: per-user Apps Script setup
+    "gdocs_setup_apps_script",  # v1.1+: per-user Apps Script setup (deprecated alias, see gdocs_install_automation)
+    "gdocs_install_automation",  # PR-α / v2.3.4: canonical user-facing reframe of setup_apps_script
     "gdocs_tab_existing_doc",
     "gdocs_trash_file",
     "gdocs_untrash_file",
@@ -263,12 +264,14 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
     properties = schema.get("properties") or {}
 
     # Tools that legitimately take no arguments. server_info is pure
-    # introspection. setup_apps_script identifies the calling user
-    # via OAuth context (get_access_token claims) so needs no kwargs;
-    # the deploy is parameter-less by design.
+    # introspection. setup_apps_script / install_automation identify the
+    # calling user via OAuth context (get_access_token claims) so need
+    # no kwargs; the install is parameter-less by design. Both names
+    # appear here post-PR-α because both are registered MCP tools.
     no_arg_tools = {
         "gdocs_server_info",
-        "gdocs_setup_apps_script",
+        "gdocs_setup_apps_script",  # deprecated alias
+        "gdocs_install_automation",  # PR-α canonical
         "gdocs_test_manifest",
         "gdocs_guide",  # v1.3.0+: orientation, zero args by design
     }
