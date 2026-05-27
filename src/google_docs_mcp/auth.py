@@ -40,6 +40,19 @@ SCOPES = [
     # scope automatically on next token refresh via the include-
     # granted-scopes flow. No forced re-consent.
     "https://www.googleapis.com/auth/presentations",
+    # PR-Δ1 (v2.3.4) — Apps Script management scopes promoted from
+    # the per-tool GAS_DEPLOY_SCOPES list into the baseline union.
+    # Reasoning: the Workspace automation runtime install
+    # (``gdocs_install_automation``, see PR-α reframe) is now framed
+    # as headline functionality rather than hidden infrastructure;
+    # bundling its scopes into the first-consent screen kills the
+    # "scary second consent" moment. The per-tool
+    # ``required_scopes=GAS_DEPLOY_SCOPES`` parameter in
+    # ``services/gas_deploy/tools.py`` is now redundant but kept
+    # for explicit documentation — ``_check_scopes_or_raise`` will
+    # pass on first call because the scopes are baseline-granted.
+    "https://www.googleapis.com/auth/script.projects",
+    "https://www.googleapis.com/auth/script.deployments",
 ]
 
 

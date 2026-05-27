@@ -4,25 +4,29 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — PR-α reframe
+## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union
 
-Strategic copy + naming change. Positions the Apps-Script-backed
-installer as the headline **Workspace Automation runtime** install
-rather than as hidden infrastructure plumbing. Same underlying
-behavior; new user-facing framing.
+Combined two related ships that together close the gap between the
+"Workspace Automation MCP" product positioning and the consent UX.
+PR-α surfaces the runtime install as headline functionality; PR-Δ1
+bundles its scopes into the first-consent screen and adds the
+spec-mandated OAuth discovery endpoint so claude.ai's connector
+reconnect flow lands precisely on the first probe.
 
 ### Added
 
-- **`gdocs_install_automation` MCP tool** — canonical, user-facing name for the Workspace Automation runtime installer. One-time per-user install that enables Claude to build persistent workflows in the user's Workspace: time-driven jobs, custom menus inside docs/sheets/slides, reactive automations that fire when data changes. After install, automations live in the user's account and run on Google's infrastructure without Claude in the loop. Returns the same `{status, url, script_id, deployment_id, message}` envelope as the old name; the consent and success messages now describe the capability being unlocked rather than the deployment mechanics.
+- **`gdocs_install_automation` MCP tool** (PR-α) — canonical, user-facing name for the Workspace Automation runtime installer. One-time per-user install that enables Claude to build persistent workflows in the user's Workspace: time-driven jobs, custom menus inside docs/sheets/slides, reactive automations that fire when data changes. After install, automations live in the user's account and run on Google's infrastructure without Claude in the loop. Returns the same `{status, url, script_id, deployment_id, message}` envelope as the old name; the consent and success messages now describe the capability being unlocked rather than the deployment mechanics.
+- **`GET /.well-known/oauth-protected-resource` endpoint** (PR-Δ1) — RFC 9728 OAuth Protected Resource Metadata. The MCP Authorization spec mandates this path for any MCP server that exposes OAuth-protected resources; pre-PR-Δ1 the server returned 404 (verified via live `curl`), forcing claude.ai's connector discovery into less-precise fallback heuristics on reconnect. The new endpoint advertises `resource` + `authorization_servers` + the canonical `scopes_supported` list (sourced from `oauth_google.GOOGLE_API_SCOPES` so additions/removals stay in sync without a duplicate registry) + `bearer_methods_supported: ["header"]` (we deliberately don't implement RFC 6750 §2.2/§2.3 query-string or POST-body bearer presentation). Public endpoint — `BearerTokenMiddleware` already excludes `/.well-known/*`. Companion RFC 8414 endpoint (`/.well-known/oauth-authorization-server`) was already auto-wired by FastMCP's `GoogleProvider`. See `docs/adr/2026-05-27-spec-compliance-and-scope-union.md`.
+- **Apps Script scopes in baseline OAuth consent** (PR-Δ1) — `script.projects` + `script.deployments` added to both `auth.SCOPES` (stdio mode) and `oauth_google.GOOGLE_API_SCOPES` (HTTP/cloud mode). Reverses the v1.x scope reduction (Issue #17): that reduction made sense when Apps Script setup was hidden infrastructure, but the PR-α reframe made `gdocs_install_automation` headline functionality and the incremental-consent moment became a UX papercut. Now users hit a single Google consent screen that covers every scope the server may ever ask for; `gdocs_install_automation` and every subsequent tool call Just Work without re-prompting. Existing users pick up the new baseline automatically on next token refresh via Google's `include_granted_scopes=true` flow — no forced re-consent (same path that handled the earlier scope additions across prior PRs). `services/gas_deploy/tools.py`'s per-tool `required_scopes=GAS_DEPLOY_SCOPES` parameter is kept verbatim; it becomes documentary since the scopes are baseline-granted, but removing it would obscure the intent at the install site.
 
 ### Changed
 
-- **`gdocs_setup_apps_script` is now a deprecation alias** for `gdocs_install_automation`. The old name remains a registered MCP tool — existing user prompts, saved automations, and external integrations that reference the old name continue to work — but calling it emits a `DeprecationWarning` instructing the caller to migrate. Both tools delegate to a single shared `_install_automation_runtime()` helper in `services/gas_deploy/tools.py`; the no-divergence invariant is pinned by a structural test (`test_alias_and_canonical_share_underlying_implementation`).
-- **User-facing consent + success copy reframed** to lead with the capability (automation runtime install) rather than the mechanism (Apps Script Web App deploy). The `needs_authorization` message reads "Install your custom Workspace automation runtime — Google will ask you to authorize the workflow installer" instead of "Google API access required to set up your Apps Script Web App." Success messages explain what was unlocked (scheduled jobs, custom menus, reactive workflows) rather than what was deployed (a Web App URL). Copy is asserted by tests so a future "let me revert this for clarity" change can't slip in unnoticed.
-- **LLM_RECOVERY entry `apps_script_modified` rewritten** to recommend `gdocs_install_automation` for runtime re-install + use the "Workspace automation runtime" framing in the user-facing message.
-- **Retrofit error message in `docx_import.py` reframed** — when the runtime isn't installed yet and a user hits the retrofit path, the error now reads "Workspace automation runtime not yet installed for your account. Run the gdocs_install_automation tool first…" instead of the prior Apps-Script-Web-App phrasing.
-- **`gdocs_guide()` orientation surface** — the `setup_and_auth` group lists `gdocs_install_automation` as the canonical entry; the deprecation alias is intentionally omitted from the user-facing group so the orientation surface stays clean.
-- **README + USER_GUIDE + TOOL_CONTRACT + LLM_RECOVERY** updated to the new canonical name. USER_GUIDE explicitly notes that the old name still works and will be removed in v3.0 (so any cached user knowledge of `gdocs_setup_apps_script` continues to find a working tool and a clear migration message).
+- **`gdocs_setup_apps_script` is now a deprecation alias** (PR-α) for `gdocs_install_automation`. The old name remains a registered MCP tool — existing user prompts, saved automations, and external integrations that reference the old name continue to work — but calling it emits a `DeprecationWarning` instructing the caller to migrate. Both tools delegate to a single shared `_install_automation_runtime()` helper in `services/gas_deploy/tools.py`; the no-divergence invariant is pinned by a structural test (`test_alias_and_canonical_share_underlying_implementation`).
+- **User-facing consent + success copy reframed** (PR-α) to lead with the capability (automation runtime install) rather than the mechanism (Apps Script Web App deploy). The `needs_authorization` message reads "Install your custom Workspace automation runtime — Google will ask you to authorize the workflow installer" instead of "Google API access required to set up your Apps Script Web App." Success messages explain what was unlocked (scheduled jobs, custom menus, reactive workflows) rather than what was deployed (a Web App URL). Copy is asserted by tests so a future "let me revert this for clarity" change can't slip in unnoticed.
+- **LLM_RECOVERY entry `apps_script_modified` rewritten** (PR-α) to recommend `gdocs_install_automation` for runtime re-install + use the "Workspace automation runtime" framing in the user-facing message.
+- **Retrofit error message in `docx_import.py` reframed** (PR-α) — when the runtime isn't installed yet and a user hits the retrofit path, the error now reads "Workspace automation runtime not yet installed for your account. Run the gdocs_install_automation tool first…" instead of the prior Apps-Script-Web-App phrasing.
+- **`gdocs_guide()` orientation surface** (PR-α) — the `setup_and_auth` group lists `gdocs_install_automation` as the canonical entry; the deprecation alias is intentionally omitted from the user-facing group so the orientation surface stays clean.
+- **README + USER_GUIDE + TOOL_CONTRACT + LLM_RECOVERY** (PR-α) updated to the new canonical name. USER_GUIDE explicitly notes that the old name still works and will be removed in v3.0 (so any cached user knowledge of `gdocs_setup_apps_script` continues to find a working tool and a clear migration message).
 
 ### Deprecated
 
@@ -30,10 +34,13 @@ behavior; new user-facing framing.
 
 ### Out of scope (deferred to follow-up PRs)
 
-- No change to the underlying Apps Script template (`restructure.gs`) — next PR's scope.
+- No change to the underlying Apps Script template (`restructure.gs`) — separate PR.
 - No new tools beyond the rename + alias — separate PR.
-- No change to the OAuth scope set in `services/gas_deploy/scopes.py` — same scopes, new copy.
+- No change to `services/gas_deploy/scopes.py` (the `GAS_DEPLOY_SCOPES` constant) — same scopes, just now baseline-granted via `auth.SCOPES` / `GOOGLE_API_SCOPES`.
 - No sidebar HTML / progress UI — separate PR.
+- `drive.readonly` stays in baseline (an earlier draft of PR-Δ1 removed it; reverted per operator decision — Testing-mode bypass covers the current deployment, future-CASA-if-Marketplace is hypothetical). See ADR for the rationale.
+- SECURITY.md / threat model / OWASP ASVS — PR-Δ2.
+- Rate limiting / key rotation / pip-audit CI / HMAC constant-time verification — PR-Δ3 (hardening).
 
 ## [2.0.6] — 2026-05-20
 
