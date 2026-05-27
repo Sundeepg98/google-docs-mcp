@@ -145,15 +145,21 @@ def test_production_adapter_delegates_to_build():
 
 
 def test_with_google_api_client_swaps_active():
+    from google_docs_mcp.google_api_client import RetryingGoogleApiClientAdapter
+
     stub_drive = MagicMock(name="drive-stub")
     injected = InMemoryGoogleAPIClient({("drive", "v3"): stub_drive})
 
     with with_google_api_client(injected):
         assert get_active_client() is injected
 
-    # After exit: default restored to a production adapter.
-    assert get_active_client() is not injected
-    assert isinstance(get_active_client(), GoogleApiClientAdapter)
+    # After exit: default restored. PR-Δ3 made the production default
+    # a ``RetryingGoogleApiClientAdapter`` composed over the bare
+    # ``GoogleApiClientAdapter`` — assert the OUTER composing type,
+    # since that's what production now wires by default.
+    after = get_active_client()
+    assert after is not injected
+    assert isinstance(after, RetryingGoogleApiClientAdapter)
 
 
 def test_with_google_api_client_restores_on_exception():

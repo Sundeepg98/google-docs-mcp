@@ -1,4 +1,15 @@
-FROM python:3.13-slim
+# PR-Δ3 (2026-05-27): SHA-pin the base image digest.
+# Rationale: an unpinned ``python:3.13-slim`` lets the registry serve a
+# different upstream layer set at build time without any change in this
+# file — a supply-chain MITM, an upstream rebuild, or a Docker Hub
+# repository swap would all silently land in our image. Pinning to the
+# manifest digest makes the dependency content-addressable: identical
+# bytes every build, until we explicitly bump the digest.
+#
+# Bumped via dependabot's ``docker`` ecosystem (see .github/dependabot.yml).
+# The digest below was the current ``3.13-slim`` tag as of 2026-05-22
+# (Docker Hub manifest lookup).
+FROM python:3.13-slim@sha256:b04b5d7233d2ad9c379e22ea8927cd1378cd15c60d4ef876c065b25ea8fb3bf3
 
 # Minimal runtime image. Build the package, then install it. No dev
 # tooling (uv etc.) shipped to the final image.
@@ -92,5 +103,27 @@ EXPOSE 8080
 # Health endpoint for Fly.io probes is at /health (unauthenticated)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health', timeout=3).status==200 else 1)"
+
+# PR-Δ3 (2026-05-27): drop root.
+# Create an unprivileged ``app`` user (uid 10001) and switch to it for
+# the runtime. The application never needs to write outside ``/data``
+# or read outside ``/app`` + the python stdlib, so root inside the
+# container is gratuitous attack surface (escape-via-shared-kernel,
+# accidental writes to /etc, etc.).
+#
+# uid 10001 is high enough to avoid colliding with anything in
+# Debian's reserved 0–999 range, and matches the ``app``-user
+# convention used by the Distroless and Chainguard images.
+#
+# ``chown`` /app + /data so the venv and the persistent OAuth/Apps
+# Script state are owned by the runtime user — Fly Volumes mounted
+# at /data will already be owned by uid 10001 on subsequent boots
+# (Fly preserves volume ownership across deploys).
+#
+# ``--no-create-home`` + ``--shell /sbin/nologin``: this user is
+# strictly a runtime UID, never an interactive shell account.
+RUN useradd --uid 10001 --user-group --no-create-home --shell /sbin/nologin app \
+    && chown -R app:app /app /data
+USER app
 
 CMD ["google-docs-mcp"]
