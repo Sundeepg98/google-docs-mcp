@@ -327,6 +327,113 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------------------------------
+# License-key middleware (PR-Δ5 — commercial-ready engineering seam)
+# ---------------------------------------------------------------------------
+
+
+class LicenseKeyMiddleware(BaseHTTPMiddleware):
+    """License-key gate; default no-op for personal use.
+
+    Three-state flow per ``license.check_license``:
+
+      - ``LICENSE_KEY_ENFORCEMENT`` env var off (default): always passes
+        through. Zero behavior change for personal users. The middleware
+        is wired so commercial activation is a config flip rather than
+        a code+deploy operation.
+
+      - Enforcement ON + valid key: passes through; structured log.
+
+      - Enforcement ON + missing/invalid key: returns **HTTP 402
+        Payment Required** with a JSON body explaining how to obtain /
+        configure a key. Per RFC 9110 §15.5.2, 402 is the appropriate
+        status for "payment required" semantics — distinct from the
+        401 ("auth missing") that ``BearerTokenMiddleware`` returns,
+        so monitoring can disambiguate "user forgot bearer" from
+        "user lacks license".
+
+    **Scope of enforcement** (intentionally narrow, mirrors
+    ``BearerTokenMiddleware``):
+
+      - ``/api/*`` and ``/info``: license-gated when enforcement on.
+        Same dispatch matcher as the bearer middleware so the two
+        gates are co-applied to the same protected surface.
+
+      - Everything else — ``/health``, ``/mcp*``, ``/.well-known/*``,
+        ``/oauth/*`` — passes through regardless. Health probes,
+        MCP transport, and OAuth discovery MUST stay reachable
+        without a license; the license gate is for the commercial
+        REST surface, not the operational endpoints.
+
+    **Key resolution order** (caller-supplied beats operator-configured):
+
+      1. ``X-License-Key`` HTTP header (caller-supplied; commercial
+         customer hits) — wins if present.
+      2. ``MCP_LICENSE_KEY`` env var (operator-configured; self-hosted
+         commercial customer) — fallback when no header.
+
+    The header-beats-env order matters: an operator with a default
+    key set via env can still test a temporary key per-request
+    without restarting the server.
+    """
+
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        # Local import keeps the module import graph free of a
+        # circular dependency on http_server initialization (license
+        # has no deps; the import is cheap).
+        from google_docs_mcp.license import (
+            LicenseStatus,
+            check_license,
+            resolve_token_from_env,
+        )
+
+        # Same protected surface as BearerTokenMiddleware so the two
+        # gates apply to identical paths. Anything else passes through
+        # untouched.
+        path = request.url.path
+        if not (path.startswith("/api/") or path == "/info"):
+            return await call_next(request)
+
+        # Header beats env. ``X-License-Key`` is the customer-supplied
+        # path; the env var is the self-hosted default.
+        header_key = request.headers.get("x-license-key")
+        token = header_key or resolve_token_from_env()
+
+        result = check_license(token)
+
+        if result.status == LicenseStatus.INVALID:
+            log.warning(
+                "license: rejecting request to %s — %s",
+                path,
+                result.reason,
+            )
+            return JSONResponse(
+                {
+                    "error": "license_required",
+                    "message": result.reason,
+                    # Doc URL is intentionally generic — the operator
+                    # is expected to override via a future
+                    # ``MCP_LICENSE_DOC_URL`` env var when commercial
+                    # activation happens. For now (personal mode +
+                    # enforcement off by default), this code path is
+                    # unreachable, so the placeholder is fine.
+                    "documentation": (
+                        "Set LICENSE_KEY_ENFORCEMENT=false to disable "
+                        "the gate, or supply a valid license key via "
+                        "X-License-Key header / MCP_LICENSE_KEY env var."
+                    ),
+                },
+                status_code=402,
+            )
+
+        # VALID or DISABLED — pass through. The check_license function
+        # already logged the result; no need to re-log here.
+        return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
 # Host + body-size middleware (v1.3.1 security hardening)
 # ---------------------------------------------------------------------------
 

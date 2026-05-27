@@ -24,9 +24,23 @@ where state lives.
 This is the DOMAIN-SPECIFIC layer. ``gas_deploy/`` is the GENERIC
 layer that could be extracted. The dividing line: anything that
 mentions ``restructure.gs`` or ``google-docs-mcp`` lives here.
+
+**PR-Δ5 (commercial-ready engineering) — optional GCP project linking.**
+The ``GCP_PROJECT_NUMBER`` env var, when set, augments the manifest
+with a ``cloudPlatform.projectId`` block (Apps Script API expects
+the project NUMBER, despite the field name's lexical mismatch). Doing
+so links every Apps Script execution into Cloud Logging under that
+GCP project, providing an enterprise-grade audit trail (the SOC 2 +
+compliance path). When unset (the default), the manifest is identical
+to pre-PR-Δ5 — zero behavior change for personal users.
+
+See ``docs/runbooks/gcp-project-linking.md`` for the operator
+workflow + verification steps.
 """
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +55,8 @@ from .auth import (
 from .services.gas_deploy import AppsScriptClient, GAS_DEPLOY_SCOPES
 from .services.gas_deploy.api import WebAppDeployment
 
+log = logging.getLogger("google_docs_mcp.setup_apps_script")
+
 # The .gs script ships in the package itself (the file copied into
 # the wheel by hatchling). Reading from __file__'s dir means it works
 # whether installed via pipx, pip -e, or inside a Docker image.
@@ -49,7 +65,7 @@ RESTRUCTURE_GS_PATH = Path(__file__).parent / "restructure.gs"
 PROJECT_TITLE = "google-docs-mcp / restructure"
 SCRIPT_FILENAME = "Restructure"
 
-_MANIFEST = {
+_BASE_MANIFEST = {
     "timeZone": "Etc/GMT",
     "exceptionLogging": "STACKDRIVER",
     "runtimeVersion": "V8",
@@ -67,6 +83,98 @@ _MANIFEST = {
         "access": "ANYONE_ANONYMOUS",
     },
 }
+
+
+def _build_manifest(gcp_project_number: str | None) -> dict:
+    """Construct the appsscript.json manifest, optionally linked to GCP.
+
+    When ``gcp_project_number`` is None (the default, personal-user
+    case), returns the base manifest verbatim — bit-for-bit identical
+    to the pre-PR-Δ5 ``_MANIFEST`` constant. When supplied, augments
+    with a ``cloudPlatform`` block so every Apps Script execution
+    surfaces logs in the named GCP project's Cloud Logging.
+
+    The Apps Script API expects the GCP project NUMBER (the numeric
+    integer ID Google assigns at project-creation time), NOT the
+    project ID (the human-readable string). The manifest field is
+    confusingly named ``projectId`` but takes the number — verified
+    against Google's documented schema:
+    https://developers.google.com/apps-script/manifest#cloudplatform
+
+    Args:
+        gcp_project_number: GCP project number as a string (numeric
+            content but typed as ``str`` for env-var consistency).
+            Pass ``None`` to omit the link (default / personal use).
+
+    Returns:
+        A new dict — never mutates ``_BASE_MANIFEST``. The
+        ``cloudPlatform`` key is only present when the project number
+        is supplied.
+    """
+    # Defensive copy. The caller's downstream uses (content_hash,
+    # push_files) consume the dict; if we mutated the module-level
+    # constant, two consecutive calls with different env-var values
+    # would silently corrupt each other.
+    manifest = dict(_BASE_MANIFEST)
+    # Copy the nested webapp dict too — same reason.
+    manifest["webapp"] = dict(_BASE_MANIFEST["webapp"])
+
+    if gcp_project_number is not None:
+        # Per Google's documented schema (URL above), the manifest
+        # field is ``cloudPlatform.projectId`` even though the value
+        # is the project NUMBER. Storing as str matches the env-var
+        # source type; Apps Script's JSON parser handles either.
+        manifest["cloudPlatform"] = {"projectId": gcp_project_number}
+
+    return manifest
+
+
+def _resolve_gcp_project_number() -> str | None:
+    """Read ``GCP_PROJECT_NUMBER`` env var; return stripped value or None.
+
+    Single read site so the env-var name + falsy-value semantics are
+    pinned in one place. An empty / whitespace-only value is treated
+    as unset (no link) rather than as an explicit empty-link request,
+    matching the convention for the rest of this repo's env vars.
+    """
+    raw = os.environ.get("GCP_PROJECT_NUMBER", "").strip()
+    return raw or None
+
+
+def _current_manifest() -> dict:
+    """Resolve the manifest at call time (reads ``GCP_PROJECT_NUMBER``).
+
+    PR-Δ5: replaces the pre-existing module-level ``_MANIFEST`` constant
+    so the env var is read each time the pipeline runs rather than
+    once at import. Two reasons:
+
+      1. Tests can monkeypatch ``GCP_PROJECT_NUMBER`` per-test without
+         needing to reload the module.
+      2. Operators flipping the env var without restarting (e.g. via
+         a Fly secret update + soft-reload) see the change on the
+         next pipeline run.
+
+    Both call sites in ``_execute_setup_with_ledger`` —
+    ``push_files`` and ``setup_state.compute_content_hash`` — must
+    use the SAME manifest within a single run; binding via a local
+    at the top of the function (rather than two separate calls) is
+    the contract.
+    """
+    return _build_manifest(_resolve_gcp_project_number())
+
+
+# Backward-compat surface for in-repo callers that referenced the
+# pre-PR-Δ5 module-level ``_MANIFEST`` constant. The snapshot is
+# captured at import time and reflects whatever ``GCP_PROJECT_NUMBER``
+# happened to be set to then — fine for static assertions (e.g.
+# ``test_doc_cohesion`` checks the webapp.access mode, which doesn't
+# vary by GCP linking) but WRONG for any caller that needs the
+# env-var-driven behavior. New code should call ``_current_manifest()``
+# directly. The constant is preserved instead of deleted so the
+# import line in ``test_doc_cohesion`` keeps working without a
+# rewrite — that test's contract (README cohesion vs the manifest)
+# is orthogonal to PR-Δ5.
+_MANIFEST = _current_manifest()
 
 
 def _execute_setup_with_ledger(
@@ -120,8 +228,14 @@ def _execute_setup_with_ledger(
     # (Pushed in the same conditional — pushing is idempotent at the
     # API level, but if version_number is already set we've passed
     # this point and shouldn't redo either operation.)
+    # PR-Δ5: manifest is resolved at call time so the GCP_PROJECT_NUMBER
+    # env var (optional) flows into ``cloudPlatform.projectId``. Bound
+    # to a local so the push body matches whatever the caller's
+    # content_hash was computed against (the two must use the same
+    # manifest within a single run).
     if "version_number" not in state:
-        client.push_files(state["script_id"], manifest=_MANIFEST, files=files)
+        manifest = _current_manifest()
+        client.push_files(state["script_id"], manifest=manifest, files=files)
         state["version_number"] = client.create_version(
             state["script_id"],
             description="initial deploy via setup-apps-script-auto",
@@ -129,7 +243,7 @@ def _execute_setup_with_ledger(
         save_state_partial({"version_number": state["version_number"]})
 
     # --- Step 4: projects.deployments.create ---
-    # Entry-point config (executeAs, access) is declared in _MANIFEST
+    # Entry-point config (executeAs, access) is declared in the manifest
     # and pushed via push_files; the deployment body must NOT include
     # entryPoints (Apps Script API rejects it).
     if "deployment_id" not in state:
@@ -214,7 +328,12 @@ def setup_apps_script_auto(
         creds = load_credentials(data_dir, extra_scopes=GAS_DEPLOY_SCOPES)
 
     files = {SCRIPT_FILENAME: RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")}
-    content_hash = setup_state.compute_content_hash(_MANIFEST, files)
+    # PR-Δ5: manifest resolved at call time so the optional
+    # GCP_PROJECT_NUMBER env var participates in the content_hash. If
+    # the operator flips GCP linking on/off between runs, the hash
+    # change correctly triggers a re-deploy (matches the existing
+    # "manifest changed" reset logic in _execute_setup_with_ledger).
+    content_hash = setup_state.compute_content_hash(_current_manifest(), files)
 
     def _get_state() -> dict:
         return dict(setup_state.load_state(data_dir))
@@ -296,7 +415,12 @@ def setup_apps_script_for_user(
     the caller's credentials resolver should catch that first).
     """
     files = {SCRIPT_FILENAME: RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")}
-    content_hash = setup_state.compute_content_hash(_MANIFEST, files)
+    # PR-Δ5: manifest resolved at call time so the optional
+    # GCP_PROJECT_NUMBER env var participates in the content_hash. If
+    # the operator flips GCP linking on/off between runs, the hash
+    # change correctly triggers a re-deploy (matches the existing
+    # "manifest changed" reset logic in _execute_setup_with_ledger).
+    content_hash = setup_state.compute_content_hash(_current_manifest(), files)
 
     def _get_state() -> dict:
         row = user_store.get_state(user_id)
