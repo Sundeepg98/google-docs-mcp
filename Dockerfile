@@ -132,8 +132,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # at /data will already be owned by uid 10001 on subsequent boots
 # (Fly preserves volume ownership across deploys).
 #
-# ``--no-create-home`` + ``--shell /sbin/nologin``: this user is
-# strictly a runtime UID, never an interactive shell account.
+# ``--create-home`` + ``--shell /sbin/nologin``: this user is strictly
+# a runtime UID, never an interactive shell account, BUT it still
+# needs a real ``/home/app`` because Python's standard library writes
+# to ``$HOME`` during normal startup (pathlib, importlib caches,
+# etc.). PR-Δ3 (PR #127) shipped ``--no-create-home``; that crashed
+# production every restart with
+# ``PermissionError: [Errno 13] '/home/app'`` because the home dir
+# didn't exist and ``$HOME`` defaults there for the app user.
+# Hotfixed in PR-Δ3-hotfix to ``--create-home`` — writability is what
+# matters, not the interactive-shell affordance (``/sbin/nologin``
+# still blocks login).
 # PR-Δ4 (2026-05-27): Litestream binary + config + entrypoint.
 #
 # Copies the static litestream binary from the multi-stage builder
@@ -157,7 +166,7 @@ COPY litestream.yml /etc/litestream.yml
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-RUN useradd --uid 10001 --user-group --no-create-home --shell /sbin/nologin app \
+RUN useradd --uid 10001 --user-group --create-home --shell /sbin/nologin app \
     && chown -R app:app /app /data
 USER app
 
