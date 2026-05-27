@@ -24,6 +24,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -219,9 +220,16 @@ def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     drive = get_service("drive", "v3", credentials=creds)
 
     try:
-        before = drive.files().get(
-            fileId=drive_file_id, fields="id,name,mimeType,trashed"
-        ).execute()
+        # PR-Δ3.5: gdocs_untrash_file is idempotent=True; wrap.
+        # 404/403 propagate to the existing handler (retry policy only
+        # covers 429/5xx).
+        before = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=drive_file_id, fields="id,name,mimeType,trashed"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get",
+        )
     except HttpError as e:
         if e.status_code == 404:
             return {
@@ -240,11 +248,16 @@ def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     was_already_active = not bool(before.get("trashed"))
 
     try:
-        updated = drive.files().update(
-            fileId=drive_file_id,
-            body={"trashed": False},
-            fields="id,name,mimeType,trashed",
-        ).execute()
+        # PR-Δ3.5: setting trashed=False twice is a true no-op; safe to retry.
+        updated = execute_with_retry(
+            lambda: drive.files().update(
+                fileId=drive_file_id,
+                body={"trashed": False},
+                fields="id,name,mimeType,trashed",
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.update.untrash",
+        )
     except HttpError as e:
         if e.status_code == 403:
             reasons = [
@@ -337,12 +350,17 @@ def find_doc_by_title(
         q_parts.append("trashed = false")
     q = " and ".join(q_parts)
 
-    resp = drive.files().list(
-        q=q,
-        orderBy="modifiedTime desc",
-        pageSize=min(max(page_size, 1), 100),
-        fields="files(id,name,mimeType,modifiedTime,trashed)",
-    ).execute()
+    # PR-Δ3.5: gdocs_find_doc_by_title is readonly=True, idempotent=True.
+    resp = execute_with_retry(
+        lambda: drive.files().list(
+            q=q,
+            orderBy="modifiedTime desc",
+            pageSize=min(max(page_size, 1), 100),
+            fields="files(id,name,mimeType,modifiedTime,trashed)",
+        ).execute(),
+        idempotent=True,
+        op_name="drive.files.list",
+    )
 
     matches: list[dict] = []
     for f in resp.get("files", []):
@@ -422,10 +440,15 @@ def move_to_folder(
     drive = get_service("drive", "v3", credentials=creds)
 
     try:
-        before = drive.files().get(
-            fileId=drive_file_id,
-            fields="id,name,mimeType,parents",
-        ).execute()
+        # PR-Δ3.5: gdocs_move_to_folder is idempotent=True.
+        before = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=drive_file_id,
+                fields="id,name,mimeType,parents",
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get",
+        )
     except HttpError as e:
         if e.status_code == 404:
             return {
@@ -441,9 +464,14 @@ def move_to_folder(
     # this here gives a clean reason instead of relying on Drive's
     # error message for an invalid addParents value.
     try:
-        folder_meta = drive.files().get(
-            fileId=folder_id, fields="id,mimeType"
-        ).execute()
+        # PR-Δ3.5: folder existence check is a pure read.
+        folder_meta = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=folder_id, fields="id,mimeType"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get.folder",
+        )
     except HttpError as e:
         if e.status_code == 404:
             return {
@@ -478,12 +506,17 @@ def move_to_folder(
         }
 
     try:
-        updated = drive.files().update(
-            fileId=drive_file_id,
-            addParents=folder_id,
-            removeParents=",".join(current_parents) if current_parents else None,
-            fields="id,name,mimeType,parents",
-        ).execute()
+        # PR-Δ3.5: moving to the same folder twice is a no-op; safe to retry.
+        updated = execute_with_retry(
+            lambda: drive.files().update(
+                fileId=drive_file_id,
+                addParents=folder_id,
+                removeParents=",".join(current_parents) if current_parents else None,
+                fields="id,name,mimeType,parents",
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.update.move",
+        )
     except HttpError as e:
         if e.status_code == 403:
             reasons = [
@@ -524,9 +557,14 @@ def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
     """
     drive = get_service("drive", "v3", credentials=creds)
     try:
-        meta = drive.files().get(
-            fileId=drive_file_id, fields="trashed"
-        ).execute()
+        # PR-Δ3.5: pure read used by readonly tool wrappers.
+        meta = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=drive_file_id, fields="trashed"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get.trashed_check",
+        )
         return bool(meta.get("trashed"))
     except Exception:  # noqa: BLE001
         return False
@@ -536,9 +574,14 @@ def classify_drive_file(creds: Credentials, drive_file_id: str) -> str:
     """Return the mime type of a Drive file. Used to route to the
     right ingestion function (raw .docx vs already-converted Google Doc)."""
     drive = get_service("drive", "v3", credentials=creds)
-    meta = drive.files().get(
-        fileId=drive_file_id, fields="mimeType"
-    ).execute()
+    # PR-Δ3.5: pure read; classifies file type so callers can route ingestion.
+    meta = execute_with_retry(
+        lambda: drive.files().get(
+            fileId=drive_file_id, fields="mimeType"
+        ).execute(),
+        idempotent=True,
+        op_name="drive.files.get.classify",
+    )
     return meta.get("mimeType", "")
 
 
@@ -567,9 +610,15 @@ def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     # Read current state first so we can flag idempotent no-ops AND
     # detect non-existent IDs early with a clean reason.
     try:
-        before = drive.files().get(
-            fileId=drive_file_id, fields="id,name,mimeType,trashed"
-        ).execute()
+        # PR-Δ3.5: gdocs_trash_file is destructive=True but idempotent=True
+        # (trashing twice = same end state). Wrap.
+        before = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=drive_file_id, fields="id,name,mimeType,trashed"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get",
+        )
     except HttpError as e:
         if e.status_code == 404:
             return {
@@ -587,11 +636,16 @@ def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     was_already_trashed = bool(before.get("trashed"))
 
     try:
-        updated = drive.files().update(
-            fileId=drive_file_id,
-            body={"trashed": True},
-            fields="id,name,mimeType,trashed",
-        ).execute()
+        # PR-Δ3.5: trashing an already-trashed file is a no-op; safe to retry.
+        updated = execute_with_retry(
+            lambda: drive.files().update(
+                fileId=drive_file_id,
+                body={"trashed": True},
+                fields="id,name,mimeType,trashed",
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.update.trash",
+        )
     except HttpError as e:
         # drive.file scope only grants write to files this app created.
         # Trashing a file uploaded externally (e.g. via the Drive web UI

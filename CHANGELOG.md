@@ -4,9 +4,9 @@ All notable changes to `google-docs-mcp`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter
+## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter + PR-Δ3.5 retry adoption
 
-Combined four related ships. PR-α surfaces the runtime install as
+Combined five related ships. PR-α surfaces the runtime install as
 headline functionality; PR-Δ1 bundles its scopes into the
 first-consent screen and adds the spec-mandated OAuth discovery
 endpoint so claude.ai's connector reconnect flow lands precisely on
@@ -20,7 +20,11 @@ bypass applies to our user scope; **PR-Δ3 closes the Hex specialist's
 remaining architectural gap** (no retry/backoff anywhere for Google's
 routine 429/5xx) and four DevOps specialist must-fix gaps in a single
 themed batch (non-root container, SHA-pinned base image, CODEOWNERS,
-key-rotation runbook, per-upload-session audit logging).
+key-rotation runbook, per-upload-session audit logging); **PR-Δ3.5
+adopts the retry adapter at the api.py call sites** — 31 of 55
+``.execute()`` sites wrapped (readonly + idempotent tools), 24 left
+intentionally un-wrapped (mutating non-idempotent tools, where retry
+would risk duplicate side effects).
 
 ### Added
 
@@ -32,6 +36,10 @@ key-rotation runbook, per-upload-session audit logging).
 - **Per-upload-session audit log line** (PR-Δ3, `src/google_docs_mcp/http_server/routes/convert.py`) — dedicated logger namespace `google_docs_mcp.audit.upload` emits one line per `/api/convert` upload: `session_id=<uuid4> user_id=sub:<8char>… file_size_bytes=<n> file_sha256=<hex> split_by=<...> ts=<unix>`. **`file_sha256` is a hash of the bytes, not the content** — forensic primitive for "was this exact byte sequence uploaded twice?" without retaining the bytes themselves. `user_id` is the signed-URL `uid` truncated to 8 chars (limits correlation surface in long-retained logs) or `anonymous_sandbox` for the bearer-header / operator path. Distinct logger namespace so operators can route audit lines to a SIEM or longer-retention sink without dragging in every middleware log line.
 - **`docs/adr/2026-05-27-retry-backoff-and-hardening.md`** (PR-Δ3) — full ADR documenting the retry-adapter architectural decision (why a separate `execute_with_retry` method vs. wrapping every `HttpRequest`), production wiring, consequences (the adapter is **wired but not yet adopted** — opt-in adoption is a follow-up sweep), and roll-forward path.
 - **`tenacity>=9.1.4`** (PR-Δ3, `pyproject.toml` + `uv.lock`) — new runtime dependency for the retry adapter. Well-maintained, single-purpose, MIT-licensed.
+
+### Changed
+
+- **Retry adoption across readonly + idempotent tool call sites** (PR-Δ3.5) — PR-Δ3 wired `RetryingGoogleApiClientAdapter` as the production default but no `.execute()` call yet invoked `execute_with_retry`. This change adopts retry at **31 of the 55** `.execute()` call sites across `services/docs/api.py`, `services/drive/api.py`, `services/drive/sharing.py`, `services/sheets/api.py`, `services/slides/api.py`, and `preview.py`. **Adoption rule**: wrap when the calling tool is annotated `readonly=True` OR `idempotent=True`; **do not** wrap when annotated `readonly=False AND idempotent=False`. The 24 un-wrapped sites are mutating non-idempotent operations — `gdocs_make_tabbed_doc`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_tab_existing_doc`'s `.docx` upload + conversion path, `gdocs_share_file`, `gsheets_create_spreadsheet`, `gslides_create_presentation`, the entire `gas_deploy.AppsScriptClient` install flow, `retrofit_existing_docx`, and `docx_import.convert_docx_to_tabbed_doc`'s Drive document fetch. Retrying these would risk duplicate docs / duplicate Apps Script deployments / duplicate sends, which is exactly the safety floor the per-call-site `idempotent=` flag exists to enforce. Adoption is mechanical: each wrapped call site reads `result = execute_with_retry(lambda: <chain>.execute(), idempotent=True, op_name="<service>.<method>")` instead of `<chain>.execute()`. The 24 un-wrapped sites stay byte-equivalent to pre-PR-Δ3.5 behavior. 4 new tests in `tests/unit/test_retry_adoption_in_apis.py` cover the adoption contract end-to-end (a wrapped function retries on 503 then succeeds; an un-wrapped function calls `.execute()` exactly once and lets the 503 propagate; the facade gracefully degrades to a single invocation when the active client lacks `execute_with_retry` — so tests that opted out via a bare `InMemoryGoogleAPIClient` still see the api functions return their value, not silently None).
 
 - **`GET /.well-known/security.txt` endpoint** (PR-Δ2) — RFC 9116 machine-readable vulnerability disclosure contact, served by `src/google_docs_mcp/http_server/routes/observability.py` next to the existing `/.well-known/oauth-protected-resource` (RFC 9728) endpoint. Contact field points at the GitHub Security Advisories form (canonical channel per `SECURITY.md`). `Expires:` field hardcoded to a conservative ~6-month window so a stale image deployment still serves a valid block; the integration test `test_security_txt_expires_is_rfc3339_and_in_future` is the canary that fires when renewal is needed. Public endpoint — the `BearerTokenMiddleware` already excludes `/.well-known/*`.
 - **`docs/security-posture.md`** (PR-Δ2) — human-readable narrative companion to the structured artifacts. Covers minimal-scope OAuth posture (`drive.file` primary + `drive.readonly` for explicit ingestion), per-user token storage + per-purpose HKDF key derivation, standards-compliant OAuth discovery (RFC 8414/9728/9116), the bounded-blast-radius architectural property, continuous posture monitoring (Scorecard + CodeQL + pip-audit + Sigstore), what we self-attest (ASVS L1) and what we explicitly do NOT claim (SOC 2, CASA, paid pen-test, ASVS L2/L3).

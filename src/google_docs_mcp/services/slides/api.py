@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from google_docs_mcp.google_api_client import execute_with_retry
 from google_docs_mcp.google_clients import get_service
 
 if TYPE_CHECKING:
@@ -71,9 +72,14 @@ def get_outline(creds: Credentials, presentation_id: str) -> dict:
             propagate; the tool-layer envelope renders it.
     """
     slides = get_service("slides", "v1", credentials=creds)
-    presentation = slides.presentations().get(
-        presentationId=presentation_id,
-    ).execute()
+    # PR-Δ3.5: gslides_get_outline is readonly=True, idempotent=True.
+    presentation = execute_with_retry(
+        lambda: slides.presentations().get(
+            presentationId=presentation_id,
+        ).execute(),
+        idempotent=True,
+        op_name="slides.presentations.get",
+    )
     return {
         "presentation_id": presentation_id,
         "title": presentation.get("title", ""),
@@ -147,10 +153,18 @@ def replace_all_text(
             },
         ],
     }
-    resp = slides.presentations().batchUpdate(
-        presentationId=presentation_id,
-        body=body,
-    ).execute()
+    # PR-Δ3.5: gslides_replace_all_text is annotated idempotent=True —
+    # replacing the same text twice is a no-op once the first call
+    # already replaced everything; the second call's
+    # ``occurrencesChanged`` is 0.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body=body,
+        ).execute(),
+        idempotent=True,
+        op_name="slides.presentations.batchUpdate.replaceAllText",
+    )
     occurrences = sum(
         r.get("replaceAllText", {}).get("occurrencesChanged", 0)
         for r in resp.get("replies", [])
