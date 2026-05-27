@@ -1,18 +1,59 @@
 """Observability endpoints — Fly.io health probe + curl-friendly /info
-+ RFC 9728 OAuth protected resource metadata."""
++ RFC 9728 OAuth protected resource metadata + RFC 9116 security.txt."""
 from __future__ import annotations
 
 import os
 import time
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from google_docs_mcp import keys
 
 
 async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+
+
+# RFC 9116 §2.3 recommends an expiry no more than 1 year out. We hardcode
+# 2027-01-01 here as a deliberately conservative ~6-month window so a
+# stale deployment of an old image still serves a non-expired contact
+# block. Re-bump in CHANGELOG on each tag; the integration test
+# `test_security_txt_expires_is_rfc3339_and_in_future` is the canary.
+_SECURITY_TXT_EXPIRES = "2027-01-01T00:00:00Z"
+
+_SECURITY_TXT_BODY = f"""\
+# RFC 9116 security.txt for google-docs-mcp
+# Machine-readable companion to /SECURITY.md + docs/THREAT_MODEL.md
+# in the source repo.
+
+Contact: https://github.com/Sundeepg98/google-docs-mcp/security/advisories/new
+Expires: {_SECURITY_TXT_EXPIRES}
+Preferred-Languages: en
+Canonical: https://sundeepg98-docs-mcp.fly.dev/.well-known/security.txt
+Policy: https://github.com/Sundeepg98/google-docs-mcp/blob/main/SECURITY.md
+Acknowledgments: https://github.com/Sundeepg98/google-docs-mcp/security/advisories
+"""
+
+
+async def security_txt(_request: Request) -> PlainTextResponse:
+    """``GET /.well-known/security.txt`` — RFC 9116 machine-readable
+    vulnerability disclosure contact.
+
+    Companion to the human-readable ``SECURITY.md`` at the repo root.
+    Spec mandates ``Contact:`` and ``Expires:``; the rest are
+    recommended fields that materially help reporters. Public endpoint
+    (the ``BearerTokenMiddleware`` already excludes ``/.well-known/*``).
+
+    The ``Expires:`` value is hardcoded — see ``_SECURITY_TXT_EXPIRES``
+    above for the renewal protocol. A stale deployment of an old image
+    still serves a non-expired block thanks to the conservative window.
+    """
+    return PlainTextResponse(
+        _SECURITY_TXT_BODY,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:

@@ -1,0 +1,91 @@
+# Build + sign release artifacts on tag publish (PR-Δ2).
+#
+# Triggered by GitHub Release `published` events (so the existing
+# release-drafter.yml's draft-then-publish flow remains the operator's
+# release control surface — they "Publish release" in the GitHub UI
+# when ready, and THIS workflow then builds + signs + uploads the
+# wheel + sdist + Sigstore attestation).
+#
+# Why a separate workflow (not folded into release-drafter.yml):
+# release-drafter runs on every push to keep the DRAFT current. The
+# signing pipeline runs ONCE per published tag and must not fire on
+# every push. Separating them keeps each workflow's permission scope
+# minimum (release-drafter has `contents: write` for draft updates;
+# this workflow has `id-token: write` + `attestations: write` for
+# Sigstore, which release-drafter has no business holding).
+#
+# Verification side: downstream consumers can verify with:
+#   gh attestation verify google_docs_mcp-X.Y.Z-py3-none-any.whl \
+#     --repo Sundeepg98/google-docs-mcp
+# That command checks the Sigstore signature was issued by GitHub
+# Actions for THIS repo at the commit that tagged the release.
+
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions: read-all
+
+jobs:
+  build-and-sign:
+    name: Build wheel + sdist and attest provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # upload artifacts to the release
+      id-token: write       # OIDC token for Sigstore
+      attestations: write   # write the .intoto.jsonl attestation
+
+    steps:
+      - name: Checkout source at the released tag
+        uses: actions/checkout@v6
+        with:
+          # Tag ref is checked out automatically via GITHUB_REF on a
+          # `release` trigger; explicit ref kept here for clarity.
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build backend
+        # Hatchling is the build backend declared in pyproject.toml;
+        # `python -m build` orchestrates the wheel + sdist construction
+        # via that backend in a clean isolated env (--isolated default).
+        run: pip install build==1.2.2
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Attest build provenance for every artifact
+        # actions/attest-build-provenance@v2 → emits an in-toto
+        # Statement signed via Sigstore's Fulcio (short-lived cert
+        # issued to this workflow run's GitHub Actions OIDC identity)
+        # and submits to the Rekor transparency log. The resulting
+        # `.intoto.jsonl` file is uploaded as a workflow artifact and
+        # is verifiable via `gh attestation verify`.
+        #
+        # `subject-path` globs cover wheel + sdist; the action handles
+        # multi-subject statements correctly.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+
+      - name: Upload artifacts to the release page
+        # gh CLI is pre-installed on ubuntu-latest. We upload the
+        # signed wheel + sdist + the workflow artifact's local copy
+        # so users can grab them straight from the release page.
+        # The Sigstore attestation itself lives at
+        # /repos/{owner}/{repo}/attestations and is fetched by name
+        # via `gh attestation` — no need to re-upload it as a
+        # release asset.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/*.whl \
+            dist/*.tar.gz \
+            --clobber
