@@ -22,6 +22,7 @@ from .middleware import (
     BearerTokenMiddleware,
     BodySizeLimitMiddleware,
     HealthExemptTrustedHostMiddleware,
+    LicenseKeyMiddleware,
     RequestIdLogFilter,
     RequestIdMiddleware,
     derive_trusted_hosts,
@@ -88,6 +89,14 @@ def build_app(mcp: FastMCP) -> Starlette:
             bearer_token=bearer_token,
             signed_url_key=signed_url_key,
         ),
+        # PR-Δ5: LicenseKeyMiddleware AFTER bearer auth — same protected
+        # surface (/api/* and /info), but checked second so an
+        # unauthenticated request still gets a 401 (not a 402) for the
+        # "you forgot the bearer" case. Default behavior: no-op
+        # (LICENSE_KEY_ENFORCEMENT env var is off for personal use).
+        # When commercial activation flips enforcement on, this gate
+        # returns 402 Payment Required for missing/invalid keys.
+        Middleware(LicenseKeyMiddleware),
         Middleware(BodySizeLimitMiddleware, max_bytes=body_max),
     ]
 

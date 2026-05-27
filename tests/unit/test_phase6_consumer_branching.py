@@ -72,6 +72,12 @@ def test_get_credentials_http_mode_uses_per_user_resolver(isolated_state):
     from google_docs_mcp import server
 
     fake_creds = MagicMock()
+    # PR-Δ5: production credentials returned by ``get_credentials_for_user``
+    # are stamped with the requesting user_id (via ``_stamp_tenant``) so
+    # the ``assert_tenant_match`` check inside ``_get_credentials`` can
+    # verify the tenant binding. Stamp the mock with the matching id so
+    # the assertion passes — mirrors the production contract.
+    fake_creds._google_docs_mcp_user_id = "user-sub-abc"
     with patch(
         "google_docs_mcp._tool_helpers.current_user_id_or_none",
         return_value="user-sub-abc",

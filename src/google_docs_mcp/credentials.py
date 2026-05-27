@@ -45,6 +45,103 @@ from .oauth_google import GOOGLE_API_SCOPES, build_authorization_url
 
 log = logging.getLogger("google_docs_mcp.credentials")
 
+# PR-Δ5: dedicated audit logger for multi-tenant credential dispatch.
+# Separate from ``google_docs_mcp.credentials`` so operators can
+# selectively elevate audit-trail verbosity (e.g. for SOC 2 prep:
+# pipe ``google_docs_mcp.audit.tenant`` to a separate sink that's
+# retained for the compliance window). The request-ID injected by
+# ``RequestIdMiddleware`` (PR-Δ4) automatically appears in every
+# audit line thanks to ``RequestIdLogFilter`` on the root logger.
+_audit_log = logging.getLogger("google_docs_mcp.audit.tenant")
+
+
+# PR-Δ5: attribute name used to stamp the resolved user_id onto a
+# ``Credentials`` object so downstream call sites can defensively
+# verify the binding via ``assert_tenant_match``. Centralized as a
+# constant so the spelling never drifts between the writer here and
+# the reader in ``_tool_helpers``.
+_TENANT_ATTR = "_google_docs_mcp_user_id"
+
+
+def _stamp_tenant(creds: Credentials, user_id: str) -> Credentials:
+    """Attach ``user_id`` to ``creds`` so tenant-match checks can fire.
+
+    Google's ``Credentials`` class does not carry the originating
+    user_id natively (the binding lives at the storage layer:
+    ``user_store.get_state(user_id) → google_creds_json``). For
+    defensive multi-tenant safety we stamp the user_id onto the
+    instance via ``setattr`` — Credentials inherits from a flexible
+    base, accepts extra attributes without complaint, and the stamp
+    is process-local (never serialized back to user_store).
+
+    The stamp is what ``_tool_helpers.assert_tenant_match`` reads to
+    confirm "these creds are FOR the user the tool thinks they are."
+    Today the assertion is belt-and-suspenders — the storage layer
+    is the source of truth, and the storage layer is correct. The
+    stamp catches a future caching bug, a future SQL injection that
+    swaps the WHERE clause, a future race condition that returns
+    the wrong row. Without the stamp those bugs would surface as
+    silent cross-tenant data access; with it they surface as a
+    loud AssertionError before any user data is touched.
+    """
+    setattr(creds, _TENANT_ATTR, user_id)
+    return creds
+
+
+def _emit_tenant_audit_log(
+    user_id: str,
+    *,
+    required_scopes: list[str] | None,
+    granted_scopes: list[str] | None,
+    outcome: str,
+) -> None:
+    """Emit a structured audit-log record for a credential-dispatch event.
+
+    Logger: ``google_docs_mcp.audit.tenant`` — operators can route
+    this to a separate retention sink for SOC 2 / compliance audit
+    trails. The ``extra`` dict carries structured fields that get
+    rendered by any JSON-formatter configured downstream; the
+    formatted message is human-readable for default text logs.
+
+    The request-ID from PR-Δ4 is auto-injected by
+    ``RequestIdLogFilter`` (installed on the root logger) — no
+    explicit threading needed here. Outside HTTP context the
+    placeholder ``-`` appears, which is fine: stdio-mode credential
+    dispatch is single-tenant and the audit trail is the operator's
+    own activity.
+
+    Args:
+        user_id: The tenant identifier credentials were dispatched
+            for. Truncated to first 8 chars in the human message
+            (full value in the structured field) so log lines don't
+            leak the entire ``sub`` claim into shoulder-surfable
+            terminal output.
+        required_scopes: The scope list the call site asked for
+            (None = no scope check). Helps a compliance reviewer
+            tell "tool X demanded scope Y for user Z" from "tool X
+            ran without a scope check."
+        granted_scopes: The scope list the returned creds actually
+            carry (None = unknown). The intersection of required vs
+            granted is the compliance-relevant surface.
+        outcome: One of ``"dispatched"`` (creds returned),
+            ``"needs_reauth"`` (NeedsReauthError raised),
+            ``"revoked"`` (invalid_grant caught and state cleared).
+    """
+    _audit_log.info(
+        "tenant_dispatch user_id=%s... outcome=%s required_scopes=%d granted_scopes=%d",
+        user_id[:8] if user_id else "-",
+        outcome,
+        len(required_scopes) if required_scopes else 0,
+        len(granted_scopes) if granted_scopes else 0,
+        extra={
+            "audit_event": "tenant_dispatch",
+            "audit_user_id": user_id,
+            "audit_outcome": outcome,
+            "audit_required_scopes": required_scopes or [],
+            "audit_granted_scopes": granted_scopes or [],
+        },
+    )
+
 
 def current_user_id_or_none() -> str | None:
     """Return Google ``sub`` of calling user, or None outside auth context.
@@ -131,6 +228,12 @@ def get_credentials_for_user(
     state = user_store.get_state(user_id)
 
     if "google_creds_json" not in state:
+        _emit_tenant_audit_log(
+            user_id,
+            required_scopes=required_scopes,
+            granted_scopes=None,
+            outcome="needs_reauth",
+        )
         raise NeedsReauthError(
             user_id,
             auth_url=_auth_url(user_id, client_config, signing_key, base_url),
@@ -140,12 +243,25 @@ def get_credentials_for_user(
     creds = _credentials_from_state(state, client_config)
 
     if creds.valid:
-        return _check_scopes_or_raise(
+        checked = _check_scopes_or_raise(
             creds, user_id, required_scopes, client_config, signing_key, base_url,
         )
+        _emit_tenant_audit_log(
+            user_id,
+            required_scopes=required_scopes,
+            granted_scopes=list(checked.scopes or []),
+            outcome="dispatched",
+        )
+        return _stamp_tenant(checked, user_id)
 
     if not creds.refresh_token:
         # Expired AND no refresh_token — can't recover silently.
+        _emit_tenant_audit_log(
+            user_id,
+            required_scopes=required_scopes,
+            granted_scopes=None,
+            outcome="needs_reauth",
+        )
         raise NeedsReauthError(
             user_id,
             auth_url=_auth_url(user_id, client_config, signing_key, base_url),
@@ -160,10 +276,17 @@ def get_credentials_for_user(
         state = user_store.get_state(user_id)
         creds = _credentials_from_state(state, client_config)
         if creds.valid:
-            return _check_scopes_or_raise(
+            checked = _check_scopes_or_raise(
                 creds, user_id, required_scopes, client_config,
                 signing_key, base_url,
             )
+            _emit_tenant_audit_log(
+                user_id,
+                required_scopes=required_scopes,
+                granted_scopes=list(checked.scopes or []),
+                outcome="dispatched",
+            )
+            return _stamp_tenant(checked, user_id)
 
         try:
             creds.refresh(Request())
@@ -174,6 +297,12 @@ def get_credentials_for_user(
                     user_id,
                 )
                 user_store.clear_state(user_id)
+                _emit_tenant_audit_log(
+                    user_id,
+                    required_scopes=required_scopes,
+                    granted_scopes=None,
+                    outcome="revoked",
+                )
                 raise NeedsReauthError(
                     user_id,
                     auth_url=_auth_url(user_id, client_config, signing_key, base_url),
@@ -188,9 +317,16 @@ def get_credentials_for_user(
 
         user_store.save_credentials_json(user_id, creds.to_json())
 
-    return _check_scopes_or_raise(
+    checked = _check_scopes_or_raise(
         creds, user_id, required_scopes, client_config, signing_key, base_url,
     )
+    _emit_tenant_audit_log(
+        user_id,
+        required_scopes=required_scopes,
+        granted_scopes=list(checked.scopes or []),
+        outcome="dispatched",
+    )
+    return _stamp_tenant(checked, user_id)
 
 
 def _credentials_from_state(
