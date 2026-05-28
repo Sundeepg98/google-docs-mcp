@@ -104,6 +104,23 @@ lint = [
     "pyright>=1.1.400",
     "ruff>=0.7",
 ]
+# === PR-Δ6: Vercel pilot extras ===
+# The VercelKvBackend talks to Upstash KV via the HTTP REST API; the
+# implementation uses httpx (already transitive via FastMCP), so no
+# net-new runtime dependency is required for the backend itself.
+#
+# This extras group exists for symmetry + future-proofing: when
+# Vercel-specific tooling lands (Vercel CLI for local dev, vercel-sdk
+# for programmatic deploy operations, upstash-redis if we ever decide
+# the SDK is worth the dep), it goes here. Today the group is empty;
+# `pip install appscriptly[vercel]` is a no-op extras-resolve that
+# documents the intent without forcing the install.
+#
+# The Vercel deploy itself (api/index.py) needs only the base
+# dependencies — no extras required to run on Vercel.
+vercel = [
+    # (Intentionally empty as of PR-Δ6. See comment above.)
+]
 
 [project.urls]
 # PR-Δ5.5: repository URLs unchanged for now — the repo transfer to
