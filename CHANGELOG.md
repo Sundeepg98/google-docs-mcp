@@ -4,7 +4,11 @@ All notable changes to `appscriptly` (pre-PR-Δ5.5: `google-docs-mcp`).
 
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter + PR-Δ3.5 retry adoption + PR-Δ4 DR + observability + PR-Δ5 commercial-ready engineering + PR-Δ5.5 rename to appscriptly
+## [Unreleased] — PR-α reframe + PR-Δ1 spec compliance + scope union + PR-Δ2 security posture artifacts + PR-Δ3 hardening + retry adapter + PR-Δ3.5 retry adoption + PR-Δ4 DR + observability + PR-Δ5 commercial-ready engineering + PR-Δ5.5 rename to appscriptly + PR-Δ3-hotfix Dockerfile home-dir fix
+
+### Fixed
+
+- **Hotfix: Dockerfile non-root user `--no-create-home` caused production startup crash; switched to `--create-home`** (PR-Δ3-hotfix). PR-Δ3 (PR #127) added the non-root container user (`uid 10001`) with `--no-create-home` based on a minimum-attack-surface instinct; that crashed every container restart with `PermissionError: [Errno 13] '/home/app'` because Python's standard library writes to `$HOME` during normal startup (pathlib, importlib caches, etc.) and `$HOME` defaults to `/home/app` for the app user. Production stayed up only because PRs #128-#135's image pushes succeeded at the layer level — flyctl marked release "complete" but every machine landed in a restart loop. Orchestrator rolled production back to `deployment-dfc388a` (PR #126 image, pre-hardening); this hotfix flips `--no-create-home` → `--create-home` so useradd materializes `/home/app` with correct ownership. `/sbin/nologin` still blocks interactive shell access — the writability is what matters, not the interactive-shell affordance.
 
 Combined six related ships. PR-α surfaces the runtime install as
 headline functionality; PR-Δ1 bundles its scopes into the
