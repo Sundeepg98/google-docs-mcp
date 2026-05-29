@@ -367,3 +367,95 @@ def test_save_state_unaffected_for_other_fields():
     assert state["apps_script_script_id"] == "arbitrary-string-no-validator"
     assert state["apps_script_deployment_id"] == "also-arbitrary"
     assert state["apps_script_version_number"] == 42
+
+
+# ---------------------------------------------------------------------------
+# assert_state_db_writable — the SQLITE_READONLY boot guard
+# ---------------------------------------------------------------------------
+#
+# The HTTP server calls this at startup (server.main) so a state DB the
+# runtime user can't write fails LOUD in the deploy logs instead of
+# silently 500-ing every per-user tool call at request time. The prod
+# incident: a Fly volume created while the server ran as root kept its
+# root-owned files; the non-root app user (uid 10001) then hit
+# "attempt to write a readonly database" on the WAL open of every tool.
+
+
+def test_assert_state_db_writable_passes_on_writable_path(tmp_path, monkeypatch):
+    """Happy path: a normal writable location is accepted silently."""
+    db = tmp_path / "writable" / "user_state.db"
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
+
+    from google_docs_mcp.user_store import assert_state_db_writable
+
+    assert_state_db_writable()  # must not raise
+    # The probe must NOT leave real schema/rows behind — it only proves
+    # write capability. (WAL sidecars may exist; the DB has no user_state
+    # table yet because the probe rolls back without DDL on the schema.)
+    assert db.exists()
+
+
+def test_assert_state_db_writable_creates_parent_dir(tmp_path, monkeypatch):
+    """A not-yet-existing /data subdir is created (fresh-volume case)."""
+    db = tmp_path / "deeply" / "nested" / "user_state.db"
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
+    assert not db.parent.exists()
+
+    from google_docs_mcp.user_store import assert_state_db_writable
+
+    assert_state_db_writable()
+    assert db.parent.exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX file-mode read-only enforcement; Windows chmod semantics "
+           "differ and the running test user may bypass them.",
+)
+def test_assert_state_db_writable_raises_on_readonly_db(tmp_path, monkeypatch):
+    """A pre-existing read-only DB file (the prod root-owned-file shape)
+    must raise a clear RuntimeError, NOT the raw sqlite error, and NOT
+    pass silently."""
+    import stat
+
+    db = tmp_path / "user_state.db"
+    # Create a real (empty) sqlite file, then strip all write bits — the
+    # closest portable analogue of "owned by a different uid, mode 0644".
+    sqlite3.connect(db).close()
+    db.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0444
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
+
+    from google_docs_mcp.user_store import assert_state_db_writable
+
+    try:
+        with pytest.raises(RuntimeError, match="NOT writable"):
+            assert_state_db_writable()
+    finally:
+        # Restore write bit so tmp_path cleanup can remove it on all OSes.
+        db.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX directory-mode enforcement; Windows dir ACLs differ.",
+)
+def test_assert_state_db_writable_raises_when_dir_unwritable(tmp_path, monkeypatch):
+    """A read-only PARENT directory (can't create the DB nor WAL sidecars)
+    must raise — this is the exact prod shape: the /data/google-docs-mcp
+    directory itself was root-owned 0755, so the app user couldn't create
+    the -wal/-shm files even if the DB file were writable."""
+    import stat
+
+    ro_dir = tmp_path / "readonly_dir"
+    ro_dir.mkdir()
+    db = ro_dir / "user_state.db"
+    monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
+    ro_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x, no write
+
+    from google_docs_mcp.user_store import assert_state_db_writable
+
+    try:
+        with pytest.raises(RuntimeError):
+            assert_state_db_writable()
+    finally:
+        ro_dir.chmod(stat.S_IRWXU)  # restore for cleanup
