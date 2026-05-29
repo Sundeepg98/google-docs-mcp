@@ -64,6 +64,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -114,14 +115,41 @@ _MAX_FPS = 60
 
 # Defensive cap on frame count — a single Apps Script render pass tops
 # out around ~50 slides (the render half's documented guidance), so a
-# manifest claiming thousands of frames is almost certainly malformed /
+# manifest claiming hundreds of frames is almost certainly malformed /
 # a wrong-folder pointer. Reject rather than spend minutes downloading.
-_MAX_FRAMES = 1000
+# v2.x hardening (#4a): lowered 1000 → 200. 200 is ~4x the documented
+# single-pass slide ceiling — generous headroom for legitimate decks
+# while still refusing an obviously-wrong manifest before the download
+# loop spends time + memory + disk on it.
+_MAX_FRAMES = 200
+
+# Cumulative byte budget across ALL frame downloads (#4a). The prod
+# machine is shared-cpu-1x / 512mb; each frame is read fully into RAM
+# (BytesIO) before being written to the temp dir, and ffmpeg then needs
+# headroom on top. getThumbnail LARGE frames are ~0.3-2 MB each, so a
+# legitimate ~50-slide deck is well under this; the cap exists to stop a
+# pathological / malformed manifest (huge frames, or a wrong-folder
+# pointer at a folder full of large images) from OOM-ing the box.
+#
+# 250 MB leaves ~260 MB for the Python process + the ffmpeg child + OS
+# on a 512 MB machine — deliberately conservative. The budget is
+# enforced INCREMENTALLY inside the download loop: we abort the moment
+# the running total would exceed the cap, so we never complete the full
+# in-RAM/disk load of an over-budget set.
+_MAX_TOTAL_FRAME_BYTES = 250 * 1024 * 1024  # 250 MiB
 
 # ffmpeg's exit is trusted, but bound the wall-clock so a pathological
 # encode can't pin the machine. 50 frames at libx264 ultrafast is
 # sub-second; 5 minutes is generous headroom that still fails fast.
 _FFMPEG_TIMEOUT_SEC = 300
+
+# How much to lower the ffmpeg child's scheduling priority on POSIX
+# (#4b). The prod container has ONE shared vCPU; a multi-second encode
+# at default priority competes head-to-head with the HTTP server's
+# event loop and can delay the /health probe. `os.nice(10)` keeps the
+# encode CPU-bound work below request handling so a big encode degrades
+# its OWN latency, not the server's liveness. (No-op on non-POSIX dev.)
+_FFMPEG_NICE_INCREMENT = 10
 
 
 def _drive_list_folder(drive, folder_id: str) -> list[dict]:
@@ -226,11 +254,40 @@ def _build_ffmpeg_cmd(work_dir: Path, fps: int, output_path: Path) -> list[str]:
         "-framerate", str(fps),  # INPUT rate: how long each PNG shows
         "-i", str(work_dir / "%04d.png"),
         "-c:v", "libx264",
+        # #4b: bound CPU on the single shared vCPU. `-preset veryfast`
+        # trades a little compression efficiency for a much shorter,
+        # lighter encode (slide frames are static — the size cost is
+        # negligible); `-threads 1` stops libx264 from spawning a thread
+        # per core and saturating the box. Together with the os.nice()
+        # de-prioritization on the subprocess, a big encode degrades its
+        # OWN latency rather than starving the HTTP server's /health probe.
+        "-preset", "veryfast",
+        "-threads", "1",
         "-pix_fmt", "yuv420p",  # broad-player compat (QuickTime/Safari)
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",  # even dims for yuv420p
         "-movflags", "+faststart",  # moov atom up front for streaming
         str(output_path),
     ]
+
+
+def _ffmpeg_preexec():
+    """Return a ``preexec_fn`` that lowers the ffmpeg child's priority,
+    or ``None`` when ``os.nice`` is unavailable (non-POSIX / dev).
+
+    #4b: ``os.nice`` only exists on POSIX. The prod container is Linux,
+    so this fires in production; on Windows dev it returns ``None`` and
+    ``subprocess.run`` simply runs the child at normal priority (no
+    crash). ``preexec_fn`` runs in the forked child BEFORE exec, so the
+    nice increment applies to ffmpeg only — never the parent server.
+    """
+    nice_fn = getattr(os, "nice", None)
+    if nice_fn is None:
+        return None
+
+    def _apply_nice() -> None:  # pragma: no cover — runs in forked child
+        nice_fn(_FFMPEG_NICE_INCREMENT)
+
+    return _apply_nice
 
 
 @workspace_tool(
@@ -310,8 +367,12 @@ def as_encode_video(
         ValueError: empty ``frames_folder_id``, ``fps`` out of range, the
             folder has no ``manifest.json`` (render step hasn't run), the
             manifest is malformed, a manifest-listed frame is missing from
-            the folder, or the frame count exceeds the safety cap —
-            rejected before / during fetch with a clear message.
+            the folder, the frame count exceeds the safety cap
+            (``_MAX_FRAMES``), or the cumulative frame bytes exceed the
+            server-side size limit (``_MAX_TOTAL_FRAME_BYTES``, enforced
+            incrementally during download to protect the 512 MB machine)
+            — all rejected with a clear, actionable message rather than
+            crashing.
         ToolError: ffmpeg failed, or any Drive API error — the standard
             ``@workspace_tool(creds=True)`` envelope renders ``HttpError``
             as a user-facing ``ToolError``; an ffmpeg failure surfaces as
@@ -381,6 +442,15 @@ def as_encode_video(
         # zero-padded sequential name in MANIFEST ORDER so ffmpeg's
         # %04d.png pattern plays them in slide order (decoupled from
         # the on-Drive filenames).
+        #
+        # #4a: enforce the cumulative byte budget INCREMENTALLY. We add
+        # each frame's size to a running total and abort the moment the
+        # total exceeds _MAX_TOTAL_FRAME_BYTES — BEFORE downloading the
+        # rest of the set. This bounds peak memory + temp-disk to roughly
+        # the cap plus one frame, instead of loading an arbitrarily large
+        # set into RAM/disk and OOM-ing the 512 MB machine. The refusal
+        # is a clean, actionable ValueError, not a crash.
+        total_bytes = 0
         for idx, fname in enumerate(frame_names):
             entry = by_name.get(fname)
             if entry is None:
@@ -391,6 +461,17 @@ def as_encode_video(
                     f"and retry."
                 )
             frame_bytes = _drive_download_bytes(drive, entry["id"])
+            total_bytes += len(frame_bytes)
+            if total_bytes > _MAX_TOTAL_FRAME_BYTES:
+                cap_mb = _MAX_TOTAL_FRAME_BYTES // (1024 * 1024)
+                raise ValueError(
+                    f"Frame data exceeds the {cap_mb} MB total-size limit "
+                    f"(reached {total_bytes / 1024 / 1024:.0f} MB at frame "
+                    f"{idx + 1} of {len(frame_names)}). This deck's frames "
+                    f"are too large to encode on the server. Re-render with "
+                    f"fewer / smaller slides, or split the deck into parts "
+                    f"and encode each separately."
+                )
             (work_dir / f"{idx:04d}.png").write_bytes(frame_bytes)
 
         output_path = work_dir / "out.mp4"
@@ -405,6 +486,10 @@ def as_encode_video(
             capture_output=True,
             text=True,
             timeout=_FFMPEG_TIMEOUT_SEC,
+            # #4b: lower the encode's scheduling priority on POSIX so it
+            # can't starve the HTTP server on the single shared vCPU.
+            # No-op (None) on non-POSIX dev — see _ffmpeg_preexec.
+            preexec_fn=_ffmpeg_preexec(),
         )
         if result.returncode != 0:
             # Surface a trimmed stderr tail — ffmpeg's last lines carry
