@@ -329,6 +329,12 @@ from .services.apps_script import custom_function as _apps_script_custom_functio
 # re-runs a refresh function on a daily/hourly/weekly schedule). Own
 # module (sheet_dashboard.py); same side-effect-import registration.
 from .services.apps_script import sheet_dashboard as _apps_script_sheet_dashboard  # noqa: F401, E402 — side-effect import
+# PR-Δ11: slides-to-video RENDER half — a use-case tool that COMPOSES the
+# PR-Δ7 primitive (deploys a bound renderer that exports each slide of a
+# Slides deck to a PNG frame in Drive + a manifest.json). Own module
+# (video_deck.py); the PNG->MP4 encode is a SEPARATE follow-up PR. Same
+# side-effect-import registration; keeps parallel feature PRs merge-clean.
+from .services.apps_script import video_deck as _apps_script_video_deck  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

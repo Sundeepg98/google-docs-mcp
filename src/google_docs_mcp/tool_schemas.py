@@ -434,6 +434,38 @@ AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_generate_video_deck`` (PR-Δ11) composes the bound-script generator
+# into the RENDER half of a slides-to-video pipeline. Returns the bound
+# project's IDs + the deck it bound to + the output folder + the render
+# function name + an HONEST activation note (the frames don't exist until
+# renderFrames runs). ``frames_expected`` is nullable — the slide count is
+# only known once renderFrames runs (the tool doesn't read the deck), so a
+# successful deploy returns null here. additionalProperties stays True (the
+# _object default) so a future field (e.g. the eventual encode pointer) is
+# additive.
+AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "presentation_id": {"type": "string"},
+        "output_folder_name": {"type": "string"},
+        "frames_expected": {"type": ["integer", "null"], "minimum": 0},
+        "render_function": {"type": "string"},
+        "activation_note": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "presentation_id",
+        "output_folder_name",
+        "render_function",
+        "activation_note",
+        "project_url",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -656,6 +688,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "as_install_custom_function": AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA,
     # PR-Δ9 — scheduled dashboard refresh for Sheets (composes PR-Δ7)
     "as_install_sheet_dashboard": AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA,
+    # PR-Δ11 — render a Slides deck to video frames (composes PR-Δ7;
+    # the render half of the slides-to-video pipeline)
+    "as_generate_video_deck": AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
