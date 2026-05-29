@@ -17,7 +17,7 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after PR-Δ7** (sum must equal 34):
+**Partition state after PR-Δ10** (sum must equal 35):
 
   DOCS_SERVICE_TOOLS        = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS       =  6  (Phase B + v2.3.0, services/drive/tools.py)
@@ -25,11 +25,12 @@ need a multi-service view.
   ADMIN_SERVICE_TOOLS       =  7  (Gap #7,   services/admin/tools.py)
   SHEETS_SERVICE_TOOLS      =  3  (v2.3.1,   services/sheets/tools.py)
   SLIDES_SERVICE_TOOLS      =  3  (v2.3.2,   services/slides/tools.py)
-  APPS_SCRIPT_SERVICE_TOOLS =  1  (PR-Δ7,    services/apps_script/tools.py)
+  APPS_SCRIPT_SERVICE_TOOLS =  2  (PR-Δ7 tools.py + PR-Δ10
+                                    custom_function.py)
   NON_SERVICE_TOOLS         =  0  (Gap #7 emptied it — server.py
                                     contains NO tool definitions)
                             ─────
-  EXPECTED_TOOLS            = 34
+  EXPECTED_TOOLS            = 35
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
@@ -166,6 +167,11 @@ SLIDES_SERVICE_TOOLS: frozenset[str] = frozenset({
 # NOT in this set — this PR ships the generator only.
 APPS_SCRIPT_SERVICE_TOOLS: frozenset[str] = frozenset({
     "as_generate_bound_script",
+    # PR-Δ10: convenience tool composing the PR-Δ7 primitive — installs a
+    # custom =FUNCTION() into a Sheet. Lives in its OWN feature file
+    # (custom_function.py), not tools.py, so parallel apps_script feature
+    # PRs stay merge-clean.
+    "as_install_custom_function",
 })
 
 # Gap #7 emptied this set: every tool now belongs to a service folder.
@@ -505,38 +511,65 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
         )
 
 
-def test_apps_script_service_tools_register_from_services_apps_script_tools_module():
-    """PR-Δ7: the apps_script-service tool(s) must be defined in
-    ``services/apps_script/tools.py``, NOT in server.py. Symmetric to the
-    sheets / slides registration guards — same ``__module__`` + no-shadow
-    invariants.
+# apps_script tool name → the submodule of the apps_script package it is
+# defined in. PR-Δ7's generic primitive lives in ``tools``; later
+# convenience tools that COMPOSE it each get their OWN feature file in
+# the same package (PR-Δ10's custom-function installer →
+# ``custom_function``) so parallel feature PRs don't collide on one
+# tools.py. The registration guard below pins each tool to its expected
+# home module — catching both a misplaced tool and a forgotten server.py
+# side-effect import.
+_APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
+    "as_generate_bound_script": "google_docs_mcp.services.apps_script.tools",
+    "as_install_custom_function": (
+        "google_docs_mcp.services.apps_script.custom_function"
+    ),
+}
 
-    Catches a regression where someone re-adds the bound-script tool to
-    server.py by accident, OR where ``server.py`` ever loses its
-    ``from .services.apps_script import tools`` side-effect import (the
-    tool registration would silently fail — the Round 1 landmine).
 
-    Also implicitly distinguishes apps_script from gas_deploy: the tool
+def test_apps_script_service_tools_register_from_services_apps_script_module():
+    """PR-Δ7 + PR-Δ10: every apps_script-service tool must be defined in
+    its feature file under ``services/apps_script/`` (the generic
+    primitive in ``tools.py``; each composing convenience tool in its own
+    feature module), NOT in server.py. Symmetric to the sheets / slides
+    registration guards — same per-file ``__module__`` + no-shadow
+    invariants, generalized to the apps_script package's multi-file
+    layout.
+
+    Catches a regression where someone re-adds an apps_script tool to
+    server.py by accident, OR where ``server.py`` ever loses one of its
+    ``from .services.apps_script import <feature>`` side-effect imports
+    (the tool registration would silently fail — the Round 1 landmine).
+
+    Also implicitly distinguishes apps_script from gas_deploy: the tools
     must live in the apps_script folder, not get folded into gas_deploy
     (the two services are deliberately separate — bound vs standalone).
     """
-    from google_docs_mcp.services.apps_script import tools as apps_script_tools
+    import importlib
+
+    from google_docs_mcp import server
 
     for tool_name in APPS_SCRIPT_SERVICE_TOOLS:
-        assert hasattr(apps_script_tools, tool_name), (
-            f"{tool_name} not found in services.apps_script.tools — "
-            f"PR-Δ7 added it; ensure it's defined there."
+        expected_module = _APPS_SCRIPT_TOOL_MODULE.get(tool_name)
+        assert expected_module is not None, (
+            f"{tool_name} is in APPS_SCRIPT_SERVICE_TOOLS but has no entry "
+            f"in _APPS_SCRIPT_TOOL_MODULE — add its feature-file module so "
+            f"this guard knows where it should live."
         )
-        fn = getattr(apps_script_tools, tool_name)
-        assert fn.__module__ == "google_docs_mcp.services.apps_script.tools", (
+        mod = importlib.import_module(expected_module)
+        assert hasattr(mod, tool_name), (
+            f"{tool_name} not found in {expected_module} — ensure it's "
+            f"defined there (and server.py side-effect-imports that module)."
+        )
+        fn = getattr(mod, tool_name)
+        assert fn.__module__ == expected_module, (
             f"{tool_name}.__module__ is {fn.__module__!r}, expected "
-            f"'google_docs_mcp.services.apps_script.tools'."
+            f"{expected_module!r}."
         )
-        from google_docs_mcp import server
         assert not hasattr(server, tool_name), (
             f"{tool_name} ALSO exists in server.py — duplicate "
-            f"definition. apps_script tools live in "
-            f"services/apps_script/tools.py."
+            f"definition. apps_script tools live in their "
+            f"services/apps_script/ feature files."
         )
 
 
