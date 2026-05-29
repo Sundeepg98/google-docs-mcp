@@ -316,6 +316,37 @@ GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA = _object(
 
 
 # ---------------------------------------------------------------------
+# Apps Script — bound-script generator (PR-Δ7)
+# ---------------------------------------------------------------------
+
+
+# ``as_generate_bound_script`` returns the IDs + a deep-link to the
+# generated bound project. ``container_kind`` is the resolved
+# docs/sheets/slides discriminator (echoed so the caller sees what was
+# detected). additionalProperties stays True (the _object default) so a
+# future field (e.g. ``version_number``, ``warnings``) is additive.
+AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "container_id": {"type": "string"},
+        "container_kind": {
+            "type": "string",
+            "enum": ["docs", "sheets", "slides"],
+        },
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "container_id",
+        "container_kind",
+        "project_url",
+    ],
+)
+
+
+# ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
 
@@ -529,6 +560,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
+    # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
+    "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,

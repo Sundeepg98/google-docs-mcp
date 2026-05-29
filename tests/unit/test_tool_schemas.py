@@ -51,6 +51,7 @@ EXPECTED_TOOLS = {
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create
+    "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
 }
 
 
