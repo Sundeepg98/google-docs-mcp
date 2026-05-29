@@ -27,6 +27,32 @@ FROM python:3.13-slim@sha256:b04b5d7233d2ad9c379e22ea8927cd1378cd15c60d4ef876c06
 # tooling (uv etc.) shipped to the final image.
 WORKDIR /app
 
+# PR-Δ12 (2026-05-29): ffmpeg for as_encode_video (PNG frames → MP4).
+#
+# Installed as root HERE, BEFORE the `USER app` switch at the bottom,
+# so the binary lands system-wide at /usr/bin/ffmpeg — owned by root,
+# mode 0755, world-readable + world-executable. The non-root `app`
+# user (uid 10001) can therefore exec it without needing ownership
+# (this is the same model as the python interpreter itself). The
+# encode tool writes its transient frames to a per-request temp dir
+# under /tmp (world-writable, 1777) — NOT a root-owned path — so the
+# #127 "non-root can't write to its target dir" failure class does
+# not recur. After deploy, confirm with
+# `fly ssh console -C "ffmpeg -version"` (runs as the app user) and
+# the standard /health smoke check on the deploy.
+#
+# `--no-install-recommends` keeps the dependency closure tight (ffmpeg
+# pulls a large recommends set — fonts, x11 libs — that the headless
+# libx264 encode path doesn't need). `rm -rf /var/lib/apt/lists/*`
+# drops the apt index from the layer (~40 MB) since we never apt-get
+# again after this. This layer sits high in the file so it stays warm
+# in the buildx GHA cache across app-code edits (ffmpeg version rarely
+# changes; Debian's package is tracked by the `docker` Dependabot
+# ecosystem via the base-image digest bumps).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # v2.0.4: install deps from the LOCKED uv.lock — not a fresh pip
 # resolve from pyproject.toml. CI runs `uv sync --frozen` (see
 # .github/workflows/e2e.yml); the Dockerfile must use the same dep

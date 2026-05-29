@@ -466,6 +466,29 @@ AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
 )
 
 
+# PR-Δ12 — encode rendered slide frames into an MP4 (the ENCODE half of
+# the slides-to-video pipeline; server-side ffmpeg compute, composes the
+# Drive folder as_generate_video_deck produced).
+AS_ENCODE_VIDEO_OUTPUT_SCHEMA = _object(
+    properties={
+        "video_file_id": {"type": "string"},
+        "video_url": {"type": "string", "format": "uri"},
+        "frame_count": {"type": "integer", "minimum": 1},
+        "duration_sec": {"type": "number", "minimum": 0},
+        "fps": {"type": "integer", "minimum": 1},
+        "output_name": {"type": "string"},
+    },
+    required=[
+        "video_file_id",
+        "video_url",
+        "frame_count",
+        "duration_sec",
+        "fps",
+        "output_name",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -691,6 +714,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # PR-Δ11 — render a Slides deck to video frames (composes PR-Δ7;
     # the render half of the slides-to-video pipeline)
     "as_generate_video_deck": AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA,
+    # PR-Δ12 — encode those rendered frames into an MP4 (server-side
+    # ffmpeg; the encode half that completes slides-to-video)
+    "as_encode_video": AS_ENCODE_VIDEO_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,

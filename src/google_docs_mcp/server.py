@@ -336,6 +336,16 @@ from .services.apps_script import sheet_dashboard as _apps_script_sheet_dashboar
 # side-effect-import registration; keeps parallel feature PRs merge-clean.
 from .services.apps_script import video_deck as _apps_script_video_deck  # noqa: F401, E402 — side-effect import
 
+# PR-Δ12: slides-to-video ENCODE half — the server-side ffmpeg compute that
+# completes the pipeline (reads the PNG frames + manifest.json that
+# as_generate_video_deck produced, stitches them into an MP4, uploads it back
+# to Drive). Own module (encode_video.py); same side-effect-import
+# registration. NOTE: this is the only apps_script tool that is NOT a
+# bound-script generator — it's server-side compute — but it lives in the
+# apps_script package as the second half of the apps_script-owned
+# slides-to-video feature.
+from .services.apps_script import encode_video as _apps_script_encode_video  # noqa: F401, E402 — side-effect import
+
 
 _CLI_SUBCOMMANDS = {
     "setup-apps-script",
