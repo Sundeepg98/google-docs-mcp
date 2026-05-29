@@ -55,6 +55,7 @@ EXPECTED_TOOLS = {
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
+    "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
 }
 
 

@@ -17,7 +17,7 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after PR-Δ8 + PR-Δ9 + PR-Δ10** (sum must equal 37):
+**Partition state after PR-Δ8 + PR-Δ9 + PR-Δ10 + PR-Δ11** (sum must equal 38):
 
   DOCS_SERVICE_TOOLS        = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS       =  6  (Phase B + v2.3.0, services/drive/tools.py)
@@ -25,17 +25,19 @@ need a multi-service view.
   ADMIN_SERVICE_TOOLS       =  7  (Gap #7,   services/admin/tools.py)
   SHEETS_SERVICE_TOOLS      =  3  (v2.3.1,   services/sheets/tools.py)
   SLIDES_SERVICE_TOOLS      =  3  (v2.3.2,   services/slides/tools.py)
-  APPS_SCRIPT_SERVICE_TOOLS =  4  (PR-Δ7 generator in apps_script/tools.py
+  APPS_SCRIPT_SERVICE_TOOLS =  5  (PR-Δ7 generator in apps_script/tools.py
                                     + PR-Δ8 doc-menu installer in
                                     apps_script/doc_menu.py + PR-Δ9
                                     sheet-dashboard installer in
                                     apps_script/sheet_dashboard.py + PR-Δ10
                                     custom-function installer in
-                                    apps_script/custom_function.py)
+                                    apps_script/custom_function.py + PR-Δ11
+                                    slides-to-video render half in
+                                    apps_script/video_deck.py)
   NON_SERVICE_TOOLS         =  0  (Gap #7 emptied it — server.py
                                     contains NO tool definitions)
                             ─────
-  EXPECTED_TOOLS            = 37
+  EXPECTED_TOOLS            = 38
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
@@ -186,6 +188,11 @@ APPS_SCRIPT_SERVICE_TOOLS: frozenset[str] = frozenset({
     # scheduled (time-driven) dashboard refresh into a Sheet. Own feature
     # file (sheet_dashboard.py), same merge-clean discipline.
     "as_install_sheet_dashboard",
+    # PR-Δ11: slides-to-video RENDER half composing the PR-Δ7 primitive —
+    # deploys a bound renderer that exports each slide to a PNG frame in
+    # Drive + a manifest. Own feature file (video_deck.py). The PNG->MP4
+    # encode is a SEPARATE follow-up PR (not in this set).
+    "as_generate_video_deck",
 })
 
 # Gap #7 emptied this set: every tool now belongs to a service folder.
@@ -543,6 +550,10 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     ),
     "as_install_sheet_dashboard": (
         "google_docs_mcp.services.apps_script.sheet_dashboard"
+    ),
+    # PR-Δ11: the slides-to-video render half ships in its own feature module.
+    "as_generate_video_deck": (
+        "google_docs_mcp.services.apps_script.video_deck"
     ),
 }
 
