@@ -408,6 +408,32 @@ AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_doc_menu`` (PR-Δ8) composes the bound-script generator
+# into a "install a custom menu into a Doc" feature. Returns the bound
+# project's IDs + the Doc it bound to + the installed menu's title and
+# item count (echoed so the caller can confirm what was wired), plus the
+# script-editor deep link. additionalProperties stays True (the _object
+# default) so a future field is additive.
+AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "doc_id": {"type": "string"},
+        "menu_title": {"type": "string"},
+        "item_count": {"type": "integer", "minimum": 1},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "doc_id",
+        "menu_title",
+        "item_count",
+        "project_url",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -624,6 +650,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
+    # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)
+    "as_install_doc_menu": AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)
     "as_install_custom_function": AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA,
     # PR-Δ9 — scheduled dashboard refresh for Sheets (composes PR-Δ7)
