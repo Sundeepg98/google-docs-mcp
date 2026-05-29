@@ -146,6 +146,47 @@ def configure_auth_for_http(mcp) -> None:
             "(which uses HTTPS). Remove it from your fly.toml / secrets."
         )
 
+    # ----------------------------------------------------------------
+    # PERSISTENCE GUARD (the "silent re-auth on every restart" fix).
+    #
+    # FastMCP's GoogleProvider subclasses OAuthProxy, which persists ALL
+    # connector OAuth state to a ``client_storage`` backend:
+    #   - mcp-oauth-proxy-clients   (the DCR client registration — i.e.
+    #                                claude.ai's issued client_id/secret)
+    #   - mcp-upstream-tokens       (the Google REFRESH token we use to
+    #                                silently renew the access token)
+    #   - mcp-jti-mappings / mcp-refresh-tokens / mcp-authorization-codes
+    #
+    # When ``client_storage`` is None (our case — we don't pass one),
+    # OAuthProxy creates an encrypted FileTreeStore under
+    # ``fastmcp.settings.home`` == ``platformdirs.user_data_dir("fastmcp")``.
+    # On the Fly container that resolves to ``$HOME/.local/share/fastmcp``
+    # == ``/home/app/.local/share/fastmcp`` — which is on the EPHEMERAL
+    # overlay filesystem, NOT the ``/data`` Fly Volume (the only mount).
+    #
+    # Consequence: every deploy/restart wipes that directory →
+    #   1. claude.ai's DCR registration is gone → the next token/authorize
+    #      call is ``invalid_client`` → connector must re-register (and
+    #      claude.ai's validator may flag a generic "server configuration
+    #      issue" that "clears on reconnect" — that's THIS, not a metadata
+    #      bug);
+    #   2. the upstream Google refresh token is gone → no silent renewal
+    #      path → the full browser consent dance fires again.
+    #
+    # The fix is to relocate ``fastmcp.settings.home`` onto the volume via
+    # ``FASTMCP_HOME=/data/fastmcp`` (set in Dockerfile + fly.toml). Both
+    # the JWT signing key (PBKDF2 of client_secret) and the storage
+    # encryption key (HKDF of the JWT key) are DETERMINISTIC, so the
+    # persisted, encrypted files still decrypt after a restart once the
+    # directory itself survives — no key-rotation invalidation.
+    #
+    # This guard makes the regression structurally impossible to ship: if
+    # we're on Fly (``FLY_APP_NAME`` is always set in the runtime) and the
+    # resolved FastMCP home is NOT under a persistent path, refuse to boot
+    # rather than serve a connector that silently re-auths on every deploy.
+    # Same fail-loud philosophy as the tool-discovery boot guards.
+    _assert_oauth_state_is_persistent()
+
     cfg = resolve_runtime_oauth_config()
     client_block = cfg["client_config"].get("web") or cfg["client_config"].get("installed") or {}
     client_id = client_block.get("client_id")
@@ -194,6 +235,82 @@ def configure_auth_for_http(mcp) -> None:
             pass  # older FastMCP without _cimd_manager.default_scope
 
     mcp.auth = provider
+
+
+def _assert_oauth_state_is_persistent() -> None:
+    """Fail loud at boot if FastMCP's OAuth storage isn't on a durable path.
+
+    See the long comment in ``configure_auth_for_http`` for the full
+    rationale. In short: OAuthProxy persists the DCR client registration
+    and the upstream Google refresh token under ``fastmcp.settings.home``;
+    on Fly that defaults to the EPHEMERAL ``/home/app/.local/share/fastmcp``
+    unless ``FASTMCP_HOME`` is pointed at the ``/data`` volume. If it isn't,
+    every restart forces a full browser re-auth — so we refuse to boot.
+
+    The check only fires when we can positively detect a Fly runtime
+    (``FLY_APP_NAME`` set, which Fly always injects). Local / non-Fly HTTP
+    deployments are left alone — their platformdirs home is genuinely
+    persistent, and we don't want to break ``MCP_TRANSPORT=http`` on a
+    laptop. An explicit escape hatch
+    (``ALLOW_EPHEMERAL_OAUTH_STATE=1``) is provided for the rare operator
+    who has wired a non-default ``client_storage`` out-of-band or knowingly
+    accepts ephemeral state (e.g. a stateless serverless target where a
+    shared external KV is configured via ``FASTMCP_*`` differently).
+    """
+    if os.environ.get("ALLOW_EPHEMERAL_OAUTH_STATE") == "1":
+        return
+
+    # Only enforce where we KNOW the filesystem layout is ephemeral-by-
+    # default: a Fly machine. FLY_APP_NAME is always present at runtime.
+    if not os.environ.get("FLY_APP_NAME"):
+        return
+
+    # Resolve FastMCP's storage home the same way OAuthProxy does. Import
+    # lazily (mirrors the GoogleProvider import) so stdio users without
+    # the HTTP extras never load fastmcp.settings here.
+    from pathlib import Path as _Path
+
+    from fastmcp.settings import Settings as _FastMCPSettings
+
+    fastmcp_home = _Path(_FastMCPSettings().home).resolve()
+
+    # The persistent surface on Fly is the volume mount. We accept any
+    # path under /data (the mount destination in fly.toml). Use the app's
+    # own data-dir convention as the canonical anchor when available, but
+    # fall back to the literal mount root so this stays correct even if
+    # GOOGLE_DOCS_DATA_DIR is customised.
+    persistent_roots = [_Path("/data").resolve()]
+    app_data_dir = os.environ.get("GOOGLE_DOCS_DATA_DIR")
+    if app_data_dir:
+        persistent_roots.append(_Path(app_data_dir).resolve())
+
+    if any(_is_relative_to(fastmcp_home, root) for root in persistent_roots):
+        return
+
+    raise RuntimeError(
+        "OAuth connector state would be stored on EPHEMERAL disk and lost "
+        f"on every deploy/restart. FastMCP's storage home resolves to "
+        f"{fastmcp_home!r}, which is not under the persistent Fly volume "
+        "(/data). This is the 'connector forces a full re-auth after every "
+        "restart' failure mode: the DCR client registration and the Google "
+        "refresh token live there.\n\n"
+        "Fix: set FASTMCP_HOME=/data/fastmcp (Dockerfile ENV + fly.toml "
+        "[env]) so OAuthProxy's encrypted token store lands on the volume. "
+        "The Dockerfile in this repo already does this; if you're seeing "
+        "this error, the env var was removed or the volume mount changed.\n\n"
+        "If you have deliberately wired a durable external client_storage "
+        "out-of-band (e.g. Redis/KV) or accept ephemeral state, set "
+        "ALLOW_EPHEMERAL_OAUTH_STATE=1 to bypass this guard."
+    )
+
+
+def _is_relative_to(path, root) -> bool:
+    """``Path.is_relative_to`` backport-safe helper (3.9+ has it natively)."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def resolve_runtime_oauth_config() -> dict:

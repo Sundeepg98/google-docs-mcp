@@ -132,6 +132,21 @@ COPY mutation-check.jso[n] /app/mutation-check.json
 RUN mkdir -p /data/google-docs-mcp
 ENV GOOGLE_DOCS_DATA_DIR=/data/google-docs-mcp
 
+# Persist FastMCP's OAuth-proxy state (the connector DCR client
+# registration + the upstream Google refresh token) onto the SAME Fly
+# Volume. FastMCP's GoogleProvider/OAuthProxy defaults its encrypted
+# token store to ``platformdirs.user_data_dir("fastmcp")`` ==
+# ``$HOME/.local/share/fastmcp`` == ``/home/app/.local/share/fastmcp``,
+# which is on the EPHEMERAL overlay fs and gets wiped on every deploy —
+# forcing claude.ai through the full browser consent flow again instead
+# of a silent token refresh. FASTMCP_HOME relocates that whole tree to
+# the volume; the storage encryption key is derived deterministically
+# from the OAuth client_secret, so the persisted files still decrypt
+# after a restart. ``configure_auth_for_http`` asserts this at boot
+# (FLY_APP_NAME-gated) so the regression can never silently reship.
+RUN mkdir -p /data/fastmcp
+ENV FASTMCP_HOME=/data/fastmcp
+
 # HTTP transport mode
 ENV MCP_TRANSPORT=http
 ENV PORT=8080
