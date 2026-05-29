@@ -312,6 +312,12 @@ from .services.slides import tools as _slides_tools  # noqa: F401, E402 — side
 # creates per-container BOUND scripts (menus / sidebars / edit triggers).
 # Same side-effect-import registration pattern; no infrastructure change.
 from .services.apps_script import tools as _apps_script_tools  # noqa: F401, E402 — side-effect import
+# PR-Δ10: custom spreadsheet function installer — a convenience tool that
+# COMPOSES the PR-Δ7 generator (own file custom_function.py, not tools.py).
+# Registers ``as_install_custom_function`` (deploys a bound =FUNCTION()).
+# Separate side-effect import (one line per feature-file) keeps parallel
+# apps_script feature PRs merge-clean.
+from .services.apps_script import custom_function as _apps_script_custom_function  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

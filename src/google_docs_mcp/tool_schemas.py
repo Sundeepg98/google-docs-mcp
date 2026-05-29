@@ -346,6 +346,31 @@ AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
+# the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
+# user types) and the echoed ``function_name`` / ``sheet_id``.
+# additionalProperties stays True (the _object default) so a future
+# field (e.g. ``needs_reload``, ``warnings``) is additive.
+AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "function_name": {"type": "string"},
+        "usage_hint": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "function_name",
+        "usage_hint",
+        "project_url",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -562,6 +587,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
+    # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)
+    "as_install_custom_function": AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
