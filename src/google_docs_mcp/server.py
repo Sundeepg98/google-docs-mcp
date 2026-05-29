@@ -181,7 +181,19 @@ gdocs_server_info() — version + verified CI test status (digest,
 gdocs_test_manifest() — full test inventory + per-test outcomes
 """
 
-mcp = FastMCP("appscriptly", instructions=_SERVER_INSTRUCTIONS)
+mcp = FastMCP(
+    "appscriptly",
+    instructions=_SERVER_INSTRUCTIONS,
+    # Auto-discovery refactor: fail loud on a duplicate tool name.
+    # FastMCP's DEFAULT is warn-and-overwrite — under auto-discovery a
+    # double-registration (e.g. two feature files both decorating the
+    # same tool name) would otherwise silently clobber. With
+    # on_duplicate="error" the dup raises a ValueError at decoration
+    # time, the discovery loop's try/except captures it as a failure,
+    # and the boot RuntimeError fires — converting a silent surface
+    # corruption into a loud boot crash (the prod-critical posture).
+    on_duplicate="error",
+)
 # PR-Δ5.5 (2026-05-27): FastMCP server identity renamed from
 # ``"google-docs"`` to ``"appscriptly"``. This is the string that
 # appears in MCP client UIs (e.g. claude.ai's connector picker) as
@@ -256,95 +268,154 @@ def _validate_title(title, *, field: str = "title") -> None:
             )
 
 
-# M3 POC (v2.1.3): the 12 docs-service tools moved to
-# ``services/docs/tools.py``. Importing that module at the bottom of
-# this file triggers their @gdocs_tool registration. Tools relocated:
-#   gdocs_make_tabbed_doc, gdocs_add_tabs, gdocs_get_doc_outline,
-#   gdocs_read_doc, gdocs_append_to_tab, gdocs_tab_existing_doc,
-#   gdocs_rename_tab, gdocs_get_tab_url, gdocs_delete_tab,
-#   gdocs_replace_all_text, gdocs_set_tab_icons, gdocs_preview_tab_split
-#
-# The remaining 12 tools (drive, gas_deploy, admin, introspection,
-# auth) stay in this file until the next M3 phase. See
-# docs/ARCHITECTURE.md §5.1 for the migration plan.
 # ---------------------------------------------------------------------
-# M3: trigger per-service tool registration.
+# Auto-discovery: register every service tool by walking services/.
 # ---------------------------------------------------------------------
-# Each per-service ``tools.py`` is imported AT THE BOTTOM of server.py
-# — AFTER ``mcp`` is built, AFTER ``decorators.register(mcp, ...)``
-# wires the @workspace_tool decorator, AND AFTER the remaining
-# module-level state in this file has run — so service-tool
-# registrations land on the fully-initialised mcp instance. The
-# asymmetric import order (services/<svc>/tools.py can
-# ``from google_docs_mcp import server`` at module load because by
-# then server.py is fully loaded) avoids a circular import.
+# Replaces the prior 12 hand-maintained ``from .services.X import
+# tools as _X`` side-effect imports (the merge-conflict surface every
+# feature PR used to touch). Runs AFTER ``mcp`` is built and AFTER
+# ``decorators.register(mcp, ...)`` wires @workspace_tool — so every
+# discovered module's module-level @workspace_tool decorations land
+# on the fully-initialised mcp instance.
 #
-# Side-effect imports: registration happens as a side-effect of
-# evaluating each tools.py's module-level @workspace_tool decorations.
+# A new tool now drops into ``services/X/`` and is picked up
+# automatically; a feature PR touches only its own folder (+ that
+# service's ``_expected_tools.py`` declaration). No central edit here.
 #
-# Migration history:
+# Migration history (pre-auto-discovery, when this was explicit imports):
 #   Phase A (v2.1.3, PR #94):  docs/ (12 tools)
-#   Phase B (v2.1.4, PR #97):  drive/ (4 tools + _run_batch helper)
-#   Phase C (v2.1.5, PR #103): gas_deploy/ (1 tool)
-#   Gap #7  (v2.2.2, this PR): admin/ (7 tools + admin-domain helpers).
-#                              After this PR, server.py contains NO
-#                              tool definitions — the Hex / SOLID
-#                              specialists' ISP-asymmetry finding is
-#                              closed.
-from .services.docs import tools as _docs_tools  # noqa: F401, E402 — side-effect import
-from .services.drive import tools as _drive_tools  # noqa: F401, E402 — side-effect import
-from .services.gas_deploy import tools as _gas_deploy_tools  # noqa: F401, E402 — side-effect import
-from .services.admin import tools as _admin_tools  # noqa: F401, E402 — side-effect import
-# v2.3.1: 2nd new service after Drive sharing — Sheets minimal start
-# (range read/write + create). Same registration pattern, no new
-# infrastructure required. Empirically validates that Sheets fits
-# the per-service-folder template that Drive sharing (PR #117) proved.
-from .services.sheets import tools as _sheets_tools  # noqa: F401, E402 — side-effect import
-# v2.3.2: 3rd new service — Slides (outline read + replace_all_text +
-# create). Same registration pattern as Sheets PR #119; no infrastructure
-# changes. The Slides batchUpdate tagged-union surface is deliberately
-# deferred per the multi-service feasibility audit's "wait for actual
-# need" guidance (same approach as Sheets).
-from .services.slides import tools as _slides_tools  # noqa: F401, E402 — side-effect import
-# PR-Δ7: bound-script generator — the feature foundation. Registers the
-# generic ``as_generate_bound_script`` primitive (first ``as_*``-prefixed
-# tool). DISTINCT from gas_deploy (standalone runtime bootstrap) — this
-# creates per-container BOUND scripts (menus / sidebars / edit triggers).
-# Same side-effect-import registration pattern; no infrastructure change.
-from .services.apps_script import tools as _apps_script_tools  # noqa: F401, E402 — side-effect import
-# PR-Δ8: doc-menu installer — a convenience tool that COMPOSES the PR-Δ7
-# generator (own file doc_menu.py, not tools.py). Registers
-# ``as_install_doc_menu`` (deploys a bound onOpen menu into a Doc).
-# Separate side-effect import (one line per feature-file) keeps parallel
-# apps_script feature PRs merge-clean.
-from .services.apps_script import doc_menu as _apps_script_doc_menu  # noqa: F401, E402 — side-effect import
-# PR-Δ10: custom spreadsheet function installer — a convenience tool that
-# COMPOSES the PR-Δ7 generator (own file custom_function.py, not tools.py).
-# Registers ``as_install_custom_function`` (deploys a bound =FUNCTION()).
-# Separate side-effect import (one line per feature-file) keeps parallel
-# apps_script feature PRs merge-clean.
-from .services.apps_script import custom_function as _apps_script_custom_function  # noqa: F401, E402 — side-effect import
-# PR-Δ9: scheduled dashboard refresh for Sheets — a use-case tool that
-# COMPOSES the PR-Δ7 primitive (install a time-driven bound script that
-# re-runs a refresh function on a daily/hourly/weekly schedule). Own
-# module (sheet_dashboard.py); same side-effect-import registration.
-from .services.apps_script import sheet_dashboard as _apps_script_sheet_dashboard  # noqa: F401, E402 — side-effect import
-# PR-Δ11: slides-to-video RENDER half — a use-case tool that COMPOSES the
-# PR-Δ7 primitive (deploys a bound renderer that exports each slide of a
-# Slides deck to a PNG frame in Drive + a manifest.json). Own module
-# (video_deck.py); the PNG->MP4 encode is a SEPARATE follow-up PR. Same
-# side-effect-import registration; keeps parallel feature PRs merge-clean.
-from .services.apps_script import video_deck as _apps_script_video_deck  # noqa: F401, E402 — side-effect import
+#   Phase B (v2.1.4, PR #97):  drive/ (4 tools + sharing)
+#   Phase C (v2.1.5, PR #103): gas_deploy/
+#   Gap #7  (v2.2.2):          admin/ (7 tools) — server.py held NO
+#                              tool definitions from here on.
+#   v2.3.1 / v2.3.2:           sheets/ + slides/
+#   PR-Δ7..Δ12:                apps_script/ (6 tools across feature files)
+#
+# Inclusion rule (Option B): import every leaf module under services/
+# whose name does NOT start with ``_`` (skips ``__init__``,
+# ``_expected_tools``, future private helpers) and is NOT in the
+# ``{api, scopes}`` denylist. This is a deliberate harmless SUPERSET
+# of the tool modules — it also imports decoration-free helper modules
+# (``docs/markdown_render``, ``docs/tab_tree``, ``drive/sharing``).
+# Those register zero tools (no @workspace_tool) AND are already on the
+# boot import graph today (their service's tools.py imports them
+# transitively), so importing them directly is a net-zero change to
+# what loads at boot. Exactness of the TOOL SURFACE (not the imported-
+# module set) is enforced by the golden snapshot
+# (tests/golden/tool_surface.json) + the per-service ``_expected_tools.py``
+# witnesses + the independent ``test_tool_schemas.py`` witness.
+#
+# INVARIANT (load-bearing — enforced by
+# tests/unit/services/test_discovery_safety.py ::
+# test_every_service_module_imports_without_network_or_creds):
+#   Every module under services/ reachable by discovery is imported at
+#   boot. It MUST be import-safe — NO network I/O, NO credential load at
+#   module-import time. All I/O is deferred to tool invocation. A future
+#   Gmail/Calendar tool that loads creds at import would break this and
+#   the import-safety test will catch it.
+#
+# Fail-loud (prod-critical): a broken import or a discovery miss must
+# crash at module-load BEFORE mcp.run(), never serve a partial tool
+# surface. Three guards: (1) any import exception → RuntimeError here;
+# (2) the FastMCP instance is constructed with on_duplicate="error", so
+# a double-registration raises (caught here → boot fails); (3) the
+# boot-time count FLOOR below.
+import importlib as _importlib  # noqa: E402
+import pkgutil as _pkgutil  # noqa: E402
 
-# PR-Δ12: slides-to-video ENCODE half — the server-side ffmpeg compute that
-# completes the pipeline (reads the PNG frames + manifest.json that
-# as_generate_video_deck produced, stitches them into an MP4, uploads it back
-# to Drive). Own module (encode_video.py); same side-effect-import
-# registration. NOTE: this is the only apps_script tool that is NOT a
-# bound-script generator — it's server-side compute — but it lives in the
-# apps_script package as the second half of the apps_script-owned
-# slides-to-video feature.
-from .services.apps_script import encode_video as _apps_script_encode_video  # noqa: F401, E402 — side-effect import
+from . import services as _services_pkg  # noqa: E402
+
+# Skip leaves matching these (in addition to the underscore-prefix
+# rule). ``api`` + ``scopes`` are per-service support modules that
+# carry no @workspace_tool decorations.
+_DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
+
+# Boot-time floor (Δ2): the known-good registered-tool count. A FLOOR
+# (>=), not exact-match, so adding a tool doesn't force a central edit
+# here (which would reintroduce the per-PR conflict this refactor
+# kills). The floor catches the DANGEROUS direction — tools silently
+# DROPPED below known-good (e.g. a discovery miss, a folder that
+# stopped importing). The CI golden test enforces exact-match; this
+# floor is the runtime backstop. Bump deliberately + rarely.
+_MIN_EXPECTED_TOOL_COUNT = 39
+
+_discovery_failures: list[tuple[str, str]] = []
+
+
+def _on_walk_error(_name: str) -> None:
+    # walk_packages swallows errors raised while IMPORTING a sub-package
+    # during the walk itself (distinct from our explicit
+    # import_module below) unless an onerror handler is given. Capture
+    # them into the same failure list so a broken sub-package __init__
+    # also fails loud rather than silently truncating the walk.
+    import sys as _sys
+
+    _exc = _sys.exc_info()[1]
+    _discovery_failures.append((_name, repr(_exc)))
+
+
+for _modinfo in _pkgutil.walk_packages(
+    _services_pkg.__path__,
+    prefix=_services_pkg.__name__ + ".",
+    onerror=_on_walk_error,
+):
+    _leaf = _modinfo.name.rsplit(".", 1)[-1]
+    if _leaf.startswith("_") or _leaf in _DISCOVERY_DENYLIST:
+        continue
+    if _modinfo.ispkg:
+        # Sub-packages (the service folders themselves) are walked
+        # into, not imported as a tool module.
+        continue
+    try:
+        _importlib.import_module(_modinfo.name)
+    except Exception as _e:  # noqa: BLE001 — capture ALL, re-raise aggregated
+        _discovery_failures.append((_modinfo.name, repr(_e)))
+
+if _discovery_failures:
+    raise RuntimeError(
+        "Tool discovery FAILED for "
+        f"{_discovery_failures}; refusing to boot a partial tool "
+        "surface. Fix the failing module(s) before deploy. (This is "
+        "the prod-critical fail-loud guard — a broken service module "
+        "must crash at boot, not silently drop tools.)"
+    )
+
+# Boot-time count floor (Δ2). Runs synchronously at module load so a
+# discovery miss fails BEFORE mcp.run(). ``list_tools()`` is the public
+# async API; we drive it via ``asyncio.run`` at import time. This is
+# safe because server.py is imported during boot BEFORE main() starts
+# the event loop (mcp.run() / run_http()) — there is no running loop at
+# module-load time. Using the public API (not a private registry attr)
+# keeps the floor robust across FastMCP version churn AND counts ONLY
+# tools (FastMCP's internal component registry mixes tools + resources
+# + prompts; server.py registers resources via resources.py, so a raw
+# component count would over-count).
+import asyncio as _asyncio  # noqa: E402
+
+
+def _count_registered_tools() -> int:
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop (the expected boot-time case) — safe to run.
+        return len(_asyncio.run(mcp.list_tools()))
+    # A loop is already running (unexpected at import; defensive). Fall
+    # back to a private-attr tools-only count rather than risk a nested-
+    # loop crash. Key shape is "tool:<name>@..."; filter to tool keys.
+    components = mcp._local_provider._components  # type: ignore[attr-defined]
+    return sum(1 for k in components if k.startswith("tool:"))
+
+
+_registered_count = _count_registered_tools()
+if _registered_count < _MIN_EXPECTED_TOOL_COUNT:
+    raise RuntimeError(
+        f"Tool discovery registered only {_registered_count} tools; "
+        f"expected at least {_MIN_EXPECTED_TOOL_COUNT}. A service module "
+        "was likely missed by discovery or stopped registering its "
+        "tools. Refusing to boot a partial tool surface. (If you "
+        "intentionally REMOVED tools, lower _MIN_EXPECTED_TOOL_COUNT "
+        "and regenerate tests/golden/tool_surface.json.)"
+    )
 
 
 _CLI_SUBCOMMANDS = {
