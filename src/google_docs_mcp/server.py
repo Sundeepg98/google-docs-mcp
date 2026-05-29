@@ -318,6 +318,11 @@ from .services.apps_script import tools as _apps_script_tools  # noqa: F401, E40
 # Separate side-effect import (one line per feature-file) keeps parallel
 # apps_script feature PRs merge-clean.
 from .services.apps_script import custom_function as _apps_script_custom_function  # noqa: F401, E402 — side-effect import
+# PR-Δ9: scheduled dashboard refresh for Sheets — a use-case tool that
+# COMPOSES the PR-Δ7 primitive (install a time-driven bound script that
+# re-runs a refresh function on a daily/hourly/weekly schedule). Own
+# module (sheet_dashboard.py); same side-effect-import registration.
+from .services.apps_script import sheet_dashboard as _apps_script_sheet_dashboard  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {

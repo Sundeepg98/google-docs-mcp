@@ -53,6 +53,7 @@ EXPECTED_TOOLS = {
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
+    "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
 }
 
 
