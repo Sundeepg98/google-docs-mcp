@@ -17,7 +17,7 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after PR-Δ10** (sum must equal 35):
+**Partition state after PR-Δ10 + PR-Δ9** (sum must equal 36):
 
   DOCS_SERVICE_TOOLS        = 12  (Phase A,  services/docs/tools.py)
   DRIVE_SERVICE_TOOLS       =  6  (Phase B + v2.3.0, services/drive/tools.py)
@@ -25,12 +25,13 @@ need a multi-service view.
   ADMIN_SERVICE_TOOLS       =  7  (Gap #7,   services/admin/tools.py)
   SHEETS_SERVICE_TOOLS      =  3  (v2.3.1,   services/sheets/tools.py)
   SLIDES_SERVICE_TOOLS      =  3  (v2.3.2,   services/slides/tools.py)
-  APPS_SCRIPT_SERVICE_TOOLS =  2  (PR-Δ7 tools.py + PR-Δ10
-                                    custom_function.py)
+  APPS_SCRIPT_SERVICE_TOOLS =  3  (PR-Δ7 tools.py + PR-Δ10
+                                    custom_function.py + PR-Δ9
+                                    sheet_dashboard.py)
   NON_SERVICE_TOOLS         =  0  (Gap #7 emptied it — server.py
                                     contains NO tool definitions)
                             ─────
-  EXPECTED_TOOLS            = 35
+  EXPECTED_TOOLS            = 36
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
@@ -172,6 +173,10 @@ APPS_SCRIPT_SERVICE_TOOLS: frozenset[str] = frozenset({
     # (custom_function.py), not tools.py, so parallel apps_script feature
     # PRs stay merge-clean.
     "as_install_custom_function",
+    # PR-Δ9: convenience tool composing the PR-Δ7 primitive — installs a
+    # scheduled (time-driven) dashboard refresh into a Sheet. Own feature
+    # file (sheet_dashboard.py), same merge-clean discipline.
+    "as_install_sheet_dashboard",
 })
 
 # Gap #7 emptied this set: every tool now belongs to a service folder.
@@ -515,7 +520,8 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
 # defined in. PR-Δ7's generic primitive lives in ``tools``; later
 # convenience tools that COMPOSE it each get their OWN feature file in
 # the same package (PR-Δ10's custom-function installer →
-# ``custom_function``) so parallel feature PRs don't collide on one
+# ``custom_function``; PR-Δ9's scheduled dashboard refresh →
+# ``sheet_dashboard``) so parallel feature PRs don't collide on one
 # tools.py. The registration guard below pins each tool to its expected
 # home module — catching both a misplaced tool and a forgotten server.py
 # side-effect import.
@@ -524,15 +530,18 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_install_custom_function": (
         "google_docs_mcp.services.apps_script.custom_function"
     ),
+    "as_install_sheet_dashboard": (
+        "google_docs_mcp.services.apps_script.sheet_dashboard"
+    ),
 }
 
 
 def test_apps_script_service_tools_register_from_services_apps_script_module():
-    """PR-Δ7 + PR-Δ10: every apps_script-service tool must be defined in
-    its feature file under ``services/apps_script/`` (the generic
-    primitive in ``tools.py``; each composing convenience tool in its own
-    feature module), NOT in server.py. Symmetric to the sheets / slides
-    registration guards — same per-file ``__module__`` + no-shadow
+    """PR-Δ7 + PR-Δ10 + PR-Δ9: every apps_script-service tool must be
+    defined in its feature file under ``services/apps_script/`` (the
+    generic primitive in ``tools.py``; each composing convenience tool in
+    its own feature module), NOT in server.py. Symmetric to the sheets /
+    slides registration guards — same per-file ``__module__`` + no-shadow
     invariants, generalized to the apps_script package's multi-file
     layout.
 

@@ -371,6 +371,43 @@ AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_sheet_dashboard`` (PR-Δ9) returns the deployed bound
+# script's IDs + the schedule it wired + the trigger HANDLER name + a
+# deep-link, PLUS the honest trigger-activation state. ``trigger_active``
+# is False on a fresh deploy: an installable time trigger only exists once
+# ``installTrigger`` runs, and deploy doesn't run it, so the schedule
+# isn't live until the user does the one-time run. ``activation_required``
+# + ``activation_instructions`` spell that out. additionalProperties stays
+# True (the _object default) so a future field is additive.
+AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "schedule": {
+            "type": "string",
+            "enum": ["daily", "hourly", "weekly"],
+        },
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "schedule",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -589,6 +626,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)
     "as_install_custom_function": AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA,
+    # PR-Δ9 — scheduled dashboard refresh for Sheets (composes PR-Δ7)
+    "as_install_sheet_dashboard": AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
