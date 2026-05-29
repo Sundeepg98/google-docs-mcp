@@ -17,18 +17,19 @@ home; per-service folders (``tests/unit/services/{docs,drive,gas_deploy,admin}/`
 hold consumer tests (``test_api.py``, ``test_tools.py``) that don't
 need a multi-service view.
 
-**Partition state after PR-α reframe** (sum must equal 33):
+**Partition state after PR-Δ7** (sum must equal 34):
 
-  DOCS_SERVICE_TOOLS       = 12  (Phase A,  services/docs/tools.py)
-  DRIVE_SERVICE_TOOLS      =  6  (Phase B + v2.3.0, services/drive/tools.py)
-  GAS_DEPLOY_SERVICE_TOOLS =  2  (Phase C + PR-α, services/gas_deploy/tools.py)
-  ADMIN_SERVICE_TOOLS      =  7  (Gap #7,   services/admin/tools.py)
-  SHEETS_SERVICE_TOOLS     =  3  (v2.3.1,   services/sheets/tools.py)
-  SLIDES_SERVICE_TOOLS     =  3  (v2.3.2,   services/slides/tools.py)
-  NON_SERVICE_TOOLS        =  0  (Gap #7 emptied it — server.py
-                                   contains NO tool definitions)
-                           ─────
-  EXPECTED_TOOLS           = 33
+  DOCS_SERVICE_TOOLS        = 12  (Phase A,  services/docs/tools.py)
+  DRIVE_SERVICE_TOOLS       =  6  (Phase B + v2.3.0, services/drive/tools.py)
+  GAS_DEPLOY_SERVICE_TOOLS  =  2  (Phase C + PR-α, services/gas_deploy/tools.py)
+  ADMIN_SERVICE_TOOLS       =  7  (Gap #7,   services/admin/tools.py)
+  SHEETS_SERVICE_TOOLS      =  3  (v2.3.1,   services/sheets/tools.py)
+  SLIDES_SERVICE_TOOLS      =  3  (v2.3.2,   services/slides/tools.py)
+  APPS_SCRIPT_SERVICE_TOOLS =  1  (PR-Δ7,    services/apps_script/tools.py)
+  NON_SERVICE_TOOLS         =  0  (Gap #7 emptied it — server.py
+                                    contains NO tool definitions)
+                            ─────
+  EXPECTED_TOOLS            = 34
 
 v2.3.0 (PR #117) added ``gdocs_share_file`` + ``gdocs_list_permissions``
 to the drive service (1st empirical bolt-on).
@@ -154,6 +155,19 @@ SLIDES_SERVICE_TOOLS: frozenset[str] = frozenset({
     "gslides_create_presentation",
 })
 
+# Apps-Script-service tools — PR-Δ7 (this PR). The feature FOUNDATION:
+# one generic primitive, ``as_generate_bound_script``, that generates a
+# container-bound Apps Script project (menus / sidebars / edit triggers)
+# and deploys it. DISTINCT from GAS_DEPLOY_SERVICE_TOOLS — gas_deploy
+# bootstraps a STANDALONE runtime Web App; this creates per-container
+# BOUND scripts. First ``as_*``-prefixed tool (appscriptly-native naming
+# per PR-Δ5.5). Use-case tools that compose this primitive (slides-for-
+# video, sheets dashboards, docs menu-installers) are FUTURE PRs and are
+# NOT in this set — this PR ships the generator only.
+APPS_SCRIPT_SERVICE_TOOLS: frozenset[str] = frozenset({
+    "as_generate_bound_script",
+})
+
 # Gap #7 emptied this set: every tool now belongs to a service folder.
 # Kept as an empty frozenset (not deleted) so existing callers /
 # external test sweeps that import the name keep working. If a future
@@ -170,6 +184,7 @@ NON_DOCS_TOOLS: frozenset[str] = (
     | ADMIN_SERVICE_TOOLS
     | SHEETS_SERVICE_TOOLS
     | SLIDES_SERVICE_TOOLS
+    | APPS_SCRIPT_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -180,6 +195,7 @@ EXPECTED_TOOLS: frozenset[str] = (
     | ADMIN_SERVICE_TOOLS
     | SHEETS_SERVICE_TOOLS
     | SLIDES_SERVICE_TOOLS
+    | APPS_SCRIPT_SERVICE_TOOLS
     | NON_SERVICE_TOOLS
 )
 
@@ -489,6 +505,41 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
         )
 
 
+def test_apps_script_service_tools_register_from_services_apps_script_tools_module():
+    """PR-Δ7: the apps_script-service tool(s) must be defined in
+    ``services/apps_script/tools.py``, NOT in server.py. Symmetric to the
+    sheets / slides registration guards — same ``__module__`` + no-shadow
+    invariants.
+
+    Catches a regression where someone re-adds the bound-script tool to
+    server.py by accident, OR where ``server.py`` ever loses its
+    ``from .services.apps_script import tools`` side-effect import (the
+    tool registration would silently fail — the Round 1 landmine).
+
+    Also implicitly distinguishes apps_script from gas_deploy: the tool
+    must live in the apps_script folder, not get folded into gas_deploy
+    (the two services are deliberately separate — bound vs standalone).
+    """
+    from google_docs_mcp.services.apps_script import tools as apps_script_tools
+
+    for tool_name in APPS_SCRIPT_SERVICE_TOOLS:
+        assert hasattr(apps_script_tools, tool_name), (
+            f"{tool_name} not found in services.apps_script.tools — "
+            f"PR-Δ7 added it; ensure it's defined there."
+        )
+        fn = getattr(apps_script_tools, tool_name)
+        assert fn.__module__ == "google_docs_mcp.services.apps_script.tools", (
+            f"{tool_name}.__module__ is {fn.__module__!r}, expected "
+            f"'google_docs_mcp.services.apps_script.tools'."
+        )
+        from google_docs_mcp import server
+        assert not hasattr(server, tool_name), (
+            f"{tool_name} ALSO exists in server.py — duplicate "
+            f"definition. apps_script tools live in "
+            f"services/apps_script/tools.py."
+        )
+
+
 # ---------------------------------------------------------------------
 # Sanity: a docs-service tool is callable through the live registry
 # ---------------------------------------------------------------------
@@ -544,6 +595,9 @@ _EXPECTED_SERVICE_BY_TOOL: dict[str, str] = {
     **{name: "sheets" for name in SHEETS_SERVICE_TOOLS},
     # v2.3.2: 3rd new service. Slides tools carry service="slides".
     **{name: "slides" for name in SLIDES_SERVICE_TOOLS},
+    # PR-Δ7: bound-script generator. apps_script tools carry
+    # service="apps_script" (distinct from gas_deploy).
+    **{name: "apps_script" for name in APPS_SCRIPT_SERVICE_TOOLS},
 }
 
 

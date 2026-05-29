@@ -78,7 +78,7 @@ START HERE: call ``gdocs_guide()`` for the orientation as a structured
 payload, or ``gdocs_server_info()`` for build version + verified CI
 test status.
 
-THE 5 CORE WORKFLOWS
+THE 6 CORE WORKFLOWS
 ====================
 
 1. NEW DOC from content composed in chat
@@ -121,6 +121,24 @@ THE 5 CORE WORKFLOWS
    Notes: ONLY acts on files this app created. Files created
    elsewhere return app_not_authorized (no recovery — the file
    belongs to its owner). file_id accepts a string or list (batch).
+
+6. INSTALL BOUND AUTOMATION inside a Doc / Sheet / Slides
+   Goal: make a specific Doc / Sheet / Slides DO something on its own —
+   a custom menu, a sidebar, a daily time-driven job, an onEdit reaction.
+   The automation lives IN that file and runs without Claude after one
+   deploy.
+   Tools: as_generate_bound_script(container_id, script_body,
+              manifest={menu?, triggers?, sidebar_html?, oauth_scopes?})
+   Notes: This is the generic GENERATOR — Claude writes the .gs
+   ``script_body`` that does the work; the tool creates a bound Apps
+   Script project (auto-detecting docs/sheets/slides from the
+   container), pushes the code + manifest, and deploys it in one call.
+   Use for ANYTHING persistent (recurring jobs, re-clickable menus,
+   reactions to the user's future edits). For a one-off edit, use the
+   direct docs/sheets/slides tools instead. DISTINCT from
+   gdocs_install_automation (that installs the standalone runtime;
+   this binds a per-file script). Example: "make this Doc refresh from
+   the linked Sheet every morning."
 
 NON-OBVIOUS OPERATING RULES
 ===========================
@@ -288,6 +306,12 @@ from .services.sheets import tools as _sheets_tools  # noqa: F401, E402 — side
 # deferred per the multi-service feasibility audit's "wait for actual
 # need" guidance (same approach as Sheets).
 from .services.slides import tools as _slides_tools  # noqa: F401, E402 — side-effect import
+# PR-Δ7: bound-script generator — the feature foundation. Registers the
+# generic ``as_generate_bound_script`` primitive (first ``as_*``-prefixed
+# tool). DISTINCT from gas_deploy (standalone runtime bootstrap) — this
+# creates per-container BOUND scripts (menus / sidebars / edit triggers).
+# Same side-effect-import registration pattern; no infrastructure change.
+from .services.apps_script import tools as _apps_script_tools  # noqa: F401, E402 — side-effect import
 
 
 _CLI_SUBCOMMANDS = {
