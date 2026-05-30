@@ -72,7 +72,7 @@ logging.basicConfig(
 # Initialize Sentry (PR-Δ4) BEFORE the rest of the imports so any
 # import-time exception is captured. ``init_sentry()`` is a no-op
 # when SENTRY_DSN is unset.
-from google_docs_mcp.observability import init_sentry  # noqa: E402
+from appscriptly.observability import init_sentry  # noqa: E402
 
 init_sentry()
 
@@ -81,7 +81,7 @@ init_sentry()
 # the resolved backend; doing it AFTER could let an import-time
 # user_store access (none exist today, but defense-in-depth) hit the
 # default SqliteBackend.
-from google_docs_mcp.user_store import init_default_backend_from_env  # noqa: E402
+from appscriptly.user_store import init_default_backend_from_env  # noqa: E402
 
 init_default_backend_from_env()
 
@@ -91,10 +91,10 @@ init_default_backend_from_env()
 # server.py imports). When this api/index.py module loads, every
 # tool registers; the resulting mcp instance is what build_app
 # wraps.
-from google_docs_mcp.server import mcp  # noqa: E402
-from google_docs_mcp.oauth_google import configure_auth_for_http  # noqa: E402
-from google_docs_mcp.http_server.app import build_app  # noqa: E402
-from google_docs_mcp.http_server.middleware import RequestIdLogFilter  # noqa: E402
+from appscriptly.server import mcp  # noqa: E402
+from appscriptly.oauth_google import configure_auth_for_http  # noqa: E402
+from appscriptly.http_server.app import build_app  # noqa: E402
+from appscriptly.http_server.middleware import RequestIdLogFilter  # noqa: E402
 
 # Install the request-ID log filter on the root logger so every
 # log line inside an HTTP request handler carries the active

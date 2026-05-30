@@ -60,7 +60,7 @@ def _fresh_mcp():
 
 
 def test_first_call_sets_mcp_auth_to_a_GoogleProvider():
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     mcp = _fresh_mcp()
     with patch(
@@ -75,7 +75,7 @@ def test_first_call_sets_mcp_auth_to_a_GoogleProvider():
 def test_second_call_is_idempotent_no_op():
     """Avoid clobbering the provider on a re-entry — important for
     test isolation and hot-reload scenarios."""
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     mcp = _fresh_mcp()
     mcp.auth = MagicMock(name="already_configured_provider")
@@ -94,7 +94,7 @@ def test_required_scopes_are_identity_only():
     """``required_scopes`` is what MUST be granted for auth to succeed.
     If we put Workspace scopes here and Google grants less, the OAuth
     handshake fails entirely. Keep identity-only as the floor."""
-    from google_docs_mcp.oauth_google import IDENTITY_SCOPES, configure_auth_for_http
+    from appscriptly.oauth_google import IDENTITY_SCOPES, configure_auth_for_http
 
     mcp = _fresh_mcp()
     with patch(
@@ -110,7 +110,7 @@ def test_valid_scopes_include_full_workspace_union():
     """``valid_scopes`` advertises at the well-known endpoint that
     Workspace scopes CAN be requested. Without this in the constructor
     arg, the discovery metadata is wrong."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, configure_auth_for_http,
     )
 
@@ -129,7 +129,7 @@ def test_default_scopes_patched_on_client_registration_options():
     """The DCR-side patch. Without this, Claude.ai's connector only
     requests identity scopes regardless of valid_scopes — the silent-
     insufficient-scope foot-gun the agent's research warned about."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, IDENTITY_SCOPES, configure_auth_for_http,
     )
 
@@ -153,7 +153,7 @@ def test_default_scope_str_patched_on_private_attr():
     """The CIMD-side patch. ``_default_scope_str`` is consulted when a
     client omits ``scope`` in /authorize and by the CIMD path. Missing
     this breaks Claude Code (CIMD) even if DCR (Claude.ai) is OK."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, IDENTITY_SCOPES, configure_auth_for_http,
     )
 
@@ -272,7 +272,7 @@ def test_insecure_transport_envvar_refused(monkeypatch):
     """Foot-gun guard: refuse to run if OAUTHLIB_INSECURE_TRANSPORT=1
     is set. This is for localhost HTTP dev only; on Fly (HTTPS) it
     silently disables transport security checks."""
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     monkeypatch.setenv("OAUTHLIB_INSECURE_TRANSPORT", "1")
     mcp = _fresh_mcp()
@@ -285,7 +285,7 @@ def test_relax_token_scope_envvar_set():
     """Without this, partial-grant consents (user unchecked Apps Script)
     cause Flow.fetch_token to raise — dead-end re-auth UX."""
     import os
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     mcp = _fresh_mcp()
     with patch(
@@ -297,7 +297,7 @@ def test_relax_token_scope_envvar_set():
 
 
 def test_missing_client_id_raises_loudly(monkeypatch, tmp_path):
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
     import json
 
     cs = tmp_path / "broken.json"
@@ -333,7 +333,7 @@ def test_persistence_guard_raises_on_fly_with_ephemeral_home(monkeypatch):
     forced through full re-consent after every deploy because the DCR
     registration + Google refresh token were on ephemeral disk.
     """
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     monkeypatch.setenv("FLY_APP_NAME", "sundeepg98-docs-mcp")
     monkeypatch.delenv("ALLOW_EPHEMERAL_OAUTH_STATE", raising=False)
@@ -355,7 +355,7 @@ def test_persistence_guard_raises_on_fly_with_ephemeral_home(monkeypatch):
 def test_persistence_guard_passes_on_fly_with_volume_home(monkeypatch):
     """On Fly with FASTMCP_HOME under /data, the guard is satisfied and
     provider wiring proceeds normally."""
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     monkeypatch.setenv("FLY_APP_NAME", "sundeepg98-docs-mcp")
     monkeypatch.delenv("ALLOW_EPHEMERAL_OAUTH_STATE", raising=False)
@@ -374,7 +374,7 @@ def test_persistence_guard_is_noop_off_fly(monkeypatch):
     HTTP deploys have a genuinely persistent platformdirs home, and we
     must not break ``MCP_TRANSPORT=http`` on a laptop even if the home
     happens to look ephemeral-ish."""
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     monkeypatch.delenv("FLY_APP_NAME", raising=False)
     monkeypatch.delenv("ALLOW_EPHEMERAL_OAUTH_STATE", raising=False)
@@ -391,7 +391,7 @@ def test_persistence_guard_escape_hatch_bypasses_on_fly(monkeypatch):
     """ALLOW_EPHEMERAL_OAUTH_STATE=1 lets an operator who wired a durable
     external client_storage (or knowingly accepts ephemeral state) bypass
     the guard even on Fly."""
-    from google_docs_mcp.oauth_google import configure_auth_for_http
+    from appscriptly.oauth_google import configure_auth_for_http
 
     monkeypatch.setenv("FLY_APP_NAME", "sundeepg98-docs-mcp")
     monkeypatch.setenv("ALLOW_EPHEMERAL_OAUTH_STATE", "1")

@@ -49,7 +49,7 @@ _READONLY = "https://www.googleapis.com/auth/drive.readonly"
 
 
 def test_auth_scopes_has_no_drive_readonly():
-    from google_docs_mcp.auth import SCOPES
+    from appscriptly.auth import SCOPES
     assert _READONLY not in SCOPES, (
         "drive.readonly is back in auth.SCOPES — that re-restricts the base "
         "tier (CASA + 7-day refresh cap). It belongs on a future restricted "
@@ -58,7 +58,7 @@ def test_auth_scopes_has_no_drive_readonly():
 
 
 def test_connector_scopes_has_no_drive_readonly():
-    from google_docs_mcp.oauth_google import GOOGLE_API_SCOPES
+    from appscriptly.oauth_google import GOOGLE_API_SCOPES
     assert _READONLY not in GOOGLE_API_SCOPES, (
         "drive.readonly is back in oauth_google.GOOGLE_API_SCOPES (HTTP "
         "connector mode) — same problem; keep the two scope sets in sync."
@@ -66,7 +66,7 @@ def test_connector_scopes_has_no_drive_readonly():
 
 
 def test_encode_video_scopes_has_no_drive_readonly():
-    from google_docs_mcp.services.apps_script.encode_video import (
+    from appscriptly.services.apps_script.encode_video import (
         AS_ENCODE_VIDEO_SCOPES,
     )
     assert _READONLY not in AS_ENCODE_VIDEO_SCOPES
@@ -79,7 +79,7 @@ def test_encode_video_scopes_has_no_drive_readonly():
 def test_video_render_scopes_has_no_drive_at_all():
     """The bound renderer POSTs frames to the server, so it needs NO Drive
     scope — only Slides read + UrlFetch."""
-    from google_docs_mcp.services.apps_script.video_deck import _RENDER_SCOPES
+    from appscriptly.services.apps_script.video_deck import _RENDER_SCOPES
     assert _READONLY not in _RENDER_SCOPES
     assert "https://www.googleapis.com/auth/drive.file" not in _RENDER_SCOPES
     assert set(_RENDER_SCOPES) == {
@@ -91,8 +91,8 @@ def test_video_render_scopes_has_no_drive_at_all():
 def test_no_restricted_scope_in_either_base_set():
     """Belt-and-suspenders: NONE of Google's restricted scopes may appear
     in the base sets (any one would trigger CASA)."""
-    from google_docs_mcp.auth import SCOPES
-    from google_docs_mcp.oauth_google import GOOGLE_API_SCOPES
+    from appscriptly.auth import SCOPES
+    from appscriptly.oauth_google import GOOGLE_API_SCOPES
 
     for name, scope_set in (
         ("auth.SCOPES", SCOPES),
@@ -105,8 +105,8 @@ def test_no_restricted_scope_in_either_base_set():
 def test_base_scope_sets_match_intended_exactly():
     """Pin the exact intended end-state (catches an accidental add OR a
     drop of a needed sensitive scope)."""
-    from google_docs_mcp.auth import SCOPES
-    from google_docs_mcp.oauth_google import GOOGLE_API_SCOPES
+    from appscriptly.auth import SCOPES
+    from appscriptly.oauth_google import GOOGLE_API_SCOPES
 
     assert set(GOOGLE_API_SCOPES) == _TARGET_CONNECTOR, (
         f"connector scope drift: extra={set(GOOGLE_API_SCOPES) - _TARGET_CONNECTOR}, "
@@ -122,7 +122,7 @@ def test_identity_scopes_unchanged():
     """IDENTITY_SCOPES (the connector required_scopes floor) is still just
     openid + email — we deliberately did NOT add userinfo.profile (nothing
     reads profile claims)."""
-    from google_docs_mcp.oauth_google import IDENTITY_SCOPES
+    from appscriptly.oauth_google import IDENTITY_SCOPES
     assert set(IDENTITY_SCOPES) == {
         "openid",
         "https://www.googleapis.com/auth/userinfo.email",

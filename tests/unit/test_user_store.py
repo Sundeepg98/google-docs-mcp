@@ -27,12 +27,12 @@ import pytest
 
 
 def test_get_state_returns_empty_dict_for_unknown_user():
-    from google_docs_mcp.user_store import get_state
+    from appscriptly.user_store import get_state
     assert get_state("user-does-not-exist") == {}
 
 
 def test_save_then_get_roundtrip():
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state(
         "user-1",
@@ -52,7 +52,7 @@ def test_save_then_get_roundtrip():
 
 def test_save_merges_existing_state_not_overwrites():
     """The killer guard: a partial update must NOT erase other fields."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state(
         "user-2",
@@ -73,7 +73,7 @@ def test_save_merges_existing_state_not_overwrites():
 
 
 def test_save_preserves_created_at_but_bumps_updated_at():
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state("user-3", {"apps_script_url": "https://script.google.com/macros/s/U3/exec"})
     first = get_state("user-3")
@@ -88,7 +88,7 @@ def test_save_preserves_created_at_but_bumps_updated_at():
 
 
 def test_clear_removes_state():
-    from google_docs_mcp.user_store import clear_state, get_state, save_state
+    from appscriptly.user_store import clear_state, get_state, save_state
 
     save_state("user-4", {"apps_script_url": "https://script.google.com/macros/s/U4/exec"})
     assert get_state("user-4") != {}
@@ -99,12 +99,12 @@ def test_clear_removes_state():
 
 def test_clear_nonexistent_user_is_noop():
     """No exception when clearing a row that doesn't exist."""
-    from google_docs_mcp.user_store import clear_state
+    from appscriptly.user_store import clear_state
     clear_state("user-never-existed")  # must not raise
 
 
 def test_multiple_users_isolated():
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state("alice", {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"})
     save_state("bob", {"apps_script_url": "https://script.google.com/macros/s/BOB/exec"})
@@ -119,13 +119,13 @@ def test_unknown_field_raises_loudly():
     Without this guard, ``save_state(uid, {"apps_script_ulr": ...})``
     would write nothing useful and you'd debug the consumer for hours.
     """
-    from google_docs_mcp.user_store import save_state
+    from appscriptly.user_store import save_state
     with pytest.raises(ValueError, match="Unknown user_state fields"):
         save_state("user-5", {"appz_scripit_url": "typo"})
 
 
 def test_empty_user_id_rejected():
-    from google_docs_mcp.user_store import clear_state, get_state, save_state
+    from appscriptly.user_store import clear_state, get_state, save_state
     for fn_call in (
         lambda: get_state(""),
         lambda: save_state("", {"apps_script_url": "x"}),
@@ -141,14 +141,14 @@ def test_db_initialized_lazily_on_fresh_deployment(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(fresh_db))
     assert not fresh_db.exists()
 
-    from google_docs_mcp.user_store import get_state
+    from appscriptly.user_store import get_state
     get_state("any-user")
 
     assert fresh_db.exists()
 
 
 def test_google_creds_dict_parses_when_present():
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         google_creds_dict, get_state, save_state,
     )
     creds_json = json.dumps(
@@ -161,7 +161,7 @@ def test_google_creds_dict_parses_when_present():
 
 
 def test_google_creds_dict_returns_none_when_absent():
-    from google_docs_mcp.user_store import google_creds_dict
+    from appscriptly.user_store import google_creds_dict
     assert google_creds_dict({}) is None
     assert google_creds_dict({"apps_script_url": "URL"}) is None
 
@@ -170,7 +170,7 @@ def test_concurrent_writes_to_different_users_dont_corrupt():
     """SQLite WAL + per-connection isolation should handle parallel writes
     to distinct user_ids cleanly. If this fails, the storage layer is
     not multi-tenant-safe."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     def worker(uid: str) -> None:
         for i in range(10):
@@ -201,19 +201,19 @@ def test_concurrent_writes_to_different_users_dont_corrupt():
 
 
 def test_valid_gas_url_accepts_canonical_exec():
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("https://script.google.com/macros/s/ABC123/exec") is True
 
 
 def test_valid_gas_url_accepts_dev_path():
     """/dev is the head-deployment endpoint, also legitimate."""
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("https://script.google.com/macros/s/ABC123/dev") is True
 
 
 def test_valid_gas_url_accepts_deployment_id_with_underscores_and_hyphens():
     """Real GAS deployment IDs include _ and - characters."""
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url(
         "https://script.google.com/macros/s/AKfycb_X-Y_Z-abc123/exec"
     ) is True
@@ -221,13 +221,13 @@ def test_valid_gas_url_accepts_deployment_id_with_underscores_and_hyphens():
 
 def test_valid_gas_url_rejects_http():
     """HTTPS-only: an http:// URL would silently downgrade transport security."""
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("http://script.google.com/macros/s/ABC123/exec") is False
 
 
 def test_valid_gas_url_rejects_non_google():
     """Reject look-alike hosts -- attacker-controlled origin is the threat model."""
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("https://evil.com/macros/s/x/exec") is False
     assert _valid_gas_url("https://script.google.com.evil.com/macros/s/x/exec") is False
 
@@ -239,21 +239,21 @@ def test_valid_gas_url_rejects_other_google_subdomains():
     An attacker-tampered DB row pointing at mail.google.com/macros/s/X/exec
     would otherwise direct authenticated requests at Gmail's host. Strict
     hostname match, fail closed."""
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("https://apps.google.com/macros/s/X/exec") is False
     assert _valid_gas_url("https://mail.google.com/macros/s/X/exec") is False
     assert _valid_gas_url("https://attacker.script.google.com/macros/s/X/exec") is False
 
 
 def test_valid_gas_url_rejects_malformed_path():
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url("https://script.google.com/wrong/path") is False
     assert _valid_gas_url("https://script.google.com/macros/s/ABC123/run") is False  # not exec|dev
     assert _valid_gas_url("https://script.google.com/macros/s//exec") is False  # empty deploy id
 
 
 def test_valid_gas_url_rejects_non_string():
-    from google_docs_mcp.user_store import _valid_gas_url
+    from appscriptly.user_store import _valid_gas_url
     assert _valid_gas_url(None) is False
     assert _valid_gas_url(123) is False
     assert _valid_gas_url({"url": "x"}) is False
@@ -262,7 +262,7 @@ def test_valid_gas_url_rejects_non_string():
 
 def test_save_state_raises_on_invalid_gas_url():
     """Bad value at the write boundary must abort the write loudly."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     with pytest.raises(ValueError, match="apps_script_url"):
         save_state("user-bad", {"apps_script_url": "http://bad"})
@@ -272,7 +272,7 @@ def test_save_state_raises_on_invalid_gas_url():
 
 
 def test_save_state_error_message_names_field_and_value():
-    from google_docs_mcp.user_store import save_state
+    from appscriptly.user_store import save_state
     with pytest.raises(ValueError) as exc:
         save_state("user-bad-2", {"apps_script_url": "https://evil.com/x"})
     msg = str(exc.value)
@@ -282,7 +282,7 @@ def test_save_state_error_message_names_field_and_value():
 
 def test_save_state_accepts_valid_gas_url():
     """Happy path: a valid URL writes cleanly and roundtrips."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
     good = "https://script.google.com/macros/s/HAPPY/exec"
     save_state("user-good", {"apps_script_url": good})
     assert get_state("user-good")["apps_script_url"] == good
@@ -291,7 +291,7 @@ def test_save_state_accepts_valid_gas_url():
 def test_save_state_allows_none_to_blank_validated_field():
     """A caller explicitly clearing a validated field with None must succeed --
     validators only veto bad non-None values, not the absence of a value."""
-    from google_docs_mcp.user_store import save_state
+    from appscriptly.user_store import save_state
     # Should not raise.
     save_state("user-clear", {"apps_script_url": None})
 
@@ -300,7 +300,7 @@ def test_get_state_drops_invalid_gas_url_with_warn(isolated_db, caplog):
     """Seed the DB with an invalid URL via raw SQL (simulating a row from
     a pre-validator install or external tampering), then assert get_state
     drops the field AND emits a WARNING."""
-    from google_docs_mcp.user_store import get_state, _ensure_initialized
+    from appscriptly.user_store import get_state, _ensure_initialized
 
     # Trigger schema creation so the table exists before we INSERT.
     _ensure_initialized(isolated_db)
@@ -317,7 +317,7 @@ def test_get_state_drops_invalid_gas_url_with_warn(isolated_db, caplog):
     finally:
         conn.close()
 
-    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.user_store"):
+    with caplog.at_level(logging.WARNING, logger="appscriptly.user_store"):
         state = get_state("user-tampered")
 
     assert "apps_script_url" not in state, "validator-failed field must be dropped"
@@ -336,14 +336,14 @@ def test_get_state_drops_invalid_gas_url_with_warn(isolated_db, caplog):
 def test_get_state_does_not_drop_valid_persisted_url(isolated_db, caplog):
     """Negative control: a valid persisted URL must NOT be dropped or
     trigger a warning -- guards against an over-eager validator regression."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state(
         "user-ok",
         {"apps_script_url": "https://script.google.com/macros/s/OK1/exec"},
     )
 
-    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.user_store"):
+    with caplog.at_level(logging.WARNING, logger="appscriptly.user_store"):
         state = get_state("user-ok")
 
     assert state["apps_script_url"] == "https://script.google.com/macros/s/OK1/exec"
@@ -353,7 +353,7 @@ def test_get_state_does_not_drop_valid_persisted_url(isolated_db, caplog):
 def test_save_state_unaffected_for_other_fields():
     """Fields without a registered validator must write through normally.
     Regression guard: don't accidentally validate-everything."""
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state(
         "user-other",
@@ -386,7 +386,7 @@ def test_assert_state_db_writable_passes_on_writable_path(tmp_path, monkeypatch)
     db = tmp_path / "writable" / "user_state.db"
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
 
-    from google_docs_mcp.user_store import assert_state_db_writable
+    from appscriptly.user_store import assert_state_db_writable
 
     assert_state_db_writable()  # must not raise
     # The probe must NOT leave real schema/rows behind — it only proves
@@ -401,7 +401,7 @@ def test_assert_state_db_writable_creates_parent_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
     assert not db.parent.exists()
 
-    from google_docs_mcp.user_store import assert_state_db_writable
+    from appscriptly.user_store import assert_state_db_writable
 
     assert_state_db_writable()
     assert db.parent.exists()
@@ -425,7 +425,7 @@ def test_assert_state_db_writable_raises_on_readonly_db(tmp_path, monkeypatch):
     db.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0444
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
 
-    from google_docs_mcp.user_store import assert_state_db_writable
+    from appscriptly.user_store import assert_state_db_writable
 
     try:
         with pytest.raises(RuntimeError, match="NOT writable"):
@@ -452,7 +452,7 @@ def test_assert_state_db_writable_raises_when_dir_unwritable(tmp_path, monkeypat
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db))
     ro_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x, no write
 
-    from google_docs_mcp.user_store import assert_state_db_writable
+    from appscriptly.user_store import assert_state_db_writable
 
     try:
         with pytest.raises(RuntimeError):

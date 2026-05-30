@@ -194,7 +194,7 @@ Fly is unaffected throughout — no Fly secret change, no Fly route change, no F
 ## Related
 
 - ADR: `docs/adr/2026-05-27-vercel-pilot.md`
-- Code: `src/google_docs_mcp/storage/vercel_kv_backend.py`, `src/google_docs_mcp/storage/backend_selector.py`, `api/index.py`, `vercel.json`, `.github/workflows/deploy-vercel.yml`
+- Code: `src/appscriptly/storage/vercel_kv_backend.py`, `src/appscriptly/storage/backend_selector.py`, `api/index.py`, `vercel.json`, `.github/workflows/deploy-vercel.yml`
 - Tests: `tests/unit/test_vercel_kv_backend.py`, `tests/unit/test_backend_selector.py`
 - Companion runbooks: `docs/runbooks/backup-restore.md`, `docs/runbooks/gcp-project-linking.md`, `docs/runbooks/key-rotation.md`, `docs/runbooks/sentry-setup.md`, `docs/runbooks/pypi-publish-stub.md`
 - Vercel docs: https://vercel.com/docs/functions/runtimes/python

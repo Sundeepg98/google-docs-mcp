@@ -20,7 +20,7 @@ without needing Google API mocks.
 """
 from __future__ import annotations
 
-from google_docs_mcp.services.docs.markdown_render import (
+from appscriptly.services.docs.markdown_render import (
     _add_tab_request,
     _plain_text_requests,
     _rename_tab_request,

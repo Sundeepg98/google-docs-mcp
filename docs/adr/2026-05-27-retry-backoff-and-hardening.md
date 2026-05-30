@@ -96,7 +96,7 @@ Rolling back is mechanical: delete the `useradd` + `USER app` lines, redeploy. N
 
 ### 6. Structured audit log per upload session
 
-`src/google_docs_mcp/http_server/routes/convert.py` now emits one log line per upload via a new dedicated logger `google_docs_mcp.audit.upload`:
+`src/appscriptly/http_server/routes/convert.py` now emits one log line per upload via a new dedicated logger `appscriptly.audit.upload`:
 
 ```
 upload_session session_id=<uuid4> user_id=sub:<8char>… file_size_bytes=<n>

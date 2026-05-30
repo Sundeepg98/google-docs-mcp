@@ -2,7 +2,7 @@
 
 > Generated 2026-05-30. Verified against `origin/main` @ `e7222e5` (post-#148/#149/#150). Free sensitive-scope verification path (zero restricted scopes → no CASA).
 
-**Target repo:** `Sundeepg98/google-docs-mcp` (module `google_docs_mcp`).
+**Target repo:** `Sundeepg98/google-docs-mcp` (module `appscriptly`).
 **Deployed:** Fly app `sundeepg98-docs-mcp` → `https://sundeepg98-docs-mcp.fly.dev` (new app `appscriptly` reserved, not yet cut over).
 
 ## 0. Confirmed final scope set (8 scopes — `drive.readonly` removed in #148, MERGED + deployed + live-verified)

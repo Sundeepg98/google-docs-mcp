@@ -35,7 +35,7 @@ FAIL Required test coverage of 55% not reached. Total coverage: 54.xx%
 To see what changed locally:
 
 ```bash
-pytest tests/unit --cov=src/google_docs_mcp --cov-report=term-missing
+pytest tests/unit --cov=src/appscriptly --cov-report=term-missing
 ```
 
 ## Scope

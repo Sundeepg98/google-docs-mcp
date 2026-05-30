@@ -30,13 +30,13 @@ import pytest
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script import sheet_dashboard
-from google_docs_mcp.services.apps_script.sheet_dashboard import (
+from appscriptly.services.apps_script import sheet_dashboard
+from appscriptly.services.apps_script.sheet_dashboard import (
     _extract_handler_name,
     _trigger_builder_expr,
     build_dashboard_script_body,
@@ -70,7 +70,7 @@ def inject_stub_creds(stub_creds, monkeypatch):
     launch real OAuth. This tool declares scopes, so resolution flows
     through ``auth.load_credentials`` (stdio mode) — patch that. The other
     two patches cover the no-scope path too (belt-and-suspenders)."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)
@@ -407,8 +407,8 @@ def test_install_dashboard_resolves_creds_via_scope_aware_path(
     """Canary: because this tool DECLARES scopes, resolution flows through
     the scope-aware path (auth.load_credentials in stdio mode) with the
     tool's declared scopes threaded as extra_scopes."""
-    from google_docs_mcp import auth
-    from google_docs_mcp.services.apps_script.scopes import GAS_BOUND_SCOPES
+    from appscriptly import auth
+    from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 
     calls: list[dict] = []
 

@@ -1,7 +1,7 @@
 """Multi-service tool-registration guards (auto-discovery refactor).
 
 These tests verify the central registration invariant: importing
-``google_docs_mcp.server`` registers every expected tool. Post-refactor,
+``appscriptly.server`` registers every expected tool. Post-refactor,
 registration happens via **auto-discovery** — ``server.py`` walks
 ``services/`` with ``pkgutil.walk_packages`` and imports each non-private,
 non-``{api,scopes}`` leaf module; each module's ``@workspace_tool``
@@ -48,7 +48,7 @@ auto-discovery walk + the ``server`` import register the full surface
 correctly under file execution (prod console-script + CI both run as
 files). They register a PARTIAL surface only under ``python -c`` in an
 editable/src-layout install — a Python packaging artifact (the
-``google_docs_mcp.services`` subpackage namespace doesn't resolve under
+``appscriptly.services`` subpackage namespace doesn't resolve under
 ``-c`` editable), entirely upstream of the registration mechanism and
 irrelevant to prod/CI. See ``test_registration_context_independence.py``
 for the subprocess test that pins the real (file) entry at 39.
@@ -77,13 +77,13 @@ from pathlib import Path
 def _declared_by_service() -> dict[str, frozenset[str]]:
     """Map service-folder name -> its declared EXPECTED frozenset.
 
-    Walks ``google_docs_mcp.services`` for sub-packages, importing each
+    Walks ``appscriptly.services`` for sub-packages, importing each
     one's ``_expected_tools`` module. A service WITHOUT an
     ``_expected_tools.py`` is a hard error here (every service that
     registers tools must declare them) — caught by the assertion in
     ``test_every_service_package_declares_expected_tools``.
     """
-    import google_docs_mcp.services as services_pkg
+    import appscriptly.services as services_pkg
 
     result: dict[str, frozenset[str]] = {}
     for modinfo in pkgutil.iter_modules(services_pkg.__path__):
@@ -92,7 +92,7 @@ def _declared_by_service() -> dict[str, frozenset[str]]:
         svc = modinfo.name
         try:
             mod = importlib.import_module(
-                f"google_docs_mcp.services.{svc}._expected_tools"
+                f"appscriptly.services.{svc}._expected_tools"
             )
         except ModuleNotFoundError:
             # No declaration file — record empty so the dedicated test
@@ -136,14 +136,14 @@ EXPECTED_TOOLS: frozenset[str] = _declared_tools()
 
 def _registered_tool_names() -> set[str]:
     """Snapshot of currently-registered tool names from the live mcp."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     tools = asyncio.run(mcp.list_tools())
     return {t.name for t in tools}
 
 
 def _registered_tools_by_name() -> dict:
     """Snapshot of every registered tool, keyed by name."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     tools = asyncio.run(mcp.list_tools())
     return {t.name: t for t in tools}
 
@@ -283,7 +283,7 @@ def test_golden_surface_matches_registered():
 def _assert_tools_live_in_module(tool_names, expected_module: str) -> None:
     """Assert each tool is a module-level attr of ``expected_module`` with
     a matching ``__module__``, and is NOT also defined on ``server``."""
-    from google_docs_mcp import server
+    from appscriptly import server
 
     mod = importlib.import_module(expected_module)
     for tool_name in tool_names:
@@ -307,7 +307,7 @@ def test_docs_service_tools_register_from_services_docs_tools_module():
     ``services/docs/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["docs"],
-        "google_docs_mcp.services.docs.tools",
+        "appscriptly.services.docs.tools",
     )
 
 
@@ -316,7 +316,7 @@ def test_drive_service_tools_register_from_services_drive_tools_module():
     ``services/drive/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["drive"],
-        "google_docs_mcp.services.drive.tools",
+        "appscriptly.services.drive.tools",
     )
 
 
@@ -325,7 +325,7 @@ def test_gas_deploy_service_tools_register_from_services_gas_deploy_tools_module
     ``services/gas_deploy/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["gas_deploy"],
-        "google_docs_mcp.services.gas_deploy.tools",
+        "appscriptly.services.gas_deploy.tools",
     )
 
 
@@ -334,7 +334,7 @@ def test_admin_service_tools_register_from_services_admin_tools_module():
     ``services/admin/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["admin"],
-        "google_docs_mcp.services.admin.tools",
+        "appscriptly.services.admin.tools",
     )
 
 
@@ -343,7 +343,7 @@ def test_sheets_service_tools_register_from_services_sheets_tools_module():
     ``services/sheets/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["sheets"],
-        "google_docs_mcp.services.sheets.tools",
+        "appscriptly.services.sheets.tools",
     )
 
 
@@ -352,7 +352,7 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
     ``services/slides/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["slides"],
-        "google_docs_mcp.services.slides.tools",
+        "appscriptly.services.slides.tools",
     )
 
 
@@ -362,19 +362,19 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
 # layout. A new apps_script tool adds an entry here + its own feature file
 # + the apps_script _expected_tools.py declaration.
 _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
-    "as_generate_bound_script": "google_docs_mcp.services.apps_script.tools",
-    "as_install_doc_menu": "google_docs_mcp.services.apps_script.doc_menu",
+    "as_generate_bound_script": "appscriptly.services.apps_script.tools",
+    "as_install_doc_menu": "appscriptly.services.apps_script.doc_menu",
     "as_install_custom_function": (
-        "google_docs_mcp.services.apps_script.custom_function"
+        "appscriptly.services.apps_script.custom_function"
     ),
     "as_install_sheet_dashboard": (
-        "google_docs_mcp.services.apps_script.sheet_dashboard"
+        "appscriptly.services.apps_script.sheet_dashboard"
     ),
     "as_generate_video_deck": (
-        "google_docs_mcp.services.apps_script.video_deck"
+        "appscriptly.services.apps_script.video_deck"
     ),
     "as_encode_video": (
-        "google_docs_mcp.services.apps_script.encode_video"
+        "appscriptly.services.apps_script.encode_video"
     ),
 }
 
@@ -420,7 +420,7 @@ def test_no_tool_definitions_remain_in_server_py():
     A tool re-added to server.py would be a regression both here and in
     the per-module location guards.
     """
-    from google_docs_mcp import server
+    from appscriptly import server
 
     leftover = [name for name in _declared_tools() if hasattr(server, name)]
     assert not leftover, (
@@ -440,7 +440,7 @@ def test_gdocs_get_tab_url_works_through_registration():
     registered-from-services-folder path. ``gdocs_get_tab_url`` is the
     cleanest target — pure URL composition, no Google API call needed.
     """
-    from google_docs_mcp.services.docs.tools import gdocs_get_tab_url
+    from appscriptly.services.docs.tools import gdocs_get_tab_url
 
     result = gdocs_get_tab_url("DOC123", "TAB456")
     assert result == {
@@ -527,7 +527,7 @@ def test_no_in_repo_callers_use_deprecated_gdocs_tool_decorator():
     """
     import pathlib
 
-    src_root = pathlib.Path(__file__).resolve().parents[3] / "src" / "google_docs_mcp"
+    src_root = pathlib.Path(__file__).resolve().parents[3] / "src" / "appscriptly"
     offenders: list[str] = []
     for path in src_root.rglob("*.py"):
         # decorators.py legitimately DEFINES ``def gdocs_tool(...)`` as the

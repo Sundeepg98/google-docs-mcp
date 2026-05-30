@@ -30,8 +30,8 @@ def test_select_backend_returns_sqlite_when_env_unset(monkeypatch):
     """The default (env var unset) must be SqliteBackend — pre-PR-Δ6
     behavior, preserves every existing test + every existing Fly deploy."""
     monkeypatch.delenv("STORAGE_BACKEND", raising=False)
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
     backend = select_backend()
     assert isinstance(backend, SqliteBackend)
@@ -42,8 +42,8 @@ def test_select_backend_returns_sqlite_when_env_explicitly_sqlite(monkeypatch):
     intent: declarative documentation of the backend choice (rather than
     implicit unset)."""
     monkeypatch.setenv("STORAGE_BACKEND", "sqlite")
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
     assert isinstance(select_backend(), SqliteBackend)
 
@@ -52,8 +52,8 @@ def test_select_backend_case_insensitive(monkeypatch):
     """Operator-facing env-var values shouldn't be case-sensitive — a
     typo like ``STORAGE_BACKEND=Sqlite`` shouldn't silently fall through
     to the unknown-value warning path."""
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
     for value in ("SQLITE", "Sqlite", "sQlItE"):
         monkeypatch.setenv("STORAGE_BACKEND", value)
@@ -66,8 +66,8 @@ def test_select_backend_strips_surrounding_whitespace(monkeypatch):
     """Operators occasionally paste env-var values with stray
     whitespace; the selector strips so the matcher sees the clean
     value."""
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
     monkeypatch.setenv("STORAGE_BACKEND", "  sqlite  ")
     assert isinstance(select_backend(), SqliteBackend)
@@ -87,8 +87,8 @@ def test_select_backend_returns_vercel_kv_when_env_set_and_kv_present(
     monkeypatch.setenv("KV_REST_API_URL", "https://fake.upstash.io")
     monkeypatch.setenv("KV_REST_API_TOKEN", "fake-tok")
 
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.storage.vercel_kv_backend import VercelKvBackend
 
     backend = select_backend()
     assert isinstance(backend, VercelKvBackend)
@@ -105,10 +105,10 @@ def test_select_backend_falls_back_to_sqlite_when_vercel_kv_env_missing(
     monkeypatch.delenv("KV_REST_API_URL", raising=False)
     monkeypatch.delenv("KV_REST_API_TOKEN", raising=False)
 
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
-    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.storage.selector"):
+    with caplog.at_level(logging.WARNING, logger="appscriptly.storage.selector"):
         backend = select_backend()
 
     assert isinstance(backend, SqliteBackend), (
@@ -130,10 +130,10 @@ def test_select_backend_falls_back_to_sqlite_for_unknown_value(
     toward safety: a deploy with a typo'd backend choice shouldn't
     500 the entire surface."""
     monkeypatch.setenv("STORAGE_BACKEND", "vercelkv")  # missing underscore
-    from google_docs_mcp.storage.backend_selector import select_backend
-    from google_docs_mcp.user_store import SqliteBackend
+    from appscriptly.storage.backend_selector import select_backend
+    from appscriptly.user_store import SqliteBackend
 
-    with caplog.at_level(logging.WARNING, logger="google_docs_mcp.storage.selector"):
+    with caplog.at_level(logging.WARNING, logger="appscriptly.storage.selector"):
         backend = select_backend()
 
     assert isinstance(backend, SqliteBackend)
@@ -154,8 +154,8 @@ def test_init_default_backend_from_env_swaps_module_default(monkeypatch):
     calls at startup. It must actually swap the module-level
     ``_backend`` so subsequent ``get_state`` / ``save_state`` calls
     route to the resolved backend."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.user_store import (
+    from appscriptly import user_store
+    from appscriptly.user_store import (
         SqliteBackend,
         get_backend,
         init_default_backend_from_env,
@@ -175,7 +175,7 @@ def test_init_default_backend_from_env_swaps_module_default(monkeypatch):
         monkeypatch.setenv("KV_REST_API_TOKEN", "fake-tok")
 
         returned = init_default_backend_from_env()
-        from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+        from appscriptly.storage.vercel_kv_backend import VercelKvBackend
         assert isinstance(returned, VercelKvBackend)
         # And the module default actually swapped.
         assert isinstance(get_backend(), VercelKvBackend)
@@ -188,7 +188,7 @@ def test_init_default_backend_from_env_is_noop_for_unset_env(monkeypatch):
     """When STORAGE_BACKEND is unset (the test + Fly default), calling
     ``init_default_backend_from_env`` returns a SqliteBackend without
     changing observable behavior."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         SqliteBackend,
         get_backend,
         init_default_backend_from_env,

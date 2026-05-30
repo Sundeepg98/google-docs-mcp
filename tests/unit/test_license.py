@@ -37,7 +37,7 @@ from starlette.testclient import TestClient
 def test_check_license_returns_DISABLED_when_enforcement_unset(monkeypatch):
     """Default personal-use path: env var unset → DISABLED, token ignored."""
     monkeypatch.delenv("LICENSE_KEY_ENFORCEMENT", raising=False)
-    from google_docs_mcp.license import LicenseStatus, check_license
+    from appscriptly.license import LicenseStatus, check_license
 
     # Token presence is irrelevant when enforcement is off.
     assert check_license(None).status == LicenseStatus.DISABLED
@@ -54,7 +54,7 @@ def test_check_license_treats_falsy_env_values_as_disabled(
 ):
     """Falsy env var values must keep enforcement off. Case-insensitive."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", falsy_value)
-    from google_docs_mcp.license import LicenseStatus, check_license
+    from appscriptly.license import LicenseStatus, check_license
 
     assert check_license("any-token").status == LicenseStatus.DISABLED
 
@@ -66,7 +66,7 @@ def test_check_license_returns_INVALID_when_enforcement_on_no_token(
     and env-var alternatives so the operator can pick whichever fits
     their deployment."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
-    from google_docs_mcp.license import LicenseStatus, check_license
+    from appscriptly.license import LicenseStatus, check_license
 
     result = check_license(None)
     assert result.status == LicenseStatus.INVALID
@@ -84,7 +84,7 @@ def test_check_license_returns_VALID_when_stub_verifier_accepts(monkeypatch):
     verification, this test's monkeypatch needs to mock the verifier
     explicitly, but today the stub itself IS the verifier."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
-    from google_docs_mcp.license import LicenseStatus, check_license
+    from appscriptly.license import LicenseStatus, check_license
 
     result = check_license("any-non-empty-token")
     assert result.status == LicenseStatus.VALID
@@ -98,7 +98,7 @@ def test_check_license_returns_INVALID_when_real_verifier_rejects(
     that can reject, the INVALID path must be reachable. Monkeypatch
     ``_verify_token`` to simulate post-swap behavior."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
-    from google_docs_mcp import license as lic
+    from appscriptly import license as lic
 
     monkeypatch.setattr(lic, "_verify_token", lambda _token: False)
     result = lic.check_license("revoked-key")
@@ -113,7 +113,7 @@ def test_check_license_returns_INVALID_when_real_verifier_rejects(
 
 def test_resolve_token_from_env_returns_None_when_unset(monkeypatch):
     monkeypatch.delenv("MCP_LICENSE_KEY", raising=False)
-    from google_docs_mcp.license import resolve_token_from_env
+    from appscriptly.license import resolve_token_from_env
 
     assert resolve_token_from_env() is None
 
@@ -125,7 +125,7 @@ def test_resolve_token_from_env_returns_None_for_empty_or_whitespace_value(
     the repo's env-var convention). A literally-blank env var should
     not be treated as "supply a blank license key."
     """
-    from google_docs_mcp.license import resolve_token_from_env
+    from appscriptly.license import resolve_token_from_env
 
     monkeypatch.setenv("MCP_LICENSE_KEY", "")
     assert resolve_token_from_env() is None
@@ -137,7 +137,7 @@ def test_resolve_token_from_env_strips_surrounding_whitespace(monkeypatch):
     """Operators occasionally paste secrets with trailing newlines; the
     helper strips so the verifier doesn't see the whitespace."""
     monkeypatch.setenv("MCP_LICENSE_KEY", "  secret-key-123  \n")
-    from google_docs_mcp.license import resolve_token_from_env
+    from appscriptly.license import resolve_token_from_env
 
     assert resolve_token_from_env() == "secret-key-123"
 
@@ -152,7 +152,7 @@ def _build_license_app() -> Starlette:
     with just the LicenseKeyMiddleware. Lets us drive the middleware in
     isolation from BearerTokenMiddleware (which is tested separately).
     """
-    from google_docs_mcp.http_server.middleware import LicenseKeyMiddleware
+    from appscriptly.http_server.middleware import LicenseKeyMiddleware
 
     async def echo(_request):
         return JSONResponse({"ok": True})
@@ -234,7 +234,7 @@ def test_middleware_header_beats_env_for_key_resolution(monkeypatch):
     reached the verifier."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
     monkeypatch.setenv("MCP_LICENSE_KEY", "env-token")
-    from google_docs_mcp import license as lic
+    from appscriptly import license as lic
 
     seen: list[str] = []
 
@@ -279,7 +279,7 @@ def test_middleware_returns_402_when_real_verifier_rejects_header_key(
     Mirrors the commercial-activation case where Stripe says the
     license expired or was revoked."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
-    from google_docs_mcp import license as lic
+    from appscriptly import license as lic
 
     monkeypatch.setattr(lic, "_verify_token", lambda _token: False)
     client = TestClient(_build_license_app())

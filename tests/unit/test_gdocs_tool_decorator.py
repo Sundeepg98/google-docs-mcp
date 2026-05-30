@@ -36,7 +36,7 @@ def fresh_decorator_module():
     """Reload decorators module to reset its global bindings between tests."""
     import importlib
 
-    from google_docs_mcp import decorators
+    from appscriptly import decorators
     importlib.reload(decorators)
     yield decorators
 
@@ -376,7 +376,7 @@ def test_scopes_resolution_stdio_mode_calls_load_credentials_with_extra_scopes(
 
     # Force stdio mode.
     monkeypatch.setattr(
-        "google_docs_mcp.credentials.current_user_id_or_none",
+        "appscriptly.credentials.current_user_id_or_none",
         lambda: None,
     )
 
@@ -388,7 +388,7 @@ def test_scopes_resolution_stdio_mode_calls_load_credentials_with_extra_scopes(
         return "stdio-scoped-creds"
 
     monkeypatch.setattr(
-        "google_docs_mcp.auth.load_credentials", fake_load_credentials,
+        "appscriptly.auth.load_credentials", fake_load_credentials,
     )
 
     requested_scope = "https://www.googleapis.com/auth/gmail.send"
@@ -426,18 +426,18 @@ def test_scopes_resolution_http_mode_partial_grant_returns_reauth_url_not_500(
     Prevents PR #47-shape failure recurrence: a partial-grant user
     seeing an opaque server error instead of an actionable consent URL.
     """
-    from google_docs_mcp.credentials import NeedsReauthError
+    from appscriptly.credentials import NeedsReauthError
 
     _mcp, decorators, _, _ = stub_mcp_and_helpers
 
     # Force HTTP mode by returning a user_id.
     monkeypatch.setattr(
-        "google_docs_mcp.credentials.current_user_id_or_none",
+        "appscriptly.credentials.current_user_id_or_none",
         lambda: "user-partial-grant",
     )
     # Stub the OAuth config resolution so we don't depend on env vars.
     monkeypatch.setattr(
-        "google_docs_mcp.oauth_google.resolve_runtime_oauth_config",
+        "appscriptly.oauth_google.resolve_runtime_oauth_config",
         lambda: {
             "client_config": {"web": {}},
             "signing_key": b"x" * 32,
@@ -468,7 +468,7 @@ def test_scopes_resolution_http_mode_partial_grant_returns_reauth_url_not_500(
         )
 
     monkeypatch.setattr(
-        "google_docs_mcp.credentials.get_credentials_for_user",
+        "appscriptly.credentials.get_credentials_for_user",
         fake_get_credentials_for_user,
     )
 
@@ -516,11 +516,11 @@ def test_scopes_resolution_http_mode_full_grant_returns_creds(
     _mcp, decorators, _, _ = stub_mcp_and_helpers
 
     monkeypatch.setattr(
-        "google_docs_mcp.credentials.current_user_id_or_none",
+        "appscriptly.credentials.current_user_id_or_none",
         lambda: "user-full-grant",
     )
     monkeypatch.setattr(
-        "google_docs_mcp.oauth_google.resolve_runtime_oauth_config",
+        "appscriptly.oauth_google.resolve_runtime_oauth_config",
         lambda: {
             "client_config": {"web": {}},
             "signing_key": b"x" * 32,
@@ -535,7 +535,7 @@ def test_scopes_resolution_http_mode_full_grant_returns_creds(
         return f"creds-for-{user_id}-with-{required_scopes}"
 
     monkeypatch.setattr(
-        "google_docs_mcp.credentials.get_credentials_for_user",
+        "appscriptly.credentials.get_credentials_for_user",
         fake_get_credentials_for_user,
     )
 

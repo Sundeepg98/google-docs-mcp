@@ -8,12 +8,12 @@ pytestmark = pytest.mark.live
 
 def test_create_outline_trash_untrash_roundtrip(live_creds):
     """Guards the basic happy path across 4 tools at once."""
-    from google_docs_mcp.services.docs.api import (
+    from appscriptly.services.docs.api import (
         delete_tab,
         get_doc_outline,
         make_doc_with_tabs,
     )
-    from google_docs_mcp.services.drive.api import trash_drive_file, untrash_drive_file
+    from appscriptly.services.drive.api import trash_drive_file, untrash_drive_file
 
     # 1. CREATE — 3 tabs with icons
     spec = [

@@ -35,12 +35,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.drive import tools
+from appscriptly.services.drive import tools
 
 
 @pytest.fixture

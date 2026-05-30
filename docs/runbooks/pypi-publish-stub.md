@@ -154,7 +154,7 @@ This blast-radius reduction is per PR-Δ2's security posture — every long-live
 ## Subsequent re-publishes (version bumps)
 
 ```bash
-# 1. Bump version in pyproject.toml + src/google_docs_mcp/__init__.py (must match)
+# 1. Bump version in pyproject.toml + src/appscriptly/__init__.py (must match)
 # 2. uv lock (regenerates uv.lock with the new version)
 # 3. Commit + push + merge to main as usual
 # 4. From a clean checkout at the merged commit:

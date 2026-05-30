@@ -5,12 +5,12 @@ For the full developer map (commands, architecture, conventions) see **CLAUDE.md
 in the repo root — this file stays short and points there to avoid drift.
 
 > Note: the GitHub repo and Python module are still named `google-docs-mcp` /
-> `google_docs_mcp` (rename to `appscriptly` is pending — see MIGRATION_READINESS.md).
+> `appscriptly` (rename to `appscriptly` is pending — see MIGRATION_READINESS.md).
 
 ## Project layout
 
 ```
-src/google_docs_mcp/
+src/appscriptly/
 ├── server.py                       # FastMCP entry; auto-discovers + registers tools
 ├── _decorators.py                  # @workspace_tool (auth + creds + registration)
 ├── google_api_client.py            # single chokepoint for Google API calls

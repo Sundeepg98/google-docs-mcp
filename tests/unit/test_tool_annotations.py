@@ -16,7 +16,7 @@ import asyncio
 
 def _list_tools():
     """Run mcp.list_tools() in a fresh event loop (no pytest-asyncio dep)."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     return asyncio.run(mcp.list_tools())
 
 

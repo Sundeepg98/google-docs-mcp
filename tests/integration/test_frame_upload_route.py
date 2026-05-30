@@ -38,8 +38,8 @@ import pytest
 from fastmcp import FastMCP
 from starlette.testclient import TestClient
 
-from google_docs_mcp.http_server.app import build_app
-from google_docs_mcp.services.apps_script import _frames_staging
+from appscriptly.http_server.app import build_app
+from appscriptly.services.apps_script import _frames_staging
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
 
@@ -148,7 +148,7 @@ def test_full_handoff_post_then_encode_reads_the_frames(client, batch, monkeypat
     """
     from pathlib import Path
 
-    from google_docs_mcp.services.apps_script import encode_video
+    from appscriptly.services.apps_script import encode_video
 
     # Leg 1: POST 3 frames over the REAL route. Each 200 proves the route
     # accepted + staged the frame (the response is returned post-write).

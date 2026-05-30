@@ -35,7 +35,7 @@ def test_stamp_tenant_writes_attribute_readable_via_getattr():
     so a refactor that renames the attribute (or moves it to a wrapper)
     fires this test instead of silently breaking the assertion chain.
     """
-    from google_docs_mcp.credentials import _stamp_tenant
+    from appscriptly.credentials import _stamp_tenant
 
     fake_creds = MagicMock()
     returned = _stamp_tenant(fake_creds, "user-abc-123")
@@ -53,8 +53,8 @@ def test_stamp_tenant_writes_attribute_readable_via_getattr():
 def test_assert_tenant_match_passes_on_matching_stamp():
     """The common happy-path: creds correctly stamped for the expected
     user. Returns silently (no exception)."""
-    from google_docs_mcp._tool_helpers import assert_tenant_match
-    from google_docs_mcp.credentials import _stamp_tenant
+    from appscriptly._tool_helpers import assert_tenant_match
+    from appscriptly.credentials import _stamp_tenant
 
     creds = _stamp_tenant(MagicMock(), "alice")
     # No exception means the assertion passed.
@@ -65,11 +65,11 @@ def test_assert_tenant_match_raises_on_mismatched_stamp():
     """The load-bearing assertion: when the storage layer hands back
     Bob's creds while Alice was requested, raise immediately. This is
     the cross-tenant-leak prevention contract."""
-    from google_docs_mcp._tool_helpers import (
+    from appscriptly._tool_helpers import (
         TenantIsolationError,
         assert_tenant_match,
     )
-    from google_docs_mcp.credentials import _stamp_tenant
+    from appscriptly.credentials import _stamp_tenant
 
     bobs_creds = _stamp_tenant(MagicMock(), "bob")
     with pytest.raises(TenantIsolationError, match="tenant isolation breach"):
@@ -82,7 +82,7 @@ def test_TenantIsolationError_is_subclass_of_AssertionError():
     — which catches HttpError and lets everything else propagate —
     doesn't accidentally translate it into a user-facing 400. Cross-
     tenant leaks fail loud, not soft."""
-    from google_docs_mcp._tool_helpers import TenantIsolationError
+    from appscriptly._tool_helpers import TenantIsolationError
 
     assert issubclass(TenantIsolationError, AssertionError)
 
@@ -91,7 +91,7 @@ def test_assert_tenant_match_no_op_when_expected_user_id_is_None():
     """Stdio mode: no per-tenant binding to check. The function must
     return silently rather than fire on the absent stamp (which would
     break every stdio tool call)."""
-    from google_docs_mcp._tool_helpers import assert_tenant_match
+    from appscriptly._tool_helpers import assert_tenant_match
 
     # Creds with NO stamp, expected_user_id=None — stdio mode.
     bare_creds = MagicMock(spec=[])  # spec=[] = no auto-mock attributes
@@ -107,7 +107,7 @@ def test_assert_tenant_match_warns_when_stamp_absent_but_user_id_set(caplog):
     doesn't prove a cross-tenant bug, just that the defensive check
     couldn't run.
     """
-    from google_docs_mcp._tool_helpers import assert_tenant_match
+    from appscriptly._tool_helpers import assert_tenant_match
 
     # spec=[] makes _google_docs_mcp_user_id attribute access raise
     # AttributeError, which getattr(..., None) catches and returns
@@ -115,7 +115,7 @@ def test_assert_tenant_match_warns_when_stamp_absent_but_user_id_set(caplog):
     # creds resolution path bypassed _stamp_tenant.
     bare_creds = MagicMock(spec=[])
     with caplog.at_level(
-        logging.WARNING, logger="google_docs_mcp.audit.tenant_isolation",
+        logging.WARNING, logger="appscriptly.audit.tenant_isolation",
     ):
         # No exception — warning only.
         assert_tenant_match(bare_creds, "alice-sub")
@@ -131,15 +131,15 @@ def test_assert_tenant_match_mismatch_emits_error_log(caplog):
     log with both user_ids (truncated) so the operator's incident
     response can identify which two tenants were involved without
     fishing through the full traceback."""
-    from google_docs_mcp._tool_helpers import (
+    from appscriptly._tool_helpers import (
         TenantIsolationError,
         assert_tenant_match,
     )
-    from google_docs_mcp.credentials import _stamp_tenant
+    from appscriptly.credentials import _stamp_tenant
 
     bobs_creds = _stamp_tenant(MagicMock(), "bob-very-long-sub-claim-12345")
     with caplog.at_level(
-        logging.ERROR, logger="google_docs_mcp.audit.tenant_isolation",
+        logging.ERROR, logger="appscriptly.audit.tenant_isolation",
     ), pytest.raises(TenantIsolationError):
         assert_tenant_match(bobs_creds, "alice-very-long-sub-67890")
     # Log carries the truncated form of BOTH ids so the operator can
@@ -162,10 +162,10 @@ def test_emit_tenant_audit_log_records_dispatched_outcome(caplog):
     """The audit log must include the structured ``audit_event`` field
     so a downstream JSON formatter / log shipper can route it. Pinned
     so a refactor doesn't accidentally drop the structured fields."""
-    from google_docs_mcp.credentials import _emit_tenant_audit_log
+    from appscriptly.credentials import _emit_tenant_audit_log
 
     with caplog.at_level(
-        logging.INFO, logger="google_docs_mcp.audit.tenant",
+        logging.INFO, logger="appscriptly.audit.tenant",
     ):
         _emit_tenant_audit_log(
             "user-alice-sub-12345",
@@ -176,7 +176,7 @@ def test_emit_tenant_audit_log_records_dispatched_outcome(caplog):
 
     records = [
         r for r in caplog.records
-        if r.name == "google_docs_mcp.audit.tenant"
+        if r.name == "appscriptly.audit.tenant"
     ]
     assert records, "no audit log emitted"
     rec = records[-1]
@@ -193,11 +193,11 @@ def test_emit_tenant_audit_log_truncates_user_id_in_human_message(caplog):
     shoulder-surfable terminal log output doesn't leak the full
     ``sub`` claim. The structured field carries the untruncated
     value for downstream correlation."""
-    from google_docs_mcp.credentials import _emit_tenant_audit_log
+    from appscriptly.credentials import _emit_tenant_audit_log
 
     full_id = "user-extremely-long-sub-claim-from-google-12345"
     with caplog.at_level(
-        logging.INFO, logger="google_docs_mcp.audit.tenant",
+        logging.INFO, logger="appscriptly.audit.tenant",
     ):
         _emit_tenant_audit_log(
             full_id,
@@ -232,8 +232,8 @@ def test_get_credentials_for_user_stamps_returned_creds(monkeypatch):
     accidentally drops the stamp in a future refactor.\""""
     from google.oauth2.credentials import Credentials
 
-    from google_docs_mcp import credentials as creds_mod
-    from google_docs_mcp import user_store
+    from appscriptly import credentials as creds_mod
+    from appscriptly import user_store
 
     # Stub user_store to return a valid creds-json payload.
     fake_creds = MagicMock(spec=Credentials)
@@ -273,8 +273,8 @@ def test_get_credentials_for_user_emits_audit_log_on_dispatch(
     "who got which creds when" question can't be answered."""
     from google.oauth2.credentials import Credentials
 
-    from google_docs_mcp import credentials as creds_mod
-    from google_docs_mcp import user_store
+    from appscriptly import credentials as creds_mod
+    from appscriptly import user_store
 
     fake_creds = MagicMock(spec=Credentials)
     fake_creds.valid = True
@@ -294,7 +294,7 @@ def test_get_credentials_for_user_emits_audit_log_on_dispatch(
     )
 
     with caplog.at_level(
-        logging.INFO, logger="google_docs_mcp.audit.tenant",
+        logging.INFO, logger="appscriptly.audit.tenant",
     ):
         creds_mod.get_credentials_for_user(
             "alice-sub",
@@ -320,8 +320,8 @@ def test_get_credentials_for_user_emits_needs_reauth_on_missing_creds(
     """The needs_reauth path must emit a ``needs_reauth`` audit record.
     Same compliance reasoning — re-auth events are part of the audit
     trail (especially for "did the user actually re-consent?")."""
-    from google_docs_mcp import credentials as creds_mod
-    from google_docs_mcp import user_store
+    from appscriptly import credentials as creds_mod
+    from appscriptly import user_store
 
     # No google_creds_json in state → NeedsReauthError path.
     monkeypatch.setattr(user_store, "get_state", lambda _user_id: {})
@@ -336,7 +336,7 @@ def test_get_credentials_for_user_emits_needs_reauth_on_missing_creds(
     )
 
     with caplog.at_level(
-        logging.INFO, logger="google_docs_mcp.audit.tenant",
+        logging.INFO, logger="appscriptly.audit.tenant",
     ), pytest.raises(creds_mod.NeedsReauthError):
         creds_mod.get_credentials_for_user(
             "bob-sub",
