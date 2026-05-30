@@ -566,13 +566,30 @@ def gdocs_guide() -> dict:
             "name": "google-docs-fly",
             "version": __version__,
             "what_it_does": (
-                "Create, edit, read, and manage Google Docs with native "
-                "sidebar Tabs (October 2024+ feature)."
+                "Workspace Automation MCP. Generates persistent workflows "
+                "(time-driven jobs, custom menus, reactive automations) "
+                "that live in your Google Workspace and run on Google's "
+                "infrastructure. Also creates, edits, reads, and manages "
+                "Google Docs with native sidebar Tabs (Oct 2024+ feature) "
+                "plus Sheets, Slides, Drive, and Apps Script projects."
             ),
+            # Load-bearing for clients building tool calls: the core
+            # tool surface is ``gdocs_``-prefixed. Newer (appscriptly-
+            # native) tools use ``as_``, and the Sheets/Slides verticals
+            # use ``gsheets_`` / ``gslides_`` — see additional_tool_prefixes.
             "all_tools_prefixed": "gdocs_",
+            "additional_tool_prefixes": {
+                "as_": (
+                    "appscriptly-native automation tools (e.g. "
+                    "as_generate_bound_script)."
+                ),
+                "gsheets_": "Google Sheets tools.",
+                "gslides_": "Google Slides tools.",
+            },
             "more_info": (
                 "Call gdocs_server_info for build version + verified CI "
-                "test status (digest, ci_run_url, mutation_check)."
+                "test status (digest, ci_run_url, mutation_check), and for "
+                "the authoritative full tool inventory (tools list)."
             ),
         },
         "workflows": [
@@ -648,6 +665,59 @@ def gdocs_guide() -> dict:
                     "list (batch)."
                 ),
             },
+            {
+                "name": "install_automation",
+                "goal": (
+                    "Make something keep working AFTER the chat ends — a "
+                    "recurring job, a custom menu, a reaction to the user's "
+                    "own future edits (persistent Workspace automation)"
+                ),
+                "tool_sequence": [
+                    "gdocs_install_automation",
+                    "as_generate_bound_script",
+                ],
+                "notes": (
+                    "One-time: gdocs_install_automation provisions the "
+                    "per-user Apps Script runtime (returns "
+                    "status='needs_authorization' with an authorize_url if "
+                    "consent is missing — surface that link, then retry). "
+                    "Then as_generate_bound_script(container_id, "
+                    "script_body, manifest?) binds a script with menus / "
+                    "triggers / sidebars INTO a specific Doc/Sheet/Slides. "
+                    "Use for 'every morning', 'when I edit', 'add a button' "
+                    "— NOT for a one-off edit (use the direct tools)."
+                ),
+            },
+            {
+                "name": "spreadsheet",
+                "goal": "Create a Google Sheet and put tabular data in it",
+                "tool_sequence": [
+                    "gsheets_create_spreadsheet",
+                    "gsheets_write_range",
+                    "gsheets_read_range",
+                ],
+                "notes": (
+                    "create returns spreadsheet_id; write/read take that ID "
+                    "+ an A1 range like 'Sheet1!A1:C10'. write needs the "
+                    "tab to exist already. To write into an EXISTING sheet, "
+                    "skip create and use its ID directly."
+                ),
+            },
+            {
+                "name": "presentation",
+                "goal": "Create a Google Slides deck or fill a templated one",
+                "tool_sequence": [
+                    "gslides_create_presentation",
+                    "gslides_get_outline",
+                    "gslides_replace_all_text",
+                ],
+                "notes": (
+                    "create returns presentation_id; get_outline discovers "
+                    "slide/object IDs (don't guess them); replace_all_text "
+                    "swaps literal placeholder tokens like '{{name}}' across "
+                    "every slide. To edit an EXISTING deck, skip create."
+                ),
+            },
         ],
         "operating_rules": [
             (
@@ -675,6 +745,18 @@ def gdocs_guide() -> dict:
                 "The client must open the consent URL in a browser — "
                 "this cannot be automated. Subsequent calls reuse the "
                 "cached token until it expires."
+            ),
+            (
+                "For persistent automation (recurring jobs, menus, onEdit "
+                "reactions) use the install_automation workflow. For a "
+                "one-off edit, use the direct docs/sheets/slides tools — "
+                "no script needed."
+            ),
+            (
+                "On any error, pass the raw error text to gdocs_help for a "
+                "structured next-action. An auth error's body carries a "
+                "'Click here to authorize' link — surface it to the user; "
+                "do NOT silently retry."
             ),
         ],
         "tool_groups": {
@@ -712,10 +794,29 @@ def gdocs_guide() -> dict:
                 "gdocs_install_automation",
                 "gdocs_reset_authorization",
             ],
+            "automation": [
+                # Persistent Workspace automation (the appscriptly moat):
+                # install the runtime, then generate bound scripts.
+                "gdocs_install_automation",
+                "as_generate_bound_script",
+            ],
+            "spreadsheets": [
+                "gsheets_create_spreadsheet",
+                "gsheets_write_range",
+                "gsheets_read_range",
+            ],
+            "presentations": [
+                "gslides_create_presentation",
+                "gslides_get_outline",
+                "gslides_replace_all_text",
+            ],
             "introspection": [
                 "gdocs_server_info",
                 "gdocs_test_manifest",
                 "gdocs_guide",
+                # gdocs_help: pass a raw error string, get the recovery
+                # action. Belongs in the discoverable surface.
+                "gdocs_help",
             ],
         },
     }

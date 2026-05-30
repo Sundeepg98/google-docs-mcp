@@ -254,15 +254,23 @@ def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
         assert key in guide["server"], f"guide.server missing {key}"
     assert guide["server"]["all_tools_prefixed"] == "gdocs_"
 
-    # All 5 named workflows present. If any of these names changes
-    # the external doc is no longer the canonical source — update
-    # this list deliberately.
+    # Exact workflow set — the test analog of the golden tool-surface
+    # snapshot. If any name changes the external doc is no longer the
+    # canonical source — update this list deliberately. The tool-DX
+    # enrichment added the spreadsheet / presentation / install_automation
+    # flows so the Sheets/Slides verticals + the automation moat are
+    # discoverable from the orientation payload (was Docs-only).
     expected_workflow_names = {
+        # The 5 original core flows.
         "new_doc",
         "convert_doc_with_headings",
         "retrofit_styled_doc",
         "convert_sandbox_docx",
         "cleanup",
+        # tool-DX enrichment: automation moat + Sheets/Slides verticals.
+        "install_automation",
+        "spreadsheet",
+        "presentation",
     }
     actual_workflow_names = {w["name"] for w in guide["workflows"]}
     assert actual_workflow_names == expected_workflow_names, (
