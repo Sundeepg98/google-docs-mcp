@@ -63,7 +63,7 @@ EXPECTED_TOOLS = {
 @pytest.fixture(scope="module")
 def all_tools():
     """Snapshot the live tool registry once per module."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     tools = asyncio.run(mcp.list_tools())
     return {t.name: t for t in tools}
 
@@ -142,7 +142,7 @@ def test_tool_discoverability_via_server_info(all_tools):
     """
     import asyncio
 
-    from google_docs_mcp.services.admin.tools import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     info_tools = set(info["tools"])
@@ -233,7 +233,7 @@ def test_tab_nesting_depth_cap_enforced():
     an empty doc + the user gets a confusing API error from Google.
     """
     from unittest.mock import MagicMock
-    from google_docs_mcp.services.docs.api import make_doc_with_tabs
+    from appscriptly.services.docs.api import make_doc_with_tabs
 
     # 4-level nesting: root → child → grandchild → great-grandchild.
     # Should raise ValueError before any Google API call (so the

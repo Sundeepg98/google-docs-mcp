@@ -47,7 +47,7 @@ def _seed_user(
     For tests that need to bypass validators (e.g. seeding a row with an
     older ``updated_at``), do a direct UPDATE after save_state.
     """
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     updates: dict[str, object] = {}
     if apps_script_url is not None:
         updates["apps_script_url"] = apps_script_url
@@ -75,7 +75,7 @@ def _back_date_all(seconds_ago: int = 120) -> None:
     Needed for tests that call save_state to seed (which sets updated_at
     to now) and then expect the migration to actually run.
     """
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     path = user_store.db_path()
     cutoff = int(time.time()) - seconds_ago
     conn = sqlite3.connect(path, isolation_level=None)
@@ -86,13 +86,13 @@ def _back_date_all(seconds_ago: int = 120) -> None:
 
 
 def _read_key(user_id: str) -> str | None:
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     return user_store.get_state(user_id).get("apps_script_hmac_key")
 
 
 def test_migrate_provisions_64_hex_key():
     """Fresh legacy user gets a key matching the field validator."""
-    from google_docs_mcp.user_store import _valid_apps_script_hmac_key
+    from appscriptly.user_store import _valid_apps_script_hmac_key
 
     _seed_user(
         "user-legacy-1",
@@ -155,7 +155,7 @@ def test_migrate_dry_run_no_writes():
     # the column is already present on the seeded DB. We work around
     # by dropping it via a fresh DB connection that bypasses the
     # in-process _initialized_paths cache.
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     before = user_store.get_state("user-dryrun")
     assert "apps_script_hmac_key" not in before, "seed leaked a key"
 
@@ -373,7 +373,7 @@ def test_migrate_empty_db_returns_zero():
     # No _seed_user calls — DB exists (autouse fixture) but is empty.
     # We need to trigger schema init first via a get_state call so the
     # DB file actually materializes.
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     user_store.get_state("triggers-init")
 
     rc = mig.main(["--apply"])

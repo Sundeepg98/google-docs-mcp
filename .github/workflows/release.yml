@@ -15,7 +15,7 @@
 # Sigstore, which release-drafter has no business holding).
 #
 # Verification side: downstream consumers can verify with:
-#   gh attestation verify google_docs_mcp-X.Y.Z-py3-none-any.whl \
+#   gh attestation verify appscriptly-X.Y.Z-py3-none-any.whl \
 #     --repo Sundeepg98/google-docs-mcp
 # That command checks the Sigstore signature was issued by GitHub
 # Actions for THIS repo at the commit that tagged the release.

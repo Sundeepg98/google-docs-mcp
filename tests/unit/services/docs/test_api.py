@@ -18,13 +18,13 @@ public API entry points (``make_doc_with_tabs`` /
 consumer-path tests are out of scope here.
 
 This file also pins the **re-export back-compat invariant**: callers
-that did ``from google_docs_mcp.services.docs.api import _flatten_tab_tree``
+that did ``from appscriptly.services.docs.api import _flatten_tab_tree``
 or similar continue to work, because api.py re-exports the pure
 helpers from their new homes.
 """
 from __future__ import annotations
 
-from google_docs_mcp.services.docs.api import _summarize_body_paragraphs
+from appscriptly.services.docs.api import _summarize_body_paragraphs
 
 
 # ---------------------------------------------------------------------
@@ -96,8 +96,8 @@ def test_api_module_reexports_pure_helpers_for_backward_compat():
     This test is intentionally narrow: it only asserts the names exist
     in ``services.docs.api`` and refer to the same callables as the
     new homes. Behaviour tests live next to each helper's source file."""
-    from google_docs_mcp.services.docs import api as api_mod
-    from google_docs_mcp.services.docs import markdown_render, tab_tree
+    from appscriptly.services.docs import api as api_mod
+    from appscriptly.services.docs import markdown_render, tab_tree
 
     # tab_tree re-exports
     assert api_mod._flatten_tab_tree is tab_tree._flatten_tab_tree

@@ -34,7 +34,7 @@ What we CAN test directly here:
 Tests for the larger consumer paths (trash/untrash/move_to_folder
 soft-failure contracts) already live in
 ``tests/unit/test_soft_failure_contracts.py``, which ship-d1 updated
-in M3 Phase B to import from ``google_docs_mcp.services.drive.api``.
+in M3 Phase B to import from ``appscriptly.services.drive.api``.
 Not duplicated here.
 """
 from __future__ import annotations
@@ -44,11 +44,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.drive.api import (
+from appscriptly.services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
     MAX_UPLOAD_BYTES,

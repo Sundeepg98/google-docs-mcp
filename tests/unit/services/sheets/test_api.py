@@ -36,11 +36,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.sheets.api import (
+from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
     create_spreadsheet,
     read_range,

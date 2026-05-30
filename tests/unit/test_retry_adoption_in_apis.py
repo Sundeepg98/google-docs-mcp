@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     GoogleApiClientAdapter,
     InMemoryGoogleAPIClient,
     RetryingGoogleApiClientAdapter,
@@ -88,7 +88,7 @@ def test_sheets_read_range_retries_on_transient_5xx():
         inner, max_attempts=3, base_wait_seconds=0.0001, max_wait_seconds=0.001,
     )
 
-    from google_docs_mcp.services.sheets.api import read_range
+    from appscriptly.services.sheets.api import read_range
 
     with with_google_api_client(retrying):
         result = read_range(
@@ -139,7 +139,7 @@ def test_drive_find_doc_by_title_retries_on_transient_5xx():
         inner, max_attempts=3, base_wait_seconds=0.0001, max_wait_seconds=0.001,
     )
 
-    from google_docs_mcp.services.drive.api import find_doc_by_title
+    from appscriptly.services.drive.api import find_doc_by_title
 
     with with_google_api_client(retrying):
         result = find_doc_by_title(
@@ -185,7 +185,7 @@ def test_unwrapped_api_function_does_not_retry_on_transient():
         inner, max_attempts=3, base_wait_seconds=0.0001, max_wait_seconds=0.001,
     )
 
-    from google_docs_mcp.services.drive.api import upload_and_convert_docx
+    from appscriptly.services.drive.api import upload_and_convert_docx
 
     # Use a real tiny docx-shaped tempfile so the pre-flight validation
     # passes (the file existence check fires before any .execute()).
@@ -238,7 +238,7 @@ def test_facade_falls_back_to_single_call_when_active_client_lacks_retry():
     # Bare InMemory — no retry layer.
     bare = InMemoryGoogleAPIClient({("sheets", "v4"): stub_sheets})
 
-    from google_docs_mcp.services.sheets.api import read_range
+    from appscriptly.services.sheets.api import read_range
 
     with with_google_api_client(bare):
         result = read_range(

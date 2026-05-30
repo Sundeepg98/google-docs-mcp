@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-from google_docs_mcp.key_provider import (
+from appscriptly.key_provider import (
     EnvOverrideKeyProvider,
     HKDFKeyProvider,
     InMemoryKeyProvider,
@@ -280,7 +280,7 @@ def test_inmemory_provenance_reports_configured_mechanism():
 
 def test_with_key_provider_swaps_active(monkeypatch):
     monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
-    from google_docs_mcp import keys  # triggers default provider init
+    from appscriptly import keys  # triggers default provider init
     injected = InMemoryKeyProvider({"api_bearer": b"INJECTED-" + b"x" * 23})
     with with_key_provider(injected):
         assert get_active_provider() is injected
@@ -295,7 +295,7 @@ def test_with_key_provider_restores_on_exception(monkeypatch):
     """A test failure inside the with-block must NOT leak the injection
     into subsequent tests."""
     monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
-    from google_docs_mcp import keys  # triggers default provider init
+    from appscriptly import keys  # triggers default provider init
     injected = InMemoryKeyProvider({"api_bearer": b"\xff" * 32})
     before = get_active_provider()
     with pytest.raises(RuntimeError, match="boom"):
@@ -370,7 +370,7 @@ def test_keys_facade_observability_falls_back_when_non_layered_active(
     provider's counters — not crash. Exercises ``_provider()``'s
     isinstance check in ``keys.py``."""
     monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
-    from google_docs_mcp import keys
+    from appscriptly import keys
 
     bare = InMemoryKeyProvider({"api_bearer": b"x" * 32})
     with with_key_provider(bare):
@@ -415,7 +415,7 @@ def test_hkdf_byte_equality_golden_value():
     implementation swaps" — is enforced at CI time, not at deploy
     time when shim_hit telemetry would notice.
     """
-    from google_docs_mcp.key_provider import _hkdf_sha256
+    from appscriptly.key_provider import _hkdf_sha256
 
     # Fixed inputs: 32 bytes of 'A', the live api_bearer info string.
     ikm = b"A" * 32

@@ -28,13 +28,13 @@ import pytest
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script import doc_menu
-from google_docs_mcp.services.apps_script.doc_menu import build_menu_script
+from appscriptly.services.apps_script import doc_menu
+from appscriptly.services.apps_script.doc_menu import build_menu_script
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def inject_stub_creds(stub_creds, monkeypatch):
     scope-aware path (``auth.load_credentials(..., extra_scopes=scopes)``
     in stdio test mode) — patch THAT, plus the no-scope fallbacks for
     belt-and-suspenders (same as test_tools.py)."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)
@@ -390,8 +390,8 @@ def test_resolves_creds_via_scope_aware_path(with_script_client, monkeypatch):
     """Canary: because this tool DECLARES scopes, creds resolution flows
     through the scope-aware path (auth.load_credentials in stdio test
     mode) with the tool's scopes passed as extra_scopes — exactly once."""
-    from google_docs_mcp import auth
-    from google_docs_mcp.services.apps_script.scopes import GAS_BOUND_SCOPES
+    from appscriptly import auth
+    from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 
     calls: list[dict] = []
 

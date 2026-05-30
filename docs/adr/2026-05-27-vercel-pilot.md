@@ -50,18 +50,18 @@ Three signals converged for the Vercel pilot:
 
 ### Key components added in this PR
 
-**`src/google_docs_mcp/storage/vercel_kv_backend.py` — VercelKvBackend.** Third implementation of the `StorageBackend` Protocol (after `SqliteBackend` and `InMemoryBackend`). Talks to Upstash via the HTTP REST API (`KV_REST_API_URL` + `KV_REST_API_TOKEN` env vars, which Vercel populates automatically when KV is bound to the project). Uses httpx (already transitive via FastMCP) — no new runtime dep.
+**`src/appscriptly/storage/vercel_kv_backend.py` — VercelKvBackend.** Third implementation of the `StorageBackend` Protocol (after `SqliteBackend` and `InMemoryBackend`). Talks to Upstash via the HTTP REST API (`KV_REST_API_URL` + `KV_REST_API_TOKEN` env vars, which Vercel populates automatically when KV is bound to the project). Uses httpx (already transitive via FastMCP) — no new runtime dep.
 
 Storage layout: each `user_id` → one Redis HSET at `user_state:<user_id>`. Fields are JSON-encoded so ints/strs/bools round-trip. Merge semantics bit-for-bit identical to SqliteBackend (HSET only touches the fields in the update; `created_at` preserved across saves; `updated_at` bumped; first save stamps `user_id` + `created_at`).
 
-**`src/google_docs_mcp/storage/backend_selector.py` — env-var-driven factory.** Reads `STORAGE_BACKEND`:
+**`src/appscriptly/storage/backend_selector.py` — env-var-driven factory.** Reads `STORAGE_BACKEND`:
 - unset / `sqlite` → SqliteBackend (default; preserves every existing test + every existing Fly deploy)
 - `vercel_kv` → VercelKvBackend if `KV_REST_API_URL` + `KV_REST_API_TOKEN` are set; else SqliteBackend + WARNING log (fail-soft).
 - unknown value → SqliteBackend + WARNING (typo protection).
 
 Fail-soft rationale: the selector NEVER raises. A misconfigured operator deploy must not 500 on every request; the WARNING log surfaces the problem for fix-forward.
 
-**`src/google_docs_mcp/user_store.py::init_default_backend_from_env()` — operator entrypoint helper.** Called by `api/index.py` (Vercel) at module load. Resolves the env var + swaps the module-level `_backend`. Tests do NOT call this — they rely on `with_backend(InMemoryBackend())` for explicit per-test control, so the function exists for operator-entrypoint use only.
+**`src/appscriptly/user_store.py::init_default_backend_from_env()` — operator entrypoint helper.** Called by `api/index.py` (Vercel) at module load. Resolves the env var + swaps the module-level `_backend`. Tests do NOT call this — they rely on `with_backend(InMemoryBackend())` for explicit per-test control, so the function exists for operator-entrypoint use only.
 
 **`api/index.py` — Vercel Python ASGI entrypoint.** Imports the FastMCP app, calls `init_default_backend_from_env()` + `init_sentry()` + `configure_auth_for_http()` in order, builds the Starlette app, exports as module-level `app`. Vercel's Python runtime auto-detects the `app` symbol.
 
@@ -156,6 +156,6 @@ None of these block PR-Δ7+ feature work.
 - Upstash Redis REST API: https://upstash.com/docs/redis/features/restapi
 - Vercel KV (Upstash-backed): https://vercel.com/docs/storage/vercel-kv
 - Vercel Hobby tier limits: https://vercel.com/docs/limits/overview
-- StorageBackend Protocol: `src/google_docs_mcp/user_store.py::StorageBackend`
+- StorageBackend Protocol: `src/appscriptly/user_store.py::StorageBackend`
 - PR-Δ4 ADR (DR / observability — defines the Litestream + R2 + Sentry + RequestId surface this pilot's KV alternative obsoletes if/when Vercel becomes primary)
 - Operator runbook: `docs/runbooks/vercel-activation.md`

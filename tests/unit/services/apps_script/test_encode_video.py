@@ -16,9 +16,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp import decorators
-from google_docs_mcp.services.apps_script import _frames_staging, encode_video
-from google_docs_mcp.services.apps_script.encode_video import (
+from appscriptly import decorators
+from appscriptly.services.apps_script import _frames_staging, encode_video
+from appscriptly.services.apps_script.encode_video import (
     _build_ffmpeg_cmd,
     _collect_staged_frames,
     _ffmpeg_preexec,
@@ -36,7 +36,7 @@ def stub_creds():
 @pytest.fixture(autouse=True)
 def inject_stub_creds_and_staging(stub_creds, monkeypatch, tmp_path):
     """Scope-aware creds patch + point the frame-staging dir at a tmp /data."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)

@@ -29,7 +29,7 @@ def test_build_manifest_unset_returns_base_manifest_unchanged():
     manifest must NOT carry a ``cloudPlatform`` key. This is the
     backward-compat guarantee: personal users without the env var
     see a manifest identical to v2.3.x."""
-    from google_docs_mcp.setup_apps_script import _build_manifest
+    from appscriptly.setup_apps_script import _build_manifest
 
     manifest = _build_manifest(None)
     assert "cloudPlatform" not in manifest, (
@@ -48,7 +48,7 @@ def test_build_manifest_with_project_adds_cloudPlatform_block():
     ``cloudPlatform.projectId`` block carrying the supplied value.
     Note: the field name is ``projectId`` per Apps Script's documented
     schema, but the value is the project NUMBER (numeric)."""
-    from google_docs_mcp.setup_apps_script import _build_manifest
+    from appscriptly.setup_apps_script import _build_manifest
 
     manifest = _build_manifest("123456789012")
     assert manifest["cloudPlatform"] == {"projectId": "123456789012"}
@@ -58,7 +58,7 @@ def test_build_manifest_does_not_mutate_base_manifest():
     """Defensive copy invariant. Two consecutive calls with different
     project numbers must not corrupt each other through shared mutable
     state."""
-    from google_docs_mcp.setup_apps_script import _BASE_MANIFEST, _build_manifest
+    from appscriptly.setup_apps_script import _BASE_MANIFEST, _build_manifest
 
     snapshot_keys = set(_BASE_MANIFEST.keys())
     snapshot_webapp_keys = set(_BASE_MANIFEST["webapp"].keys())
@@ -84,7 +84,7 @@ def test_build_manifest_does_not_mutate_base_manifest():
 def test_resolve_gcp_project_number_returns_None_when_unset(monkeypatch):
     """Default state: env var unset → None. Personal-user default."""
     monkeypatch.delenv("GCP_PROJECT_NUMBER", raising=False)
-    from google_docs_mcp.setup_apps_script import _resolve_gcp_project_number
+    from appscriptly.setup_apps_script import _resolve_gcp_project_number
 
     assert _resolve_gcp_project_number() is None
 
@@ -95,7 +95,7 @@ def test_resolve_gcp_project_number_treats_blank_as_unset(monkeypatch, blank):
     convention used by ``MCP_LICENSE_KEY`` and elsewhere in this repo).
     Avoids "blank project number sent to Apps Script" failure mode."""
     monkeypatch.setenv("GCP_PROJECT_NUMBER", blank)
-    from google_docs_mcp.setup_apps_script import _resolve_gcp_project_number
+    from appscriptly.setup_apps_script import _resolve_gcp_project_number
 
     assert _resolve_gcp_project_number() is None
 
@@ -104,7 +104,7 @@ def test_resolve_gcp_project_number_strips_surrounding_whitespace(monkeypatch):
     """Operators occasionally paste env-var values with stray whitespace;
     the helper strips so Apps Script doesn't see the noise."""
     monkeypatch.setenv("GCP_PROJECT_NUMBER", "  987654321098  \n")
-    from google_docs_mcp.setup_apps_script import _resolve_gcp_project_number
+    from appscriptly.setup_apps_script import _resolve_gcp_project_number
 
     assert _resolve_gcp_project_number() == "987654321098"
 
@@ -118,7 +118,7 @@ def test_current_manifest_reads_env_at_call_time(monkeypatch):
     """The contract: ``_current_manifest()`` resolves the env var on
     each call (not at module import). Tests can monkeypatch the env
     var per-test without reloading the module."""
-    from google_docs_mcp.setup_apps_script import _current_manifest
+    from appscriptly.setup_apps_script import _current_manifest
 
     # Unset → no cloudPlatform.
     monkeypatch.delenv("GCP_PROJECT_NUMBER", raising=False)
@@ -142,8 +142,8 @@ def test_current_manifest_change_triggers_content_hash_change():
     GCP_PROJECT_NUMBER from unset to set wouldn't see a re-deploy
     and the Apps Script project would never get the cloudPlatform
     block — silent no-op."""
-    from google_docs_mcp import setup_state
-    from google_docs_mcp.setup_apps_script import _build_manifest
+    from appscriptly import setup_state
+    from appscriptly.setup_apps_script import _build_manifest
 
     files = {"Code": "function doGet() {}"}
     hash_without = setup_state.compute_content_hash(

@@ -30,7 +30,7 @@ machinery, not just the happy path:
 
 NOTE on ``python -c``: discovery (like the old explicit-import chain)
 registers a PARTIAL surface under ``python -c`` in an editable/src-layout
-install — a Python packaging artifact (the ``google_docs_mcp.services``
+install — a Python packaging artifact (the ``appscriptly.services``
 subpackage doesn't resolve under ``-c`` editable), upstream of and
 unrelated to the registration mechanism, and NOT a context any real
 entry uses (prod = console script = file; CI = pytest = file). The
@@ -63,7 +63,7 @@ def _golden_count() -> int:
 
 
 def test_boot_discovery_runs_and_count_floor_passes():
-    """Importing ``google_docs_mcp.server`` MUST succeed (discovery runs
+    """Importing ``appscriptly.server`` MUST succeed (discovery runs
     with no exception) and register at least the floor count.
 
     server.py raises a RuntimeError at module-load if (a) any service
@@ -80,8 +80,8 @@ def test_boot_discovery_runs_and_count_floor_passes():
     # If discovery or the floor failed, this import raises (and the test
     # errors with that RuntimeError — exactly the boot-crash signal we
     # want surfaced in CI before deploy).
-    from google_docs_mcp.server import mcp
-    from google_docs_mcp.server import _MIN_EXPECTED_TOOL_COUNT
+    from appscriptly.server import mcp
+    from appscriptly.server import _MIN_EXPECTED_TOOL_COUNT
 
     count = len(asyncio.run(mcp.list_tools()))
     assert count >= _MIN_EXPECTED_TOOL_COUNT, (
@@ -100,7 +100,7 @@ def test_boot_floor_constant_matches_golden():
     the golden, or vice versa), that's a maintenance bug — the two
     count-of-record sources must stay in lockstep.
     """
-    from google_docs_mcp.server import _MIN_EXPECTED_TOOL_COUNT
+    from appscriptly.server import _MIN_EXPECTED_TOOL_COUNT
 
     assert _MIN_EXPECTED_TOOL_COUNT == _golden_count(), (
         f"_MIN_EXPECTED_TOOL_COUNT ({_MIN_EXPECTED_TOOL_COUNT}) != golden "
@@ -165,7 +165,7 @@ def _all_discoverable_service_modules() -> list[str]:
     """
     import pkgutil
 
-    import google_docs_mcp.services as services_pkg
+    import appscriptly.services as services_pkg
 
     mods: list[str] = []
     for modinfo in pkgutil.walk_packages(
@@ -237,7 +237,7 @@ def test_duplicate_tool_registration_fails_loud():
     live mcp instance (the same instance discovery registered onto),
     under a throwaway name we register twice then remove.
     """
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
 
     dup_name = "_test_discovery_safety_dup_probe"
 
@@ -300,7 +300,7 @@ def test_file_entry_subprocess_registers_full_surface():
     probe_src = textwrap.dedent(
         """
         import asyncio
-        from google_docs_mcp.server import mcp
+        from appscriptly.server import mcp
         print(len(asyncio.run(mcp.list_tools())))
         """
     )
@@ -359,7 +359,7 @@ def test_broken_service_module_makes_boot_fail_loud():
         """
         import importlib
         _real = importlib.import_module
-        _BROKEN = "google_docs_mcp.services.sheets.tools"
+        _BROKEN = "appscriptly.services.sheets.tools"
 
         def _sabotaged(name, *a, **k):
             if name == _BROKEN:
@@ -368,7 +368,7 @@ def test_broken_service_module_makes_boot_fail_loud():
 
         importlib.import_module = _sabotaged
         try:
-            import google_docs_mcp.server  # noqa: F401 — must raise
+            import appscriptly.server  # noqa: F401 — must raise
         except RuntimeError as e:
             msg = str(e)
             ok = ("discovery FAILED" in msg) and (_BROKEN in msg)

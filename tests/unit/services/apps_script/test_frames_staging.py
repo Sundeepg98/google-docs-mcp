@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.services.apps_script import _frames_staging
+from appscriptly.services.apps_script import _frames_staging
 
 _BATCH = "BATCHaaaaaaaaaaaaaaaa"
 
@@ -120,7 +120,7 @@ def _req(batch_id: str, index: str, token: str, body: bytes) -> MagicMock:
 
 
 def _call(req):
-    from google_docs_mcp.http_server.routes.convert import upload_frame_endpoint
+    from appscriptly.http_server.routes.convert import upload_frame_endpoint
     return asyncio.run(upload_frame_endpoint(req))
 
 

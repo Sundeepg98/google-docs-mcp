@@ -101,7 +101,7 @@ class _FakeResponse:
 
 def _make_backend(client: _FakeUpstashClient | None = None):
     """Build a VercelKvBackend with the fake REST client injected."""
-    from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+    from appscriptly.storage.vercel_kv_backend import VercelKvBackend
 
     return VercelKvBackend(
         rest_url="https://fake.upstash.io",
@@ -122,7 +122,7 @@ def test_vercel_kv_backend_satisfies_storage_backend_protocol():
     ``read_state``), this fires BEFORE any caller breaks. The
     Protocol is the contract everything else trusts.
     """
-    from google_docs_mcp.user_store import StorageBackend
+    from appscriptly.user_store import StorageBackend
 
     backend = _make_backend()
     assert isinstance(backend, StorageBackend), (
@@ -151,7 +151,7 @@ def test_vercel_kv_backend_raises_when_url_missing(monkeypatch):
     must fail loudly rather than defer the error to first request."""
     monkeypatch.delenv("KV_REST_API_URL", raising=False)
     monkeypatch.setenv("KV_REST_API_TOKEN", "tok")
-    from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+    from appscriptly.storage.vercel_kv_backend import VercelKvBackend
 
     with pytest.raises(RuntimeError, match="KV_REST_API_URL"):
         VercelKvBackend()
@@ -162,7 +162,7 @@ def test_vercel_kv_backend_raises_when_token_missing(monkeypatch):
     error at startup, not on the first user request."""
     monkeypatch.setenv("KV_REST_API_URL", "https://fake.upstash.io")
     monkeypatch.delenv("KV_REST_API_TOKEN", raising=False)
-    from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+    from appscriptly.storage.vercel_kv_backend import VercelKvBackend
 
     with pytest.raises(RuntimeError, match="KV_REST_API_TOKEN"):
         VercelKvBackend()
@@ -174,7 +174,7 @@ def test_vercel_kv_backend_reads_env_vars_when_args_omitted(monkeypatch):
     without explicit arg passing."""
     monkeypatch.setenv("KV_REST_API_URL", "https://prod.upstash.io/")
     monkeypatch.setenv("KV_REST_API_TOKEN", "prod-tok")
-    from google_docs_mcp.storage.vercel_kv_backend import VercelKvBackend
+    from appscriptly.storage.vercel_kv_backend import VercelKvBackend
 
     backend = VercelKvBackend()
     # Trailing slash should have been stripped for unambiguous URL joining.
@@ -461,7 +461,7 @@ def test_upstash_429_raises_UpstashRestError():
     """Rate-limit responses must surface as UpstashRestError carrying
     the status code so caller-side retry / monitoring can branch on
     the 429 specifically."""
-    from google_docs_mcp.storage.vercel_kv_backend import (
+    from appscriptly.storage.vercel_kv_backend import (
         UpstashRestError,
         VercelKvBackend,
     )
@@ -487,7 +487,7 @@ def test_upstash_error_in_json_body_raises_UpstashRestError():
     """Upstash returns 200 OK with a JSON ``error`` field for
     protocol-level errors (bad command, wrong arity). The backend
     must treat that as a failure even though HTTP succeeded."""
-    from google_docs_mcp.storage.vercel_kv_backend import (
+    from appscriptly.storage.vercel_kv_backend import (
         UpstashRestError,
         VercelKvBackend,
     )
@@ -514,7 +514,7 @@ def test_network_error_raises_UpstashRestError_with_status_0():
     should bubble as UpstashRestError with status 0 so callers can
     branch on a uniform exception type rather than having to catch
     multiple httpx exception classes."""
-    from google_docs_mcp.storage.vercel_kv_backend import (
+    from appscriptly.storage.vercel_kv_backend import (
         UpstashRestError,
         VercelKvBackend,
     )

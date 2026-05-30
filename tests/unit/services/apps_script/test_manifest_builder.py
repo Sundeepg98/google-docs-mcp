@@ -34,7 +34,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from google_docs_mcp.services.apps_script.api import build_manifest
+from appscriptly.services.apps_script.api import build_manifest
 
 _UI_SCOPE = "https://www.googleapis.com/auth/script.container.ui"
 _TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"

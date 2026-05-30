@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     GoogleAPIClient,
     GoogleApiClientAdapter,
     InMemoryGoogleAPIClient,
@@ -258,7 +258,7 @@ def test_retry_after_header_is_honored_as_wait_floor(monkeypatch):
     AT LEAST that long before the next attempt — even when our own
     backoff would be shorter — so we don't immediately re-trip the
     server's rate-limit decision."""
-    from google_docs_mcp import google_api_client as gac
+    from appscriptly import google_api_client as gac
 
     adapter = _make_adapter(max_attempts=2, base_wait=0.0001, max_wait=0.001)
     # The Retry-After (5s) is far larger than our default backoff

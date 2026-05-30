@@ -36,12 +36,12 @@ import pytest
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script import custom_function as cf
+from appscriptly.services.apps_script import custom_function as cf
 
 _UI_SCOPE = "https://www.googleapis.com/auth/script.container.ui"
 _TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
@@ -165,7 +165,7 @@ def inject_stub_creds(stub_creds, monkeypatch):
     scope-aware path (auth.load_credentials in stdio test mode) — patch
     THAT, per #138's test_tools.py note. The other two patches keep the
     no-scope path covered (belt-and-suspenders)."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)
@@ -370,8 +370,8 @@ def test_install_custom_function_resolves_creds_via_scope_aware_path(
     decorator resolves credentials through the scope-aware path
     (auth.load_credentials in stdio test mode) with the tool's declared
     scopes threaded as extra_scopes — exactly once."""
-    from google_docs_mcp import auth
-    from google_docs_mcp.services.apps_script.scopes import GAS_BOUND_SCOPES
+    from appscriptly import auth
+    from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 
     calls: list[dict] = []
 

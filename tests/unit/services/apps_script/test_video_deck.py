@@ -18,13 +18,13 @@ import pytest
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script import video_deck
-from google_docs_mcp.services.apps_script.video_deck import (
+from appscriptly.services.apps_script import video_deck
+from appscriptly.services.apps_script.video_deck import (
     build_video_deck_script,
 )
 
@@ -44,7 +44,7 @@ def stub_creds():
 def inject_stub_creds(stub_creds, monkeypatch):
     """Scope-aware creds patch + the env the tool needs to mint a batch
     (resolve_runtime_oauth_config + keys.get_key('signed_url'))."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)
@@ -172,7 +172,7 @@ def test_script_ends_with_trailing_newline():
 
 
 def test_manifest_declares_render_scopes_without_drive():
-    from google_docs_mcp.services.apps_script.api import build_manifest
+    from appscriptly.services.apps_script.api import build_manifest
 
     manifest = build_manifest({"oauth_scopes": video_deck._RENDER_SCOPES})
     scopes = manifest["oauthScopes"]
@@ -325,8 +325,8 @@ def test_tool_api_httperror_maps_to_tool_error():
 def test_tool_resolves_creds_via_scope_aware_path(with_slides_container, monkeypatch):
     """Because the tool declares scopes=GAS_BOUND_SCOPES, the decorator
     resolves creds via the scope-aware auth.load_credentials path."""
-    from google_docs_mcp import auth
-    from google_docs_mcp.services.apps_script.scopes import GAS_BOUND_SCOPES
+    from appscriptly import auth
+    from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 
     calls: list[dict] = []
 

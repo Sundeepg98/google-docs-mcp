@@ -8,7 +8,7 @@
 
 `google-docs-mcp` is being expanded into a multi-service Google Workspace MCP. Current scope (v2.0.x): Docs + Drive + Apps Script. Target scope (v2.x → v3.x): Sheets, Slides, Gmail, Calendar, and Drive sharing as first-class peers of Docs.
 
-The pre-expansion codebase has a single-service shape — most modules live flat under `src/google_docs_mcp/` and Google API access is open-coded at the call site (`build("docs", "v1", ...)`). That shape was fine while there was one service. With five services landing over the next several releases, it becomes the wrong shape: every new service either duplicates wiring or threads through the Docs-shaped path.
+The pre-expansion codebase has a single-service shape — most modules live flat under `src/appscriptly/` and Google API access is open-coded at the call site (`build("docs", "v1", ...)`). That shape was fine while there was one service. With five services landing over the next several releases, it becomes the wrong shape: every new service either duplicates wiring or threads through the Docs-shaped path.
 
 The operator's intent (recorded in session: 2026-05-20): apply Hex/Ports/Adapters at the infrastructure seam where multiple implementations already exist or are imminent. **Do not** apply it at the service surface, where each service is naturally service-specific and abstraction would be cargo-culted.
 
@@ -22,8 +22,8 @@ Two layers, two design philosophies, one codebase.
 
 | Layer | Philosophy | Why |
 |---|---|---|
-| Core infrastructure (`src/google_docs_mcp/`) | Ports + Adapters | Multiple implementations already exist (or are imminent) for storage, credentials, key derivation, Google API access. Hex isolates the swap. |
-| Service layer (`src/google_docs_mcp/services/<service>/`) | Per-service folders, no shared abstraction | Each Google service has a distinct API surface (Docs vs Gmail vs Drive). Sharing structure across them is premature; mirroring service boundaries in code aids navigability. |
+| Core infrastructure (`src/appscriptly/`) | Ports + Adapters | Multiple implementations already exist (or are imminent) for storage, credentials, key derivation, Google API access. Hex isolates the swap. |
+| Service layer (`src/appscriptly/services/<service>/`) | Per-service folders, no shared abstraction | Each Google service has a distinct API surface (Docs vs Gmail vs Drive). Sharing structure across them is premature; mirroring service boundaries in code aids navigability. |
 
 The split is deliberate. Hex earns its keep only when there's a real swap to defend; folder layout earns its keep when there's real navigation pressure. Different problems, different tools.
 
@@ -34,7 +34,7 @@ The 4 ports below are the candidate set. Promotion order is by **risk × evidenc
 ### 3.1 `StorageBackend` — ALREADY PROVEN (v2.1)
 
 - **Status:** Shipped in v2.1 (PR #39). Production-proven.
-- **File:** `src/google_docs_mcp/user_store.py`
+- **File:** `src/appscriptly/user_store.py`
 - **Shape:** `Protocol` with 4 methods (`get_state`, `save_state`, `delete_state`, `iter_users`).
 - **Adapters:** `SqliteBackend` (default), `InMemoryBackend` (test ergonomics).
 - **Why it earned its keep:** the test suite uses `InMemoryBackend` and the production deploy uses `SqliteBackend`, with zero test scaffolding leaking into prod code. A future `PostgresBackend` is a single new class, not a rewrite.
@@ -43,7 +43,7 @@ The 4 ports below are the candidate set. Promotion order is by **risk × evidenc
 ### 3.2 `GoogleAPIClient` — CHOKEPOINT EXISTS
 
 - **Status:** Wrapper module shipped in v2.6a (PR #48); call-site migration in PR #70/#71/#75 (v2.6b). Promotion to Protocol pending.
-- **File:** `src/google_docs_mcp/google_clients.py`
+- **File:** `src/appscriptly/google_clients.py`
 - **Today:** thin passthrough wrapper around `googleapiclient.discovery.build`. Enforced as the sole import surface via TID251 lint.
 - **Why promote:** the chokepoint already exists; promoting to a Protocol enables:
   - swapping in `aiogoogle` for async (concrete future requirement — see in-flight Gmail integration, which needs streaming + concurrent message fetches).
@@ -54,7 +54,7 @@ The 4 ports below are the candidate set. Promotion order is by **risk × evidenc
 ### 3.3 `KeyProvider` — LANDED v2.1.0 (M1a complete)
 
 - **Status:** Shipped in v2.1.0 (PR #88). Consumer test migration + HKDF golden-value regression landed in v2.1.1 (PR #90).
-- **File:** `src/google_docs_mcp/key_provider.py` — Protocol + 3 adapters + `InMemoryKeyProvider` for tests + `with_key_provider()` context manager (mirrors the `with_backend()` shape from v2.1).
+- **File:** `src/appscriptly/key_provider.py` — Protocol + 3 adapters + `InMemoryKeyProvider` for tests + `with_key_provider()` context manager (mirrors the `with_backend()` shape from v2.1).
 - **Three mechanisms already coexist:**
   1. Raw master via `MCP_BEARER_TOKEN` env (legacy shim, removed in v2.0b strict-flip).
   2. Per-purpose env override (`MCP_API_BEARER_KEY`, `OAUTH_STATE_SIGNING_KEY`, `SIGNED_URL_SIGNING_KEY` — v1.5.1).
@@ -117,7 +117,7 @@ The 2 candidates below were considered and rejected. Documenting them so future 
 Per-service folder shape, inspired by `taylorwilsdon/google_workspace_mcp`:
 
 ```
-src/google_docs_mcp/services/
+src/appscriptly/services/
 ├── docs/
 │   ├── __init__.py
 │   ├── api.py           # docs_api.py moves here (Google Docs REST calls)
@@ -163,9 +163,9 @@ Expected size: **~500–800 LOC** (down from current 2,452 — 70% reduction). T
 
 ```python
 # services/docs/tools.py
-from google_docs_mcp.server import mcp  # the FastMCP instance
-from google_docs_mcp.decorators import gdocs_tool  # from PR #83
-from google_docs_mcp.server import _get_credentials, _format_http_error
+from appscriptly.server import mcp  # the FastMCP instance
+from appscriptly.decorators import gdocs_tool  # from PR #83
+from appscriptly.server import _get_credentials, _format_http_error
 from . import api as docs_api
 
 @gdocs_tool(
@@ -249,7 +249,7 @@ def test_all_24_tools_register_from_their_service_locations():
     (NOT mcp._tools — that's not a public attribute and breaks across
     FastMCP versions). Wrap in asyncio.run() for a sync test.
     """
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     tools = asyncio.run(mcp.list_tools())
     registered = {t.name for t in tools}
     missing = EXPECTED_TOOLS - registered
@@ -351,11 +351,11 @@ Documenting these so the next reviewer doesn't re-litigate them from scratch. Th
 
 ## 10. References
 
-- `src/google_docs_mcp/user_store.py` — proven Hex pattern (StorageBackend, v2.1).
-- `src/google_docs_mcp/key_provider.py` — M1a port (v2.1.0); `with_key_provider()` helper mirrors `with_backend()`.
-- `src/google_docs_mcp/credentials.py` — the transaction script that §3.4.1 explains we deliberately did NOT promote to a port.
-- `src/google_docs_mcp/google_clients.py` — chokepoint wrapper; M2 promotion in flight.
-- `src/google_docs_mcp/decorators.py` — `@gdocs_tool` (target of M4 rename).
+- `src/appscriptly/user_store.py` — proven Hex pattern (StorageBackend, v2.1).
+- `src/appscriptly/key_provider.py` — M1a port (v2.1.0); `with_key_provider()` helper mirrors `with_backend()`.
+- `src/appscriptly/credentials.py` — the transaction script that §3.4.1 explains we deliberately did NOT promote to a port.
+- `src/appscriptly/google_clients.py` — chokepoint wrapper; M2 promotion in flight.
+- `src/appscriptly/decorators.py` — `@gdocs_tool` (target of M4 rename).
 - `taylorwilsdon/google_workspace_mcp` (GitHub) — inspiration for the per-service folder pattern.
 - `docs/THREAT_MODEL.md` — security model the KeyProvider port preserves; the M1b-skipped decision in §3.4.1 means the credential refresh path keeps its current threat-model coverage unchanged.
 - `CHANGELOG.md` v2.0.6 — the original session that motivated this doc; v2.1.0/v2.1.1/v2.1.2 — M1a landing + test cash-in + M1b decision.

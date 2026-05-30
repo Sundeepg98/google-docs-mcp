@@ -21,7 +21,7 @@ This document covers rotation of every long-lived secret the server depends on. 
 
 ### What it does
 
-`MCP_BEARER_TOKEN` is the **single master input** to `src/google_docs_mcp/keys.py`'s HKDF derivation. Per purpose (`api_bearer`, `oauth_state`, `signed_url`), `keys.get_key(purpose)` derives 32 bytes deterministically:
+`MCP_BEARER_TOKEN` is the **single master input** to `src/appscriptly/keys.py`'s HKDF derivation. Per purpose (`api_bearer`, `oauth_state`, `signed_url`), `keys.get_key(purpose)` derives 32 bytes deterministically:
 
 ```
 derived = HKDF-SHA256(
@@ -61,7 +61,7 @@ The trick: `keys.get_key(purpose)` looks at the per-purpose env-var override FIR
 
 1. **Capture the current derived keys.** SSH into a Fly machine (or run locally with the current master in env):
    ```sh
-   python -c "from google_docs_mcp import keys; \
+   python -c "from appscriptly import keys; \
      print('api_bearer:', keys.get_key('api_bearer').hex()); \
      print('oauth_state:', keys.get_key('oauth_state').hex()); \
      print('signed_url:', keys.get_key('signed_url').hex())"
@@ -236,10 +236,10 @@ If a per-user token misbehaves (rare; usually a Google-side oddity), the surgica
 
 ## Related modules
 
-- `src/google_docs_mcp/keys.py` — HKDF derivation + per-purpose lookup.
-- `src/google_docs_mcp/key_provider.py` — Hex Port + Adapters for the key system (M1a refactor; `keys.py` is the facade).
-- `src/google_docs_mcp/crypto.py` — signed-URL TTL constants (`DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS`) used in the wait-out step above.
-- `src/google_docs_mcp/credentials.py` — `NeedsReauthError`, per-user OAuth refresh.
+- `src/appscriptly/keys.py` — HKDF derivation + per-purpose lookup.
+- `src/appscriptly/key_provider.py` — Hex Port + Adapters for the key system (M1a refactor; `keys.py` is the facade).
+- `src/appscriptly/crypto.py` — signed-URL TTL constants (`DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS`) used in the wait-out step above.
+- `src/appscriptly/credentials.py` — `NeedsReauthError`, per-user OAuth refresh.
 - `scripts/preflight_strict_flip.sh` — telemetry-gated readiness check used in the graceful cutover.
 - `RUNBOOK.md` §3.4 — original v1.5.1 documentation of the per-purpose env-var overrides; this runbook supersedes it for rotation procedure.
 

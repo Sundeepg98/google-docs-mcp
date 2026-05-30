@@ -13,7 +13,7 @@
   so you can pin "this regression appeared in `<sha>`" without
   spelunking through logs.
 - **No PII leakage.** A `before_send` scrubber (see
-  `src/google_docs_mcp/observability.py`) walks every event before
+  `src/appscriptly/observability.py`) walks every event before
   transmit and replaces values for keys matching ~20 sensitive
   patterns (Authorization, bearer, sig, token, refresh_token,
   client_secret, sub, email, …) with `[REDACTED]`. Regression-pinned
@@ -70,7 +70,7 @@ in `server.py` detects the DSN and activates Sentry. Look for this
 line in `fly logs`:
 
 ```
-INFO ... google_docs_mcp.observability Sentry initialized: release=<sha> env=<region>
+INFO ... appscriptly.observability Sentry initialized: release=<sha> env=<region>
 ```
 
 If you don't see that line, double-check `fly secrets list` shows
@@ -134,7 +134,7 @@ Three responses:
 2. **Sample at the SDK.** Set `traces_sample_rate=0.0` (already
    done) and add `sample_rate=0.1` to `sentry_sdk.init()` to send
    only 10% of error events. Edit `init_sentry()` in
-   `src/google_docs_mcp/observability.py`.
+   `src/appscriptly/observability.py`.
 3. **Upgrade Sentry.** Their next tier ("Team") is $26/mo for
    50k events. If you're at this point, you have real users and
    the math is fine.

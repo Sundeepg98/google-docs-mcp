@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     GoogleApiClientAdapter,
     GoogleAPIClient,
     InMemoryGoogleAPIClient,
@@ -131,7 +131,7 @@ def test_production_adapter_delegates_to_build():
     sentinel_resource = MagicMock(name="drive-v3-resource")
     fake_creds = MagicMock(name="creds")
 
-    with patch("google_docs_mcp.google_api_client.build") as mk_build:
+    with patch("appscriptly.google_api_client.build") as mk_build:
         mk_build.return_value = sentinel_resource
         result = adapter.get_service("drive", "v3", credentials=fake_creds)
 
@@ -145,7 +145,7 @@ def test_production_adapter_delegates_to_build():
 
 
 def test_with_google_api_client_swaps_active():
-    from google_docs_mcp.google_api_client import RetryingGoogleApiClientAdapter
+    from appscriptly.google_api_client import RetryingGoogleApiClientAdapter
 
     stub_drive = MagicMock(name="drive-stub")
     injected = InMemoryGoogleAPIClient({("drive", "v3"): stub_drive})
@@ -202,7 +202,7 @@ def test_facade_delegation_routes_to_active_client():
     public entry point) now delegates to the active GoogleAPIClient.
     A test that injects an InMemoryGoogleAPIClient must see its stubs
     returned through the legacy import path."""
-    from google_docs_mcp import google_clients
+    from appscriptly import google_clients
 
     stub = MagicMock(name="docs-v1-stub")
     fake_creds = MagicMock()
@@ -214,9 +214,9 @@ def test_facade_delegation_routes_to_active_client():
 
 
 def test_facade_keeps_resource_reexport_for_backward_compat():
-    """Pre-v2.1.2 code that did ``from google_docs_mcp.google_clients
+    """Pre-v2.1.2 code that did ``from appscriptly.google_clients
     import Resource`` for type hints must continue to work."""
-    from google_docs_mcp.google_clients import Resource
+    from appscriptly.google_clients import Resource
 
     # Resource is the googleapiclient.discovery.Resource class itself.
     # We can't easily isinstance-check a real Resource (it's dynamically

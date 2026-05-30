@@ -36,11 +36,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.slides.api import (
+from appscriptly.services.slides.api import (
     _extract_slide_text,
     create_presentation,
     get_outline,

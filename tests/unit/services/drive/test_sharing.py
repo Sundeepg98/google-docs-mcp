@@ -32,11 +32,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.drive.sharing import (
+from appscriptly.services.drive.sharing import (
     _VALID_ROLES,
     grant_permission,
     list_permissions,

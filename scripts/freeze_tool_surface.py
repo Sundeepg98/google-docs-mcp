@@ -16,9 +16,9 @@ the diff to this file is the reviewed proof of the surface change.
 
 CRITICAL — MUST be run as a FILE (``python scripts/freeze_tool_surface.py``),
 NEVER as ``python -c "..."``. Under an editable / ``src``-layout install,
-``python -c`` cannot resolve the ``google_docs_mcp.services`` subpackage
+``python -c`` cannot resolve the ``appscriptly.services`` subpackage
 namespace (``pkgutil`` finds nothing, ``import
-google_docs_mcp.services.X`` raises ModuleNotFoundError) — a Python
+appscriptly.services.X`` raises ModuleNotFoundError) — a Python
 packaging artifact of editable + src-layout + ``-c``, entirely upstream
 of (and unrelated to) the tool-registration mechanism. File execution
 (which is how prod's console-script entry, CI, and this script all run)
@@ -44,13 +44,13 @@ _GOLDEN_PATH = (
 def current_tool_surface() -> list[str]:
     """Return the sorted list of every registered tool name.
 
-    Imports ``google_docs_mcp.server`` (which runs auto-discovery as a
+    Imports ``appscriptly.server`` (which runs auto-discovery as a
     module-load side effect post-refactor; pre-refactor it ran the
     explicit bottom-of-file side-effect imports). Either way, by the
     time this returns, the full surface is registered on the live
     ``mcp`` instance.
     """
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
 
     tools = asyncio.run(mcp.list_tools())
     return sorted(t.name for t in tools)

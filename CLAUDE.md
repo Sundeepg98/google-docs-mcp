@@ -7,8 +7,8 @@ Orientation for a fresh Claude session. Keep this a stable map; **live status li
 **appscriptly** is a Workspace-automation MCP server. Its differentiator is generating **persistent Apps Script automations** that live in the user's Google Workspace and run on Google's infrastructure — bound scripts, custom menus, custom `=FUNCTION()`s, scheduled sheet dashboards, slides-to-video decks — plus create/edit/manage of Google **Docs (native Tabs), Sheets, Slides, and Drive**.
 
 - **Tool prefixes:** `gdocs_*` (legacy, docs-first era — kept indefinitely) and `as_*` (newer, appscriptly-native). Both are first-class; don't mass-rename.
-- **Module path:** the implementation package is **`src/google_docs_mcp/`** even though the product/distribution name is `appscriptly`. The module-path rename is deferred — see `MIGRATION_READINESS.md`.
-- **Distribution:** `pyproject.toml` `name = "appscriptly"`, build backend **hatchling**, packages = `src/google_docs_mcp`. Console scripts: **`appscriptly`** and legacy alias **`google-docs-mcp`**, both → `google_docs_mcp.server:main`.
+- **Module path:** the implementation package is **`src/appscriptly/`** even though the product/distribution name is `appscriptly`. The module-path rename is deferred — see `MIGRATION_READINESS.md`.
+- **Distribution:** `pyproject.toml` `name = "appscriptly"`, build backend **hatchling**, packages = `src/appscriptly`. Console scripts: **`appscriptly`** and legacy alias **`google-docs-mcp`**, both → `appscriptly.server:main`.
 - **Python:** `>=3.10`. Dep/lock manager: **uv** (`uv.lock`, `uv sync --frozen`).
 
 ## Commands
@@ -46,7 +46,7 @@ Deploy (Fly) — normally automatic: push to `main` runs `.github/workflows/depl
 
 ## Architecture (brief)
 
-- **FastMCP server**, constructed in `src/google_docs_mcp/server.py` as `FastMCP("appscriptly", …, on_duplicate="error")`.
+- **FastMCP server**, constructed in `src/appscriptly/server.py` as `FastMCP("appscriptly", …, on_duplicate="error")`.
 - **Auto-discovery registration (#144):** a `pkgutil.walk_packages` loop imports every leaf module under `services/` (skipping `_`-prefixed modules + the `{api, scopes}` denylist). Tools register as a side effect of import; **no central registry edit** to add one.
 - **Boot guards (fail loud before serving):** (1) any discovery import error → `RuntimeError` at module load; (2) `on_duplicate="error"` turns a duplicate tool name into a boot crash; (3) `_MIN_EXPECTED_TOOL_COUNT` floor (currently 39) catches a silent surface drop.
 - **Services:** `services/{docs,sheets,slides,drive,apps_script,gas_deploy,admin}/`. Each defines tools via the **`@workspace_tool(service=…, scopes=[…], creds=…)`** decorator (in `_tool_helpers.py`) and declares its surface in **`_expected_tools.py::EXPECTED`**.
@@ -69,6 +69,6 @@ Do **not** rely on prose here for volatile state — read the planning docs in t
 
 - **`ROADMAP.md`** — feature / hardening / architecture roadmap (synthesized; pending a verified code audit).
 - **`PHASE1_VERIFICATION_KIT.md`** — Google OAuth verification + dedicated-client plan and operator punch-list.
-- **`MIGRATION_READINESS.md`** — the rename/migration surface (incl. the pending `google_docs_mcp` → `appscriptly` module-path rename) and sequencing.
+- **`MIGRATION_READINESS.md`** — the rename/migration surface (incl. the pending `appscriptly` → `appscriptly` module-path rename) and sequencing.
 
 Project ADRs live in `docs/adr/`. Repo URLs / GitHub org and the Fly app name may move per `MIGRATION_READINESS.md`.
