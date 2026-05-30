@@ -35,6 +35,8 @@ second (via the bottom-of-file import).
 """
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 from typing import Literal
 
@@ -42,6 +44,7 @@ from fastmcp.exceptions import ToolError
 
 from google_docs_mcp.decorators import workspace_tool
 from google_docs_mcp.docx_import import convert_docx_to_tabbed_doc as _convert_docx
+
 from google_docs_mcp.preview import preview_tab_split as _preview_tab_split
 from google_docs_mcp.retrofit import retrofit_existing_docx as _retrofit_existing_docx
 from google_docs_mcp.services.docs.api import (
@@ -90,6 +93,9 @@ from google_docs_mcp._tool_helpers import (
     _format_http_error,
     _get_credentials,
 )
+
+
+_log = logging.getLogger("google_docs_mcp.services.docs.tools")
 
 
 def _get_validate_title():
@@ -540,12 +546,42 @@ def gdocs_tab_existing_doc(
         )
     if title is not None:
         _validate_title(title)
+
+    # DEPRECATION (base-tier redesign): the ``drive_file_id`` /
+    # ``docx_drive_file_id`` input path reads a Drive file the app did NOT
+    # create (metadata get + get_media / copy), which needs the
+    # ``drive.readonly`` RESTRICTED scope. The base tier dropped
+    # drive.readonly to stay CASA-free, so this path now only works for
+    # users whose existing token still carries the (relaxed) grant — new
+    # users get an insufficient-scope error from Google. It is deprecated
+    # and slated for removal next minor; steer callers to the signed-URL
+    # upload flow (gdocs_get_signed_upload_url → POST the .docx →
+    # /api/convert), which stages bytes server-side with NO Drive read
+    # scope. ``docx_path`` (local stdio) is unaffected. We still execute
+    # the conversion for one version so in-flight callers don't break.
+    deprecation: str | None = None
+    if drive_file_id is not None:
+        deprecation = (
+            "drive_file_id / docx_drive_file_id is deprecated and will be "
+            "removed in the next minor version: it requires the "
+            "drive.readonly scope, which the base tier no longer requests. "
+            "Switch to the signed-upload flow — call "
+            "gdocs_get_signed_upload_url, POST the .docx to the returned "
+            "URL, then convert. (Local stdio callers can keep using "
+            "docx_path.)"
+        )
+        _log.warning(
+            "gdocs_tab_existing_doc: drive_file_id path is DEPRECATED "
+            "(needs drive.readonly, dropped from the base scope set). Use "
+            "gdocs_get_signed_upload_url -> POST -> /api/convert instead."
+        )
+
     path: Path | None = Path(docx_path).expanduser() if docx_path else None
     try:
         if markers:
             # Retrofit path: inject Heading 1s before each marker, then
             # convert. Single tool, two modes — discriminated by markers.
-            return _retrofit_existing_docx(
+            result = _retrofit_existing_docx(
                 creds,
                 markers=markers,
                 docx_path=path,
@@ -558,19 +594,23 @@ def gdocs_tab_existing_doc(
                 replace_doc_id=replace_doc_id,
                 case_sensitive=case_sensitive,
             )
-        return _convert_docx(
-            creds,
-            docx_path=path,
-            drive_file_id=drive_file_id,
-            split_by=split_by,
-            title=title,
-            tab_icons=tab_icons,
-            icons_by_title=icons_by_title,
-            placeholder_behavior=placeholder_behavior,
-            placeholder_title=placeholder_title,
-            placeholder_icon=placeholder_icon,
-            replace_doc_id=replace_doc_id,
-        )
+        else:
+            result = _convert_docx(
+                creds,
+                docx_path=path,
+                drive_file_id=drive_file_id,
+                split_by=split_by,
+                title=title,
+                tab_icons=tab_icons,
+                icons_by_title=icons_by_title,
+                placeholder_behavior=placeholder_behavior,
+                placeholder_title=placeholder_title,
+                placeholder_icon=placeholder_icon,
+                replace_doc_id=replace_doc_id,
+            )
+        if deprecation is not None and isinstance(result, dict):
+            result = {**result, "deprecation": deprecation}
+        return result
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
     except ValueError as e:

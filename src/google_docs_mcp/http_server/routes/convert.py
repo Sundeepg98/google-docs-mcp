@@ -35,6 +35,47 @@ from google_docs_mcp.http_server._helpers import (
 _audit_log = logging.getLogger("google_docs_mcp.audit.upload")
 
 
+async def upload_frame_endpoint(request: Request) -> JSONResponse:
+    """``POST /upload/frames/<batch_id>/<index>?token=<sig>`` — stage one PNG.
+
+    The base-tier slides→video frame handoff (replaces the
+    ``drive.readonly`` Drive round-trip). Public (no bearer): auth is the
+    HMAC batch token in the query string, exactly like the docx signed
+    upload path — so the bound Apps Script (running as the user) can POST
+    each rendered frame straight to the server via ``UrlFetchApp``. The
+    batch token authorizes the whole render; the per-frame ``index`` is a
+    bounded integer validated in the staging layer (no path traversal).
+    Raw PNG bytes in the request body. Size-capped by
+    ``BodySizeLimitMiddleware``.
+    """
+    from google_docs_mcp.services.apps_script._frames_staging import (
+        stage_frame_bytes,
+        verify_frames_token,
+    )
+
+    batch_id = request.path_params["batch_id"]
+    index = request.path_params["index"]
+    token = request.query_params.get("token", "")
+    if not verify_frames_token(batch_id, token):
+        return JSONResponse(
+            {"error": "Invalid or expired frame upload token"}, status_code=403
+        )
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "Empty frame body"}, status_code=400)
+    try:
+        stage_frame_bytes(batch_id, index, body)
+    except ValueError as e:
+        # Malformed batch_id / index (e.g. a traversal attempt) — reject.
+        return JSONResponse(
+            {"error": f"Invalid frame upload target: {e}"}, status_code=400
+        )
+    return JSONResponse(
+        {"batch_id": batch_id, "index": index, "bytes": len(body)}
+    )
+
+
 async def convert_endpoint(request: Request) -> JSONResponse:
     """``POST /api/convert`` — multipart .docx upload + conversion + optional icons.
 
