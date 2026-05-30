@@ -59,7 +59,13 @@ GOOGLE_API_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive.readonly",
+    # drive.readonly REMOVED for the free base tier (it's Google's only
+    # RESTRICTED scope here → CASA + 7-day token cap). Both consumers
+    # (legacy .docx ingest, slides→video frame handoff) were re-plumbed to
+    # drive.file + the server's signed-upload staging. Existing tokens keep
+    # working via OAUTHLIB_RELAX_TOKEN_SCOPE; new consents won't request
+    # it. A future restricted tier will reintroduce it for "read any Drive
+    # file". Mirror of the auth.py:SCOPES change — keep the two in sync.
     # v2.3.1: Sheets read/write/create for the 2nd new service.
     # See auth.py:SCOPES for the rationale + non-breaking note.
     # Mirrored here so HTTP/cloud-mode users get the same consent

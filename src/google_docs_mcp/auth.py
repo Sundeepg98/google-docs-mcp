@@ -21,10 +21,24 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
-    # drive.readonly lets us read files uploaded by OTHER apps (e.g. cloud
-    # chat's Drive connector). Required for the ``docx_drive_file_id``
-    # input path on convert_docx_to_tabbed_doc.
-    "https://www.googleapis.com/auth/drive.readonly",
+    # NOTE: drive.readonly was REMOVED here for the free base tier
+    # (base-tier redesign). It's Google's only RESTRICTED scope in our
+    # set — keeping it would force CASA security assessment + the
+    # Testing-mode 7-day refresh-token cap, blocking a free
+    # "sensitive scopes only" verification. Its two consumers were
+    # re-plumbed off drive.readonly:
+    #   * legacy .docx ingest (drive_file_id / docx_drive_file_id) →
+    #     deprecated in favor of the signed-URL upload path
+    #     (gdocs_get_signed_upload_url → POST → /api/convert), which
+    #     stages bytes on the server with no Drive read scope.
+    #   * slides→video frame handoff → the bound render script now POSTs
+    #     frames to the server's signed staging endpoint instead of a
+    #     Drive folder the app would need drive.readonly to re-read.
+    # Existing tokens that still carry drive.readonly keep working
+    # (OAUTHLIB_RELAX_TOKEN_SCOPE); new consents won't request it. A
+    # FUTURE "read ANY Drive file" feature will reintroduce drive.readonly
+    # on a SEPARATE restricted tier (out of scope here). Keep this list in
+    # sync with oauth_google.GOOGLE_API_SCOPES.
     # v2.3.1 — Sheets read/write/create for the 2nd new service. The
     # full ``spreadsheets`` scope (not the narrower
     # ``spreadsheets.readonly``) is needed because gsheets_write_range

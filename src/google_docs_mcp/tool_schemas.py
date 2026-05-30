@@ -448,7 +448,11 @@ AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
         "script_id": {"type": "string"},
         "deployment_id": {"type": "string"},
         "presentation_id": {"type": "string"},
-        "output_folder_name": {"type": "string"},
+        # Base-tier redesign: the renderer POSTs frames to the server's
+        # signed staging area instead of a Drive folder, so the contract
+        # returns the batch handle (passed to as_encode_video) rather than
+        # an output_folder_name.
+        "frames_batch_id": {"type": "string"},
         "frames_expected": {"type": ["integer", "null"], "minimum": 0},
         "render_function": {"type": "string"},
         "activation_note": {"type": "string"},
@@ -458,7 +462,7 @@ AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
         "script_id",
         "deployment_id",
         "presentation_id",
-        "output_folder_name",
+        "frames_batch_id",
         "render_function",
         "activation_note",
         "project_url",
