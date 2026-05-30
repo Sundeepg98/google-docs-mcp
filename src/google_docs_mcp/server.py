@@ -461,6 +461,17 @@ def main() -> None:
         from .observability import init_sentry
         init_sentry()
 
+        # PR-Δ-volfix: fail loud at boot if the per-user state DB isn't
+        # writable by the runtime user (the SQLITE_READONLY incident).
+        # Runs AFTER init_sentry so the crash is captured, and BEFORE we
+        # accept traffic so a root-owned-volume mismatch surfaces in the
+        # deploy logs instead of silently 500-ing every tool call for
+        # hours. entrypoint.sh fixes the ownership; this verifies it
+        # actually took (defense in depth — and the only guard on the
+        # in-process db_path() if the entrypoint is ever bypassed).
+        from . import user_store
+        user_store.assert_state_db_writable()
+
         # v1.1+: wire GoogleProvider so HTTP requests are per-user
         # authenticated. Stdio path below intentionally skips this —
         # local trust model, single user, no auth middleware.

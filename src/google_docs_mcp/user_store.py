@@ -168,6 +168,66 @@ def db_path() -> Path:
     return default_data_dir() / "user_state.db"
 
 
+def assert_state_db_writable() -> None:
+    """Fail loud at startup if the state DB can't be opened for WRITE.
+
+    The in-process companion to entrypoint.sh's volume-ownership check.
+    This is the SQLITE_READONLY incident's belt-and-suspenders guard:
+    every per-user tool call opens ``user_state.db`` in WAL mode, and
+    WAL init writes both the DB file AND the ``-wal``/``-shm`` sidecars
+    in the parent directory. If the volume's files are owned by a
+    different uid than the runtime user (the classic root-owned-volume-
+    vs-non-root-process mismatch), that open raises
+    ``sqlite3.OperationalError: attempt to write a readonly database``
+    at REQUEST time — silently taking the whole tool surface offline
+    for hours. We'd rather crash at boot, visibly, in the deploy logs.
+
+    Does a REAL write probe (open WAL + a throwaway DDL in a rolled-back
+    txn), not an ``os.access`` check — ``os.access`` lies for root and
+    on some filesystems, and only a real sqlite open exercises the exact
+    WAL-sidecar-creation path that fails in production.
+
+    Raises ``RuntimeError`` (not the raw sqlite error) with an operator-
+    actionable message. Call once at HTTP startup, before serving.
+    """
+    path = db_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(
+            f"State DB directory {path.parent} could not be created/accessed "
+            f"({e}). On Fly this is the /data volume; check the mount is "
+            "present and writable by the runtime user (uid 10001). "
+            "entrypoint.sh normally reconciles this at boot."
+        ) from e
+
+    # Open exactly like _connect does (WAL), and force a write so the
+    # readonly condition surfaces HERE rather than on the first tool call.
+    conn = None
+    try:
+        conn = sqlite3.connect(path, isolation_level=None, timeout=5)
+        conn.execute("PRAGMA journal_mode=WAL")
+        # A transaction we immediately roll back: proves write capability
+        # without mutating real data or requiring the schema to exist yet.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError as e:
+        raise RuntimeError(
+            f"State DB at {path} is NOT writable by the runtime user "
+            f"({e}). This is the SQLITE_READONLY failure mode: the "
+            "persistent volume's files are likely owned by a different "
+            "uid than the server process (uid 10001). The whole tool "
+            "surface would fail at request time, so we refuse to start. "
+            "Fix: ensure entrypoint.sh's root-stage chown ran (the "
+            "container must start as root and drop to app via setpriv); "
+            "or manually 'fly ssh console' + "
+            "'chown -R 10001:10001 /data'. See entrypoint.sh."
+        ) from e
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 # ---------------------------------------------------------------------
 # StorageBackend Protocol + implementations (v2.1)
 # ---------------------------------------------------------------------
