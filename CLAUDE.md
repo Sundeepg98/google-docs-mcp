@@ -7,7 +7,7 @@ Orientation for a fresh Claude session. Keep this a stable map; **live status li
 **appscriptly** is a Workspace-automation MCP server. Its differentiator is generating **persistent Apps Script automations** that live in the user's Google Workspace and run on Google's infrastructure — bound scripts, custom menus, custom `=FUNCTION()`s, scheduled sheet dashboards, slides-to-video decks — plus create/edit/manage of Google **Docs (native Tabs), Sheets, Slides, and Drive**.
 
 - **Tool prefixes:** `gdocs_*` (legacy, docs-first era — kept indefinitely) and `as_*` (newer, appscriptly-native). Both are first-class; don't mass-rename.
-- **Module path:** the implementation package is **`src/appscriptly/`** even though the product/distribution name is `appscriptly`. The module-path rename is deferred — see `MIGRATION_READINESS.md`.
+- **Module path:** the implementation package is **`src/appscriptly/`** — the module path and distribution name now match. Remaining identity moves (GitHub repo transfer, Fly app cutover) are tracked in `MIGRATION_READINESS.md`.
 - **Distribution:** `pyproject.toml` `name = "appscriptly"`, build backend **hatchling**, packages = `src/appscriptly`. Console scripts: **`appscriptly`** and legacy alias **`google-docs-mcp`**, both → `appscriptly.server:main`.
 - **Python:** `>=3.10`. Dep/lock manager: **uv** (`uv.lock`, `uv sync --frozen`).
 
@@ -60,6 +60,7 @@ Deploy (Fly) — normally automatic: push to `main` runs `.github/workflows/depl
 - **CI is the arbiter.** The type/lint gate is `pyright src/` + `ruff check src/ tests/` (note the **`src/` scope** for pyright). Ignore worktree-only import-resolution noise that CI doesn't reproduce.
 - **Adding a service or tool** = define it under `services/X/` with `@workspace_tool` + update that service's **`_expected_tools.py`** + **re-freeze** the golden surface (and bump `_MIN_EXPECTED_TOOL_COUNT` only when deliberately growing the floor).
 - **Behavior-preserving changes keep the golden-surface diff at zero** — if `tool_surface.json` changes unexpectedly, that's a real surface change to explain, not noise to re-freeze away.
+- **Keep ROADMAP self-current:** when you finish a ROADMAP.md item, flip its line to DONE (with the PR #) IN THE SAME PR as the code. ROADMAP.md is the source of truth for what's shipped; memory only *points* to it, never restates status — so the done-marker travels with the code and can't drift.
 - Google API calls go through the `google_api_client` chokepoint; a ruff `TID251` rule bans bare `googleapiclient.discovery.build` imports elsewhere.
 - Deps are CVE-floor-pinned; after editing dependencies, regenerate `uv.lock` (`uv sync`) — CI uses `--frozen` and fails on drift.
 
@@ -69,6 +70,6 @@ Do **not** rely on prose here for volatile state — read the planning docs in t
 
 - **`ROADMAP.md`** — feature / hardening / architecture roadmap (synthesized; pending a verified code audit).
 - **`PHASE1_VERIFICATION_KIT.md`** — Google OAuth verification + dedicated-client plan and operator punch-list.
-- **`MIGRATION_READINESS.md`** — the rename/migration surface (incl. the pending `appscriptly` → `appscriptly` module-path rename) and sequencing.
+- **`MIGRATION_READINESS.md`** — the rename/migration surface (remaining identity moves: GitHub repo transfer + Fly app cutover) and sequencing.
 
 Project ADRs live in `docs/adr/`. Repo URLs / GitHub org and the Fly app name may move per `MIGRATION_READINESS.md`.
