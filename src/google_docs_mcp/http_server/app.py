@@ -27,7 +27,7 @@ from .middleware import (
     RequestIdMiddleware,
     derive_trusted_hosts,
 )
-from .routes.convert import convert_endpoint
+from .routes.convert import convert_endpoint, upload_frame_endpoint
 from .routes.oauth import oauth_google_api_callback
 from .routes.observability import (
     health,
@@ -148,6 +148,19 @@ def build_app(mcp: FastMCP) -> Starlette:
         # token available). Security via HMAC-signed state + single-use
         # nonce store, not via header auth.
         Route(CALLBACK_PATH, oauth_google_api_callback, methods=["GET"]),
+        # Base-tier slides->video frame handoff: the bound renderFrames()
+        # script POSTs each rendered PNG here (authed by a signed batch
+        # token), replacing the drive.readonly Drive round-trip. Public by
+        # design (the HMAC token in the query string IS the credential;
+        # BearerTokenMiddleware only gates /api/* + /info, so /upload/* is
+        # already exempt). MUST be declared BEFORE the catch-all Mount("/")
+        # below, or Starlette resolves /upload/frames/... into the FastMCP
+        # sub-app and the POST 404s (the regression this route fixes).
+        Route(
+            "/upload/frames/{batch_id}/{index}",
+            upload_frame_endpoint,
+            methods=["POST"],
+        ),
         # FastMCP at root mount, with its endpoint at /mcp internally.
         # /mcp (no slash) is the canonical endpoint claude.ai uses.
         Mount("/", app=mcp_app),

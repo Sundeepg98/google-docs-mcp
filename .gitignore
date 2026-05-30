@@ -29,3 +29,6 @@ mutation-check.json
 # Editors
 .idea/
 .vscode/
+_full.txt
+out.txt
+*.log
