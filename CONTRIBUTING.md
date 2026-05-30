@@ -1,73 +1,67 @@
-# Contributing to google-docs-mcp
+# Contributing to appscriptly
 
-## Local dev setup
+Thanks for your interest in contributing! This guide covers the essentials.
+For the full developer map (commands, architecture, conventions) see **CLAUDE.md**
+in the repo root — this file stays short and points there to avoid drift.
 
-Clone, create venv, install with test extras:
+> Note: the GitHub repo and Python module are still named `google-docs-mcp` /
+> `google_docs_mcp` (rename to `appscriptly` is pending — see MIGRATION_READINESS.md).
 
-```bash
-git clone https://github.com/Sundeepg98/google-docs-mcp.git
-cd google-docs-mcp
-python -m venv .venv && source .venv/bin/activate    # or .venv\Scripts\activate on Windows
-pip install -e ".[test]"
+## Project layout
+
 ```
-
-Verify install:
-
-```bash
-python -m pytest tests/unit -q
-```
-
-Should report ~240 tests passing in ~12s. If it doesn't, fix that before changing anything else.
-
-## Running tests
-
-```bash
-python -m pytest tests/unit -q                       # fast feedback loop
-python -m pytest tests/unit -v -k "your_test_name"   # iterate on one test
-python scripts/mutation_check.py                     # mutation gate (~90s)
-```
-
-Live integration tests (in `tests/integration/`) require real Google creds and are not run in CI by default:
-
-```bash
-python -m pytest tests/integration --live           # opt-in via marker
+src/google_docs_mcp/
+├── server.py                       # FastMCP entry; auto-discovers + registers tools
+├── _decorators.py                  # @workspace_tool (auth + creds + registration)
+├── google_api_client.py            # single chokepoint for Google API calls
+├── auth.py / oauth_google.py       # OAuth + credential handling
+└── services/                       # one package per Workspace surface
+    └── {docs,sheets,slides,drive,apps_script,gas_deploy,admin}/
+        ├── *.py                    # tool modules
+        └── _expected_tools.py      # per-service tool manifest (a surface witness)
+tests/golden/tool_surface.json      # repo-wide golden tool surface
+scripts/freeze_tool_surface.py      # regenerate/verify the golden surface
 ```
 
 ## Adding a new tool
 
-1. **Add the tool to `src/google_docs_mcp/server.py`** with `@mcp.tool()` decorator. Docstring uses the project's house style: `USE WHEN:` clause, `Args:` block, `Returns:` block, `Choreography:` clause.
+Tools are **auto-discovered** — there is no central tool list in `server.py`. To add one:
 
-2. **Add a unit test in `tests/unit/test_<name>.py`** — mock the Google API calls; assert the return shape.
+1. Add an `async def` in the appropriate `services/<surface>/` module.
+2. Decorate it with `@workspace_tool(service=..., scopes=..., creds=...)` (from
+   `_decorators.py`) — **not** raw `@mcp.tool()`. The decorator handles auth,
+   credential injection, and registration.
+3. Write a clear docstring (it's the tool description shown to the LLM) + type hints
+   (they generate the input schema).
+4. Route any Google API calls through `google_api_client` (the single chokepoint).
+5. Add the tool to that service's `_expected_tools.py` manifest.
+6. Re-freeze the golden surface: `python scripts/freeze_tool_surface.py`.
+7. Add tests, then run the suite (see below).
 
-3. **Update `_SERVER_INSTRUCTIONS` and `gdocs_guide()`** in `server.py` to mention the new tool in the relevant workflow / tool_group bucket.
-
-4. **Add a mutation guard in `scripts/mutation_check.py`** — define a `Mutation` entry that injects a small bug and names the test that should catch it.
-
-5. **Update `docs/TOOL_CONTRACT.md`** with the new tool's entry in §3.
-
-6. **If security-sensitive** (touches creds, uploads, outbound URLs): add a row to `docs/THREAT_MODEL.md` §4.
-
-7. **If operational impact** (new state, new deploy step, new failure mode): add an entry to `docs/RUNBOOK.md` outage classes.
-
-8. **Update CHANGELOG.md** with the new tool under `### Added`.
+A behavior-preserving change must keep the golden surface diff at **zero**
+(`python scripts/freeze_tool_surface.py --check`).
 
 ## Code style
 
-- Type-annotated. No `Any` in public signatures unless unavoidable.
-- Soft-failure dicts include `reason: str` + `message: str` plus the success-case context fields.
-- Hard-fatal errors `raise ToolError(...) from e` to preserve traceback.
+- Follow PEP 8; type hints throughout; keep functions focused and testable.
+- `ruff` + `pyright` (over `src/`) define style/type green — see Testing.
 
-## PR checklist
+## Testing
 
-- [ ] Test that fails without the change and passes with it
-- [ ] Input validation on every public arg
-- [ ] Errors raise `ToolError` for hard-fatal, return soft-failure dict for recoverable
-- [ ] If new tool: entry added to `docs/TOOL_CONTRACT.md`
-- [ ] If security-sensitive: row added to `docs/THREAT_MODEL.md`
-- [ ] If operational: entry added to `docs/RUNBOOK.md`
-- [ ] CHANGELOG.md updated
-- [ ] CI green: 240+ unit + 8 mutation guards + pip-audit
+Run exactly what CI runs before submitting:
 
-## Filing issues
+```bash
+pytest tests/unit -v --cov-fail-under=55     # unit + coverage gate
+uv run pytest tests/integration/ -v          # integration
+uv run pyright src/                           # type check
+uv run ruff check src/ tests/                # lint
+python scripts/freeze_tool_surface.py --check # tool surface in sync
+```
 
-Use labels: `bug`, `feature`, `security`, `incident`. For security issues, **do not file publicly** — open a private security advisory at https://github.com/Sundeepg98/google-docs-mcp/security/advisories/new instead.
+- Add tests for new functionality. **CI is the arbiter** of green — ignore
+  worktree-only import-resolution noise from your editor.
+- If you change dependencies, update `uv.lock` (`uv lock`) — CI installs `--frozen`.
+
+## Questions?
+
+File an issue.
