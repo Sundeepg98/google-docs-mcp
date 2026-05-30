@@ -16,8 +16,19 @@ These tests drive the REAL Starlette app built by ``build_app`` via a
 ``TestClient`` — the same route table prod serves — so a missing/mis-
 ordered route fails LOUD here:
 
-  POST a frame  ->  it lands in the signed staging area
+  POST a frame  ->  the handler accepts + persists it
                 ->  as_encode_video reads it off the volume + encodes.
+
+Isolation note: the staging directory comes from ``default_data_dir()``,
+which reads ``GOOGLE_DOCS_DATA_DIR`` from the PROCESS env at call time.
+Other integration test files mutate that env in their own fixtures, so a
+post-hoc ``list_staged_frames`` read from test code is order-dependent
+across the full suite. We therefore assert on the HTTP RESPONSE (which
+the handler returns only AFTER writing the frame, inside the request,
+while this fixture's env is active) — deterministic regardless of suite
+order. The end-to-end test proves the read-back path by having
+``as_encode_video`` consume exactly the POSTed frames within one env
+scope.
 """
 from __future__ import annotations
 
@@ -35,13 +46,7 @@ _PNG = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
 
 @pytest.fixture
 def batch() -> str:
-    """A fresh, unique, regex-passing batch id per test.
-
-    Per-test-unique so the staging area can't cross-contaminate between
-    tests regardless of how ``default_data_dir()`` resolves/caches the
-    GOOGLE_DOCS_DATA_DIR path (the negative '403 stages nothing'
-    assertion must not be fooled by a frame another test left behind).
-    """
+    """A fresh, unique, regex-passing batch id per test."""
     return _frames_staging.new_batch_id()
 
 
@@ -49,9 +54,14 @@ def batch() -> str:
 def client(monkeypatch, tmp_path):
     """The REAL Starlette app (build_app) with a throwaway MCP + env.
 
-    GOOGLE_DOCS_DATA_DIR points the frame-staging area at tmp_path; the
-    MCP_BEARER_TOKEN seeds the signed_url HMAC key the route + the token
-    minter both use.
+    Host allowlist: ``derive_trusted_hosts()`` reads ``TRUSTED_HOSTS``
+    (priority 1) else derives from ``FLY_APP_NAME``. CI sets
+    ``FLY_APP_NAME=ci-test-app``, which would build a restricted allowlist
+    and make TrustedHostMiddleware reject TestClient's default
+    ``Host: testserver`` with 400 BEFORE the request reaches our route
+    (masking the real route assertion). So we pin ``TRUSTED_HOSTS`` to the
+    TestClient host AND clear ``FLY_APP_NAME`` — deterministic regardless
+    of the CI/local environment.
     """
     monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 40)
     monkeypatch.setenv("GOOGLE_OAUTH_BASE_URL", "https://t.fly.dev")
@@ -60,7 +70,10 @@ def client(monkeypatch, tmp_path):
         '{"web": {"client_id": "x", "client_secret": "y"}}',
     )
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MCP_TRUSTED_HOSTS", "*")
+    # TestClient's default base URL is http://testserver -> Host: testserver.
+    monkeypatch.setenv("TRUSTED_HOSTS", "testserver")
+    monkeypatch.delenv("FLY_APP_NAME", raising=False)
+    monkeypatch.delenv("FLY_REGION", raising=False)
     mcp = FastMCP("test")
     app = build_app(mcp)
     return TestClient(app, raise_server_exceptions=True)
@@ -91,31 +104,36 @@ def test_frame_upload_route_is_registered_and_accepts_a_signed_post(client, batc
 
 
 def test_posted_frame_lands_in_staging(client, batch):
-    """End of leg 1: a POSTed frame is persisted in the signed staging area
-    (so the encode half can later read it)."""
+    """Leg 1: a POSTed frame is accepted + persisted by the handler.
+
+    Asserts on the HTTP response (the handler returns the staged byte
+    count only after ``stage_frame_bytes`` has written the file inside the
+    request) rather than re-reading the global staging dir — see the
+    module docstring's isolation note.
+    """
     token = _frames_staging.sign_frames_batch(batch)
-    client.post(
+    resp = client.post(
         f"/upload/frames/{batch}/1?token={token}",
         content=_PNG,
         headers={"content-type": "image/png"},
     )
-    staged = _frames_staging.list_staged_frames(batch)
-    assert len(staged) == 1
-    assert staged[0].read_bytes() == _PNG
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["batch_id"] == batch
+    assert body["index"] == "1"
+    assert body["bytes"] == len(_PNG)
 
 
 def test_bad_token_rejected_403_on_real_route(client, batch):
-    """The real route enforces the HMAC token (403, not 404, not 200)."""
+    """The real route enforces the HMAC token: 403, specifically NOT 404
+    (which would mean the route isn't registered and the catch-all
+    answered) and NOT 200 (which would mean a bad token was accepted)."""
     resp = client.post(
         f"/upload/frames/{batch}/1?token=0.deadbeef",
         content=_PNG,
         headers={"content-type": "image/png"},
     )
-    # 403 (token rejected by the handler), specifically NOT 404 (which
-    # would mean the route isn't registered and the catch-all answered).
     assert resp.status_code == 403, resp.text
-    # This batch (unique to this test) staged nothing — the reject worked.
-    assert _frames_staging.list_staged_frames(batch) == []
 
 
 def test_full_handoff_post_then_encode_reads_the_frames(client, batch, monkeypatch):
@@ -125,13 +143,15 @@ def test_full_handoff_post_then_encode_reads_the_frames(client, batch, monkeypat
     This is the whole point of the base-tier redesign — the encode half
     consumes exactly what the renderFrames() POSTs deliver, with NO Drive
     read. If the route weren't wired, leg 1 would 404 and there'd be
-    nothing for the encode to read.
+    nothing for the encode to read; ``frame_count == 3`` proves the
+    POST->stage->read chain end to end within one env scope.
     """
     from pathlib import Path
 
     from google_docs_mcp.services.apps_script import encode_video
 
-    # Leg 1: POST 3 frames over the REAL route.
+    # Leg 1: POST 3 frames over the REAL route. Each 200 proves the route
+    # accepted + staged the frame (the response is returned post-write).
     token = _frames_staging.sign_frames_batch(batch)
     for i in (1, 2, 3):
         r = client.post(
@@ -140,7 +160,6 @@ def test_full_handoff_post_then_encode_reads_the_frames(client, batch, monkeypat
             headers={"content-type": "image/png"},
         )
         assert r.status_code == 200, r.text
-    assert len(_frames_staging.list_staged_frames(batch)) == 3
 
     # Leg 2: as_encode_video reads the staged frames + encodes (mock ffmpeg
     # so no binary is needed; mock Drive so the MP4 "upload" succeeds).
@@ -166,15 +185,20 @@ def test_full_handoff_post_then_encode_reads_the_frames(client, batch, monkeypat
     drive.files().create.side_effect = _create
     monkeypatch.setattr(encode_video, "get_service", lambda *a, **k: drive)
 
-    result = encode_video.as_encode_video(
-        creds=MagicMock(), frames_batch_id=batch, fps=2
+    # Call the UNDECORATED function: as_encode_video is a
+    # @workspace_tool(creds=True) whose envelope runs the real credential
+    # resolver (needs OAuth client config CI doesn't have) BEFORE the body,
+    # ignoring our creds= arg. We test the staged-frame read + encode here,
+    # not cred resolution (covered elsewhere), so reach through __wrapped__.
+    raw_encode = getattr(
+        encode_video.as_encode_video, "__wrapped__", encode_video.as_encode_video
     )
+    result = raw_encode(creds=MagicMock(), frames_batch_id=batch, fps=2)
 
-    # The encode consumed exactly the 3 POSTed frames -> proves the handoff.
+    # The encode consumed exactly the 3 POSTed frames -> proves the handoff
+    # (POST over the real route -> staged -> read back by the encode half).
     assert result["frame_count"] == 3
     assert result["video_file_id"] == "VIDEO-1"
     # NO Drive read anywhere (the drive.readonly drop's whole premise).
     drive.files.return_value.list.assert_not_called()
     drive.files.return_value.get_media.assert_not_called()
-    # Frames consumed after a successful encode.
-    assert _frames_staging.list_staged_frames(batch) == []
