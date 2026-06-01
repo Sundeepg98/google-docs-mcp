@@ -488,6 +488,238 @@ def replace_all_text(
     }
 
 
+def insert_table(
+    creds: Credentials,
+    doc_id: str,
+    rows: int,
+    columns: int,
+    *,
+    index: int = 1,
+    tab_id: str | None = None,
+) -> dict:
+    """Insert an empty ``rows`` × ``columns`` table into a document.
+
+    Uses the Docs ``insertTable`` ``batchUpdate`` request at a
+    ``Location`` (an ``index`` within the body, optionally scoped to a
+    ``tab_id`` for multi-tab docs). The table is created empty;
+    populate cells afterward with ``gdocs_replace_all_text`` (seed
+    template tokens) or a future cell-level insert tool.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline — no extra grant).
+        doc_id: The Google Doc ID.
+        rows: Number of rows (>= 1).
+        columns: Number of columns (>= 1).
+        index: Body location index to insert at. Defaults to 1 (the
+            start of the body — index 0 is reserved by Docs, so 1 is
+            the first valid insertion point). Must be >= 1.
+        tab_id: Optional tab to target. ``None`` targets the document's
+            default/first tab (Docs applies the request without a
+            ``tabId``); pass an explicit tab id (from
+            ``gdocs_get_doc_outline``) for a specific tab in a
+            multi-tab doc.
+
+    Returns:
+        ``{doc_id, rows, columns, index, tab_id}`` — echoes the request.
+        (The Docs ``insertTable`` reply does not carry a stable table
+        object id, so there is none to return; the table is locatable
+        by its ``index`` / via ``gdocs_read_doc``.)
+
+    Raises:
+        ValueError: ``rows`` / ``columns`` < 1, or ``index`` < 1.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if rows < 1 or columns < 1:
+        raise ValueError("rows and columns must each be >= 1.")
+    if index < 1:
+        raise ValueError("index must be >= 1 (index 0 is reserved by Docs).")
+
+    docs = get_service("docs", "v1", credentials=creds)
+    location: dict[str, Any] = {"index": index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        location["tabId"] = tab_id
+    req = {
+        "insertTable": {
+            "location": location,
+            "rows": rows,
+            "columns": columns,
+        }
+    }
+    # NOT idempotent: each call inserts ANOTHER table. Same convention
+    # as gslides_create_table / gsheets_create_spreadsheet.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.insertTable",
+    )
+    return {
+        "doc_id": doc_id,
+        "rows": rows,
+        "columns": columns,
+        "index": index,
+        "tab_id": tab_id,
+    }
+
+
+# Text-style fields supported by gdocs_format_range, mapped to the
+# Docs ``TextStyle`` field name used in the ``fields`` mask. Boolean
+# toggles only; the value-bearing styles (font size / family / color)
+# are handled separately because they carry a magnitude / string.
+_BOOL_STYLE_FIELDS = {
+    "bold": "bold",
+    "italic": "italic",
+    "underline": "underline",
+    "strikethrough": "strikethrough",
+}
+
+
+def _hex_to_rgbcolor(hex_color: str) -> dict:
+    """Convert ``#RRGGBB`` (or ``RRGGBB``) to a Docs ``RgbColor`` dict.
+
+    Docs expects channel magnitudes in [0, 1]. Raises ValueError on a
+    malformed hex string so the caller gets a clear client-side error
+    rather than a Docs 400.
+    """
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        raise ValueError(
+            f"color must be a 6-digit hex like '#1a73e8' — got {hex_color!r}."
+        )
+    try:
+        r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except ValueError:
+        raise ValueError(
+            f"color contains non-hex characters — got {hex_color!r}."
+        ) from None
+    return {"red": r, "green": g, "blue": b}
+
+
+def format_range(
+    creds: Credentials,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    *,
+    tab_id: str | None = None,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    underline: bool | None = None,
+    strikethrough: bool | None = None,
+    font_size_pt: float | None = None,
+    font_family: str | None = None,
+    foreground_color: str | None = None,
+) -> dict:
+    """Apply character formatting to a text range via ``updateTextStyle``.
+
+    Builds a single ``updateTextStyle`` ``batchUpdate`` request over the
+    ``[start_index, end_index)`` range (optionally scoped to ``tab_id``)
+    with a ``fields`` mask listing exactly the styles that were set —
+    so unset styles are left untouched (Docs clears any field named in
+    the mask but not provided, hence the precise mask).
+
+    Only the styles you pass are applied; passing none is an error
+    (there'd be nothing to do). Boolean styles accept True/False;
+    omit (``None``) to leave them as-is.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline — no extra grant).
+        doc_id: The Google Doc ID.
+        start_index: Range start (inclusive), >= 1.
+        end_index: Range end (exclusive), > ``start_index``.
+        tab_id: Optional tab to target (from ``gdocs_get_doc_outline``);
+            ``None`` targets the default/first tab.
+        bold / italic / underline / strikethrough: Optional booleans.
+        font_size_pt: Optional font size in points (> 0).
+        font_family: Optional font family name (e.g. ``"Roboto"``,
+            ``"Arial"``).
+        foreground_color: Optional text color as ``#RRGGBB`` hex.
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, applied}`` —
+        ``applied`` is the list of style field names that were set
+        (the ``fields`` mask), for caller confirmation.
+
+    Raises:
+        ValueError: bad range, no styles supplied, non-positive font
+            size, or malformed color.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if start_index < 1:
+        raise ValueError("start_index must be >= 1.")
+    if end_index <= start_index:
+        raise ValueError("end_index must be greater than start_index.")
+    if font_size_pt is not None and font_size_pt <= 0:
+        raise ValueError("font_size_pt must be positive.")
+
+    text_style: dict[str, Any] = {}
+    fields: list[str] = []
+    for arg_val, field_name in (
+        (bold, "bold"),
+        (italic, "italic"),
+        (underline, "underline"),
+        (strikethrough, "strikethrough"),
+    ):
+        if arg_val is not None:
+            text_style[field_name] = arg_val
+            fields.append(field_name)
+    if font_size_pt is not None:
+        text_style["fontSize"] = {"magnitude": font_size_pt, "unit": "PT"}
+        fields.append("fontSize")
+    if font_family is not None:
+        if not font_family.strip():
+            raise ValueError("font_family cannot be the empty string.")
+        text_style["weightedFontFamily"] = {"fontFamily": font_family}
+        fields.append("weightedFontFamily")
+    if foreground_color is not None:
+        text_style["foregroundColor"] = {
+            "color": {"rgbColor": _hex_to_rgbcolor(foreground_color)}
+        }
+        fields.append("foregroundColor")
+
+    if not fields:
+        raise ValueError(
+            "no styles supplied — pass at least one of bold / italic / "
+            "underline / strikethrough / font_size_pt / font_family / "
+            "foreground_color."
+        )
+
+    docs = get_service("docs", "v1", credentials=creds)
+    rng: dict[str, Any] = {"startIndex": start_index, "endIndex": end_index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        rng["tabId"] = tab_id
+    req = {
+        "updateTextStyle": {
+            "range": rng,
+            "textStyle": text_style,
+            "fields": ",".join(fields),
+        }
+    }
+    # Idempotent: applying the same style to the same range twice yields
+    # the same document state. Matches gdocs_replace_all_text's framing.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.updateTextStyle",
+    )
+    return {
+        "doc_id": doc_id,
+        "start_index": start_index,
+        "end_index": end_index,
+        "tab_id": tab_id,
+        "applied": fields,
+    }
+
+
 def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
     """Read body content of every tab in one call.
 

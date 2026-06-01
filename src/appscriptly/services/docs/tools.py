@@ -52,7 +52,9 @@ from appscriptly.services.docs.api import (
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
     delete_tab as _delete_tab,
+    format_range as _format_range,
     get_doc_outline as _get_doc_outline,
+    insert_table as _insert_table,
     make_doc_with_tabs,
     read_all_tabs as _read_all_tabs,
     read_tab_content as _read_tab_content,
@@ -64,8 +66,10 @@ from appscriptly.tool_schemas import (
     GDOCS_ADD_TABS_OUTPUT_SCHEMA,
     GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
     GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
+    GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
     GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
+    GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
     GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
     GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA,
     GDOCS_READ_DOC_OUTPUT_SCHEMA,
@@ -915,3 +919,141 @@ def gdocs_preview_tab_split(
         raise ToolError(str(e)) from e
     except HttpError as e:
         raise ToolError(_format_http_error(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_table — documents.batchUpdate (insertTable)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Insert a table into a document",
+    # Inserts a new table — a write, not destructive (existing content
+    # untouched; the table can be removed later). Matches
+    # gslides_create_table / gsheets_create_spreadsheet.
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
+)
+def gdocs_insert_table(
+    creds,
+    doc_id: str,
+    rows: int,
+    columns: int,
+    index: int = 1,
+    tab_id: str | None = None,
+) -> dict:
+    """Insert an empty ``rows`` × ``columns`` table into a document.
+
+    USE WHEN: adding tabular layout to a Doc (comparison grids,
+    schedules, specs). The table is created EMPTY; populate cells
+    afterward by seeding template tokens and calling
+    ``gdocs_replace_all_text``, or via a future cell-level text tool.
+
+    Uses the Docs ``insertTable`` ``batchUpdate`` request at a body
+    ``index`` (optionally scoped to a ``tab_id`` for multi-tab docs).
+
+    Args:
+        doc_id: Document ID.
+        rows: Number of rows (>= 1).
+        columns: Number of columns (>= 1).
+        index: Body location index to insert at. Default 1 (start of
+            the body; index 0 is reserved by Docs). Must be >= 1.
+        tab_id: Optional tab to target (from
+            ``gdocs_get_doc_outline``). Omit / None targets the
+            default/first tab.
+
+    Returns:
+        ``{doc_id, rows, columns, index, tab_id}``. (Docs' insertTable
+        reply carries no stable table id; locate the table via
+        ``gdocs_read_doc`` / its index.)
+
+    Choreography: ``gdocs_make_tabbed_doc`` → ``gdocs_insert_table`` →
+    seed tokens + ``gdocs_replace_all_text`` to fill cells →
+    ``gdocs_read_doc`` to verify.
+
+    NOTE: markdown-table *parsing* (auto-rendering a ``| a | b |``
+    block into a Docs table) is a separate, larger follow-up; this
+    tool inserts a structured empty table directly.
+    """
+    try:
+        return _insert_table(
+            creds, doc_id, rows, columns, index=index, tab_id=tab_id,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_format_range — documents.batchUpdate (updateTextStyle)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Apply character formatting to a text range",
+    # Restyling text in place is not destructive (text persists; style
+    # can be re-applied). Idempotent: same style + range twice = same
+    # state. Matches gdocs_replace_all_text's framing.
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
+)
+def gdocs_format_range(
+    creds,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    tab_id: str | None = None,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    underline: bool | None = None,
+    strikethrough: bool | None = None,
+    font_size_pt: float | None = None,
+    font_family: str | None = None,
+    foreground_color: str | None = None,
+) -> dict:
+    """Apply character formatting to a ``[start_index, end_index)`` range.
+
+    USE WHEN: styling specific text — bold a heading, color a warning,
+    set a font/size on a span. Complements ``gdocs_replace_all_text``
+    (which changes content, not appearance).
+
+    Uses the Docs ``updateTextStyle`` ``batchUpdate`` request with a
+    precise ``fields`` mask, so only the styles you pass are changed;
+    everything else is left as-is. Pass at least one style.
+
+    To find indices: ``gdocs_read_doc`` / ``gdocs_get_doc_outline``
+    expose document structure; Docs indices are character offsets.
+
+    Args:
+        doc_id: Document ID.
+        start_index: Range start (inclusive), >= 1.
+        end_index: Range end (exclusive), > start_index.
+        tab_id: Optional tab to target (from
+            ``gdocs_get_doc_outline``). Omit / None = default/first tab.
+        bold / italic / underline / strikethrough: Optional booleans
+            (omit to leave unchanged).
+        font_size_pt: Optional font size in points (> 0).
+        font_family: Optional font family (e.g. "Roboto", "Arial").
+        foreground_color: Optional text color, ``#RRGGBB`` hex.
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, applied}`` —
+        ``applied`` lists the style fields that were set.
+
+    Choreography: ``gdocs_read_doc`` to find the character range →
+    ``gdocs_format_range`` to style it.
+    """
+    try:
+        return _format_range(
+            creds, doc_id, start_index, end_index,
+            tab_id=tab_id,
+            bold=bold, italic=italic, underline=underline,
+            strikethrough=strikethrough,
+            font_size_pt=font_size_pt, font_family=font_family,
+            foreground_color=foreground_color,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
