@@ -48,6 +48,7 @@ EXPECTED_TOOLS = {
     "gsheets_read_range",  # v2.3.1: Sheets values.get
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create
+    "gsheets_format_range",  # Sheets batchUpdate (repeatCell) via the request-builder
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create

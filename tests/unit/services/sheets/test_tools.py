@@ -67,6 +67,10 @@ def sheets_stub():
         "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/NEW-1/edit",
         "properties": {"title": "T"},
     }
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "S1",
+        "replies": [{}],
+    }
     return sheets
 
 
@@ -176,6 +180,71 @@ def test_gsheets_create_spreadsheet_rejects_blank_title(with_sheets_stub):
     """Blank-title rejection from the api module bubbles up cleanly."""
     with pytest.raises(ValueError, match="title cannot be empty"):
         tools.gsheets_create_spreadsheet(title="   ")
+
+
+# ---------------------------------------------------------------------
+# 4. gsheets_format_range — happy path + validation (batchUpdate seam)
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_format_range_happy_path(with_sheets_stub):
+    """A format call dispatches a repeatCell batchUpdate and returns the
+    flat ``{spreadsheet_id, total_requests, replies}`` envelope."""
+    result = tools.gsheets_format_range(
+        spreadsheet_id="SPREAD1",
+        sheet_id=0,
+        start_row=0,
+        end_row=1,
+        bold=True,
+    )
+    # ``batch_update`` echoes the INPUT spreadsheet_id arg (not the
+    # ``spreadsheetId`` field from the API response), so the envelope
+    # carries "SPREAD1" regardless of what the stub response says.
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_gsheets_format_range_forwards_options_to_batchUpdate(with_sheets_stub):
+    """Tool-layer pass-through: the flat kwargs reach the Sheets
+    batchUpdate as a single repeatCell with the expected field mask."""
+    tools.gsheets_format_range(
+        spreadsheet_id="SPREAD1",
+        sheet_id=2,
+        start_row=0,
+        end_row=1,
+        start_col=0,
+        end_col=2,
+        bold=True,
+        horizontal_alignment="CENTER",
+    )
+    # The shared fixture pre-calls ``batchUpdate()`` (no args) during
+    # setup, which records a kwarg-less entry in call_args_list; pick
+    # the most recent REAL call (the one carrying spreadsheetId).
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no batchUpdate() call captured spreadsheetId"
+    last_call = real_calls[-1]
+    requests = last_call.kwargs["body"]["requests"]
+    assert len(requests) == 1
+    rc = requests[0]["repeatCell"]
+    assert rc["range"]["sheetId"] == 2
+    assert set(rc["fields"].split(",")) == {
+        "userEnteredFormat.textFormat.bold",
+        "userEnteredFormat.horizontalAlignment",
+    }
+
+
+def test_gsheets_format_range_rejects_empty_format(with_sheets_stub):
+    """No format options -> ValueError bubbles through the decorator
+    envelope (the builder rejects an empty repeatCell before the call)."""
+    with pytest.raises(ValueError, match="fmt is empty"):
+        tools.gsheets_format_range(spreadsheet_id="SPREAD1", sheet_id=0)
 
 
 # ---------------------------------------------------------------------

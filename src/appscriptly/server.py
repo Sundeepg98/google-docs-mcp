@@ -337,7 +337,7 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # DROPPED below known-good (e.g. a discovery miss, a folder that
 # stopped importing). The CI golden test enforces exact-match; this
 # floor is the runtime backstop. Bump deliberately + rarely.
-_MIN_EXPECTED_TOOL_COUNT = 39
+_MIN_EXPECTED_TOOL_COUNT = 40
 
 _discovery_failures: list[tuple[str, str]] = []
 

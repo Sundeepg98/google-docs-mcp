@@ -9,4 +9,5 @@ EXPECTED: frozenset[str] = frozenset({
     "gsheets_read_range",
     "gsheets_write_range",
     "gsheets_create_spreadsheet",
+    "gsheets_format_range",
 })

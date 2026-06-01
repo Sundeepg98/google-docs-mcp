@@ -280,6 +280,19 @@ GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_format_range`` returns the flat ``batch_update`` envelope:
+# the spreadsheet id, the number of batchUpdate requests sent (1 — a
+# single repeatCell), and Sheets' raw per-request reply list.
+GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
 # ---------------------------------------------------------------------
 # Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
 # ---------------------------------------------------------------------
@@ -703,6 +716,7 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
     "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
+    "gsheets_format_range": GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
     # v2.3.2 — Slides (3rd new service, minimal start)
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,

@@ -33,6 +33,7 @@
   "gdocs_trash_file",
   "gdocs_untrash_file",
   "gsheets_create_spreadsheet",
+  "gsheets_format_range",
   "gsheets_read_range",
   "gsheets_write_range",
   "gslides_create_presentation",
