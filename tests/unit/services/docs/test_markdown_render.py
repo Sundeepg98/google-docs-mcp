@@ -20,11 +20,16 @@ without needing Google API mocks.
 """
 from __future__ import annotations
 
+import pytest
+
 from appscriptly.services.docs.markdown_render import (
     _add_tab_request,
+    _is_table_separator,
     _plain_text_requests,
     _rename_tab_request,
+    _split_table_row,
     _tab_properties,
+    parse_markdown_table,
     render_content_to_requests,
 )
 
@@ -356,3 +361,68 @@ def test_property_render_every_request_has_exactly_one_allowed_op_key(content):
             f"request uses undocumented op key {op_key!r}; "
             f"allowed: {sorted(_ALLOWED_REQUEST_KEYS)}; full request={r!r}"
         )
+
+
+# ---------------------------------------------------------------------
+# parse_markdown_table — pure GFM-table parser
+# ---------------------------------------------------------------------
+
+
+def test_split_table_row_strips_pipes_and_whitespace():
+    assert _split_table_row("| a | b | c |") == ["a", "b", "c"]
+    assert _split_table_row("a|b|c") == ["a", "b", "c"]
+
+
+def test_split_table_row_handles_escaped_pipe():
+    assert _split_table_row(r"| a\|x | b |") == ["a|x", "b"]
+
+
+def test_is_table_separator_recognizes_alignment_markers():
+    assert _is_table_separator("|---|---|") is True
+    assert _is_table_separator("| :--- | :---: | ---: |") is True
+    assert _is_table_separator("| a | b |") is False
+    assert _is_table_separator("|   |---|") is False  # empty cell
+
+
+def test_parse_markdown_table_basic():
+    md = "| Name | Qty |\n|------|-----|\n| Widget | 3 |\n| Gadget | 5 |"
+    result = parse_markdown_table(md)
+    assert result["rows"] == 3  # header + 2 body
+    assert result["columns"] == 2
+    assert result["cells"] == [
+        ["Name", "Qty"],
+        ["Widget", "3"],
+        ["Gadget", "5"],
+    ]
+
+
+def test_parse_markdown_table_pads_short_and_truncates_long_rows():
+    md = "| A | B | C |\n|---|---|---|\n| 1 |\n| x | y | z | extra |"
+    result = parse_markdown_table(md)
+    assert result["columns"] == 3
+    assert result["cells"][1] == ["1", "", ""]      # padded
+    assert result["cells"][2] == ["x", "y", "z"]    # truncated
+
+
+def test_parse_markdown_table_ignores_blank_lines():
+    md = "\n\n| H |\n|---|\n| v |\n\n"
+    result = parse_markdown_table(md)
+    assert result["rows"] == 2
+    assert result["columns"] == 1
+
+
+def test_parse_markdown_table_header_only_is_valid():
+    md = "| H1 | H2 |\n|----|----|"
+    result = parse_markdown_table(md)
+    assert result["rows"] == 1
+    assert result["cells"] == [["H1", "H2"]]
+
+
+def test_parse_markdown_table_rejects_missing_separator():
+    with pytest.raises(ValueError, match="separator row"):
+        parse_markdown_table("| a | b |\n| c | d |")
+
+
+def test_parse_markdown_table_rejects_single_line():
+    with pytest.raises(ValueError, match="at least a header"):
+        parse_markdown_table("| just a header |")

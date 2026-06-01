@@ -30,6 +30,7 @@ the same ``list[dict]`` shape that ``api.py`` consumes via
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -389,3 +390,90 @@ def render_content_to_requests(
         _process(tok, ctx)
     _finalize(ctx)
     return ctx.inserts + ctx.formats
+
+
+# ---------------------------------------------------------------------
+# Markdown-table parsing (pure helper for gdocs_insert_markdown_table)
+# ---------------------------------------------------------------------
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Split one GFM table row into cell strings.
+
+    Handles escaped pipes (``\\|`` → literal ``|`` inside a cell) and
+    strips the optional leading/trailing ``|`` plus per-cell
+    whitespace. A line like ``| a | b\\|c | `` → ``["a", "b|c"]``.
+    """
+    # Temporarily protect escaped pipes, split on bare pipes, restore.
+    protected = line.replace("\\|", "\x00")
+    # Drop one leading and one trailing unescaped pipe if present.
+    stripped = protected.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [c.replace("\x00", "|").strip() for c in stripped.split("|")]
+    return cells
+
+
+def _is_table_separator(line: str) -> bool:
+    """True if ``line`` is a GFM header/body separator (``|---|:--:|``).
+
+    Each cell between pipes must be hyphens with optional leading/
+    trailing colons (alignment markers) and surrounding whitespace.
+    """
+    cells = _split_table_row(line)
+    if not cells:
+        return False
+    for cell in cells:
+        c = cell.strip()
+        if not c:
+            return False
+        if not re.fullmatch(r":?-+:?", c):
+            return False
+    return True
+
+
+def parse_markdown_table(markdown: str) -> dict[str, Any]:
+    """Parse a GFM markdown table into ``{rows, columns, cells}``.
+
+    ``cells`` is a list of rows, each a list of cell strings, INCLUDING
+    the header row (so ``rows`` counts header + body). Every row is
+    padded / truncated to ``columns`` (= the header's cell count) so the
+    grid is rectangular — Docs tables are strictly rectangular.
+
+    Args:
+        markdown: A markdown table — a header row, a separator row
+            (``|---|---|``), then zero or more body rows. Leading/
+            trailing blank lines are ignored.
+
+    Returns:
+        ``{"rows": int, "columns": int, "cells": list[list[str]]}``.
+
+    Raises:
+        ValueError: no recognizable table (missing separator, fewer
+            than the header+separator lines, or zero columns).
+    """
+    lines = [ln for ln in markdown.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        raise ValueError(
+            "not a markdown table — need at least a header row and a "
+            "'|---|---|' separator row."
+        )
+    if not _is_table_separator(lines[1]):
+        raise ValueError(
+            "second non-blank line must be a separator row like "
+            "'|---|---|' (hyphens, optional alignment colons)."
+        )
+    header = _split_table_row(lines[0])
+    columns = len(header)
+    if columns == 0:
+        raise ValueError("table header has zero columns.")
+
+    body = [_split_table_row(ln) for ln in lines[2:]]
+    grid: list[list[str]] = [header]
+    for row in body:
+        # Pad short rows, truncate long ones → rectangular grid.
+        normalized = (row + [""] * columns)[:columns]
+        grid.append(normalized)
+    return {"rows": len(grid), "columns": columns, "cells": grid}

@@ -25,6 +25,8 @@ EXPECTED: frozenset[str] = frozenset({
     "gdocs_replace_all_text",
     "gdocs_insert_table",
     "gdocs_format_range",
+    "gdocs_format_paragraph",
+    "gdocs_insert_markdown_table",
     "gdocs_set_tab_icons",
     "gdocs_preview_tab_split",
 })

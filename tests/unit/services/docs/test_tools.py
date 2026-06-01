@@ -654,3 +654,169 @@ def test_gdocs_format_range_rejects_bad_color(with_docs_stub):
         tools.gdocs_format_range(
             doc_id="DOC1", start_index=1, end_index=5, foreground_color="blue",
         )
+
+
+# ---------------------------------------------------------------------
+# gdocs_format_paragraph — batchUpdate (updateParagraphStyle)
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_format_paragraph_happy_path_alignment(with_docs_stub):
+    result = tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=1, end_index=10, alignment="center",
+    )
+    assert result == {
+        "doc_id": "DOC1",
+        "start_index": 1,
+        "end_index": 10,
+        "tab_id": None,
+        "applied": ["alignment"],
+    }
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    assert req["paragraphStyle"]["alignment"] == "CENTER"
+    assert req["fields"] == "alignment"
+
+
+def test_gdocs_format_paragraph_multiple_attrs_and_fields_mask(with_docs_stub):
+    tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=2, end_index=20,
+        named_style="HEADING_1", line_spacing=150, space_above_pt=6,
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    ps = req["paragraphStyle"]
+    assert ps["namedStyleType"] == "HEADING_1"
+    assert ps["lineSpacing"] == 150
+    assert ps["spaceAbove"] == {"magnitude": 6, "unit": "PT"}
+    assert set(req["fields"].split(",")) == {
+        "namedStyleType", "lineSpacing", "spaceAbove",
+    }
+
+
+def test_gdocs_format_paragraph_alignment_aliases(with_docs_stub):
+    tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=1, end_index=5, alignment="right",
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    assert req["paragraphStyle"]["alignment"] == "END"
+
+
+def test_gdocs_format_paragraph_rejects_unknown_alignment(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="alignment must be one of"):
+        tools.gdocs_format_paragraph(
+            doc_id="DOC1", start_index=1, end_index=5, alignment="sideways",
+        )
+
+
+def test_gdocs_format_paragraph_rejects_unknown_named_style(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="named_style must be one of"):
+        tools.gdocs_format_paragraph(
+            doc_id="DOC1", start_index=1, end_index=5, named_style="HEADING_9",
+        )
+
+
+def test_gdocs_format_paragraph_requires_at_least_one_attr(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="no paragraph attributes supplied"):
+        tools.gdocs_format_paragraph(doc_id="DOC1", start_index=1, end_index=5)
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_markdown_table — parse + insertTable + fill cells
+# ---------------------------------------------------------------------
+
+
+def _table_doc_fixture(rows: int, columns: int, base: int = 2):
+    """Build a documents().get() response whose default-tab body has one
+    table with deterministic per-cell startIndex values."""
+    idx = base
+    table_rows = []
+    for _r in range(rows):
+        cells = []
+        for _c in range(columns):
+            cells.append({"content": [{"startIndex": idx}]})
+            idx += 2  # each empty cell occupies a couple of indices
+        table_rows.append({"tableCells": cells})
+    return {
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "t.0"},
+                "documentTab": {
+                    "body": {
+                        "content": [
+                            {"startIndex": 1, "table": {"tableRows": table_rows}},
+                        ],
+                    },
+                },
+            },
+        ],
+    }
+
+
+def test_gdocs_insert_markdown_table_happy_path(with_docs_stub):
+    """Parses a 2-col table, inserts it, and fills the non-empty cells.
+    Verifies the envelope + that an insertTable + a fill batchUpdate ran."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=2, columns=2,
+    )
+    md = "| H1 | H2 |\n|----|----|\n| a | b |"
+    result = tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    assert result == {
+        "doc_id": "DOC1",
+        "rows": 2,
+        "columns": 2,
+        "index": 1,
+        "tab_id": None,
+        "cells_filled": 4,  # H1,H2,a,b all non-empty
+    }
+    # insertTable was issued
+    bodies = [
+        c.kwargs["body"] for c in with_docs_stub.documents().batchUpdate.call_args_list
+        if "body" in c.kwargs
+    ]
+    assert any(
+        "insertTable" in b["requests"][0] for b in bodies
+    ), "no insertTable batchUpdate was issued"
+
+
+def test_gdocs_insert_markdown_table_fills_in_reverse_index_order(with_docs_stub):
+    """The cell-fill batchUpdate must order insertText requests by
+    DESCENDING index so earlier inserts don't shift later ones."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=1, columns=3,
+    )
+    md = "| a | b | c |\n|---|---|---|"
+    tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    # Find the fill batchUpdate (the one with insertText requests)
+    fill = None
+    for c in with_docs_stub.documents().batchUpdate.call_args_list:
+        body = c.kwargs.get("body", {})
+        reqs = body.get("requests", [])
+        if reqs and "insertText" in reqs[0]:
+            fill = reqs
+            break
+    assert fill is not None, "no cell-fill batchUpdate found"
+    indices = [r["insertText"]["location"]["index"] for r in fill]
+    assert indices == sorted(indices, reverse=True), (
+        f"insertText requests not in descending index order: {indices}"
+    )
+
+
+def test_gdocs_insert_markdown_table_skips_empty_cells(with_docs_stub):
+    """Empty cells produce no insertText (cells_filled counts only
+    non-empty)."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=2, columns=2,
+    )
+    md = "| H1 | H2 |\n|----|----|\n| a |  |"  # second body cell empty
+    result = tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    assert result["cells_filled"] == 3  # H1, H2, a (not the empty one)
+
+
+def test_gdocs_insert_markdown_table_rejects_bad_markdown(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="separator row"):
+        tools.gdocs_insert_markdown_table(
+            doc_id="DOC1", markdown="| a | b |\n| c | d |",
+        )
