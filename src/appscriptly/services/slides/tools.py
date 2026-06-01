@@ -4,23 +4,25 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (3 slides-service tools — minimal start):
+**Tools registered here** (4 slides-service tools):
 
 1. ``gslides_get_outline``         — read structure + per-slide text
 2. ``gslides_replace_all_text``    — find/replace across all slides
 3. ``gslides_create_presentation`` — create an empty new deck
+4. ``gslides_add_slide``           — append a slide (+ title/body text)
 
-The minimal trio enables a complete 3-call workflow:
-``create_presentation`` → ``replace_all_text`` (against a template
-the user created) → ``get_outline`` (to verify).
+The first three were the minimal trio; ``gslides_add_slide`` closes
+the population gap so ``create_presentation`` → ``add_slide`` (×N) →
+``get_outline`` is a complete create-and-fill workflow (previously a
+fresh deck could only be edited via ``replace_all_text`` against text
+that already existed — leaving no way to populate an empty deck).
 
-**Deferred to a follow-up PR** (per multi-service feasibility audit):
-the ``batchUpdate`` tagged-union surface (addSlide, replaceImage,
-updateTextStyle, updateShapeProperties, etc. — ~40 request types).
-This PR proves Slides slots into the per-service template just as
-cleanly as Sheets did; the batchUpdate abstraction can be designed
-when 3+ real consumers exist (M3 Phase C's extraction-trigger rule
-applied to API shapes).
+**Still deferred to a follow-up PR**: the rest of the Slides
+``batchUpdate`` tagged-union (replaceImage, updateTextStyle,
+updateShapeProperties, createTable, etc.). ``gslides_add_slide`` is
+the first ``createSlide``/``insertText`` carve-out from that surface;
+the broader tagged-union abstraction can be designed when more
+request types have real consumers.
 
 **Import discipline.** Same as ``services/sheets/tools.py``:
 
@@ -34,11 +36,13 @@ from __future__ import annotations
 
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.slides.api import (
+    add_slide as _add_slide,
     create_presentation as _create_presentation,
     get_outline as _get_outline,
     replace_all_text as _replace_all_text,
 )
 from appscriptly.tool_schemas import (
+    GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
@@ -227,3 +231,80 @@ def gslides_create_presentation(creds, title: str) -> dict:
     swap in templated content.
     """
     return _create_presentation(creds, title)
+
+
+# ---------------------------------------------------------------------
+# 4. gslides_add_slide — batchUpdate (createSlide + insertText)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Append a slide (optional title + body) to a presentation",
+    # Appends a new slide — not a mutation of existing slides, and
+    # text can be edited afterward. Matches gslides_create_presentation
+    # / gsheets_write_range (writes, but not "destructive").
+    readonly=False,
+    destructive=False,
+    # Re-running appends ANOTHER slide — NOT idempotent. Same
+    # convention as gslides_create_presentation.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
+)
+def gslides_add_slide(
+    creds,
+    presentation_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    layout: str = "TITLE_AND_BODY",
+) -> dict:
+    """Append a slide to a deck, optionally with title + body text.
+
+    USE WHEN: building out a deck's CONTENT — this is what turns a
+    freshly-created (empty) presentation into a real one. Pairs with
+    ``gslides_create_presentation``: create the deck, then call this
+    once per slide to populate it.
+
+    Uses Slides' ``presentations.batchUpdate`` with a ``createSlide``
+    request (predefined layout + deterministic placeholder IDs)
+    followed by ``insertText`` into those placeholders — one atomic
+    round trip, so the slide and its text commit together. This is
+    the first ``createSlide``/``insertText`` carve-out from the
+    larger Slides batchUpdate surface.
+
+    Args:
+        presentation_id: The presentation to append to (from
+            ``gslides_create_presentation`` or
+            ``gdocs_find_doc_by_title``).
+        title: Optional title text. Inserted only when ``layout`` has
+            a TITLE placeholder (``TITLE_AND_BODY`` / ``TITLE_ONLY``)
+            and the text is non-empty.
+        body: Optional body text. Inserted only with
+            ``layout="TITLE_AND_BODY"`` (the only supported layout
+            with a BODY placeholder). Passing ``body`` with another
+            layout is rejected.
+        layout: Slides ``predefinedLayout`` — one of
+            ``"TITLE_AND_BODY"`` (default), ``"TITLE_ONLY"``,
+            ``"BLANK"``.
+
+    Returns:
+        ``{presentation_id, slide_object_id, url}``. ``slide_object_id``
+        is the new slide's stable ID (matches the ``object_id`` you'll
+        later see in ``gslides_get_outline``, and is a valid target
+        for future batchUpdate writes). ``url`` deep-links to the
+        slide.
+
+    Choreography: ``gslides_create_presentation`` → ``gslides_add_slide``
+    (×N) → ``gslides_get_outline`` to verify, or
+    ``gslides_replace_all_text`` to swap templated tokens. File the
+    deck with ``gdocs_move_to_folder`` / share via ``gdocs_share_file``.
+    """
+    return _add_slide(
+        creds,
+        presentation_id=presentation_id,
+        title=title,
+        body=body,
+        layout=layout,
+    )

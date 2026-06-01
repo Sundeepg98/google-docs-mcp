@@ -328,6 +328,18 @@ GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gslides_add_slide`` appends a slide (optionally with title + body)
+# and returns the new slide's stable objectId plus a deep-link URL.
+GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+    },
+    required=["presentation_id", "slide_object_id", "url"],
+)
+
+
 # ---------------------------------------------------------------------
 # Apps Script — bound-script generator (PR-Δ7)
 # ---------------------------------------------------------------------
@@ -721,6 +733,7 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
+    "gslides_add_slide": GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)

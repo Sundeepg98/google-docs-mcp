@@ -195,6 +195,63 @@ def test_gslides_create_presentation_rejects_blank_title(with_slides_stub):
 
 
 # ---------------------------------------------------------------------
+# 4. gslides_add_slide — happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_add_slide_happy_path(with_slides_stub):
+    """create+populate a slide → flat ``{presentation_id,
+    slide_object_id, url}`` envelope through the decorator boundary."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"createSlide": {"objectId": "appscriptly_slide"}}, {}, {}],
+    }
+    result = tools.gslides_add_slide(
+        presentation_id="DECK1", title="Overview", body="Details",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "appscriptly_slide",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK1"
+            "/edit#slide=id.appscriptly_slide"
+        ),
+    }
+
+
+def test_gslides_add_slide_forwards_title_and_body_to_insertText(
+    with_slides_stub,
+):
+    """The decorated tool forwards title + body into the api layer,
+    which emits insertText requests carrying that exact text."""
+    tools.gslides_add_slide(
+        presentation_id="DECK1", title="T-text", body="B-text",
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    texts = {
+        r["insertText"]["text"]
+        for r in last.kwargs["body"]["requests"]
+        if "insertText" in r
+    }
+    assert texts == {"T-text", "B-text"}
+
+
+def test_gslides_add_slide_rejects_unsupported_layout(with_slides_stub):
+    """Layout validation from the api module bubbles up cleanly."""
+    with pytest.raises(ValueError, match="layout must be one of"):
+        tools.gslides_add_slide(presentation_id="DECK1", layout="WRONG")
+
+
+def test_gslides_add_slide_rejects_body_without_body_layout(with_slides_stub):
+    """body + non-TITLE_AND_BODY layout is rejected before any API
+    call, surfacing through the decorator envelope."""
+    with pytest.raises(ValueError, match="body text requires a layout"):
+        tools.gslides_add_slide(
+            presentation_id="DECK1", body="x", layout="TITLE_ONLY",
+        )
+
+
+# ---------------------------------------------------------------------
 # Decorator-envelope cross-check: _get_credentials_fn is invoked
 # ---------------------------------------------------------------------
 
