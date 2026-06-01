@@ -293,6 +293,54 @@ GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_append_rows`` appends rows after a table's last row
+# (values.append — race-free) and returns where they landed + counts.
+GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA = _object(
+    properties={
+        "updated_range": {"type": "string"},
+        "updated_cells": {"type": "integer", "minimum": 0},
+        "updated_rows": {"type": "integer", "minimum": 0},
+    },
+    required=["updated_range", "updated_cells", "updated_rows"],
+)
+
+
+# ``gsheets_add_sheet`` adds a tab and returns the gid Sheets assigned
+# it. ``sheet_id`` / ``index`` are integers Sheets echoes back;
+# ``index`` may be absent if Sheets omits it from the reply (hence not
+# required).
+GSHEETS_ADD_SHEET_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "sheet_id": {"type": "integer"},
+        "title": {"type": "string"},
+        "index": {"type": ["integer", "null"], "minimum": 0},
+    },
+    required=["spreadsheet_id", "sheet_id", "title"],
+)
+
+
+# ``gsheets_delete_sheet`` echoes the removed tab's gid.
+GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "deleted_sheet_id": {"type": "integer"},
+    },
+    required=["spreadsheet_id", "deleted_sheet_id"],
+)
+
+
+# ``gsheets_rename_sheet`` echoes the tab's gid + its new name.
+GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "sheet_id": {"type": "integer"},
+        "title": {"type": "string"},
+    },
+    required=["spreadsheet_id", "sheet_id", "title"],
+)
+
+
 # ---------------------------------------------------------------------
 # Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
 # ---------------------------------------------------------------------
@@ -769,6 +817,11 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
     "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     "gsheets_format_range": GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
+    # Sheets append + tab lifecycle (this PR)
+    "gsheets_append_rows": GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
+    "gsheets_add_sheet": GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
+    "gsheets_delete_sheet": GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA,
+    "gsheets_rename_sheet": GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA,
     # v2.3.2 — Slides (3rd new service, minimal start)
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,

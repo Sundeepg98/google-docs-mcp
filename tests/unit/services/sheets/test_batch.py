@@ -34,11 +34,14 @@ from appscriptly.google_api_client import (
 from appscriptly.services.sheets.batch import (
     _format_field_mask,
     add_conditional_format_rule_request,
+    add_sheet_request,
     batch_update,
     cell_format,
     color,
+    delete_sheet_request,
     grid_range,
     repeat_cell_request,
+    update_sheet_title_request,
 )
 
 
@@ -353,3 +356,87 @@ def test_batch_update_defaults_to_empty_replies_when_sheets_omits_them(
     req = repeat_cell_request(grid_range(0), cell_format(bold=True))
     result = batch_update(MagicMock(), "SPREAD1", [req])
     assert result["replies"] == []
+
+
+# ---------------------------------------------------------------------
+# add_sheet_request — sheet-lifecycle builder (tab add)
+# ---------------------------------------------------------------------
+
+
+def test_add_sheet_request_minimal_shape():
+    """Just a title -> addSheet with properties.title, no index."""
+    req = add_sheet_request("Summary")
+    assert req == {"addSheet": {"properties": {"title": "Summary"}}}
+
+
+def test_add_sheet_request_includes_index_when_supplied():
+    """An explicit index lands in properties.index (0 = leftmost)."""
+    req = add_sheet_request("Q1", index=0)
+    assert req == {"addSheet": {"properties": {"title": "Q1", "index": 0}}}
+
+
+def test_add_sheet_request_strips_title_whitespace():
+    """Leading/trailing whitespace is stripped before the request dict."""
+    req = add_sheet_request("  Padded  ")
+    assert req["addSheet"]["properties"]["title"] == "Padded"
+
+
+def test_add_sheet_request_rejects_blank_title():
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        add_sheet_request("   ")
+
+
+def test_add_sheet_request_rejects_negative_index():
+    with pytest.raises(ValueError, match="index must be >= 0"):
+        add_sheet_request("T", index=-1)
+
+
+# ---------------------------------------------------------------------
+# delete_sheet_request — sheet-lifecycle builder (tab delete)
+# ---------------------------------------------------------------------
+
+
+def test_delete_sheet_request_shape():
+    assert delete_sheet_request(12345) == {"deleteSheet": {"sheetId": 12345}}
+
+
+def test_delete_sheet_request_allows_zero_gid():
+    """gid 0 (the default/first tab) is a valid delete target."""
+    assert delete_sheet_request(0) == {"deleteSheet": {"sheetId": 0}}
+
+
+def test_delete_sheet_request_rejects_negative_gid():
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        delete_sheet_request(-1)
+
+
+# ---------------------------------------------------------------------
+# update_sheet_title_request — sheet-lifecycle builder (tab rename)
+# ---------------------------------------------------------------------
+
+
+def test_update_sheet_title_request_shape_with_scoped_field_mask():
+    """Rename request carries sheetId + title and a fields mask scoped
+    to exactly ``title`` — so no other sheet property is touched."""
+    req = update_sheet_title_request(0, "Renamed")
+    assert req == {
+        "updateSheetProperties": {
+            "properties": {"sheetId": 0, "title": "Renamed"},
+            "fields": "title",
+        }
+    }
+
+
+def test_update_sheet_title_request_strips_whitespace():
+    req = update_sheet_title_request(7, "  Tidy  ")
+    assert req["updateSheetProperties"]["properties"]["title"] == "Tidy"
+
+
+def test_update_sheet_title_request_rejects_blank_title():
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        update_sheet_title_request(0, "")
+
+
+def test_update_sheet_title_request_rejects_negative_gid():
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        update_sheet_title_request(-5, "X")

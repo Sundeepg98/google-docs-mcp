@@ -71,6 +71,7 @@ DESTRUCTIVE_TOOLS = {
     "gdocs_delete_tab",
     "gdocs_trash_file",
     "gdocs_reset_authorization",
+    "gsheets_delete_sheet",  # removes a tab + all its cell data
 }
 
 

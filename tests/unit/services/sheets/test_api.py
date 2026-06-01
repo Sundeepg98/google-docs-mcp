@@ -42,9 +42,13 @@ from appscriptly.google_api_client import (
 )
 from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
+    add_sheet,
+    append_rows,
     create_spreadsheet,
+    delete_sheet,
     format_range,
     read_range,
+    rename_sheet,
     write_range,
 )
 
@@ -443,3 +447,201 @@ def test_format_range_propagates_grid_validation(stub_sheets_for_format):
             MagicMock(), "SPREAD1", sheet_id=0,
             start_row=5, end_row=2, bold=True,
         )
+
+
+# ---------------------------------------------------------------------
+# append_rows — values.append (race-free), call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_append():
+    sheets = MagicMock(name="sheets-v4-stub-append")
+    sheets.spreadsheets().values().append().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "tableRange": "Sheet1!A1:B2",
+        "updates": {
+            "spreadsheetId": "SPREAD1",
+            "updatedRange": "Sheet1!A3:B3",
+            "updatedRows": 1,
+            "updatedColumns": 2,
+            "updatedCells": 2,
+        },
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_append_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().values().append.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no values().append() call captured spreadsheetId")
+
+
+def test_append_rows_rejects_empty_values():
+    with pytest.raises(ValueError, match="values cannot be empty"):
+        append_rows(MagicMock(), "SPREAD1", [])
+
+
+def test_append_rows_rejects_non_list_of_lists():
+    with pytest.raises(ValueError, match="2D row-major"):
+        append_rows(MagicMock(), "SPREAD1", ["a", "b"])
+
+
+def test_append_rows_uses_append_endpoint_not_update(stub_sheets_for_append):
+    """The race-free path MUST go through values().append (server-side
+    last-row detection), NOT values().update (the racey precomputed-range
+    pattern)."""
+    append_rows(MagicMock(), "SPREAD1", [["x", "y"]])
+    assert stub_sheets_for_append.spreadsheets().values().append.called
+    assert not stub_sheets_for_append.spreadsheets().values().update.call_args_list
+
+
+def test_append_rows_passes_insert_rows_and_user_entered(stub_sheets_for_append):
+    """PINNED INVARIANTS: insertDataOption=INSERT_ROWS (push existing rows
+    down, never overwrite) + valueInputOption=USER_ENTERED (formulas/dates
+    parse, consistent with write_range)."""
+    append_rows(MagicMock(), "SPREAD-XYZ", [["=SUM(A1:A2)"]])
+    kw = _last_append_kwargs(stub_sheets_for_append)
+    assert kw["spreadsheetId"] == "SPREAD-XYZ"
+    assert kw["valueInputOption"] == "USER_ENTERED"
+    assert kw["insertDataOption"] == "INSERT_ROWS"
+    assert kw["body"] == {"values": [["=SUM(A1:A2)"]]}
+
+
+def test_append_rows_default_search_range(stub_sheets_for_append):
+    """Omitted range falls back to DEFAULT_RANGE (used to LOCATE the table,
+    not as the write destination)."""
+    append_rows(MagicMock(), "SPREAD1", [["x"]])
+    kw = _last_append_kwargs(stub_sheets_for_append)
+    assert kw["range"] == DEFAULT_RANGE
+
+
+def test_append_rows_returns_envelope_from_updates_block(stub_sheets_for_append):
+    """values.append nests the write result under ``updates``; the envelope
+    flattens it to {updated_range, updated_cells, updated_rows} — where the
+    rows actually LANDED (A3 here, not A1)."""
+    result = append_rows(MagicMock(), "SPREAD1", [["x", "y"]])
+    assert result == {
+        "updated_range": "Sheet1!A3:B3",
+        "updated_cells": 2,
+        "updated_rows": 1,
+    }
+
+
+def test_append_rows_defaults_counts_when_updates_omitted(stub_sheets_for_append):
+    """Defensive: if Sheets omits ``updates``, the envelope defaults counts
+    to 0 / range to the search range rather than KeyError."""
+    stub_sheets_for_append.spreadsheets().values().append().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+    }
+    result = append_rows(MagicMock(), "SPREAD1", [["x"]], range_str="A1:Z9")
+    assert result == {
+        "updated_range": "A1:Z9",
+        "updated_cells": 0,
+        "updated_rows": 0,
+    }
+
+
+# ---------------------------------------------------------------------
+# add_sheet / delete_sheet / rename_sheet — tab lifecycle via batchUpdate
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_lifecycle():
+    sheets = MagicMock(name="sheets-v4-stub-lifecycle")
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_lifecycle_batch_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().batchUpdate.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no batchUpdate() call captured spreadsheetId")
+
+
+def test_add_sheet_dispatches_add_sheet_request(stub_sheets_for_lifecycle):
+    """add_sheet composes exactly one addSheet request and dispatches it."""
+    add_sheet(MagicMock(), "SPREAD-ABC", "Summary", index=1)
+    kw = _last_lifecycle_batch_kwargs(stub_sheets_for_lifecycle)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    requests = kw["body"]["requests"]
+    assert len(requests) == 1
+    assert requests[0] == {
+        "addSheet": {"properties": {"title": "Summary", "index": 1}}
+    }
+
+
+def test_add_sheet_returns_assigned_gid_from_reply(stub_sheets_for_lifecycle):
+    """Sheets assigns the new tab gid server-side; add_sheet surfaces it
+    (parsed from replies[0].addSheet.properties.sheetId)."""
+    stub_sheets_for_lifecycle.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [
+            {"addSheet": {"properties": {
+                "sheetId": 998877, "title": "Summary", "index": 1,
+            }}}
+        ],
+    }
+    result = add_sheet(MagicMock(), "SPREAD1", "Summary", index=1)
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 998877,
+        "title": "Summary",
+        "index": 1,
+    }
+
+
+def test_add_sheet_rejects_blank_title(stub_sheets_for_lifecycle):
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        add_sheet(MagicMock(), "SPREAD1", "   ")
+
+
+def test_delete_sheet_dispatches_delete_sheet_request(stub_sheets_for_lifecycle):
+    delete_sheet(MagicMock(), "SPREAD-ABC", 12345)
+    kw = _last_lifecycle_batch_kwargs(stub_sheets_for_lifecycle)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    assert kw["body"]["requests"] == [{"deleteSheet": {"sheetId": 12345}}]
+
+
+def test_delete_sheet_returns_echo_envelope(stub_sheets_for_lifecycle):
+    result = delete_sheet(MagicMock(), "SPREAD1", 42)
+    assert result == {"spreadsheet_id": "SPREAD1", "deleted_sheet_id": 42}
+
+
+def test_delete_sheet_rejects_negative_gid(stub_sheets_for_lifecycle):
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        delete_sheet(MagicMock(), "SPREAD1", -1)
+
+
+def test_rename_sheet_dispatches_scoped_update(stub_sheets_for_lifecycle):
+    """rename_sheet composes updateSheetProperties masked to title only."""
+    rename_sheet(MagicMock(), "SPREAD-ABC", 0, "Renamed")
+    kw = _last_lifecycle_batch_kwargs(stub_sheets_for_lifecycle)
+    assert kw["body"]["requests"] == [{
+        "updateSheetProperties": {
+            "properties": {"sheetId": 0, "title": "Renamed"},
+            "fields": "title",
+        }
+    }]
+
+
+def test_rename_sheet_returns_echo_envelope(stub_sheets_for_lifecycle):
+    result = rename_sheet(MagicMock(), "SPREAD1", 7, "  Tidy  ")
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 7,
+        "title": "Tidy",
+    }
+
+
+def test_rename_sheet_rejects_blank_title(stub_sheets_for_lifecycle):
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        rename_sheet(MagicMock(), "SPREAD1", 0, "")
