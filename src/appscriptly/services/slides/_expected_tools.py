@@ -9,4 +9,5 @@ EXPECTED: frozenset[str] = frozenset({
     "gslides_get_outline",
     "gslides_replace_all_text",
     "gslides_create_presentation",
+    "gslides_add_slide",
 })

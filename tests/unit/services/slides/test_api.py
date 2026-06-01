@@ -42,6 +42,7 @@ from appscriptly.google_api_client import (
 )
 from appscriptly.services.slides.api import (
     _extract_slide_text,
+    add_slide,
     create_presentation,
     get_outline,
     replace_all_text,
@@ -462,3 +463,146 @@ def test_create_presentation_falls_back_to_input_title_when_omitted(
     }
     result = create_presentation(MagicMock(), "  Fallback Title  ")
     assert result["title"] == "Fallback Title"
+
+
+# ---------------------------------------------------------------------
+# add_slide — pre-API validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_add():
+    slides = MagicMock(name="slides-v1-stub-add")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [
+            {"createSlide": {"objectId": "appscriptly_slide"}},
+            {},  # insertText replies carry no objectId
+            {},
+        ],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_add_slide_rejects_unsupported_layout():
+    """An unsupported ``layout`` enum is a caller bug — reject
+    client-side with the supported set, rather than a Slides 400."""
+    with pytest.raises(ValueError, match="layout must be one of"):
+        add_slide(MagicMock(), "DECK1", layout="NONSENSE")
+
+
+def test_add_slide_rejects_body_for_layout_without_body_placeholder():
+    """``body`` text needs a BODY placeholder — only TITLE_AND_BODY has
+    one. Passing body with TITLE_ONLY / BLANK is rejected up front."""
+    with pytest.raises(ValueError, match="body text requires a layout"):
+        add_slide(MagicMock(), "DECK1", body="Some body", layout="TITLE_ONLY")
+    with pytest.raises(ValueError, match="body text requires a layout"):
+        add_slide(MagicMock(), "DECK1", body="Some body", layout="BLANK")
+
+
+def test_add_slide_passes_presentationId_to_slides(stub_slides_for_add):
+    add_slide(MagicMock(), "DECK-XYZ", title="Hi")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_add)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_add_slide_builds_createSlide_with_placeholder_mappings(
+    stub_slides_for_add,
+):
+    """TITLE_AND_BODY + title + body → one createSlide carrying BOTH
+    placeholderIdMappings, then two insertText requests targeting the
+    deterministic placeholder IDs."""
+    add_slide(
+        MagicMock(), "DECK1",
+        title="My Title", body="My Body", layout="TITLE_AND_BODY",
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    # createSlide first
+    cs = reqs[0]["createSlide"]
+    assert cs["slideLayoutReference"] == {"predefinedLayout": "TITLE_AND_BODY"}
+    mappings = cs["placeholderIdMappings"]
+    types = {m["layoutPlaceholder"]["type"] for m in mappings}
+    assert types == {"TITLE", "BODY"}
+    # two insertText requests, targeting the mapped object IDs
+    insert_targets = {
+        r["insertText"]["objectId"]: r["insertText"]["text"]
+        for r in reqs if "insertText" in r
+    }
+    title_id = next(
+        m["objectId"] for m in mappings
+        if m["layoutPlaceholder"]["type"] == "TITLE"
+    )
+    body_id = next(
+        m["objectId"] for m in mappings
+        if m["layoutPlaceholder"]["type"] == "BODY"
+    )
+    assert insert_targets[title_id] == "My Title"
+    assert insert_targets[body_id] == "My Body"
+
+
+def test_add_slide_title_only_omits_body_placeholder_and_insert(
+    stub_slides_for_add,
+):
+    """layout=TITLE_ONLY with a title → exactly one placeholder
+    mapping (TITLE) and one insertText; no BODY anywhere."""
+    add_slide(MagicMock(), "DECK1", title="Just a title", layout="TITLE_ONLY")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    cs = reqs[0]["createSlide"]
+    mappings = cs.get("placeholderIdMappings", [])
+    assert [m["layoutPlaceholder"]["type"] for m in mappings] == ["TITLE"]
+    inserts = [r for r in reqs if "insertText" in r]
+    assert len(inserts) == 1
+    assert inserts[0]["insertText"]["text"] == "Just a title"
+
+
+def test_add_slide_blank_layout_has_no_placeholders_or_inserts(
+    stub_slides_for_add,
+):
+    """layout=BLANK with no title/body → a bare createSlide, no
+    placeholderIdMappings, no insertText requests."""
+    add_slide(MagicMock(), "DECK1", layout="BLANK")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    assert len(reqs) == 1
+    assert "placeholderIdMappings" not in reqs[0]["createSlide"]
+
+
+def test_add_slide_empty_title_skips_title_insert(stub_slides_for_add):
+    """A falsy title (None / "") does not produce a TITLE placeholder
+    or insertText — even on a TITLE_AND_BODY layout."""
+    add_slide(MagicMock(), "DECK1", title="", body="Body only")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    cs = reqs[0]["createSlide"]
+    types = [m["layoutPlaceholder"]["type"] for m in cs.get("placeholderIdMappings", [])]
+    assert types == ["BODY"]
+    inserts = [r for r in reqs if "insertText" in r]
+    assert len(inserts) == 1
+    assert inserts[0]["insertText"]["text"] == "Body only"
+
+
+def test_add_slide_returns_flat_envelope(stub_slides_for_add):
+    """Flat ``{presentation_id, slide_object_id, url}`` envelope; the
+    slide_object_id comes from the createSlide reply and the url
+    deep-links to that slide."""
+    result = add_slide(MagicMock(), "DECK-1", title="X")
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "appscriptly_slide",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.appscriptly_slide"
+        ),
+    }
+
+
+def test_add_slide_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_add,
+):
+    """Defensive: if Slides' reply omits the createSlide objectId, the
+    envelope falls back to the deterministic ID we requested."""
+    stub_slides_for_add.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],  # no createSlide objectId echoed
+    }
+    result = add_slide(MagicMock(), "DECK-1", title="X")
+    assert result["slide_object_id"] == "appscriptly_slide"

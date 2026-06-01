@@ -215,6 +215,149 @@ def create_presentation(creds: Credentials, title: str) -> dict:
     }
 
 
+# Predefined layouts that expose a TITLE placeholder (for the optional
+# ``title`` insert). ``TITLE_AND_BODY`` additionally exposes a BODY
+# placeholder (for the optional ``body`` insert). Restricting to this
+# pair keeps placeholder-targeting deterministic; the full predefined-
+# layout enum (~12 values) is a follow-up if a real consumer needs it.
+_LAYOUTS_WITH_TITLE = frozenset({"TITLE_AND_BODY", "TITLE_ONLY"})
+_LAYOUTS_WITH_BODY = frozenset({"TITLE_AND_BODY"})
+
+
+def add_slide(
+    creds: Credentials,
+    presentation_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    layout: str = "TITLE_AND_BODY",
+) -> dict:
+    """Append a slide (optionally with title + body text) to a deck.
+
+    Uses ``presentations.batchUpdate`` with a ``createSlide`` request
+    (carrying a ``predefinedLayout`` + deterministic
+    ``placeholderIdMappings``) followed by ``insertText`` requests
+    targeting those placeholders — all in a SINGLE batchUpdate round
+    trip, so the new slide and its text commit atomically.
+
+    This is the first ``createSlide``/``insertText`` carve-out from the
+    deferred Slides batchUpdate tagged-union. Pairs with
+    ``create_presentation`` to produce a NON-empty deck (the gap the
+    minimal trio left: create made an empty deck, replace_all_text
+    could only swap text that already existed).
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (already in ``auth.SCOPES`` baseline — no extra grant).
+        presentation_id: The Slides file ID to append the slide to.
+        title: Optional title-placeholder text. Inserted only when the
+            chosen ``layout`` exposes a TITLE placeholder and the
+            string is non-empty.
+        body: Optional body-placeholder text. Inserted only when the
+            chosen ``layout`` exposes a BODY placeholder (i.e.
+            ``TITLE_AND_BODY``) and the string is non-empty.
+        layout: A Slides ``predefinedLayout`` enum value. Supported
+            here: ``"TITLE_AND_BODY"`` (default), ``"TITLE_ONLY"``,
+            ``"BLANK"``. Other values rejected client-side.
+
+    Returns:
+        ``{presentation_id, slide_object_id, url}`` — flat envelope.
+        ``slide_object_id`` is the new slide's stable ID (usable as a
+        later batchUpdate target / matches ``get_outline``'s
+        ``object_id``). ``url`` deep-links to the slide.
+
+    Raises:
+        ValueError: ``layout`` unsupported, or ``body`` supplied for a
+            layout without a BODY placeholder.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated;
+            the tool-layer envelope renders it.
+    """
+    supported = {"TITLE_AND_BODY", "TITLE_ONLY", "BLANK"}
+    if layout not in supported:
+        raise ValueError(
+            f"layout must be one of {sorted(supported)} — got {layout!r}."
+        )
+    if body and layout not in _LAYOUTS_WITH_BODY:
+        raise ValueError(
+            f"body text requires a layout with a BODY placeholder "
+            f"(TITLE_AND_BODY) — layout {layout!r} has none. Pass "
+            f"body=None or use layout='TITLE_AND_BODY'."
+        )
+
+    slides = get_service("slides", "v1", credentials=creds)
+
+    # Deterministic objectIds so the follow-up insertText requests can
+    # target the placeholders created in the SAME batch (Slides assigns
+    # random IDs otherwise, which we couldn't reference until a second
+    # round trip).
+    slide_id = "appscriptly_slide"
+    title_ph_id = "appscriptly_title_ph"
+    body_ph_id = "appscriptly_body_ph"
+
+    placeholder_mappings: list[dict] = []
+    want_title = bool(title) and layout in _LAYOUTS_WITH_TITLE
+    want_body = bool(body) and layout in _LAYOUTS_WITH_BODY
+    if want_title:
+        placeholder_mappings.append({
+            "objectId": title_ph_id,
+            "layoutPlaceholder": {"type": "TITLE", "index": 0},
+        })
+    if want_body:
+        placeholder_mappings.append({
+            "objectId": body_ph_id,
+            "layoutPlaceholder": {"type": "BODY", "index": 0},
+        })
+
+    create_slide: dict = {
+        "objectId": slide_id,
+        "slideLayoutReference": {"predefinedLayout": layout},
+    }
+    if placeholder_mappings:
+        create_slide["placeholderIdMappings"] = placeholder_mappings
+
+    requests: list[dict] = [{"createSlide": create_slide}]
+    if want_title:
+        requests.append({
+            "insertText": {"objectId": title_ph_id, "text": title or ""},
+        })
+    if want_body:
+        requests.append({
+            "insertText": {"objectId": body_ph_id, "text": body or ""},
+        })
+
+    # NOT idempotent: each call appends ANOTHER slide. Same convention
+    # as create_presentation. (We pass a fixed objectId for terseness;
+    # Slides rejects a duplicate objectId within one presentation, so a
+    # naive re-run would 400 rather than silently double-insert — but
+    # the agent-facing contract is "appends a slide", annotated
+    # idempotent=False, so retries are the caller's concern.)
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.createSlide",
+    )
+
+    # The createSlide reply echoes the slide's objectId. Fall back to
+    # the deterministic id we requested if the reply omits it.
+    created_id = slide_id
+    for reply in resp.get("replies", []) or []:
+        cs = reply.get("createSlide")
+        if cs and cs.get("objectId"):
+            created_id = cs["objectId"]
+            break
+
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": created_id,
+        "url": (
+            f"https://docs.google.com/presentation/d/{presentation_id}"
+            f"/edit#slide=id.{created_id}"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------

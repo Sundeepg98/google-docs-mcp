@@ -36,6 +36,7 @@
   "gsheets_format_range",
   "gsheets_read_range",
   "gsheets_write_range",
+  "gslides_add_slide",
   "gslides_create_presentation",
   "gslides_get_outline",
   "gslides_replace_all_text"
