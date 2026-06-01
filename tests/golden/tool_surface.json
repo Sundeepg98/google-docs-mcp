@@ -10,6 +10,7 @@
   "gdocs_append_to_tab",
   "gdocs_create_folder",
   "gdocs_delete_tab",
+  "gdocs_export_doc",
   "gdocs_find_doc_by_title",
   "gdocs_format_range",
   "gdocs_get_doc_outline",

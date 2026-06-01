@@ -312,7 +312,7 @@ def test_docs_service_tools_register_from_services_docs_tools_module():
 
 
 def test_drive_service_tools_register_from_services_drive_tools_module():
-    """The 8 drive-service tools must be defined in
+    """The 9 drive-service tools must be defined in
     ``services/drive/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["drive"],

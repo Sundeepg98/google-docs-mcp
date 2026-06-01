@@ -35,6 +35,75 @@ GDOC_MIME = "application/vnd.google-apps.document"
 # upload size.
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
+# ---------------------------------------------------------------------
+# Export (files.export) — Google-native → portable format mapping.
+# ---------------------------------------------------------------------
+#
+# Drive's ``files.export`` ONLY works on Google-native editor files
+# (Docs / Sheets / Slides / Drawings) — it converts the live editor
+# document to a downloadable format. A binary blob already on Drive (a
+# .pdf, a .png, an uploaded .docx) is NOT exportable — it has no
+# editor representation to render; ``get_media`` (raw download) is the
+# path for those, which a future tool can add. We reject the binary
+# case up front with a clean message rather than let Drive 403.
+#
+# ``_EXPORT_FORMATS`` maps a friendly format token → the export MIME
+# type Drive expects. ``_EXPORTABLE_BY_SOURCE`` constrains which tokens
+# are valid for each Google-native source type (Drive 400s on an
+# invalid pairing — e.g. exporting a Doc as ``xlsx`` — so we validate
+# client-side for a useful error). Subset of Google's documented export
+# formats, curated to the genuinely useful ones.
+GSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+GSLIDES_MIME = "application/vnd.google-apps.presentation"
+GDRAWING_MIME = "application/vnd.google-apps.drawing"
+
+# format token -> export MIME type
+_EXPORT_FORMATS: dict[str, str] = {
+    "pdf": "application/pdf",
+    "docx": DOCX_MIME,
+    "odt": "application/vnd.oasis.opendocument.text",
+    "rtf": "application/rtf",
+    "txt": "text/plain",
+    "html": "text/html",
+    "epub": "application/epub+zip",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+    "csv": "text/csv",
+    "tsv": "text/tab-separated-values",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "odp": "application/vnd.oasis.opendocument.presentation",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+}
+
+# Google-native source MIME -> the set of format tokens valid for it.
+# Mirrors Google's documented per-type export support.
+_EXPORTABLE_BY_SOURCE: dict[str, frozenset[str]] = {
+    GDOC_MIME: frozenset({"pdf", "docx", "odt", "rtf", "txt", "html", "epub"}),
+    GSHEET_MIME: frozenset({"pdf", "xlsx", "ods", "csv", "tsv", "html"}),
+    GSLIDES_MIME: frozenset({"pdf", "pptx", "odp", "txt"}),
+    GDRAWING_MIME: frozenset({"pdf", "png", "svg"}),
+}
+
+# A short, human label per Google-native source type for error text.
+_SOURCE_LABEL: dict[str, str] = {
+    GDOC_MIME: "Google Doc",
+    GSHEET_MIME: "Google Sheet",
+    GSLIDES_MIME: "Google Slides presentation",
+    GDRAWING_MIME: "Google Drawing",
+}
+
+# Default file extension per format token (for naming the exported file
+# when the caller doesn't supply one). Single-fragment formats only —
+# csv/tsv on a multi-sheet Sheet export just the first sheet (Drive's
+# documented behavior); the extension is still correct.
+_FORMAT_EXTENSION: dict[str, str] = {
+    "pdf": ".pdf", "docx": ".docx", "odt": ".odt", "rtf": ".rtf",
+    "txt": ".txt", "html": ".html", "epub": ".epub",
+    "xlsx": ".xlsx", "ods": ".ods", "csv": ".csv", "tsv": ".tsv",
+    "pptx": ".pptx", "odp": ".odp", "png": ".png", "svg": ".svg",
+}
+
 
 def upload_and_convert_docx(
     creds: Credentials,
@@ -631,6 +700,214 @@ def create_folder(
         "name": created.get("name", name.strip()),
         "url": f"https://drive.google.com/drive/folders/{folder_id}",
         "parent_folder_id": parent_folder_id,
+    }
+
+
+def export_doc(
+    creds: Credentials,
+    drive_file_id: str,
+    export_format: str,
+    output_name: str | None = None,
+) -> dict:
+    """Export a Google-native file to a portable format, stored back in Drive.
+
+    Symmetric inverse of the import side (``upload_and_convert_docx`` /
+    ``fetch_and_convert_drive_docx``): those bring a ``.docx`` IN and
+    convert it to a Google Doc; this takes a Google-native editor file
+    (Doc / Sheet / Slides / Drawing) and renders it OUT to PDF / Office /
+    OpenDocument / text via Drive's ``files.export`` endpoint.
+
+    **Why store the result in Drive instead of returning bytes.** An MCP
+    tool returns a JSON envelope, not a binary stream — raw export bytes
+    don't fit (and a large PDF would blow the context window). So this
+    mirrors the established binary-output pattern in this codebase
+    (``as_encode_video`` uploads its MP4 to Drive and returns the file
+    ID): the exported bytes are uploaded via ``files.create`` as a NEW,
+    standalone Drive file (a real ``.pdf`` / ``.docx`` / etc., NOT a
+    Google-native editor doc), and we return its ID + links. The new
+    file is app-created, so it's fully writable under ``drive.file`` —
+    the caller can immediately ``gdocs_share_file`` it, ``gdocs_move_to_folder``
+    it, or hand the ``download_url`` to the user. The source file is
+    never modified.
+
+    **Scope — pure ``drive.file``, no new grant.** Reading the source via
+    ``files.export`` needs only that this app can SEE the file (it
+    created or opened it — the ``drive.file`` per-file grant); creating
+    the exported file is a ``files.create`` (always allowed under
+    ``drive.file``). No ``drive.readonly`` / ``drive`` needed.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        drive_file_id: The Google-native file to export. Must be a Doc /
+            Sheet / Slides / Drawing this app can access. A binary blob
+            (an existing ``.pdf``/``.png``/uploaded ``.docx``) is NOT
+            exportable — it has no editor representation; this returns a
+            ``not_exportable`` soft-failure for those.
+        export_format: A friendly token — one of (Doc) ``pdf docx odt rtf
+            txt html epub``; (Sheet) ``pdf xlsx ods csv tsv html``;
+            (Slides) ``pdf pptx odp txt``; (Drawing) ``pdf png svg``.
+            Case-insensitive. Validated against the source type before
+            the Drive round-trip (Drive 400s on an invalid pairing).
+        output_name: Optional name for the exported Drive file. When
+            omitted, defaults to the source file's name with the format's
+            extension appended (e.g. ``"Q3 Plan"`` → ``"Q3 Plan.pdf"``).
+
+    Returns:
+        Success: ``{source_file_id, source_mime_type, export_format,
+        export_mime_type, exported_file_id, name, url, download_url,
+        size_bytes}``. ``url`` is the new file's Drive ``webViewLink``;
+        ``download_url`` is its ``webContentLink`` (a direct-download
+        link — how the caller/user gets the actual bytes without a
+        bespoke server route). ``size_bytes`` is the exported file's
+        size (``None`` if Drive didn't report it).
+        Soft-failure (returned as data, not raised): ``{source_file_id,
+        reason, message}`` where ``reason`` is ``"not_found"`` (id
+        doesn't resolve), ``"app_not_authorized"`` (source not accessible
+        to this app under ``drive.file``), or ``"not_exportable"`` (the
+        source is a binary blob / unsupported type with no editor
+        representation to export).
+
+    Raises:
+        ValueError: ``export_format`` is not a recognized token, OR it's
+            recognized but invalid for the source's type (e.g. ``xlsx``
+            on a Doc). Cheap rejection before the export round-trip.
+        HttpError: any non-2xx Drive does NOT classify above propagates
+            so genuine bugs surface; the tool-layer ``_format_http_error``
+            renders it through the standard envelope.
+
+    Note:
+        ``files.export`` is capped by Drive at **10 MB** of exported
+        content (Google's documented limit for the export endpoint —
+        distinct from the 50 MB upload cap). A larger export returns a
+        Drive error that propagates. The ``files.create`` upload of the
+        result is a fresh file each call (NOT idempotent), so — like
+        ``create_folder`` — the create is NOT wrapped in
+        ``execute_with_retry`` and the tool is annotated
+        ``idempotent=False``. The read-side ``files.get`` IS retried
+        (pure read).
+    """
+    token = (export_format or "").strip().lower()
+    if token not in _EXPORT_FORMATS:
+        raise ValueError(
+            f"export_format {export_format!r} is not recognized. "
+            f"Supported formats: {sorted(_EXPORT_FORMATS)}."
+        )
+    target_mime = _EXPORT_FORMATS[token]
+
+    drive = get_service("drive", "v3", credentials=creds)
+
+    # Read the source's type + name first: (a) confirm it's a
+    # Google-native exportable type, (b) validate the format pairing,
+    # (c) derive a default output name. A pure read — retry it.
+    try:
+        meta = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=drive_file_id, fields="id,name,mimeType"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get.export_source",
+        )
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "source_file_id": drive_file_id,
+                "reason": "not_found",
+                "message": (
+                    f"Drive file {drive_file_id!r} not found. Check the ID; "
+                    "the OAuth user may lack any access to it."
+                ),
+            }
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "source_file_id": drive_file_id,
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks access to this file — it wasn't "
+                        "created or opened by this app. drive.file scope "
+                        "only sees app-accessible files. The file's owner "
+                        "must export it via the Drive UI (File → Download)."
+                    ),
+                }
+        raise
+
+    source_mime = meta.get("mimeType", "")
+    allowed = _EXPORTABLE_BY_SOURCE.get(source_mime)
+    if allowed is None:
+        # Not a Google-native editor type → has no export representation.
+        return {
+            "source_file_id": drive_file_id,
+            "reason": "not_exportable",
+            "message": (
+                f"File {drive_file_id!r} (mimeType {source_mime!r}) is not a "
+                "Google-native editor file, so it has no export representation. "
+                "files.export only works on Google Docs / Sheets / Slides / "
+                "Drawings. A binary blob already on Drive (.pdf, .png, an "
+                "uploaded .docx) is downloaded as-is, not exported."
+            ),
+        }
+    if token not in allowed:
+        label = _SOURCE_LABEL.get(source_mime, "this file type")
+        raise ValueError(
+            f"Cannot export a {label} as {token!r}. "
+            f"Valid formats for a {label}: {sorted(allowed)}."
+        )
+
+    # Stream the export bytes into memory. files.export returns the
+    # converted bytes directly (no intermediate Drive file). Mirrors
+    # fetch_and_convert_drive_docx's MediaIoBaseDownload loop.
+    buf = io.BytesIO()
+    request = drive.files().export_media(fileId=drive_file_id, mimeType=target_mime)
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+    buf.seek(0)
+
+    # Name the exported file. Strip a trailing same-extension off the
+    # source name first so "Plan.pdf" doesn't become "Plan.pdf.pdf" when
+    # the source happened to be named with the extension.
+    ext = _FORMAT_EXTENSION[token]
+    if output_name and output_name.strip():
+        name = output_name.strip()
+        if not name.lower().endswith(ext):
+            name = name + ext
+    else:
+        base = meta.get("name", "export")
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+        name = base + ext
+
+    # Upload the exported bytes as a NEW standalone Drive file (not a
+    # Google-native doc — mimeType is the portable target). NOT
+    # idempotent: a retry after a landed create would duplicate. Single
+    # attempt, matching create_folder / create_presentation.
+    media = MediaIoBaseUpload(buf, mimetype=target_mime, resumable=False)
+    created = drive.files().create(
+        body={"name": name, "mimeType": target_mime},
+        media_body=media,
+        fields="id,name,size,webViewLink,webContentLink",
+    ).execute()
+    exported_id = created["id"]
+
+    size_raw = created.get("size")
+    return {
+        "source_file_id": drive_file_id,
+        "source_mime_type": source_mime,
+        "export_format": token,
+        "export_mime_type": target_mime,
+        "exported_file_id": exported_id,
+        "name": created.get("name", name),
+        "url": created.get(
+            "webViewLink", f"https://drive.google.com/file/d/{exported_id}/view"
+        ),
+        "download_url": created.get("webContentLink"),
+        "size_bytes": int(size_raw) if size_raw is not None else None,
     }
 
 

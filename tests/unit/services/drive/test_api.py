@@ -51,8 +51,11 @@ from appscriptly.google_api_client import (
 from appscriptly.services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
+    GSHEET_MIME,
+    GSLIDES_MIME,
     MAX_UPLOAD_BYTES,
     create_folder,
+    export_doc,
     find_doc_by_title,
     upload_and_convert_docx,
 )
@@ -560,3 +563,267 @@ def test_create_folder_echoes_parent_folder_id_in_envelope(
     result = create_folder(MagicMock(), "Sub", parent_folder_id="P-1")
     assert result["parent_folder_id"] == "P-1"
     assert result["folder_id"] == "F-CHILD"
+
+
+# ---------------------------------------------------------------------
+# export_doc — files.export (Google-native → portable format)
+#
+# Pattern: stub files().get (source metadata), files().export_media
+# (the export request), and files().create (the re-upload of exported
+# bytes). MediaIoBaseDownload / MediaIoBaseUpload are patched to no-op
+# fakes so no real streaming runs — we only assert on the call shapes
+# (export_media mimeType, create body) and the response envelope, plus
+# the pre-API validation + soft-failure branches.
+# ---------------------------------------------------------------------
+
+
+def _mock_http_error(status_code: int, reason_code: str = ""):
+    """Build a fake HttpError with the structure googleapiclient produces.
+
+    Mirror of the helper in test_sharing.py / test_soft_failure_contracts.py.
+    error_details is populated directly — that's what export_doc inspects
+    to classify appNotAuthorizedToFile.
+    """
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status_code
+    resp.reason = "Forbidden" if status_code == 403 else "Not Found"
+    content = (
+        f'{{"error":{{"code":{status_code},"errors":'
+        f'[{{"reason":"{reason_code}","message":"mocked"}}]}}}}'
+    ).encode("utf-8")
+    err = HttpError(resp, content)
+    err.error_details = [{"reason": reason_code, "message": "mocked"}]
+    return err
+
+
+@pytest.fixture
+def _patch_media(monkeypatch):
+    """Patch MediaIoBaseDownload + MediaIoBaseUpload in the api module so
+    export_doc's stream-download loop + re-upload don't touch real HTTP.
+
+    The fake downloader's next_chunk() returns (None, True) immediately
+    (done, zero chunks) — export_doc only needs the loop to terminate;
+    the actual bytes are irrelevant since the upload media is also faked.
+    """
+    import appscriptly.services.drive.api as api_mod
+
+    class _FakeDownloader:
+        def __init__(self, _buf, _request):
+            pass
+
+        def next_chunk(self):
+            return (None, True)
+
+    monkeypatch.setattr(api_mod, "MediaIoBaseDownload", _FakeDownloader)
+    monkeypatch.setattr(
+        api_mod, "MediaIoBaseUpload", lambda *a, **k: MagicMock(name="media-upload")
+    )
+
+
+@pytest.fixture
+def stub_drive_for_export(_patch_media):
+    """A Drive stub wired for the export happy path: source is a Google
+    Doc; export_media returns a request handle; create returns the new
+    exported file with links."""
+    drive = MagicMock(name="drive-v3-stub-export")
+    drive.files().get().execute.return_value = {
+        "id": "SRC-1", "name": "Quarterly Plan", "mimeType": GDOC_MIME,
+    }
+    drive.files().export_media.return_value = MagicMock(name="export-request")
+    drive.files().create().execute.return_value = {
+        "id": "EXP-1",
+        "name": "Quarterly Plan.pdf",
+        "size": "20480",
+        "webViewLink": "https://drive.google.com/file/d/EXP-1/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-1&export=download",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def test_export_doc_rejects_unknown_format():
+    """An unrecognized format token is rejected client-side BEFORE any
+    Drive call — no get_service needed, so MagicMock creds suffice."""
+    with pytest.raises(ValueError, match="is not recognized"):
+        export_doc(MagicMock(), "SRC-1", "garblesnort")
+
+
+def test_export_doc_rejects_format_invalid_for_source(stub_drive_for_export):
+    """A recognized token that's wrong for the source TYPE (xlsx on a
+    Doc) is rejected after the metadata read, with a message naming the
+    valid formats for that type."""
+    # Source is a Google Doc (from the fixture); xlsx is a Sheet format.
+    with pytest.raises(ValueError, match="Cannot export a Google Doc as 'xlsx'"):
+        export_doc(MagicMock(), "SRC-1", "xlsx")
+
+
+def test_export_doc_passes_target_mime_to_export_media(stub_drive_for_export):
+    """The export_media call must carry the export MIME type mapped from
+    the friendly token (pdf → application/pdf) and the source file id."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    kw = stub_drive_for_export.files().export_media.call_args.kwargs
+    assert kw["fileId"] == "SRC-1"
+    assert kw["mimeType"] == "application/pdf"
+
+
+def test_export_doc_uploads_result_with_target_mime(stub_drive_for_export):
+    """The exported bytes are re-uploaded via files.create as a NEW file
+    whose mimeType is the portable target (NOT a Google-native doc), and
+    whose name carries the format extension."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    # Find the create() call carrying a body (filter chain-build lookups).
+    create_kw = None
+    for call in reversed(stub_drive_for_export.files().create.call_args_list):
+        if "body" in call.kwargs:
+            create_kw = call.kwargs
+            break
+    assert create_kw is not None, "no files().create() captured a body="
+    assert create_kw["body"]["mimeType"] == "application/pdf"
+    assert create_kw["body"]["name"] == "Quarterly Plan.pdf"
+
+
+def test_export_doc_case_insensitive_format_token(stub_drive_for_export):
+    """Format tokens are normalized to lowercase — 'PDF' works like 'pdf'."""
+    result = export_doc(MagicMock(), "SRC-1", "PDF")
+    assert result["export_format"] == "pdf"
+    assert result["export_mime_type"] == "application/pdf"
+
+
+def test_export_doc_returns_flat_envelope_with_links(stub_drive_for_export):
+    """The success envelope surfaces the source + export identity plus
+    the new file's id / view url / direct-download url / size."""
+    result = export_doc(MagicMock(), "SRC-1", "pdf")
+    assert result == {
+        "source_file_id": "SRC-1",
+        "source_mime_type": GDOC_MIME,
+        "export_format": "pdf",
+        "export_mime_type": "application/pdf",
+        "exported_file_id": "EXP-1",
+        "name": "Quarterly Plan.pdf",
+        "url": "https://drive.google.com/file/d/EXP-1/view",
+        "download_url": "https://drive.google.com/uc?id=EXP-1&export=download",
+        "size_bytes": 20480,
+    }
+
+
+def test_export_doc_default_name_appends_extension(stub_drive_for_export):
+    """With no output_name, the exported file is named from the source's
+    name + the format extension (Quarterly Plan → Quarterly Plan.pdf)."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Quarterly Plan.pdf"
+
+
+def test_export_doc_explicit_output_name_gets_extension_if_missing(
+    stub_drive_for_export,
+):
+    """A caller output_name without the extension gets it appended."""
+    export_doc(MagicMock(), "SRC-1", "pdf", output_name="Final Report")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Final Report.pdf"
+
+
+def test_export_doc_explicit_output_name_keeps_existing_extension(
+    stub_drive_for_export,
+):
+    """A caller output_name that ALREADY ends in the extension isn't
+    doubled (Final.pdf stays Final.pdf, not Final.pdf.pdf)."""
+    export_doc(MagicMock(), "SRC-1", "pdf", output_name="Final.pdf")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Final.pdf"
+
+
+def test_export_doc_sheet_to_xlsx_happy_path(stub_drive_for_export):
+    """A Google Sheet exports to xlsx (a valid Sheet format) — verifies
+    the per-source-type allowlist admits the right pairings, not just
+    Docs."""
+    stub_drive_for_export.files().get().execute.return_value = {
+        "id": "SHEET-1", "name": "Budget", "mimeType": GSHEET_MIME,
+    }
+    stub_drive_for_export.files().create().execute.return_value = {
+        "id": "EXP-XLSX", "name": "Budget.xlsx",
+        "webViewLink": "https://drive.google.com/file/d/EXP-XLSX/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-XLSX",
+    }
+    result = export_doc(MagicMock(), "SHEET-1", "xlsx")
+    assert result["export_format"] == "xlsx"
+    kw = stub_drive_for_export.files().export_media.call_args.kwargs
+    assert kw["mimeType"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def test_export_doc_size_bytes_none_when_drive_omits_size(stub_drive_for_export):
+    """size_bytes is None (not a crash) when Drive's create response
+    omits the size field."""
+    stub_drive_for_export.files().create().execute.return_value = {
+        "id": "EXP-NOSIZE", "name": "Quarterly Plan.pdf",
+        "webViewLink": "https://drive.google.com/file/d/EXP-NOSIZE/view",
+    }
+    result = export_doc(MagicMock(), "SRC-1", "pdf")
+    assert result["size_bytes"] is None
+    # download_url also None when webContentLink is absent.
+    assert result["download_url"] is None
+
+
+# --- export_doc soft-failure branches (returned as data, not raised) ---
+
+
+def test_export_doc_not_found_returns_soft_failure(_patch_media):
+    """404 on the source metadata read → reason: not_found (data, not raised)."""
+    drive = MagicMock(name="drive-export-404")
+    drive.files().get().execute.side_effect = _mock_http_error(404)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "GONE", "pdf")
+    assert result["reason"] == "not_found"
+    assert result["source_file_id"] == "GONE"
+
+
+def test_export_doc_app_not_authorized_returns_soft_failure(_patch_media):
+    """403 appNotAuthorizedToFile on the source (file not app-accessible
+    under drive.file) → reason: app_not_authorized (data, not raised)."""
+    drive = MagicMock(name="drive-export-403")
+    drive.files().get().execute.side_effect = _mock_http_error(
+        403, "appNotAuthorizedToFile",
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "FOREIGN", "pdf")
+    assert result["reason"] == "app_not_authorized"
+    assert result["source_file_id"] == "FOREIGN"
+
+
+def test_export_doc_not_exportable_for_binary_source(_patch_media):
+    """A binary blob (e.g. an existing PDF) is NOT a Google-native editor
+    file → reason: not_exportable, returned as data (no export attempted)."""
+    drive = MagicMock(name="drive-export-binary")
+    drive.files().get().execute.return_value = {
+        "id": "BLOB-1", "name": "scan.pdf", "mimeType": "application/pdf",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "BLOB-1", "pdf")
+    assert result["reason"] == "not_exportable"
+    # export_media must NOT have been called — we bailed before the export.
+    drive.files().export_media.assert_not_called()
+
+
+def test_export_doc_reraises_unclassified_http_error(_patch_media):
+    """A 500 on the source read is not classified above → propagates as
+    HttpError so genuine bugs surface."""
+    from googleapiclient.errors import HttpError
+
+    drive = MagicMock(name="drive-export-500")
+    drive.files().get().execute.side_effect = _mock_http_error(500)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(HttpError):
+            export_doc(MagicMock(), "SRC-1", "pdf")

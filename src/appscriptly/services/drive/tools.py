@@ -7,7 +7,7 @@ the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
 decorator.
 
-**Tools registered here** (8 drive-service tools):
+**Tools registered here** (9 drive-service tools):
 
 1. ``gdocs_find_doc_by_title`` — look up a Google Doc / .docx by title (search)
 2. ``gdocs_move_to_folder``    — move a file into a Drive folder
@@ -17,6 +17,7 @@ decorator.
 6. ``gdocs_list_permissions``  — list who has access to a file (v2.3.0)
 7. ``gdocs_create_folder``     — create a Drive folder (destination for move)
 8. ``gdocs_revoke_permission`` — revoke a previously-granted share
+9. ``gdocs_export_doc``        — export a Google-native file to PDF/Office/etc.
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
@@ -44,6 +45,7 @@ from fastmcp.exceptions import ToolError
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.drive.api import (
     create_folder as _create_folder,
+    export_doc as _export_doc,
     find_doc_by_title as _find_doc_by_title,
     move_to_folder as _move_to_folder,
     trash_drive_file as _trash_drive_file,
@@ -56,6 +58,7 @@ from appscriptly.services.drive.sharing import (
 )
 from appscriptly.tool_schemas import (
     GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
+    GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
     GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
     GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
     GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
@@ -640,4 +643,99 @@ def gdocs_revoke_permission(
         creds,
         drive_file_id=drive_file_id,
         permission_id=permission_id,
+    )
+
+
+# ---------------------------------------------------------------------
+# 9. gdocs_export_doc — export a Google-native file (files.export)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Export a Google Doc/Sheet/Slides to PDF, Office, or other formats",
+    # Creates a NEW Drive file (the exported artifact) — so not a pure
+    # read; not destructive (the source is untouched, nothing removed).
+    # NOT idempotent — each call uploads a fresh exported file (Drive
+    # permits duplicate names), matching gdocs_create_folder.
+    readonly=False,
+    destructive=False,
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
+)
+def gdocs_export_doc(
+    creds,
+    drive_file_id: str,
+    export_format: str,
+    output_name: str | None = None,
+) -> dict:
+    """Export a Google Doc / Sheet / Slides / Drawing to PDF, Office, etc.
+
+    USE WHEN: the user wants a downloadable / portable copy of a
+    Google-native file — "give me this doc as a PDF", "export the sheet
+    to xlsx", "I need a .pptx of these slides". The symmetric inverse of
+    the import tools (which bring a ``.docx`` IN and convert to a Doc);
+    this renders a Google-native file OUT.
+
+    Uses Drive's ``files.export``. The exported bytes are uploaded back
+    to Drive as a NEW standalone file (a real ``.pdf`` / ``.docx`` /
+    ``.xlsx`` — NOT a Google-native editor doc), and this returns its ID
+    + a ``download_url`` (Drive's direct-download ``webContentLink``).
+    Why store-in-Drive rather than return raw bytes: an MCP tool returns
+    a JSON envelope, not a binary stream — so the artifact lands in
+    Drive (the same pattern ``as_encode_video`` uses for its MP4) where
+    the user can download it, and the agent can ``gdocs_share_file`` /
+    ``gdocs_move_to_folder`` it. The source file is never modified.
+
+    Args:
+        drive_file_id: The Google-native file to export (a Doc / Sheet /
+            Slides / Drawing this app created or opened). From a prior
+            create call or ``gdocs_find_doc_by_title``. A binary blob
+            already on Drive (.pdf, .png, an uploaded .docx) has no
+            editor representation and returns ``reason: "not_exportable"``.
+        export_format: Target format token (case-insensitive). By source:
+            • **Doc** → ``pdf docx odt rtf txt html epub``
+            • **Sheet** → ``pdf xlsx ods csv tsv html``
+            • **Slides** → ``pdf pptx odp txt``
+            • **Drawing** → ``pdf png svg``
+            An unrecognized token, or a valid token that's wrong for the
+            source type (e.g. ``xlsx`` on a Doc), is rejected before the
+            Drive round-trip.
+        output_name: Optional name for the exported Drive file. Omitted →
+            the source's name with the format extension appended (e.g.
+            ``"Q3 Plan"`` → ``"Q3 Plan.pdf"``). The right extension is
+            added if you don't include it.
+
+    Returns:
+        Success: ``{source_file_id, source_mime_type, export_format,
+        export_mime_type, exported_file_id, name, url, download_url,
+        size_bytes}``. ``url`` opens the new file in Drive;
+        ``download_url`` is the direct-download link (may be ``null`` if
+        Drive omits it); ``size_bytes`` is the exported size (``null`` if
+        unreported).
+        Soft-failure (returned as data, not raised): ``{source_file_id,
+        reason, message}`` — ``reason`` is ``"not_found"``,
+        ``"app_not_authorized"`` (source not accessible under
+        ``drive.file``), or ``"not_exportable"`` (not a Google-native
+        editor file).
+
+    Choreography: ``drive_file_id`` from a recent create
+    (``gdocs_make_tabbed_doc`` / ``gsheets_create_spreadsheet`` /
+    ``gslides_create_presentation``) or ``gdocs_find_doc_by_title``.
+    Pair the returned ``exported_file_id`` with ``gdocs_share_file`` to
+    send the PDF to someone, or ``gdocs_move_to_folder`` to file it.
+
+    NOTE: ``files.export`` is capped by Drive at ~10 MB of exported
+    content. Same ``drive.file`` ownership model as the rest of the
+    drive tools — only files THIS app can access are exportable; a file
+    the app didn't create/open returns ``reason: "app_not_authorized"``
+    (the owner can export via the Drive UI: File → Download).
+    """
+    return _export_doc(
+        creds,
+        drive_file_id=drive_file_id,
+        export_format=export_format,
+        output_name=output_name,
     )
