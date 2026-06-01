@@ -36,11 +36,35 @@ from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
+from googleapiclient.errors import HttpError
+
 from appscriptly.services.drive.sharing import (
     _VALID_ROLES,
     grant_permission,
     list_permissions,
+    revoke_permission,
 )
+
+
+def _mock_http_error(status_code: int, reason_code: str = "") -> HttpError:
+    """Build a fake HttpError with the structure googleapiclient produces.
+
+    Mirror of the helper in ``tests/unit/test_soft_failure_contracts.py``
+    — kept local so the sharing tests don't reach across into another
+    test module's private helper. ``error_details`` is populated directly
+    because that's the attribute ``revoke_permission`` inspects to
+    classify ``appNotAuthorizedToFile`` vs other 403s.
+    """
+    resp = MagicMock()
+    resp.status = status_code
+    resp.reason = "Forbidden" if status_code == 403 else "Not Found"
+    content = (
+        f'{{"error":{{"code":{status_code},"errors":'
+        f'[{{"reason":"{reason_code}","message":"mocked"}}]}}}}'
+    ).encode("utf-8")
+    err = HttpError(resp, content)
+    err.error_details = [{"reason": reason_code, "message": "mocked"}]
+    return err
 
 
 # ---------------------------------------------------------------------
@@ -345,3 +369,151 @@ def test_list_permissions_handles_missing_permissions_key_in_response(
     stub_drive_for_list.permissions().list().execute.return_value = {}
     result = list_permissions(MagicMock(), "FILE-Y")
     assert result == {"file_id": "FILE-Y", "permissions": []}
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — pre-API validation
+# ---------------------------------------------------------------------
+
+
+def test_revoke_permission_rejects_blank_permission_id():
+    """An empty / whitespace permission_id is a caller bug — surface as
+    ValueError BEFORE the Drive round-trip (no get_service needed)."""
+    with pytest.raises(ValueError, match="permission_id cannot be empty"):
+        revoke_permission(MagicMock(), "FILE1", "   ")
+    with pytest.raises(ValueError, match="permission_id cannot be empty"):
+        revoke_permission(MagicMock(), "FILE1", "")
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — Drive call shape
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_drive_for_revoke():
+    """A Drive stub whose permissions().delete().execute() succeeds
+    (Drive returns an empty body on a successful delete)."""
+    drive = MagicMock(name="drive-v3-stub-revoke")
+    drive.permissions().delete().execute.return_value = ""
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def _last_delete_kwargs(drive: MagicMock) -> dict:
+    for call in reversed(drive.permissions().delete.call_args_list):
+        if "fileId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no permissions().delete() call captured fileId")
+
+
+def test_revoke_permission_passes_file_and_permission_ids(stub_drive_for_revoke):
+    """The Drive call must target both the file_id and permission_id the
+    caller passed — permissions.delete is keyed by (fileId, permissionId)."""
+    revoke_permission(MagicMock(), "FILE-ABC", "PERM-1")
+    kw = _last_delete_kwargs(stub_drive_for_revoke)
+    assert kw["fileId"] == "FILE-ABC"
+    assert kw["permissionId"] == "PERM-1"
+
+
+def test_revoke_permission_strips_whitespace_from_permission_id(
+    stub_drive_for_revoke,
+):
+    """Leading / trailing whitespace on permission_id is stripped before
+    the Drive call (consistent with grant_permission's email handling)."""
+    revoke_permission(MagicMock(), "FILE1", "  PERM-PADDED  ")
+    kw = _last_delete_kwargs(stub_drive_for_revoke)
+    assert kw["permissionId"] == "PERM-PADDED"
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — response envelope (success)
+# ---------------------------------------------------------------------
+
+
+def test_revoke_permission_returns_revoked_true_on_success(stub_drive_for_revoke):
+    """A clean delete returns ``revoked: True`` with
+    ``was_already_absent: False`` (the permission existed and is now
+    gone)."""
+    result = revoke_permission(MagicMock(), "FILE-ABC", "PERM-1")
+    assert result == {
+        "file_id": "FILE-ABC",
+        "permission_id": "PERM-1",
+        "revoked": True,
+        "was_already_absent": False,
+    }
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — idempotent 404 (soft success)
+# ---------------------------------------------------------------------
+
+
+def test_revoke_permission_treats_404_as_idempotent_success():
+    """SOFT-SUCCESS GUARD: revoking a permission that's already gone is
+    the desired end state for a teardown, so a 404 is returned as
+    ``revoked: True, was_already_absent: True`` — NOT raised. This lets
+    a teardown loop re-run safely."""
+    drive = MagicMock(name="drive-revoke-404")
+    drive.permissions().delete().execute.side_effect = _mock_http_error(404)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = revoke_permission(MagicMock(), "FILE-GONE", "PERM-GONE")
+    assert result == {
+        "file_id": "FILE-GONE",
+        "permission_id": "PERM-GONE",
+        "revoked": True,
+        "was_already_absent": True,
+    }
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — 403 classification (soft failure, returned as data)
+# ---------------------------------------------------------------------
+
+
+def test_revoke_permission_403_app_not_authorized_returns_soft_failure():
+    """403 ``appNotAuthorizedToFile`` (the file wasn't created by this
+    app) is returned as data — ``revoked: False, reason:
+    "app_not_authorized"`` — matching the trash / move contract so a
+    batch teardown can skip-and-continue."""
+    drive = MagicMock(name="drive-revoke-403-app")
+    drive.permissions().delete().execute.side_effect = _mock_http_error(
+        403, "appNotAuthorizedToFile",
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = revoke_permission(MagicMock(), "FOREIGN-FILE", "PERM-X")
+    assert result["revoked"] is False
+    assert result["reason"] == "app_not_authorized"
+    assert result["file_id"] == "FOREIGN-FILE"
+    assert result["permission_id"] == "PERM-X"
+
+
+def test_revoke_permission_other_403_returns_cannot_revoke():
+    """A 403 whose reason is NOT ``appNotAuthorizedToFile`` (most
+    commonly an attempt to remove the file's sole owner) is surfaced as
+    a DISTINCT soft-failure ``reason: "cannot_revoke"`` so callers don't
+    conflate it with the scope / app-authorization case."""
+    drive = MagicMock(name="drive-revoke-403-owner")
+    drive.permissions().delete().execute.side_effect = _mock_http_error(
+        403, "cannotModifyInheritedPermission",
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = revoke_permission(MagicMock(), "FILE1", "PERM-OWNER")
+    assert result["revoked"] is False
+    assert result["reason"] == "cannot_revoke"
+
+
+# ---------------------------------------------------------------------
+# revoke_permission — genuine errors still raise
+# ---------------------------------------------------------------------
+
+
+def test_revoke_permission_reraises_unclassified_http_error():
+    """A status Drive doesn't classify above (e.g. 500) must PROPAGATE
+    as HttpError so genuine bugs surface — the soft-failure handling is
+    deliberately scoped to 404 / 403 only."""
+    drive = MagicMock(name="drive-revoke-500")
+    drive.permissions().delete().execute.side_effect = _mock_http_error(500)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(HttpError):
+            revoke_permission(MagicMock(), "FILE1", "PERM-1")

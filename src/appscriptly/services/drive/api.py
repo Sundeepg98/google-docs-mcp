@@ -547,6 +547,93 @@ def move_to_folder(
     }
 
 
+def create_folder(
+    creds: Credentials,
+    name: str,
+    parent_folder_id: str | None = None,
+) -> dict:
+    """Create a Drive folder via ``files.create`` (folder mimeType).
+
+    Uses ``files.create`` with
+    ``mimeType="application/vnd.google-apps.folder"`` — the documented
+    way to create a folder through the Drive API (a folder is just a
+    file whose mimeType is the folder type). Optionally nests the new
+    folder inside ``parent_folder_id``; omitting it lands the folder in
+    Drive root (My Drive).
+
+    The created folder is owned by the OAuth user and — because this
+    app created it — is fully writable under the ``drive.file`` scope.
+    That makes it a natural destination for ``move_to_folder``: a doc
+    created by this app can be filed into a folder created by this app
+    without ever touching ``drive.full``.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        name: The folder's display name. Empty / whitespace rejected
+            client-side (Drive would create a folder literally named
+            "Untitled folder" otherwise, which is rarely intended).
+        parent_folder_id: Optional parent folder Drive ID. When given,
+            the new folder is created INSIDE it (``parents=[id]``).
+            When omitted (default), the folder lands in Drive root.
+
+    Returns:
+        ``{folder_id, name, url, parent_folder_id}`` — a flat shape the
+        agent can act on. ``folder_id`` feeds straight into
+        ``move_to_folder`` (as ``folder_id``) to file documents into the
+        new folder. ``url`` deep-links to the folder in the Drive UI.
+        ``parent_folder_id`` echoes the parent back (``None`` when the
+        folder was created in root) for confirmation.
+
+    Raises:
+        ValueError: ``name`` empty / whitespace. Cheap rejection before
+            the Drive round-trip.
+        HttpError: any non-2xx from Drive — e.g. 404 when
+            ``parent_folder_id`` doesn't resolve, or 403
+            ``appNotAuthorizedToFile`` when the parent wasn't created by
+            this app (``drive.file`` can't write into a folder it
+            doesn't own). The tool-layer envelope
+            (``_format_http_error``) renders this as a structured
+            response.
+
+    Note:
+        ``files.create`` is NOT idempotent — calling twice creates two
+        distinct folders with the same name (Drive permits duplicate
+        names; folders are keyed by ID, not name). The tool wrapper is
+        annotated ``idempotent=False`` accordingly, and the call is NOT
+        wrapped in ``execute_with_retry`` — a transient retry after a
+        request that actually landed would create a duplicate folder.
+    """
+    if not name or not name.strip():
+        raise ValueError(
+            "name cannot be empty — Drive requires a folder name. "
+            "(An empty name would create a folder literally titled "
+            "'Untitled folder'.)"
+        )
+
+    drive = get_service("drive", "v3", credentials=creds)
+    body: dict[str, Any] = {
+        "name": name.strip(),
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_folder_id:
+        body["parents"] = [parent_folder_id]
+
+    # NOT idempotent — single attempt (matches create_presentation /
+    # create_spreadsheet). No execute_with_retry: replaying a create
+    # that already landed would spawn a duplicate folder.
+    created = drive.files().create(
+        body=body,
+        fields="id,name",
+    ).execute()
+    folder_id = created["id"]
+    return {
+        "folder_id": folder_id,
+        "name": created.get("name", name.strip()),
+        "url": f"https://drive.google.com/drive/folders/{folder_id}",
+        "parent_folder_id": parent_folder_id,
+    }
+
+
 def is_file_trashed(creds: Credentials, drive_file_id: str) -> bool:
     """Return whether the Drive file is currently in trash.
 

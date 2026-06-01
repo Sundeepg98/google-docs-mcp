@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from googleapiclient.errors import HttpError
+
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 
@@ -170,4 +172,134 @@ def list_permissions(
     return {
         "file_id": drive_file_id,
         "permissions": resp.get("permissions", []),
+    }
+
+
+def revoke_permission(
+    creds: Credentials,
+    drive_file_id: str,
+    permission_id: str,
+) -> dict:
+    """Revoke a permission on a Drive file via ``permissions.delete``.
+
+    The inverse of ``grant_permission``. Removes a single permission
+    (identified by ``permission_id`` — the ``id`` returned by
+    ``grant_permission`` or surfaced per-entry by ``list_permissions``)
+    from the file's access list. Drive's ``permissions.delete`` returns
+    an empty body on success; this wraps that into a structured
+    confirmation envelope.
+
+    **Idempotent by design.** Revoking a permission that's already gone
+    is the desired end state ("this grant no longer exists"), so a 404
+    on the permission is returned as a soft *success* (``revoked: True``,
+    ``was_already_absent: True``) rather than an error — a teardown loop
+    can re-run safely. The matching tool wrapper is annotated
+    ``idempotent=True``.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        drive_file_id: The Drive file to revoke access on.
+        permission_id: The permission to remove. From a prior
+            ``grant_permission`` (its ``permission_id``) or any entry's
+            ``id`` in ``list_permissions``.
+
+    Returns:
+        Success: ``{file_id, permission_id, revoked: True,
+        was_already_absent: bool}``. ``was_already_absent`` is True when
+        the permission (or its file) was already gone — the idempotent
+        no-op case.
+        Soft-failure: ``{file_id, permission_id, revoked: False, reason,
+        message}`` where ``reason`` is ``"app_not_authorized"`` (403
+        ``appNotAuthorizedToFile`` — the file wasn't created by this app,
+        so ``drive.file`` can't modify its ACL) or ``"cannot_revoke"``
+        (e.g. attempting to remove the sole owner, which Drive forbids
+        with 403 and a non-``appNotAuthorizedToFile`` reason).
+
+    Raises:
+        ValueError: ``permission_id`` empty / blank. Cheap rejection
+            before the Drive round-trip.
+        HttpError: any non-2xx Drive does NOT classify above (e.g. a
+            500) propagates so genuine bugs surface; the tool-layer
+            ``_format_http_error`` renders it through the standard
+            envelope.
+
+    Note:
+        Like the rest of the drive tools, ``drive.file`` scope limits
+        this to files this app created. A 403 ``appNotAuthorizedToFile``
+        is returned as soft-failure data (not raised) so a batch
+        teardown can skip-and-continue, matching the trash / move
+        contract.
+    """
+    if not permission_id or not permission_id.strip():
+        raise ValueError(
+            "permission_id cannot be empty — pass the id returned by "
+            "gdocs_share_file or an entry's id from gdocs_list_permissions."
+        )
+
+    drive = get_service("drive", "v3", credentials=creds)
+    try:
+        # Idempotent=True: deleting an already-deleted permission is a
+        # true no-op (Drive 404s, which we treat as soft success below).
+        # Retrying a transient 429/5xx is therefore safe.
+        execute_with_retry(
+            lambda: drive.permissions().delete(
+                fileId=drive_file_id,
+                permissionId=permission_id.strip(),
+            ).execute(),
+            idempotent=True,
+            op_name="drive.permissions.delete",
+        )
+    except HttpError as e:
+        if e.status_code == 404:
+            # The permission (or the file) is already gone. For a revoke,
+            # that's the desired end state — report idempotent success.
+            return {
+                "file_id": drive_file_id,
+                "permission_id": permission_id.strip(),
+                "revoked": True,
+                "was_already_absent": True,
+            }
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "file_id": drive_file_id,
+                    "permission_id": permission_id.strip(),
+                    "revoked": False,
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks access to modify this file's "
+                        "permissions — it wasn't created by this app. "
+                        "drive.file scope only permits ACL changes on "
+                        "app-created files. The file's owner must revoke "
+                        "via the Drive UI."
+                    ),
+                }
+            # Other 403s: Drive refuses the deletion for a reason that
+            # isn't app-authorization — most commonly trying to remove
+            # the file's sole owner. Surface as a distinct soft-failure
+            # so callers don't conflate it with the scope case.
+            return {
+                "file_id": drive_file_id,
+                "permission_id": permission_id.strip(),
+                "revoked": False,
+                "reason": "cannot_revoke",
+                "message": (
+                    "Drive refused to delete this permission (HTTP 403). "
+                    "The most common cause is attempting to remove the "
+                    "file's owner — ownership can't be revoked this way. "
+                    f"Drive reason(s): {reasons or 'unspecified'}."
+                ),
+            }
+        raise
+
+    return {
+        "file_id": drive_file_id,
+        "permission_id": permission_id.strip(),
+        "revoked": True,
+        "was_already_absent": False,
     }

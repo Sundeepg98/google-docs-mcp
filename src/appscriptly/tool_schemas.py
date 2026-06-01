@@ -247,6 +247,33 @@ GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA = _object(
 )
 
 
+# Drive folder create (services/drive/api.py::create_folder).
+GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA = _object(
+    properties={
+        "folder_id": {"type": "string"},
+        "name": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        # None when the folder was created in Drive root.
+        "parent_folder_id": {"type": ["string", "null"]},
+    },
+    required=["folder_id", "name", "url"],
+)
+
+
+# Drive permission revoke (services/drive/sharing.py::revoke_permission).
+# Success and soft-failure share file_id / permission_id / revoked; the
+# remaining keys vary by branch (was_already_absent on success, reason +
+# message on soft-failure), covered by additionalProperties.
+GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA = _object(
+    properties={
+        "file_id": {"type": "string"},
+        "permission_id": {"type": "string"},
+        "revoked": {"type": "boolean"},
+    },
+    required=["file_id", "permission_id", "revoked"],
+)
+
+
 # ---------------------------------------------------------------------
 # Sheets (services/sheets/) — v2.3.1 minimal start (2nd new service)
 # ---------------------------------------------------------------------
@@ -812,6 +839,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_untrash_file": GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
     "gdocs_share_file": GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     "gdocs_list_permissions": GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
+    # Drive folder create + permission revoke (drive.file scope, additive).
+    "gdocs_create_folder": GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
+    "gdocs_revoke_permission": GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
     # v2.3.1 — Sheets (2nd new service, minimal start)
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,

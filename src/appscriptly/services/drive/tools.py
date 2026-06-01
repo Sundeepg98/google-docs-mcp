@@ -7,7 +7,7 @@ the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
 decorator.
 
-**Tools registered here** (6 drive-service tools):
+**Tools registered here** (8 drive-service tools):
 
 1. ``gdocs_find_doc_by_title`` — look up a Google Doc / .docx by title (search)
 2. ``gdocs_move_to_folder``    — move a file into a Drive folder
@@ -15,6 +15,8 @@ decorator.
 4. ``gdocs_trash_file``        — move a file to trash (single or batch)
 5. ``gdocs_share_file``        — grant a user permission on a file (v2.3.0)
 6. ``gdocs_list_permissions``  — list who has access to a file (v2.3.0)
+7. ``gdocs_create_folder``     — create a Drive folder (destination for move)
+8. ``gdocs_revoke_permission`` — revoke a previously-granted share
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
@@ -41,6 +43,7 @@ from fastmcp.exceptions import ToolError
 
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.drive.api import (
+    create_folder as _create_folder,
     find_doc_by_title as _find_doc_by_title,
     move_to_folder as _move_to_folder,
     trash_drive_file as _trash_drive_file,
@@ -49,11 +52,14 @@ from appscriptly.services.drive.api import (
 from appscriptly.services.drive.sharing import (
     grant_permission as _grant_permission,
     list_permissions as _list_permissions,
+    revoke_permission as _revoke_permission,
 )
 from appscriptly.tool_schemas import (
+    GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
     GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
     GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
     GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+    GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
     GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
@@ -487,3 +493,151 @@ def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
     via the Drive UI instead.
     """
     return _list_permissions(creds, drive_file_id)
+
+
+# ---------------------------------------------------------------------
+# 7. gdocs_create_folder — create a Drive folder (files.create, folder mime)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Create a Google Drive folder",
+    # Creates new Drive state. Not a read; not destructive (nothing is
+    # removed). NOT idempotent — files.create makes a fresh folder each
+    # call (Drive permits duplicate names), matching
+    # gslides_create_presentation / gsheets_create_spreadsheet.
+    readonly=False,
+    destructive=False,
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
+)
+def gdocs_create_folder(
+    creds,
+    name: str,
+    parent_folder_id: str | None = None,
+) -> dict:
+    """Create a Google Drive folder — a destination to file documents into.
+
+    USE WHEN: you want to organize output before (or after) creating
+    docs — e.g. make a "Q3 Onboarding" folder, then file new docs into
+    it with ``gdocs_move_to_folder``. ``gdocs_move_to_folder`` only
+    moves into an EXISTING folder; this is how you make a new one.
+
+    Uses Drive's ``files.create`` with
+    ``mimeType="application/vnd.google-apps.folder"`` — a Drive folder
+    is just a file whose mimeType is the folder type. The folder is
+    owned by the OAuth user and, because THIS app created it, is fully
+    writable under the ``drive.file`` scope — so docs this app creates
+    can be filed into it without any broader Drive permission.
+
+    Args:
+        name: The folder's display name. Empty / whitespace is rejected
+            (Drive would otherwise create a folder literally titled
+            "Untitled folder").
+        parent_folder_id: Optional parent folder Drive ID. When given,
+            the new folder is nested INSIDE it. When omitted (default),
+            the folder is created in Drive root (My Drive).
+
+            NOTE: the parent must itself be a folder THIS app can write
+            to (one it created). Nesting under a folder the app didn't
+            create returns HTTP 403 ``appNotAuthorizedToFile`` — same
+            ``drive.file`` constraint as the rest of the drive tools.
+
+    Returns:
+        ``{folder_id, name, url, parent_folder_id}``. ``folder_id``
+        feeds straight into ``gdocs_move_to_folder`` (as ``folder_id``)
+        to file documents into the new folder; ``url`` deep-links to
+        the folder in the Drive UI; ``parent_folder_id`` echoes the
+        parent back (``None`` when created in root).
+
+    Choreography: typically the FIRST step of an organize flow — create
+    the folder here, then ``gdocs_move_to_folder`` each doc into the
+    returned ``folder_id``. Pairs with ``gdocs_make_tabbed_doc`` /
+    ``gdocs_tab_existing_doc`` (which land docs in root by default).
+
+    NOTE: NOT idempotent — calling twice creates two folders with the
+    same name (Drive keys folders by ID, not name). Track the returned
+    ``folder_id`` rather than re-creating by name.
+    """
+    return _create_folder(creds, name=name, parent_folder_id=parent_folder_id)
+
+
+# ---------------------------------------------------------------------
+# 8. gdocs_revoke_permission — revoke a share (permissions.delete)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Revoke a user's access to a Google Drive file",
+    # Removes access — destructive (the inverse of gdocs_share_file).
+    # Idempotent: revoking an already-gone permission is the desired
+    # end state, so the api layer returns a 404 as soft success
+    # (was_already_absent=True) — re-running a teardown is safe.
+    readonly=False,
+    destructive=True,
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
+)
+def gdocs_revoke_permission(
+    creds,
+    drive_file_id: str,
+    permission_id: str,
+) -> dict:
+    """Revoke a user's access to a Google Drive file — the inverse of sharing.
+
+    USE WHEN: tearing down a share you (or the agent) granted earlier —
+    e.g. a reviewer is done, a temporary collaborator should lose
+    access, or a teardown flow is cleaning up. Strengthens the "the
+    user controls who has access" story: every grant via
+    ``gdocs_share_file`` is reversible here.
+
+    Uses Drive's ``permissions.delete`` REST endpoint. The
+    ``permission_id`` is the handle returned by ``gdocs_share_file``
+    (its ``permission_id``) or surfaced per-entry by
+    ``gdocs_list_permissions`` (each entry's ``id``).
+
+    Idempotent by design: revoking a permission that's already gone is
+    the desired end state, so a 404 is returned as a soft SUCCESS
+    (``revoked: True``, ``was_already_absent: True``) — a teardown loop
+    can re-run safely.
+
+    Args:
+        drive_file_id: The file to revoke access on.
+        permission_id: The permission to remove. From a prior
+            ``gdocs_share_file`` (its ``permission_id``) or any entry's
+            ``id`` from ``gdocs_list_permissions``. Empty / blank is
+            rejected before the Drive round-trip.
+
+    Returns:
+        Success: ``{file_id, permission_id, revoked: True,
+        was_already_absent: bool}`` — ``was_already_absent=True`` is the
+        idempotent no-op case (the permission was already gone).
+        Soft-failure (returned as data, not raised): ``{file_id,
+        permission_id, revoked: False, reason, message}`` where
+        ``reason`` is ``"app_not_authorized"`` (the file wasn't created
+        by this app, so ``drive.file`` can't modify its ACL) or
+        ``"cannot_revoke"`` (Drive refused — most commonly an attempt to
+        remove the file's sole owner, which Drive forbids).
+
+    Choreography: ``permission_id`` typically comes from a recent
+    ``gdocs_share_file`` call or from ``gdocs_list_permissions`` (call
+    it first to enumerate revoke targets). Call ``gdocs_list_permissions``
+    afterward to confirm the entry is gone.
+
+    NOTE: same app-ownership constraint as ``gdocs_share_file`` —
+    ``drive.file`` scope only permits ACL changes on files this app
+    created. Revoking on a file the app didn't create returns
+    ``reason: "app_not_authorized"``; the file's owner must revoke via
+    the Drive UI instead.
+    """
+    return _revoke_permission(
+        creds,
+        drive_file_id=drive_file_id,
+        permission_id=permission_id,
+    )
