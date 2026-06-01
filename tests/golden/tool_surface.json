@@ -42,6 +42,7 @@
   "gdocs_untrash_file",
   "gsheets_add_sheet",
   "gsheets_append_rows",
+  "gsheets_apply_conditional_format",
   "gsheets_create_spreadsheet",
   "gsheets_delete_sheet",
   "gsheets_format_range",

@@ -56,6 +56,7 @@ EXPECTED_TOOLS = {
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create
     "gsheets_format_range",  # Sheets batchUpdate (repeatCell) via the request-builder
+    "gsheets_apply_conditional_format",  # Sheets batchUpdate (addConditionalFormatRule)
     "gsheets_append_rows",  # Sheets values.append — race-free row append
     "gsheets_add_sheet",  # Sheets batchUpdate (addSheet) — tab lifecycle
     "gsheets_delete_sheet",  # Sheets batchUpdate (deleteSheet) — tab lifecycle

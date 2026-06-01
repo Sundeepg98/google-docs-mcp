@@ -400,6 +400,18 @@ GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_apply_conditional_format`` returns the same flat batch_update
+# envelope as gsheets_format_range — one addConditionalFormatRule request.
+GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
 # ``gsheets_append_rows`` appends rows after a table's last row
 # (values.append — race-free) and returns where they landed + counts.
 GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA = _object(
@@ -951,6 +963,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
     "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     "gsheets_format_range": GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
+    # Sheets conditional formatting (this PR — wires the existing builder)
+    "gsheets_apply_conditional_format": GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
     # Sheets append + tab lifecycle (this PR)
     "gsheets_append_rows": GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
     "gsheets_add_sheet": GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
