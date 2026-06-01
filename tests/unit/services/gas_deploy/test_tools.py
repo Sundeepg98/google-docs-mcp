@@ -427,18 +427,35 @@ def test_as_deploy_web_app_module_is_services_gas_deploy_tools():
 def _stub_creds_and_script_svc(monkeypatch):
     """Inject stub creds at the decorator boundary + a stubbed script v1
     service via the GoogleAPIClient port, wired for the full deploy
-    chain. Returns the script-svc MagicMock for call inspection."""
+    chain. Returns the script-svc MagicMock for call inspection.
+
+    IMPORTANT — as_deploy_web_app declares ``scopes=_WEB_APP_DEPLOY_SCOPES``,
+    so its ``@workspace_tool(creds=True)`` decorator takes the SCOPE-AWARE
+    resolution path, which (in stdio test context) calls
+    ``auth.load_credentials(...)`` — NOT the plain ``_get_credentials_fn``
+    path the no-scope sheets/slides tools use. Patching only
+    ``_get_credentials_fn`` lets the real loader run and raises
+    ``FileNotFoundError: No OAuth client config found``. So patch
+    ``auth.load_credentials`` (the real target) plus the other two creds
+    entry points belt-and-suspenders. Mirrors
+    ``services/apps_script/test_tools.py::inject_stub_creds``."""
     from unittest.mock import MagicMock
 
-    from appscriptly import decorators
+    from appscriptly import auth, decorators
     from appscriptly.google_api_client import (
         InMemoryGoogleAPIClient,
         with_google_api_client,
     )
 
-    monkeypatch.setattr(
-        decorators, "_get_credentials_fn", lambda: MagicMock(name="creds")
-    )
+    _creds = MagicMock(name="creds")
+    # The scope-aware creds path for this tool resolves through
+    # auth.load_credentials (stdio context) — that's the real target to
+    # stub. _get_credentials_fn is patched too in case a future refactor
+    # flips the branch. (Unlike apps_script/sheets tools, gas_deploy/tools
+    # does NOT import a module-level _get_credentials, so there's nothing
+    # to patch there.)
+    monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: _creds)
+    monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: _creds)
     svc = MagicMock(name="script-v1")
     svc.projects().create().execute.return_value = {"scriptId": "SID-9"}
     svc.projects().updateContent().execute.return_value = {}
