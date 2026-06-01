@@ -13,6 +13,7 @@
   "gdocs_delete_tab",
   "gdocs_export_doc",
   "gdocs_find_doc_by_title",
+  "gdocs_find_file",
   "gdocs_format_paragraph",
   "gdocs_format_range",
   "gdocs_get_doc_outline",

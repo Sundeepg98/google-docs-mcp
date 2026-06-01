@@ -35,6 +35,21 @@ GDOC_MIME = "application/vnd.google-apps.document"
 # upload size.
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
+
+def _escape_q_literal(value: str) -> str:
+    """Escape a user string for embedding in a Drive ``q=`` string literal.
+
+    Drive's query DSL wraps string operands in single quotes; a literal
+    ``'`` (or ``\\``) inside the operand must be backslash-escaped or it
+    closes the literal early — both a correctness bug (``Bob's Doc``) and
+    an injection vector (a crafted name could append ``q`` clauses). We
+    escape backslash FIRST (so we don't double-escape the backslashes we
+    add for quotes), then the single quote. Shared by every ``q=``
+    builder (``find_doc_by_title`` name match + the multi-filter
+    ``find_file``) so the escape rule lives in exactly one place.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
 # ---------------------------------------------------------------------
 # Export (files.export) — Google-native → portable format mapping.
 # ---------------------------------------------------------------------
@@ -406,9 +421,10 @@ def find_doc_by_title(
     """
     drive = get_service("drive", "v3", credentials=creds)
 
-    # Escape single quotes inside the query — Drive's q DSL requires
-    # quoting them with a backslash.
-    safe_query = query.replace("'", "\\'")
+    # Escape single quotes (and backslashes) inside the query — Drive's q
+    # DSL requires quoting them with a backslash. Shared helper so the
+    # rule lives in one place (also used by find_file).
+    safe_query = _escape_q_literal(query)
     operator = "=" if exact else "contains"
     q_parts = [f"name {operator} '{safe_query}'"]
     q_parts.append(
@@ -469,6 +485,183 @@ def find_doc_by_title(
                 else:
                     # Unknown error — be conservative and say "we
                     # don't know" rather than claim writable.
+                    write_results[fid] = False
+            return cb
+
+        batch = drive.new_batch_http_request()
+        for m in matches:
+            probe_req = drive.files().update(
+                fileId=m["file_id"],
+                body={"trashed": m["trashed"]},
+                fields="id",
+            )
+            batch.add(probe_req, callback=make_callback(m["file_id"]))
+        batch.execute()
+
+        for m in matches:
+            m["owned_by_app"] = write_results.get(m["file_id"], False)
+
+    return {"matches": matches, "count": len(matches)}
+
+
+def find_file(
+    creds: Credentials,
+    query: str = "",
+    *,
+    mime_type: str | None = None,
+    full_text: str | None = None,
+    parent_folder_id: str | None = None,
+    exact: bool = False,
+    include_trashed: bool = False,
+    page_size: int = 50,
+    verify_writable: bool = False,
+) -> dict:
+    """Search APP-ACCESSIBLE Drive files of ANY type, with optional filters.
+
+    The generalization of ``find_doc_by_title``: that function hardcodes a
+    Google-Doc / ``.docx`` mimeType filter (so it silently hides Sheets,
+    Slides, PDFs, folders); this drops that hardcoding and exposes the
+    filter as an OPTIONAL ``mime_type`` parameter, plus a ``full_text``
+    content-contains filter and a ``parent_folder_id`` folder-scope
+    filter. With no filters at all it lists the most-recently-modified
+    app-accessible files of every type.
+
+    **CORPUS LIMITATION — read this.** This searches ONLY files THIS app
+    has CREATED or OPENED — i.e. the per-file set the ``drive.file`` scope
+    grants visibility to. It is **NOT a whole-Drive search**: arbitrary
+    files in the user's Drive that this app never touched are invisible to
+    ``files.list`` under ``drive.file`` and will NOT appear, no matter the
+    filters. (A whole-Drive find requires the RESTRICTED
+    ``drive.readonly`` / ``drive.metadata.readonly`` scope and is
+    intentionally not built here.) For the app's own workflow — re-find a
+    Sheet / Slides / PDF it produced earlier to export, share, move, or
+    trash — the app-accessible corpus is exactly the right (and only
+    in-scope) surface.
+
+    Args:
+        query: Optional name text to match. Empty / whitespace (the
+            default) applies NO name filter — useful for "list my recent
+            Sheets" (``mime_type`` only) or "what's in this folder"
+            (``parent_folder_id`` only). Single quotes are escaped.
+        mime_type: Optional EXACT Drive mimeType to filter to, e.g.
+            ``"application/vnd.google-apps.spreadsheet"`` (Sheets),
+            ``"application/vnd.google-apps.presentation"`` (Slides),
+            ``"application/pdf"`` (PDF),
+            ``"application/vnd.google-apps.folder"`` (folders only).
+            Omit to match all types. Drive matches mimeType exactly (no
+            wildcards). Single quotes are escaped.
+        full_text: Optional ``fullText contains`` filter — matches the
+            file's indexed CONTENT / title / metadata (Drive's full-text
+            index), not just the name. Useful for "find the doc that
+            mentions 'Q3 revenue'". Single quotes are escaped.
+        parent_folder_id: Optional folder ID to scope the search to —
+            only files whose parents include this folder are returned
+            (``'<id>' in parents``). Combine with ``mime_type`` for
+            "Sheets in this folder". Single quotes are escaped.
+        exact: When a ``query`` is given, True = exact name match
+            (``name = 'X'``); False (default) = substring
+            (``name contains 'X'``). Ignored when ``query`` is empty.
+        include_trashed: False (default) excludes trashed files.
+        page_size: max results (Drive caps at 100).
+        verify_writable: False (default) — pure read; ``owned_by_app`` is
+            ``None``. True opts into the SAME batched no-op-update probe
+            ``find_doc_by_title`` uses, populating ``owned_by_app`` per
+            match (and writing the Drive audit log). The tool wrapper is
+            ``readonly=True``, so the default MUST stay a pure read
+            (CQRS — R33 Gap #3).
+
+    Returns:
+        ``{"matches": [{file_id, name, mimeType, modified_time, trashed,
+        owned_by_app}, ...], "count": int}`` — identical shape to
+        ``find_doc_by_title`` so the two are drop-in interchangeable for
+        consumers. ``owned_by_app`` is ``True``/``False`` if probed,
+        else ``None``.
+
+    Raises:
+        ValueError: no filter at all was supplied AND a name match was
+            expected — actually we permit the all-empty case (recent
+            files), so this only fires defensively if ``page_size`` is
+            non-positive after clamping (it can't be — clamped to >=1).
+            In practice ``find_file`` does not raise on input; an
+            over-broad call just returns recent files.
+    """
+    drive = get_service("drive", "v3", credentials=creds)
+
+    # Build the q= clauses from whichever filters were supplied. Every
+    # user-supplied string operand is escaped via _escape_q_literal to
+    # preserve the single-quote-escape security property (a name/folder
+    # containing ``'`` must not break out of — or inject into — the DSL).
+    q_parts: list[str] = []
+
+    if query and query.strip():
+        operator = "=" if exact else "contains"
+        q_parts.append(f"name {operator} '{_escape_q_literal(query.strip())}'")
+
+    if mime_type and mime_type.strip():
+        # Exact match — Drive's mimeType operand takes ``=`` (no wildcard).
+        q_parts.append(f"mimeType = '{_escape_q_literal(mime_type.strip())}'")
+
+    if full_text and full_text.strip():
+        q_parts.append(
+            f"fullText contains '{_escape_q_literal(full_text.strip())}'"
+        )
+
+    if parent_folder_id and parent_folder_id.strip():
+        # Folder-scope: Drive's documented form is ``'<id>' in parents``.
+        q_parts.append(
+            f"'{_escape_q_literal(parent_folder_id.strip())}' in parents"
+        )
+
+    if not include_trashed:
+        q_parts.append("trashed = false")
+
+    # If the ONLY clause is the trashed filter (caller passed no name /
+    # mime / fullText / parent), that's a valid "recent app-accessible
+    # files" browse — Drive accepts a q of just ``trashed = false``. When
+    # include_trashed is also True we'd have an empty q; Drive treats an
+    # empty/None q as "all files", which is the intended browse-all.
+    q = " and ".join(q_parts) if q_parts else None
+
+    # Pure read (readonly=True, idempotent=True) — same retry posture as
+    # find_doc_by_title's list call.
+    resp = execute_with_retry(
+        lambda: drive.files().list(
+            q=q,
+            orderBy="modifiedTime desc",
+            pageSize=min(max(page_size, 1), 100),
+            fields="files(id,name,mimeType,modifiedTime,trashed)",
+        ).execute(),
+        idempotent=True,
+        op_name="drive.files.list.find_file",
+    )
+
+    matches: list[dict] = []
+    for f in resp.get("files", []):
+        matches.append({
+            "file_id": f["id"],
+            "name": f.get("name", ""),
+            "mimeType": f.get("mimeType", ""),
+            "modified_time": f.get("modifiedTime", ""),
+            "trashed": bool(f.get("trashed")),
+            "owned_by_app": None,  # filled below if verify_writable
+        })
+
+    # Identical writability-probe to find_doc_by_title (see that
+    # function for the full rationale: capabilities.* are user-level and
+    # unreliable; a batched no-op update is the only accurate drive.file
+    # writability test). Kept inline rather than extracted because the
+    # extraction (two consumers now) is a judgment call best left to the
+    # rule-of-three / a dedicated refactor PR, not folded into a feature.
+    if verify_writable and matches:
+        write_results: dict[str, bool] = {}
+
+        def make_callback(fid: str):
+            def cb(_request_id: str, _response: Any, exception: Any) -> None:
+                if exception is None:
+                    write_results[fid] = True
+                elif isinstance(exception, HttpError) and exception.status_code == 403:
+                    write_results[fid] = False
+                else:
                     write_results[fid] = False
             return cb
 

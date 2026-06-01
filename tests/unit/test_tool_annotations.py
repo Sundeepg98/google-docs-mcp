@@ -43,6 +43,10 @@ READONLY_TOOLS = {
     "gdocs_read_doc",
     "gdocs_get_tab_url",
     "gdocs_find_doc_by_title",
+    # Generalized find — files.list over app-accessible files of any
+    # type. Pure read by default (the verify_writable probe is opt-in,
+    # default False), same CQRS posture as gdocs_find_doc_by_title.
+    "gdocs_find_file",
     "gdocs_server_info",
     "gdocs_test_manifest",
     "gdocs_guide",

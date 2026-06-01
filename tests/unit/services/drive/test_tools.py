@@ -5,7 +5,7 @@ not delivered for the drive service either. Sister file to
 ``tests/unit/services/docs/test_tools.py``, applying the same canonical
 pattern (PR #103 → PR #110 → here) at the drive surface.
 
-The 9 drive tools:
+The 10 drive tools:
 
   1. gdocs_find_doc_by_title — title search; q= DSL construction
   2. gdocs_move_to_folder    — addParents/removeParents
@@ -16,6 +16,7 @@ The 9 drive tools:
   7. gdocs_create_folder     — files.create (folder mimeType)
   8. gdocs_revoke_permission — permissions.delete
   9. gdocs_export_doc        — files.export (Google-native → portable)
+  10. gdocs_find_file        — files.list (any mimeType, app-accessible)
 
 The trash/untrash tools accept either a single ``file_id`` (str) or
 a list (batch); a happy-path test for each form exercises the
@@ -510,3 +511,64 @@ def test_gdocs_export_doc_soft_failure_passthrough(
     result = tools.gdocs_export_doc(drive_file_id="BLOB", export_format="pdf")
     assert result["reason"] == "not_exportable"
     assert result["source_file_id"] == "BLOB"
+
+
+# ---------------------------------------------------------------------
+# 10. gdocs_find_file — happy-path + filter forwarding through envelope
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_find_file_returns_envelope_for_empty_result(with_drive_stub):
+    """Default stub returns no files → {matches: [], count: 0} through
+    the standard @workspace_tool(creds=True) boundary."""
+    result = tools.gdocs_find_file(query="nothing", verify_writable=False)
+    assert result == {"matches": [], "count": 0}
+
+
+def test_gdocs_find_file_surfaces_non_doc_types(with_drive_stub):
+    """A Sheet match flows through the tool — proving the generalized
+    find returns non-Doc types (the whole point vs find_doc_by_title)."""
+    sheet_mime = "application/vnd.google-apps.spreadsheet"
+    with_drive_stub.files().list().execute.return_value = {
+        "files": [{
+            "id": "SHEET-1", "name": "Budget", "mimeType": sheet_mime,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    result = tools.gdocs_find_file(mime_type=sheet_mime, verify_writable=False)
+    assert result["count"] == 1
+    assert result["matches"][0]["file_id"] == "SHEET-1"
+    assert result["matches"][0]["mimeType"] == sheet_mime
+
+
+def test_gdocs_find_file_forwards_filters_into_query(with_drive_stub):
+    """Filters passed at the tool layer reach the Drive q= (forwarded
+    through the api layer): mime_type + parent_folder_id + full_text."""
+    slides_mime = "application/vnd.google-apps.presentation"
+    tools.gdocs_find_file(
+        query="deck",
+        mime_type=slides_mime,
+        full_text="roadmap",
+        parent_folder_id="FOLDER-1",
+        verify_writable=False,
+    )
+    last = with_drive_stub.files().list.call_args_list[-1]
+    q = last.kwargs["q"]
+    assert "name contains 'deck'" in q
+    assert f"mimeType = '{slides_mime}'" in q
+    assert "fullText contains 'roadmap'" in q
+    assert "'FOLDER-1' in parents" in q
+
+
+def test_gdocs_find_file_invokes_get_credentials_fn(with_drive_stub, monkeypatch):
+    """Canary: the @workspace_tool(creds=True) decorator must inject
+    creds before delegating (same pattern as the other drive tools)."""
+    call_count = {"n": 0}
+
+    def counting_creds_fn():
+        call_count["n"] += 1
+        return MagicMock(name="stub-creds-canary")
+
+    monkeypatch.setattr(decorators, "_get_credentials_fn", counting_creds_fn)
+    tools.gdocs_find_file(query="x", verify_writable=False)
+    assert call_count["n"] == 1
