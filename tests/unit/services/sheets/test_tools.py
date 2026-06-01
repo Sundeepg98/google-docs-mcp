@@ -273,3 +273,142 @@ def test_gsheets_read_range_invokes_get_credentials_fn(
         "_get_credentials_fn was not called exactly once — the "
         "decorator envelope may have changed or the fixture missed."
     )
+
+
+# ---------------------------------------------------------------------
+# 5. gsheets_append_rows — happy path + validation (values.append)
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_append_rows_happy_path(with_sheets_stub):
+    """Append goes through values.append and returns the flat
+    ``{updated_range, updated_cells, updated_rows}`` envelope."""
+    with_sheets_stub.spreadsheets().values().append().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "updates": {
+            "updatedRange": "Sheet1!A5:B5",
+            "updatedCells": 2,
+            "updatedRows": 1,
+        },
+    }
+    result = tools.gsheets_append_rows(
+        spreadsheet_id="SPREAD1",
+        values=[["a", "b"]],
+    )
+    assert result == {
+        "updated_range": "Sheet1!A5:B5",
+        "updated_cells": 2,
+        "updated_rows": 1,
+    }
+
+
+def test_gsheets_append_rows_forwards_range_and_append_options(with_sheets_stub):
+    """Tool-layer pass-through: the ``range`` arg + the pinned append
+    options reach values.append verbatim."""
+    with_sheets_stub.spreadsheets().values().append().execute.return_value = {
+        "updates": {"updatedRange": "S!A1", "updatedCells": 1, "updatedRows": 1},
+    }
+    tools.gsheets_append_rows(
+        spreadsheet_id="SPREAD1",
+        values=[["x"]],
+        range="Sheet2!A:Z",
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().append.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().append() call captured spreadsheetId"
+    kw = real_calls[-1].kwargs
+    assert kw["range"] == "Sheet2!A:Z"
+    assert kw["valueInputOption"] == "USER_ENTERED"
+    assert kw["insertDataOption"] == "INSERT_ROWS"
+
+
+def test_gsheets_append_rows_validation_propagates(with_sheets_stub):
+    """Empty-values rejection bubbles from the api module through the
+    decorator envelope as ValueError."""
+    with pytest.raises(ValueError, match="values cannot be empty"):
+        tools.gsheets_append_rows(spreadsheet_id="SPREAD1", values=[])
+
+
+# ---------------------------------------------------------------------
+# 6-8. gsheets_add_sheet / delete_sheet / rename_sheet — tab lifecycle
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_add_sheet_happy_path(with_sheets_stub):
+    """add_sheet surfaces the gid Sheets assigned the new tab."""
+    with_sheets_stub.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [
+            {"addSheet": {"properties": {
+                "sheetId": 555, "title": "Summary", "index": 1,
+            }}}
+        ],
+    }
+    result = tools.gsheets_add_sheet(
+        spreadsheet_id="SPREAD1", title="Summary", index=1,
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 555,
+        "title": "Summary",
+        "index": 1,
+    }
+
+
+def test_gsheets_add_sheet_validation_propagates(with_sheets_stub):
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        tools.gsheets_add_sheet(spreadsheet_id="SPREAD1", title="  ")
+
+
+def test_gsheets_delete_sheet_happy_path(with_sheets_stub):
+    """delete_sheet dispatches a deleteSheet batchUpdate and echoes the
+    removed gid."""
+    result = tools.gsheets_delete_sheet(spreadsheet_id="SPREAD1", sheet_id=42)
+    assert result == {"spreadsheet_id": "SPREAD1", "deleted_sheet_id": 42}
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls[-1].kwargs["body"]["requests"] == [
+        {"deleteSheet": {"sheetId": 42}}
+    ]
+
+
+def test_gsheets_delete_sheet_validation_propagates(with_sheets_stub):
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        tools.gsheets_delete_sheet(spreadsheet_id="SPREAD1", sheet_id=-1)
+
+
+def test_gsheets_rename_sheet_happy_path(with_sheets_stub):
+    """rename_sheet dispatches a title-scoped updateSheetProperties and
+    echoes the new name."""
+    result = tools.gsheets_rename_sheet(
+        spreadsheet_id="SPREAD1", sheet_id=0, title="Renamed",
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 0,
+        "title": "Renamed",
+    }
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls[-1].kwargs["body"]["requests"] == [{
+        "updateSheetProperties": {
+            "properties": {"sheetId": 0, "title": "Renamed"},
+            "fields": "title",
+        }
+    }]
+
+
+def test_gsheets_rename_sheet_validation_propagates(with_sheets_stub):
+    with pytest.raises(ValueError, match="title cannot be empty"):
+        tools.gsheets_rename_sheet(
+            spreadsheet_id="SPREAD1", sheet_id=0, title="",
+        )

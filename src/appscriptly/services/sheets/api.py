@@ -49,11 +49,14 @@ from typing import TYPE_CHECKING, Any
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 from appscriptly.services.sheets.batch import (
+    add_sheet_request,
     batch_update,
     cell_format,
     color,
+    delete_sheet_request,
     grid_range,
     repeat_cell_request,
+    update_sheet_title_request,
 )
 
 if TYPE_CHECKING:
@@ -315,3 +318,234 @@ def format_range(
         idempotent=True,
         op_name="sheets.spreadsheets.batchUpdate.repeatCell",
     )
+
+
+def append_rows(
+    creds: Credentials,
+    spreadsheet_id: str,
+    values: list[list[Any]],
+    *,
+    range_str: str = DEFAULT_RANGE,
+) -> dict:
+    """Append rows after a table's last row via ``spreadsheets.values.append``.
+
+    The race-free alternative to ``read_range`` → compute next-empty-row
+    → ``write_range``. ``values.append`` lets SHEETS find the table's
+    last row and write below it server-side, in one atomic call — so two
+    concurrent appends land on consecutive rows instead of clobbering
+    each other (the classic read-then-write race the manual pattern has).
+
+    Uses ``valueInputOption="USER_ENTERED"`` (formulas/dates/numbers
+    parse as if typed — consistent with ``write_range``) and
+    ``insertDataOption="INSERT_ROWS"`` (push existing rows down rather
+    than overwrite anything below the table — the safe default for an
+    "append").
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        values: 2D row-major list of rows to append (each inner list is
+            one row, left-to-right). Strings / numbers / bools / None
+            permitted; ``None`` writes a blank cell.
+        range_str: An A1 range Sheets uses to LOCATE the table to append
+            to (it searches this range for the table, then writes after
+            its last row) — NOT the write destination. Defaults to
+            ``DEFAULT_RANGE`` (the first tab). Pass ``"Sheet2!A:Z"`` to
+            target a specific tab.
+
+    Returns:
+        ``{updated_range, updated_cells, updated_rows}`` — ``updated_range``
+        is the A1 range Sheets actually wrote the new rows into (echoed
+        so the caller sees where they landed), ``updated_cells`` /
+        ``updated_rows`` are Sheets' counts for the appended block.
+
+    Raises:
+        ValueError: ``values`` empty or not a list of lists (same cheap
+            client-side rejection as ``write_range`` — Sheets' own 400
+            is less helpful).
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+
+    Note:
+        Dispatched WITHOUT retry (``execute_with_retry`` is intentionally
+        not used): ``append`` is NOT idempotent — a transient-error
+        replay could append the same rows twice. The retry "safety floor"
+        forbids blanket-retrying a non-idempotent mutation, so this is a
+        plain ``.execute()`` (matching that contract).
+    """
+    if not values:
+        raise ValueError(
+            "values cannot be empty — pass at least one row to append "
+            "(use [[]] for a single blank row)."
+        )
+    if not all(isinstance(row, list) for row in values):
+        raise ValueError(
+            "values must be a list of lists (2D row-major). "
+            f"Got element types: {sorted({type(r).__name__ for r in values})}"
+        )
+
+    sheets = get_service("sheets", "v4", credentials=creds)
+    # No execute_with_retry: append is non-idempotent (a replay duplicates
+    # rows). Let HttpError propagate to the tool-layer envelope.
+    resp = sheets.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=range_str,
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values},
+    ).execute()
+    # values.append nests the write result under "updates".
+    updates = resp.get("updates", {})
+    return {
+        "updated_range": updates.get("updatedRange", range_str),
+        "updated_cells": updates.get("updatedCells", 0),
+        "updated_rows": updates.get("updatedRows", 0),
+    }
+
+
+def add_sheet(
+    creds: Credentials,
+    spreadsheet_id: str,
+    title: str,
+    *,
+    index: int | None = None,
+) -> dict:
+    """Add a new tab to a spreadsheet via ``batchUpdate`` (``addSheet``).
+
+    Closes the "create makes only one tab" gap: ``create_spreadsheet``
+    yields a single default tab, and this adds further tabs. Sheets
+    assigns the new tab's ``sheetId`` (gid) server-side; this function
+    parses it out of the batchUpdate reply so the caller gets the gid
+    needed for ``format_range`` / ``rename_sheet`` / ``delete_sheet``.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        title: The new tab's name (unique within the spreadsheet —
+            Sheets 400s on a duplicate). Blank rejected by the builder.
+        index: 0-based position among existing tabs (0 = leftmost).
+            ``None`` appends after the last tab.
+
+    Returns:
+        ``{spreadsheet_id, sheet_id, title, index}`` — ``sheet_id`` is
+        the gid Sheets assigned the new tab; ``title`` / ``index`` echo
+        the created tab's properties from the reply.
+
+    Raises:
+        ValueError: blank ``title`` / negative ``index`` (from the
+            builder).
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated
+            (e.g. a duplicate tab name).
+    """
+    request = add_sheet_request(title, index=index)
+    # idempotent=False (the batch_update default): re-running addSheet
+    # would create ANOTHER tab (Sheets auto-uniquifies / 400s), so a
+    # transient-error replay is unsafe.
+    result = batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.addSheet",
+    )
+    props = (
+        result.get("replies", [{}])[0]
+        .get("addSheet", {})
+        .get("properties", {})
+    )
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "sheet_id": props.get("sheetId"),
+        "title": props.get("title", title.strip()),
+        "index": props.get("index"),
+    }
+
+
+def delete_sheet(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+) -> dict:
+    """Delete a tab by its gid via ``batchUpdate`` (``deleteSheet``).
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+
+    Returns:
+        ``{spreadsheet_id, deleted_sheet_id}`` — ``deleted_sheet_id``
+        echoes the gid that was removed.
+
+    Raises:
+        ValueError: negative ``sheet_id`` (from the builder).
+        HttpError: from the underlying SDK — propagated. Notably Sheets
+            rejects deleting the LAST remaining tab (a spreadsheet must
+            keep at least one) with a 400.
+
+    Note:
+        ``deleteSheet`` is DESTRUCTIVE (the tab and its data are gone).
+        Dispatched non-idempotent — but the tool annotates
+        ``idempotent=True`` semantically (deleting an already-deleted
+        gid 400s rather than double-deleting). The dispatch stays
+        non-retried to honor the destructive-op safety floor.
+    """
+    request = delete_sheet_request(sheet_id)
+    result = batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.deleteSheet",
+    )
+    return {
+        "spreadsheet_id": result.get("spreadsheet_id", spreadsheet_id),
+        "deleted_sheet_id": sheet_id,
+    }
+
+
+def rename_sheet(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    title: str,
+) -> dict:
+    """Rename a tab via ``batchUpdate`` (``updateSheetProperties``).
+
+    Uses a ``fields="title"`` mask so only the tab name changes — index,
+    gridProperties, tabColor, etc. are untouched.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        title: The new tab name (unique within the spreadsheet — Sheets
+            400s on a duplicate). Blank rejected by the builder.
+
+    Returns:
+        ``{spreadsheet_id, sheet_id, title}`` — ``title`` echoes the
+        (stripped) new name.
+
+    Raises:
+        ValueError: blank ``title`` / negative ``sheet_id`` (from the
+            builder).
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated
+            (e.g. a duplicate tab name, or an unknown gid).
+
+    Note:
+        A rename is idempotent (renaming to the same title twice yields
+        the same state), so this dispatches with ``idempotent=True`` —
+        safe to retry on a transient 429/5xx.
+    """
+    request = update_sheet_title_request(sheet_id, title)
+    batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        idempotent=True,
+        op_name="sheets.spreadsheets.batchUpdate.updateSheetProperties",
+    )
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "sheet_id": sheet_id,
+        "title": title.strip(),
+    }

@@ -49,6 +49,10 @@ EXPECTED_TOOLS = {
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create
     "gsheets_format_range",  # Sheets batchUpdate (repeatCell) via the request-builder
+    "gsheets_append_rows",  # Sheets values.append — race-free row append
+    "gsheets_add_sheet",  # Sheets batchUpdate (addSheet) — tab lifecycle
+    "gsheets_delete_sheet",  # Sheets batchUpdate (deleteSheet) — tab lifecycle
+    "gsheets_rename_sheet",  # Sheets batchUpdate (updateSheetProperties) — tab lifecycle
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create

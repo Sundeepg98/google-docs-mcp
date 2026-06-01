@@ -393,6 +393,118 @@ def add_conditional_format_rule_request(
 
 
 # ---------------------------------------------------------------------
+# Sheet-lifecycle request builders (tab add / delete / rename)
+# ---------------------------------------------------------------------
+#
+# These operate on a whole SHEET (tab), not a cell GridRange, so they
+# don't use ``grid_range``. They are the ``batchUpdate`` request types
+# behind ``gsheets_add_sheet`` / ``gsheets_delete_sheet`` /
+# ``gsheets_rename_sheet`` — closing the "create makes only one tab" gap.
+
+
+def add_sheet_request(
+    title: str,
+    *,
+    index: int | None = None,
+) -> dict[str, Any]:
+    """Build an ``addSheet`` request that creates a new tab.
+
+    ``addSheet`` adds a sheet (tab) to an existing spreadsheet. Sheets
+    assigns the new tab's ``sheetId`` (gid) server-side and echoes it in
+    the batchUpdate reply (``replies[i].addSheet.properties.sheetId``),
+    so the api layer can surface the gid for follow-up calls.
+
+    Args:
+        title: The new tab's name. Must be unique within the
+            spreadsheet — Sheets 400s on a duplicate tab name (caught
+            server-side; we reject blank client-side).
+        index: 0-based position among existing tabs (0 = leftmost).
+            ``None`` (default) appends after the last tab.
+
+    Returns:
+        A single ``{"addSheet": {...}}`` request dict.
+
+    Raises:
+        ValueError: blank ``title``, or a negative ``index``.
+    """
+    if not title or not title.strip():
+        raise ValueError("title cannot be empty (the new tab needs a name).")
+    if index is not None and index < 0:
+        raise ValueError(f"index must be >= 0 (0 = leftmost tab); got {index}.")
+
+    properties: dict[str, Any] = {"title": title.strip()}
+    if index is not None:
+        properties["index"] = index
+    return {"addSheet": {"properties": properties}}
+
+
+def delete_sheet_request(sheet_id: int) -> dict[str, Any]:
+    """Build a ``deleteSheet`` request that removes a tab by its gid.
+
+    Args:
+        sheet_id: The numeric sheet (tab) id — the ``gid``, NOT the tab
+            name and NOT the spreadsheet id. Obtainable from
+            ``spreadsheets.get`` → ``sheets[].properties.sheetId`` or
+            the tab's URL ``#gid=...``.
+
+    Returns:
+        A single ``{"deleteSheet": {...}}`` request dict.
+
+    Raises:
+        ValueError: a negative ``sheet_id`` (gids are non-negative;
+            a negative value is always a caller bug — Sheets would 400
+            with a worse message). Note: deleting the LAST remaining
+            sheet is rejected by Sheets server-side (a spreadsheet must
+            keep at least one tab), surfaced as an HttpError.
+    """
+    if sheet_id < 0:
+        raise ValueError(
+            f"sheet_id must be >= 0 (a sheet gid is non-negative); "
+            f"got {sheet_id}."
+        )
+    return {"deleteSheet": {"sheetId": sheet_id}}
+
+
+def update_sheet_title_request(
+    sheet_id: int,
+    title: str,
+) -> dict[str, Any]:
+    """Build an ``updateSheetProperties`` request that renames a tab.
+
+    Renames a single tab via ``updateSheetProperties`` with a ``fields``
+    mask scoped to exactly ``title`` — so no other sheet property
+    (index, gridProperties, tabColor, ...) is touched.
+
+    Args:
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        title: The new tab name. Must be unique within the spreadsheet
+            (Sheets 400s on a duplicate, server-side); blank rejected
+            client-side.
+
+    Returns:
+        A single ``{"updateSheetProperties": {...}}`` request dict with
+        a ``fields="title"`` mask.
+
+    Raises:
+        ValueError: blank ``title`` or a negative ``sheet_id``.
+    """
+    if sheet_id < 0:
+        raise ValueError(
+            f"sheet_id must be >= 0 (a sheet gid is non-negative); "
+            f"got {sheet_id}."
+        )
+    if not title or not title.strip():
+        raise ValueError("title cannot be empty (the tab needs a new name).")
+    return {
+        "updateSheetProperties": {
+            "properties": {"sheetId": sheet_id, "title": title.strip()},
+            "fields": "title",
+        }
+    }
+
+
+# ---------------------------------------------------------------------
 # Dispatcher (the ONLY function here that calls Google)
 # ---------------------------------------------------------------------
 
