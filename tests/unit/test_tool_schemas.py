@@ -52,6 +52,7 @@ EXPECTED_TOOLS = {
     "gdocs_create_folder",  # Drive files.create (folder mimeType) — move destination
     "gdocs_revoke_permission",  # Drive permissions.delete — inverse of share_file
     "gdocs_export_doc",  # Drive files.export — Google-native → PDF/Office/etc.
+    "gdocs_find_file",  # Drive files.list — any mimeType, app-accessible corpus
     "gsheets_read_range",  # v2.3.1: Sheets values.get
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create

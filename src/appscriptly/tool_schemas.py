@@ -242,6 +242,19 @@ GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA = _object(
 )
 
 
+# Drive generalized find (services/drive/api.py::find_file). Same
+# {matches, count} shape as find_doc_by_title — the two are drop-in
+# interchangeable for consumers; find_file just searches all app-
+# accessible mimeTypes with optional mime/fullText/folder filters.
+GDOCS_FIND_FILE_OUTPUT_SCHEMA = _object(
+    properties={
+        "matches": {"type": "array"},
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["matches", "count"],
+)
+
+
 GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA = _object(
     properties={
         "split_strategy_used": {"type": "string"},
@@ -958,6 +971,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_revoke_permission": GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
     # Drive export (files.export → portable format, stored in Drive).
     "gdocs_export_doc": GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
+    # Drive generalized find (files.list, any mimeType, app-accessible
+    # corpus — drive.file scope, additive).
+    "gdocs_find_file": GDOCS_FIND_FILE_OUTPUT_SCHEMA,
     # v2.3.1 — Sheets (2nd new service, minimal start)
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,

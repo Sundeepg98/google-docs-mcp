@@ -7,7 +7,7 @@ the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
 decorator.
 
-**Tools registered here** (9 drive-service tools):
+**Tools registered here** (10 drive-service tools):
 
 1. ``gdocs_find_doc_by_title`` — look up a Google Doc / .docx by title (search)
 2. ``gdocs_move_to_folder``    — move a file into a Drive folder
@@ -18,6 +18,7 @@ decorator.
 7. ``gdocs_create_folder``     — create a Drive folder (destination for move)
 8. ``gdocs_revoke_permission`` — revoke a previously-granted share
 9. ``gdocs_export_doc``        — export a Google-native file to PDF/Office/etc.
+10. ``gdocs_find_file``        — find app-accessible files of ANY type (filters)
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
@@ -47,6 +48,7 @@ from appscriptly.services.drive.api import (
     create_folder as _create_folder,
     export_doc as _export_doc,
     find_doc_by_title as _find_doc_by_title,
+    find_file as _find_file,
     move_to_folder as _move_to_folder,
     trash_drive_file as _trash_drive_file,
     untrash_drive_file as _untrash_drive_file,
@@ -60,6 +62,7 @@ from appscriptly.tool_schemas import (
     GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
     GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
     GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+    GDOCS_FIND_FILE_OUTPUT_SCHEMA,
     GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
     GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
     GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
@@ -738,4 +741,106 @@ def gdocs_export_doc(
         drive_file_id=drive_file_id,
         export_format=export_format,
         output_name=output_name,
+    )
+
+
+# ---------------------------------------------------------------------
+# 10. gdocs_find_file — generalized search over app-accessible files
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Find Drive files of any type (name / content / type / folder filters)",
+    # Pure read by default — files.list. The optional verify_writable
+    # probe is opt-in (default False) so the readonly contract holds for
+    # the default call, matching gdocs_find_doc_by_title (CQRS / R33 #3).
+    readonly=True,
+    destructive=False,
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GDOCS_FIND_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_find_file(
+    creds,
+    query: str = "",
+    mime_type: str | None = None,
+    full_text: str | None = None,
+    parent_folder_id: str | None = None,
+    exact: bool = False,
+    include_trashed: bool = False,
+    verify_writable: bool = False,
+) -> dict:
+    """Find Drive files of ANY type — Sheets, Slides, PDFs, folders, Docs.
+
+    USE WHEN: you need a file_id and ``gdocs_find_doc_by_title`` is too
+    narrow — it only finds Google Docs / .docx. This finds files of any
+    type with optional filters: by ``mime_type`` ("my Sheets"), by
+    ``full_text`` content ("the doc mentioning 'Q3 revenue'"), by
+    ``parent_folder_id`` ("what's in this folder"), and/or by ``query``
+    name. With no filters it lists your most-recent app-accessible files.
+
+    **IMPORTANT — searches files this app has CREATED or OPENED, NOT the
+    whole Drive.** Under the ``drive.file`` scope, ``files.list`` only
+    sees the per-file set this app was granted access to (files it
+    created, or that the user explicitly opened with it). Arbitrary files
+    elsewhere in the user's Drive that this app never touched will NOT
+    appear, regardless of filters — this is a per-file-scope search, not
+    a Drive-wide one. (Whole-Drive discovery needs a broader, restricted
+    Drive scope this app intentionally does not request.) For re-finding
+    files the app itself produced, that's exactly the right surface.
+
+    Args:
+        query: Optional name text. Empty (default) = no name filter —
+            use ``mime_type`` and/or ``parent_folder_id`` alone to browse.
+        mime_type: Optional EXACT Drive mimeType. Common values:
+            • Sheets — ``application/vnd.google-apps.spreadsheet``
+            • Slides — ``application/vnd.google-apps.presentation``
+            • Docs   — ``application/vnd.google-apps.document``
+            • Folders— ``application/vnd.google-apps.folder``
+            • PDF    — ``application/pdf``
+            Omit to match all types. No wildcards (Drive matches exactly).
+        full_text: Optional content-contains filter (Drive's ``fullText``
+            index — searches inside the file, not just its name).
+        parent_folder_id: Optional folder ID to scope results to (only
+            files inside that folder). Combine with ``mime_type`` for
+            e.g. "Sheets in this folder". Folder IDs come from
+            ``gdocs_create_folder`` or a prior ``gdocs_find_file`` with
+            ``mime_type`` = the folder type.
+        exact: With a ``query``, True = exact name match, False (default)
+            = substring. Ignored when ``query`` is empty.
+        include_trashed: False (default) excludes trashed files.
+        verify_writable: False (default) — pure read; ``owned_by_app`` is
+            ``None``. True opts into a per-match no-op-write PROBE that
+            reports whether this app can actually WRITE each file (the
+            same check ``gdocs_trash_file`` / ``gdocs_move_to_folder``
+            run). Cost: one batched HTTP request + a Drive audit-log
+            entry per match. Default is False so this readonly tool stays
+            a pure read.
+
+    Returns:
+        ``{"matches": [{file_id, name, mimeType, modified_time, trashed,
+        owned_by_app}, ...], "count": int}`` — newest-first by
+        modified_time. SAME shape as ``gdocs_find_doc_by_title``, so the
+        two are interchangeable downstream. ``owned_by_app`` is
+        ``True``/``False`` if probed, else ``None``.
+
+    Choreography: the returned ``file_id`` feeds ``gdocs_export_doc``,
+    ``gdocs_share_file``, ``gdocs_move_to_folder``, ``gdocs_trash_file``,
+    and the Sheets/Slides tools. Use ``gdocs_find_doc_by_title`` instead
+    when you specifically want Docs/.docx; use this for everything else.
+
+    NOTE: same ``drive.file`` corpus limit as the rest of the drive
+    tools — results are confined to app-accessible files.
+    """
+    return _find_file(
+        creds,
+        query,
+        mime_type=mime_type,
+        full_text=full_text,
+        parent_folder_id=parent_folder_id,
+        exact=exact,
+        include_trashed=include_trashed,
+        verify_writable=verify_writable,
     )

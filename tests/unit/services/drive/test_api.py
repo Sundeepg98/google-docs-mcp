@@ -54,9 +54,11 @@ from appscriptly.services.drive.api import (
     GSHEET_MIME,
     GSLIDES_MIME,
     MAX_UPLOAD_BYTES,
+    _escape_q_literal,
     create_folder,
     export_doc,
     find_doc_by_title,
+    find_file,
     upload_and_convert_docx,
 )
 
@@ -827,3 +829,239 @@ def test_export_doc_reraises_unclassified_http_error(_patch_media):
     with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
         with pytest.raises(HttpError):
             export_doc(MagicMock(), "SRC-1", "pdf")
+
+
+# ---------------------------------------------------------------------
+# _escape_q_literal — the shared q= string-literal escaper
+# ---------------------------------------------------------------------
+
+
+def test_escape_q_literal_escapes_single_quote():
+    """A single quote is backslash-escaped (Drive's documented form)."""
+    assert _escape_q_literal("Bob's Doc") == "Bob\\'s Doc"
+
+
+def test_escape_q_literal_escapes_backslash_first():
+    """Backslash is escaped BEFORE the quote so we don't double-escape
+    the backslashes we add for quotes. A literal ``\\`` becomes ``\\\\``."""
+    # Input: one backslash. Output: two backslashes.
+    assert _escape_q_literal("a\\b") == "a\\\\b"
+    # Combined: backslash + quote → escaped backslash + escaped quote.
+    assert _escape_q_literal("a\\'b") == "a\\\\\\'b"
+
+
+def test_escape_q_literal_leaves_plain_text_untouched():
+    assert _escape_q_literal("plain text 123") == "plain text 123"
+
+
+# ---------------------------------------------------------------------
+# find_file — generalized q= DSL construction (any mimeType, filters)
+#
+# Reuses the find_doc_by_title test scaffolding (stubbed_drive_with_empty_list
+# + _last_q_passed_to_list) since find_file lands on the same
+# drive.files().list() call. We assert on the q-string each filter
+# combination builds.
+# ---------------------------------------------------------------------
+
+
+def test_find_file_name_substring_uses_contains(stubbed_drive_with_empty_list):
+    """A query (default exact=False) builds a ``name contains`` clause."""
+    find_file(MagicMock(), "budget", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name contains 'budget'" in q
+
+
+def test_find_file_name_exact_uses_equals(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "Budget 2026", exact=True, verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name = 'Budget 2026'" in q
+
+
+def test_find_file_does_NOT_hardcode_docs_mimetype(stubbed_drive_with_empty_list):
+    """THE GENERALIZATION: unlike find_doc_by_title, find_file must NOT
+    inject the Google-Doc / .docx mimeType filter. Without a mime_type
+    arg, the q has no mimeType clause at all — so Sheets/Slides/PDF are
+    in scope."""
+    find_file(MagicMock(), "report", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "mimeType" not in q
+
+
+def test_find_file_mime_type_filter_added_when_given(
+    stubbed_drive_with_empty_list,
+):
+    """An explicit mime_type adds an exact ``mimeType =`` clause — e.g.
+    constraining to Sheets."""
+    find_file(
+        MagicMock(), mime_type=GSHEET_MIME, verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert f"mimeType = '{GSHEET_MIME}'" in q
+
+
+def test_find_file_full_text_filter_added_when_given(
+    stubbed_drive_with_empty_list,
+):
+    """full_text builds a ``fullText contains`` clause (content search)."""
+    find_file(MagicMock(), full_text="Q3 revenue", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "fullText contains 'Q3 revenue'" in q
+
+
+def test_find_file_parent_folder_filter_uses_in_parents(
+    stubbed_drive_with_empty_list,
+):
+    """parent_folder_id builds the documented ``'<id>' in parents`` form."""
+    find_file(
+        MagicMock(), parent_folder_id="FOLDER-99", verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "'FOLDER-99' in parents" in q
+
+
+def test_find_file_combines_all_filters_with_and(stubbed_drive_with_empty_list):
+    """All filters together are AND-joined into one q."""
+    find_file(
+        MagicMock(),
+        "plan",
+        mime_type=GSLIDES_MIME,
+        full_text="roadmap",
+        parent_folder_id="F1",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name contains 'plan'" in q
+    assert f"mimeType = '{GSLIDES_MIME}'" in q
+    assert "fullText contains 'roadmap'" in q
+    assert "'F1' in parents" in q
+    assert " and " in q
+
+
+def test_find_file_escapes_single_quotes_in_all_string_filters(
+    stubbed_drive_with_empty_list,
+):
+    """SECURITY: a single quote in ANY string filter must be escaped so
+    it can't break out of — or inject into — the q DSL. Checks query,
+    mime_type, full_text, parent_folder_id all run through the escaper."""
+    find_file(
+        MagicMock(),
+        "O'Brien",
+        mime_type="x'y",
+        full_text="it's here",
+        parent_folder_id="fold'er",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "O\\'Brien" in q
+    assert "x\\'y" in q
+    assert "it\\'s here" in q
+    assert "fold\\'er" in q
+    # And the literals stay balanced (even count of unescaped quotes).
+    unescaped = q.replace("\\'", "")
+    assert unescaped.count("'") % 2 == 0, f"q literals unbalanced: {q!r}"
+
+
+def test_find_file_excludes_trashed_by_default(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "x", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "trashed = false" in q
+
+
+def test_find_file_empty_call_browses_recent_with_only_trashed_filter(
+    stubbed_drive_with_empty_list,
+):
+    """No filters at all (no query/mime/fullText/parent) is a valid
+    "recent app-accessible files" browse — q is just the trashed filter,
+    NOT a crash or a forced name match."""
+    find_file(MagicMock(), verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert q == "trashed = false"
+
+
+def test_find_file_empty_call_with_include_trashed_sends_q_none(
+    stubbed_drive_with_empty_list,
+):
+    """No filters AND include_trashed=True → no clauses at all → q is
+    None (Drive treats that as "all files"), the intended browse-all."""
+    find_file(MagicMock(), include_trashed=True, verify_writable=False)
+    last_call = stubbed_drive_with_empty_list.files().list.call_args_list[-1]
+    assert last_call.kwargs["q"] is None
+
+
+def test_find_file_clamps_page_size_to_100(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "x", page_size=500, verify_writable=False)
+    last_call = stubbed_drive_with_empty_list.files().list.call_args_list[-1]
+    assert last_call.kwargs["pageSize"] == 100
+
+
+def test_find_file_returns_matches_with_mimetype_surfaced(
+    stubbed_drive_with_empty_list,
+):
+    """The return shape mirrors find_doc_by_title: matches[] with
+    file_id/name/mimeType/modified_time/trashed/owned_by_app + count.
+    Here a Sheet comes back — proving non-Doc types flow through."""
+    stubbed_drive_with_empty_list.files().list().execute.return_value = {
+        "files": [{
+            "id": "SHEET-1", "name": "Budget",
+            "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z",
+            "trashed": False,
+        }],
+    }
+    result = find_file(MagicMock(), mime_type=GSHEET_MIME, verify_writable=False)
+    assert result["count"] == 1
+    assert result["matches"][0]["file_id"] == "SHEET-1"
+    assert result["matches"][0]["mimeType"] == GSHEET_MIME
+    assert result["matches"][0]["owned_by_app"] is None
+
+
+def test_find_file_default_does_not_probe_writability():
+    """CQRS: default (verify_writable=False) must NOT run the no-op write
+    probe — the tool is readonly=True. Mirror of the find_doc_by_title
+    CQRS guard."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {
+        "files": [{
+            "id": "F1", "name": "n", "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = find_file(MagicMock(), mime_type=GSHEET_MIME)
+    assert not drive.new_batch_http_request.called, (
+        "find_file ran the writability probe under default args — it is "
+        "readonly=True, so the default must be a pure read (CQRS)."
+    )
+    assert result["matches"][0]["owned_by_app"] is None
+
+
+def test_find_file_explicit_verify_writable_runs_probe():
+    """Opt-in verify_writable=True runs the batched no-op probe and
+    populates owned_by_app (same mechanism as find_doc_by_title)."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {
+        "files": [{
+            "id": "F1", "name": "n", "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    batch = MagicMock()
+    drive.new_batch_http_request.return_value = batch
+
+    def fake_add(request, callback):
+        callback("req-1", MagicMock(), None)  # simulate success
+    batch.add.side_effect = fake_add
+
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = find_file(
+            MagicMock(), mime_type=GSHEET_MIME, verify_writable=True,
+        )
+    assert drive.new_batch_http_request.called
+    assert batch.execute.called
+    assert result["matches"][0]["owned_by_app"] is True
+
+
+def test_find_file_returns_empty_on_no_results(stubbed_drive_with_empty_list):
+    """Contract holds with zero matches — {matches: [], count: 0}."""
+    result = find_file(MagicMock(), "nothing-here", verify_writable=False)
+    assert result == {"matches": [], "count": 0}
