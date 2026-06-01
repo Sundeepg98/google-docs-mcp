@@ -1,6 +1,6 @@
-"""Google Sheets REST wrapper (v2.3.1 — minimal start).
+"""Google Sheets REST wrapper.
 
-Only the range-shaped surface ships in this PR:
+The range-shaped surface:
 
   * ``read_range``  — ``spreadsheets.values.get``
   * ``write_range`` — ``spreadsheets.values.update``
@@ -8,13 +8,22 @@ Only the range-shaped surface ships in this PR:
     empty sheet so the read/write tools have something to target
     in a single-call workflow; pure API call, no schema acrobatics)
 
+The ``batchUpdate`` surface:
+
+  * ``format_range`` — ``spreadsheets.batchUpdate`` with a
+    ``repeatCell`` request, composed via the reusable request-builder
+    in ``services/sheets/batch.py``.
+
 The ``batchUpdate`` tagged-union (40+ request types: formatting,
-charts, pivots, named ranges, conditional formats, etc.) is
-DELIBERATELY DEFERRED to a follow-up PR per the multi-service
-feasibility audit ("Sheets — pattern stretch. batchUpdate has no
-precedent in the foundation"). The minimal start lets us prove the
-foundation extends to a new Google service without needing to first
-design the tagged-union abstraction.
+charts, pivots, named ranges, conditional formats, etc.) was
+originally deferred ("Sheets — pattern stretch. batchUpdate has no
+precedent in the foundation"). That rationale is now stale: the
+``services/sheets/batch.py`` request-builder generalises the pattern
+that docs + slides already proved, so new ``batchUpdate``-backed
+features layer on top of those pure builders instead of hand-rolling
+raw request dicts. ``format_range`` is the first operation wired
+through that seam; further request types (conditional formatting,
+charts, dimensions, sheet-lifecycle) reuse the same builders.
 
 **Scope note.** Calls require
 ``https://www.googleapis.com/auth/spreadsheets`` in the OAuth
@@ -39,6 +48,13 @@ from typing import TYPE_CHECKING, Any
 
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
+from appscriptly.services.sheets.batch import (
+    batch_update,
+    cell_format,
+    color,
+    grid_range,
+    repeat_cell_request,
+)
 
 if TYPE_CHECKING:
     from google.auth.credentials import Credentials
@@ -209,3 +225,93 @@ def create_spreadsheet(
         ),
         "title": resp.get("properties", {}).get("title", title.strip()),
     }
+
+
+def format_range(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    font_size: int | None = None,
+    foreground_color: tuple[float, float, float] | None = None,
+    background_color: tuple[float, float, float] | None = None,
+    horizontal_alignment: str | None = None,
+    number_format: str | None = None,
+) -> dict:
+    """Format a rectangular block of cells via ``spreadsheets.batchUpdate``.
+
+    The first operation wired through the reusable batchUpdate
+    request-builder (``services/sheets/batch.py``): composes a single
+    ``repeatCell`` request from a ``GridRange`` + a ``CellFormat`` and
+    dispatches it. New batchUpdate-backed Sheets features follow the
+    same compose-then-``batch_update`` shape.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        start_row / end_row / start_col / end_col: 0-based, half-open
+            GridRange bounds (``end`` exclusive, like a Python slice).
+            Any omitted bound is unbounded on that side — omitting all
+            four targets the whole sheet. See ``batch.grid_range``.
+        bold / italic / font_size: Text-format options.
+        foreground_color / background_color: ``(r, g, b)`` tuples with
+            each channel in ``[0.0, 1.0]`` (Sheets colors are floats,
+            not 0-255 ints).
+        horizontal_alignment: ``LEFT`` / ``CENTER`` / ``RIGHT``.
+        number_format: A Sheets number-format pattern (e.g.
+            ``"#,##0.00"``, ``"0.00%"``, ``"$#,##0"``, ``"yyyy-mm-dd"``).
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}`` — the flat
+        ``batch_update`` envelope. ``total_requests`` is 1 (one
+        ``repeatCell``); ``replies`` is the raw Sheets reply list.
+
+    Raises:
+        ValueError: no format options supplied (an empty format is a
+            no-op Sheets rejects), an invalid alignment / color, or an
+            inverted GridRange — all caught client-side by the
+            ``batch.py`` builders before the round-trip.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+
+    Note:
+        Dispatched with ``idempotent=True`` — a ``repeatCell`` format
+        produces the same cell state no matter how many times it runs,
+        so it is safe to retry on a transient 429/5xx (unlike a generic
+        ``batch_update``, which defaults to non-idempotent).
+    """
+    grid = grid_range(
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+    )
+    fmt = cell_format(
+        bold=bold,
+        italic=italic,
+        font_size=font_size,
+        foreground_color=(
+            color(*foreground_color) if foreground_color is not None else None
+        ),
+        background_color=(
+            color(*background_color) if background_color is not None else None
+        ),
+        horizontal_alignment=horizontal_alignment,
+        number_format=number_format,
+    )
+    request = repeat_cell_request(grid, fmt)
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        idempotent=True,
+        op_name="sheets.spreadsheets.batchUpdate.repeatCell",
+    )

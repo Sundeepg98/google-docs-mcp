@@ -43,6 +43,7 @@ from appscriptly.google_api_client import (
 from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
     create_spreadsheet,
+    format_range,
     read_range,
     write_range,
 )
@@ -347,3 +348,98 @@ def test_create_spreadsheet_falls_back_to_input_title_when_omitted(
     }
     result = create_spreadsheet(MagicMock(), "  Fallback Title  ")
     assert result["title"] == "Fallback Title"
+
+
+# ---------------------------------------------------------------------
+# format_range — composes the batch builder + dispatches batchUpdate
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_format():
+    sheets = MagicMock(name="sheets-v4-stub-format")
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_format_batch_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().batchUpdate.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no batchUpdate() call captured spreadsheetId")
+
+
+def test_format_range_builds_repeat_cell_request(stub_sheets_for_format):
+    """The api layer composes exactly ONE repeatCell request from the
+    flat kwargs and dispatches it via batchUpdate."""
+    format_range(
+        MagicMock(),
+        "SPREAD-ABC",
+        sheet_id=0,
+        start_row=0,
+        end_row=1,
+        start_col=0,
+        end_col=3,
+        bold=True,
+    )
+    kw = _last_format_batch_kwargs(stub_sheets_for_format)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    requests = kw["body"]["requests"]
+    assert len(requests) == 1
+    rc = requests[0]["repeatCell"]
+    assert rc["range"] == {
+        "sheetId": 0,
+        "startRowIndex": 0,
+        "endRowIndex": 1,
+        "startColumnIndex": 0,
+        "endColumnIndex": 3,
+    }
+    assert rc["cell"] == {"userEnteredFormat": {"textFormat": {"bold": True}}}
+    assert rc["fields"] == "userEnteredFormat.textFormat.bold"
+
+
+def test_format_range_converts_color_tuples(stub_sheets_for_format):
+    """``(r, g, b)`` tuples become Sheets Color dicts (foreground under
+    textFormat, background at the top level)."""
+    format_range(
+        MagicMock(),
+        "SPREAD1",
+        sheet_id=0,
+        foreground_color=(1.0, 0.0, 0.0),
+        background_color=(0.0, 0.0, 1.0),
+    )
+    kw = _last_format_batch_kwargs(stub_sheets_for_format)
+    fmt = kw["body"]["requests"][0]["repeatCell"]["cell"]["userEnteredFormat"]
+    assert fmt["textFormat"]["foregroundColor"] == {
+        "red": 1.0, "green": 0.0, "blue": 0.0,
+    }
+    assert fmt["backgroundColor"] == {"red": 0.0, "green": 0.0, "blue": 1.0}
+
+
+def test_format_range_returns_batch_envelope(stub_sheets_for_format):
+    result = format_range(MagicMock(), "SPREAD1", sheet_id=0, bold=True)
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_format_range_rejects_empty_format(stub_sheets_for_format):
+    """No format options -> ValueError (empty repeatCell is a no-op
+    Sheets rejects), surfaced before the round-trip by the builder."""
+    with pytest.raises(ValueError, match="fmt is empty"):
+        format_range(MagicMock(), "SPREAD1", sheet_id=0)
+
+
+def test_format_range_propagates_grid_validation(stub_sheets_for_format):
+    """An inverted GridRange is caught by the builder, not Sheets."""
+    with pytest.raises(ValueError, match="end_row.*must be >"):
+        format_range(
+            MagicMock(), "SPREAD1", sheet_id=0,
+            start_row=5, end_row=2, bold=True,
+        )
