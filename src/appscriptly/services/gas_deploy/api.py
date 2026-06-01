@@ -24,6 +24,21 @@ from googleapiclient.errors import HttpError
 # type JSON. Every project requires exactly one.
 _MANIFEST_FILENAME = "appsscript"
 
+# Web App entry-point ``executeAs`` values the Apps Script manifest accepts.
+#   USER_DEPLOYING  — the script runs as the deploying OAuth user (acts
+#                     with that user's authority / data access).
+#   USER_ACCESSING  — runs as whoever invokes the endpoint (requires each
+#                     caller to be a Google-authenticated user).
+_WEBAPP_EXECUTE_AS = frozenset({"USER_DEPLOYING", "USER_ACCESSING"})
+
+# Web App entry-point ``access`` values (who may invoke the /exec URL).
+#   ANYONE_ANONYMOUS — public, no Google sign-in (the webhook case:
+#                      Slack / Stripe / external cron POST here).
+#   ANYONE           — any Google-signed-in user.
+#   DOMAIN           — anyone in the deployer's Workspace domain.
+#   MYSELF           — only the deploying user.
+_WEBAPP_ACCESS = frozenset({"ANYONE_ANONYMOUS", "ANYONE", "DOMAIN", "MYSELF"})
+
 
 @dataclass(frozen=True)
 class WebAppDeployment:
@@ -188,3 +203,127 @@ class AppsScriptClient:
             version=version,
             url=url,
         )
+
+
+def build_webapp_manifest(
+    *,
+    execute_as: str = "USER_DEPLOYING",
+    access: str = "ANYONE_ANONYMOUS",
+    time_zone: str = "Etc/GMT",
+) -> dict[str, Any]:
+    """Build an ``appsscript.json`` manifest declaring a Web App entry point.
+
+    Pure (no I/O). The web-app entry-point config lives in the MANIFEST
+    (``executeAs`` / ``access``), NOT in the deployment create body —
+    ``AppsScriptClient.deploy_webapp`` documents why the Apps Script API
+    rejects ``entryPoints`` on ``deployments.create``. Mirrors the shape
+    the runtime installer uses (``setup_apps_script._BASE_MANIFEST``):
+    V8 runtime + a timeZone + the ``webapp`` block.
+
+    Args:
+        execute_as: ``"USER_DEPLOYING"`` (default — the endpoint runs as
+            the deploying user, with their data access) or
+            ``"USER_ACCESSING"`` (runs as each invoking Google user).
+        access: who may hit the ``/exec`` URL —
+            ``"ANYONE_ANONYMOUS"`` (default; the webhook case — no Google
+            sign-in, so Slack/Stripe/cron can POST), ``"ANYONE"``,
+            ``"DOMAIN"``, or ``"MYSELF"``.
+        time_zone: tz database name for the project (default ``Etc/GMT``).
+
+    Returns:
+        A manifest dict ready to hand to ``AppsScriptClient.push_files``.
+
+    Raises:
+        ValueError: ``execute_as`` / ``access`` outside the accepted sets
+            (caught client-side rather than via a generic Apps Script
+            400).
+    """
+    if execute_as not in _WEBAPP_EXECUTE_AS:
+        raise ValueError(
+            f"execute_as must be one of {sorted(_WEBAPP_EXECUTE_AS)}; "
+            f"got {execute_as!r}."
+        )
+    if access not in _WEBAPP_ACCESS:
+        raise ValueError(
+            f"access must be one of {sorted(_WEBAPP_ACCESS)}; got {access!r}."
+        )
+    return {
+        "timeZone": time_zone,
+        "exceptionLogging": "STACKDRIVER",
+        "runtimeVersion": "V8",
+        "webapp": {"executeAs": execute_as, "access": access},
+    }
+
+
+def deploy_web_app_project(
+    creds: Credentials,
+    *,
+    script_body: str,
+    title: str,
+    execute_as: str = "USER_DEPLOYING",
+    access: str = "ANYONE_ANONYMOUS",
+    file_name: str = "Code",
+) -> WebAppDeployment:
+    """Create a standalone Apps Script project from ``script_body`` and
+    deploy it as a Web App, returning the live ``/exec`` URL.
+
+    The full create → push → version → deploy flow for a NEW standalone
+    project carrying a ``doGet`` / ``doPost`` handler — i.e. exposing the
+    caller's automation as an inbound HTTP endpoint / webhook. Reuses the
+    existing ``AppsScriptClient`` primitives end-to-end; the only new
+    piece is composing them + ``build_webapp_manifest``.
+
+    Args:
+        creds: OAuth credentials carrying ``script.projects`` +
+            ``script.deployments`` (both in the baseline scope set — no
+            second consent).
+        script_body: the Apps Script ``.gs`` source. MUST define
+            ``doGet(e)`` and/or ``doPost(e)`` (the Web App entry points
+            Apps Script invokes on GET / POST). Caller-authored.
+        title: title for the new Apps Script project (also its Drive
+            filename).
+        execute_as / access: Web App entry-point config — see
+            ``build_webapp_manifest``.
+        file_name: the ``.gs`` file name (without extension) the body is
+            pushed as (default ``"Code"``).
+
+    Returns:
+        A ``WebAppDeployment`` (``script_id``, ``deployment_id``,
+        ``version``, ``url``) — ``url`` is the live ``/exec`` endpoint.
+
+    Raises:
+        ValueError: blank ``script_body`` / ``title``, a body missing both
+            ``doGet`` and ``doPost``, or an invalid ``execute_as`` /
+            ``access`` (from ``build_webapp_manifest``).
+        HttpError: from the underlying Apps Script API on 4xx / 5xx —
+            propagated to the tool-layer envelope.
+    """
+    if not script_body or not script_body.strip():
+        raise ValueError(
+            "script_body cannot be empty — it must define doGet(e) and/or "
+            "doPost(e)."
+        )
+    if not title or not title.strip():
+        raise ValueError("title cannot be empty.")
+    if "doGet" not in script_body and "doPost" not in script_body:
+        raise ValueError(
+            "script_body must define a Web App entry point — at least one "
+            "of doGet(e) or doPost(e). A Web App with neither has no HTTP "
+            "handler and Apps Script would serve an error on every request."
+        )
+
+    manifest = build_webapp_manifest(execute_as=execute_as, access=access)
+
+    client = AppsScriptClient(creds)
+    script_id = client.create_project(title.strip())
+    client.push_files(
+        script_id,
+        manifest=manifest,
+        files={file_name: script_body},
+    )
+    version = client.create_version(script_id, f"{title.strip()} — web app")
+    return client.deploy_webapp(
+        script_id,
+        version,
+        description=f"{title.strip()} — web app deploy",
+    )

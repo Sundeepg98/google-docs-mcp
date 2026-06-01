@@ -64,6 +64,7 @@ EXPECTED_TOOLS = {
     "gslides_add_slide",  # Slides batchUpdate (createSlide + insertText) — deck population
     "gslides_create_image",  # Slides batchUpdate (createImage) — image by URL
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
+    "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets

@@ -61,11 +61,26 @@ from appscriptly.credentials import (
 from appscriptly.oauth_google import resolve_runtime_oauth_config
 from appscriptly.server import workspace_tool
 from appscriptly.services.gas_deploy import GAS_DEPLOY_SCOPES
+from appscriptly.services.gas_deploy.api import (
+    deploy_web_app_project as _deploy_web_app_project,
+)
 from appscriptly.setup_apps_script import (
     setup_apps_script_auto,
     setup_apps_script_for_user,
 )
-from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+from appscriptly.tool_schemas import (
+    AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
+    GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+)
+
+# Apps Script scopes this service's deploy tool exercises (both already
+# in baseline auth.SCOPES — declared on the tool for honest per-tool
+# scope surfacing, a no-op for the consent flow). Mirrors
+# services/apps_script/scopes.py::GAS_BOUND_SCOPES.
+_WEB_APP_DEPLOY_SCOPES = [
+    "https://www.googleapis.com/auth/script.projects",
+    "https://www.googleapis.com/auth/script.deployments",
+]
 
 
 # ---------------------------------------------------------------------
@@ -274,3 +289,118 @@ def gdocs_setup_apps_script() -> dict:
         stacklevel=2,
     )
     return _install_automation_runtime()
+
+
+# ---------------------------------------------------------------------
+# 3. as_deploy_web_app — deploy a doGet/doPost project as a Web App
+#    (ROADMAP 59). Extends gas_deploy with the user-facing endpoint/
+#    webhook deploy on top of the existing AppsScriptClient machinery.
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    title="Deploy an Apps Script web app / webhook (doGet/doPost)",
+    service="gas_deploy",
+    readonly=False,
+    destructive=False,
+    # Each call creates a NEW standalone project + deployment — re-running
+    # produces ANOTHER project with its own /exec URL. NOT idempotent
+    # (same convention as as_generate_bound_script / create tools).
+    idempotent=False,
+    external=True,
+    # creds=True: unlike the install-automation tools above, this tool has
+    # NO NeedsReauthError structured-response path — it deploys caller-
+    # supplied code directly, so the standard creds-injection envelope is
+    # correct (HttpError → ToolError).
+    creds=True,
+    scopes=_WEB_APP_DEPLOY_SCOPES,
+    output_schema=AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
+)
+def as_deploy_web_app(
+    creds,
+    script_body: str,
+    title: str,
+    execute_as: str = "USER_DEPLOYING",
+    access: str = "ANYONE_ANONYMOUS",
+) -> dict:
+    """Deploy an Apps Script Web App — expose automation as an HTTP endpoint.
+
+    USE WHEN: the user wants their OWN automation reachable as an inbound
+    HTTP endpoint / webhook — a URL that Slack, Stripe, GitHub, an
+    external cron, or a form can POST to (or GET), which then runs their
+    Apps Script logic on Google's infrastructure. This is the "give me a
+    webhook URL" tool. (For automation that lives INSIDE a specific Doc /
+    Sheet / Slides — menus, triggers, custom functions — use
+    ``as_generate_bound_script`` instead; that binds to a container, this
+    stands alone and is HTTP-reachable.)
+
+    Creates a NEW standalone Apps Script project from the ``.gs`` body you
+    supply, pushes it with a Web App manifest entry point, cuts a version,
+    and deploys it — returning the live ``/exec`` URL. Uses the existing
+    deploy machinery (``create_project`` → ``push_files`` →
+    ``create_version`` → ``deploy_webapp``); no new scope (the baseline
+    ``script.projects`` + ``script.deployments`` cover it).
+
+    Args:
+        script_body: the Apps Script ``.gs`` source. MUST define
+            ``doGet(e)`` and/or ``doPost(e)`` — these are the Web App
+            entry points Apps Script invokes on an incoming GET / POST.
+            Each receives the request event ``e`` (``e.parameter`` for
+            query/form params, ``e.postData.contents`` for a raw POST
+            body) and should ``return ContentService.createTextOutput(...)``
+            (optionally ``.setMimeType(ContentService.MimeType.JSON)``).
+            Claude authors this. A body with neither handler is rejected.
+        title: title for the new Apps Script project (also its Drive
+            filename) — e.g. ``"Stripe webhook receiver"``.
+        execute_as: whose authority the endpoint runs with —
+            ``"USER_DEPLOYING"`` (default; runs as you, so it can touch
+            your Workspace data) or ``"USER_ACCESSING"`` (runs as each
+            invoking Google user; requires callers to be signed in).
+        access: who may invoke the ``/exec`` URL —
+            ``"ANYONE_ANONYMOUS"`` (default; the webhook case — no Google
+            sign-in, so an external service can POST), ``"ANYONE"`` (any
+            Google user), ``"DOMAIN"`` (your Workspace domain only), or
+            ``"MYSELF"`` (only you). For a public webhook keep the
+            default; tighten it if the endpoint shouldn't be world-callable.
+
+    Returns:
+        ``{script_id, deployment_id, version, exec_url, execute_as,
+        access, project_url}``. ``exec_url`` is the live endpoint —
+        give it to the external caller. ``project_url`` deep-links to the
+        script editor so the user can inspect / tweak the code.
+
+    Raises:
+        ToolError: blank / handler-less ``script_body``, blank ``title``,
+            an invalid ``execute_as`` / ``access``, or any Apps Script
+            API error — the standard decorator envelope renders these.
+
+    Choreography: Claude writes the ``doGet`` / ``doPost`` body for the
+    integration, calls this once, and hands the returned ``exec_url`` to
+    the user to paste into the external service's webhook configuration.
+    Re-running creates a SEPARATE deployment with a NEW URL (not an
+    in-place update) — deploy once, reuse the URL.
+
+    SECURITY NOTE: with ``access="ANYONE_ANONYMOUS"`` the ``/exec`` URL is
+    world-reachable (unguessable, but public). For sensitive actions, have
+    the ``doPost`` body verify a shared secret / HMAC signature from the
+    request before acting — Apps Script can't add auth in front of an
+    anonymous Web App, so the check belongs in the handler.
+    """
+    deployment = _deploy_web_app_project(
+        creds,
+        script_body=script_body,
+        title=title,
+        execute_as=execute_as,
+        access=access,
+    )
+    return {
+        "script_id": deployment.script_id,
+        "deployment_id": deployment.deployment_id,
+        "version": deployment.version,
+        "exec_url": deployment.url,
+        "execute_as": execute_as,
+        "access": access,
+        "project_url": (
+            f"https://script.google.com/d/{deployment.script_id}/edit"
+        ),
+    }

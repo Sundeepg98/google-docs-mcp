@@ -1,4 +1,5 @@
 [
+  "as_deploy_web_app",
   "as_encode_video",
   "as_generate_bound_script",
   "as_generate_video_deck",
