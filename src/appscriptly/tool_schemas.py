@@ -302,6 +302,29 @@ GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA = _object(
 )
 
 
+# Drive export (services/drive/api.py::export_doc). Success and
+# soft-failure both carry source_file_id; the success branch adds the
+# export + new-file keys, the soft-failure branch adds reason + message
+# (covered by additionalProperties). Only source_file_id is guaranteed
+# across both shapes — same single-required-key pattern as the move /
+# trash soft-failure schemas. download_url is nullable (Drive may omit
+# webContentLink); size_bytes nullable when Drive doesn't report size.
+GDOCS_EXPORT_DOC_OUTPUT_SCHEMA = _object(
+    properties={
+        "source_file_id": {"type": "string"},
+        "source_mime_type": {"type": "string"},
+        "export_format": {"type": "string"},
+        "export_mime_type": {"type": "string"},
+        "exported_file_id": {"type": "string"},
+        "name": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "download_url": {"type": ["string", "null"]},
+        "size_bytes": {"type": ["integer", "null"]},
+    },
+    required=["source_file_id"],
+)
+
+
 # ---------------------------------------------------------------------
 # Sheets (services/sheets/) — v2.3.1 minimal start (2nd new service)
 # ---------------------------------------------------------------------
@@ -872,6 +895,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # Drive folder create + permission revoke (drive.file scope, additive).
     "gdocs_create_folder": GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
     "gdocs_revoke_permission": GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
+    # Drive export (files.export → portable format, stored in Drive).
+    "gdocs_export_doc": GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
     # v2.3.1 — Sheets (2nd new service, minimal start)
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,

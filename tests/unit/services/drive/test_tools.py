@@ -5,7 +5,7 @@ not delivered for the drive service either. Sister file to
 ``tests/unit/services/docs/test_tools.py``, applying the same canonical
 pattern (PR #103 → PR #110 → here) at the drive surface.
 
-The 8 drive tools:
+The 9 drive tools:
 
   1. gdocs_find_doc_by_title — title search; q= DSL construction
   2. gdocs_move_to_folder    — addParents/removeParents
@@ -15,6 +15,7 @@ The 8 drive tools:
   6. gdocs_list_permissions  — permissions.list (v2.3.0)
   7. gdocs_create_folder     — files.create (folder mimeType)
   8. gdocs_revoke_permission — permissions.delete
+  9. gdocs_export_doc        — files.export (Google-native → portable)
 
 The trash/untrash tools accept either a single ``file_id`` (str) or
 a list (batch); a happy-path test for each form exercises the
@@ -440,3 +441,72 @@ def test_gdocs_revoke_permission_rejects_blank_permission_id(with_drive_stub):
         tools.gdocs_revoke_permission(
             drive_file_id="FILE1", permission_id="   ",
         )
+
+
+# ---------------------------------------------------------------------
+# 9. gdocs_export_doc — happy-path + validation + soft-failure
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def _patch_export_media(monkeypatch):
+    """Patch the api module's MediaIoBaseDownload / MediaIoBaseUpload so
+    the export stream-download + re-upload don't touch real HTTP. (The
+    tool-layer test only needs the body to run through the decorator
+    envelope; api-shape detail is covered in test_api.py.)"""
+    import appscriptly.services.drive.api as api_mod
+
+    class _FakeDownloader:
+        def __init__(self, _buf, _request):
+            pass
+
+        def next_chunk(self):
+            return (None, True)
+
+    monkeypatch.setattr(api_mod, "MediaIoBaseDownload", _FakeDownloader)
+    monkeypatch.setattr(
+        api_mod, "MediaIoBaseUpload", lambda *a, **k: MagicMock(name="media-upload")
+    )
+
+
+def test_gdocs_export_doc_happy_path_returns_envelope(
+    with_drive_stub, _patch_export_media,
+):
+    """The tool delegates to ``api.export_doc`` and surfaces its
+    export envelope through the standard ``@workspace_tool(creds=True)``
+    boundary. Source is a Google Doc → pdf."""
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "SRC-1", "name": "Plan",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    with_drive_stub.files().export_media.return_value = MagicMock(name="req")
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "EXP-1", "name": "Plan.pdf", "size": "1024",
+        "webViewLink": "https://drive.google.com/file/d/EXP-1/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-1",
+    }
+    result = tools.gdocs_export_doc(drive_file_id="SRC-1", export_format="pdf")
+    assert result["exported_file_id"] == "EXP-1"
+    assert result["export_format"] == "pdf"
+    assert result["export_mime_type"] == "application/pdf"
+    assert result["download_url"] == "https://drive.google.com/uc?id=EXP-1"
+
+
+def test_gdocs_export_doc_rejects_unknown_format_via_api(with_drive_stub):
+    """An unrecognized format token bubbles from the api module through
+    the decorator envelope as ValueError (no Drive call needed)."""
+    with pytest.raises(ValueError, match="is not recognized"):
+        tools.gdocs_export_doc(drive_file_id="SRC-1", export_format="bogus")
+
+
+def test_gdocs_export_doc_soft_failure_passthrough(
+    with_drive_stub, _patch_export_media,
+):
+    """A not_exportable source (binary blob) is surfaced as data through
+    the tool layer — the decorator does not turn it into an error."""
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "BLOB", "name": "scan.pdf", "mimeType": "application/pdf",
+    }
+    result = tools.gdocs_export_doc(drive_file_id="BLOB", export_format="pdf")
+    assert result["reason"] == "not_exportable"
+    assert result["source_file_id"] == "BLOB"
