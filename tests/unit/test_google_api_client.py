@@ -124,7 +124,15 @@ def test_inmemory_credentials_keyword_is_ignored_by_lookup():
 def test_production_adapter_delegates_to_build():
     """The production adapter is a thin wrapper around
     ``googleapiclient.discovery.build``. Patch the upstream and verify
-    the adapter hands back exactly what build() returned."""
+    the adapter hands back exactly what build() returned.
+
+    v#152 socket-timeout hardening: the adapter now calls
+    ``build(service, version, http=AuthorizedHttp(credentials, http=
+    httplib2.Http(timeout=N)))`` instead of ``credentials=`` — so the
+    credentials reach build() wrapped inside the ``http=`` transport
+    (passing both ``credentials=`` and ``http=`` raises). We assert the
+    new shape: build is called with the service/version positionally and
+    an ``http`` whose ``.credentials`` is the creds we passed in."""
     from unittest.mock import patch
 
     adapter = GoogleApiClientAdapter()
@@ -136,7 +144,13 @@ def test_production_adapter_delegates_to_build():
         result = adapter.get_service("drive", "v3", credentials=fake_creds)
 
     assert result is sentinel_resource
-    mk_build.assert_called_once_with("drive", "v3", credentials=fake_creds)
+    mk_build.assert_called_once()
+    args, kwargs = mk_build.call_args
+    assert args == ("drive", "v3")
+    # credentials are wrapped in the AuthorizedHttp handed to http=, not a
+    # direct build() kwarg.
+    assert "credentials" not in kwargs
+    assert kwargs["http"].credentials is fake_creds
 
 
 # ---------------------------------------------------------------------
