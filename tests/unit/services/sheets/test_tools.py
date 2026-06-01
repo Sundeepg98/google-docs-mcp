@@ -412,3 +412,65 @@ def test_gsheets_rename_sheet_validation_propagates(with_sheets_stub):
         tools.gsheets_rename_sheet(
             spreadsheet_id="SPREAD1", sheet_id=0, title="",
         )
+
+
+# ---------------------------------------------------------------------
+# 9. gsheets_apply_conditional_format — happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_apply_conditional_format_happy_path(with_sheets_stub):
+    """A conditional-format call dispatches one addConditionalFormatRule
+    batchUpdate and returns the flat envelope."""
+    result = tools.gsheets_apply_conditional_format(
+        spreadsheet_id="SPREAD1",
+        sheet_id=0,
+        condition_type="NUMBER_GREATER",
+        start_row=1,
+        end_row=50,
+        values=["1000"],
+        background_color=(1.0, 0.0, 0.0),
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_gsheets_apply_conditional_format_forwards_to_batchUpdate(with_sheets_stub):
+    """Tool-layer pass-through: the kwargs reach Sheets batchUpdate as a
+    single addConditionalFormatRule with the right condition + format."""
+    tools.gsheets_apply_conditional_format(
+        spreadsheet_id="SPREAD1",
+        sheet_id=3,
+        condition_type="TEXT_CONTAINS",
+        values=["FAIL"],
+        bold=True,
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no batchUpdate() call captured spreadsheetId"
+    rule = real_calls[-1].kwargs["body"]["requests"][0][
+        "addConditionalFormatRule"
+    ]["rule"]
+    assert rule["ranges"][0]["sheetId"] == 3
+    assert rule["booleanRule"]["condition"] == {
+        "type": "TEXT_CONTAINS",
+        "values": [{"userEnteredValue": "FAIL"}],
+    }
+    assert rule["booleanRule"]["format"]["textFormat"]["bold"] is True
+
+
+def test_gsheets_apply_conditional_format_rejects_empty_format(with_sheets_stub):
+    """No format options -> ValueError bubbles through the decorator
+    envelope (an empty rule does nothing)."""
+    with pytest.raises(ValueError, match="needs a format to apply"):
+        tools.gsheets_apply_conditional_format(
+            spreadsheet_id="SPREAD1",
+            sheet_id=0,
+            condition_type="NOT_BLANK",
+        )

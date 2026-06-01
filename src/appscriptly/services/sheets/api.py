@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 from appscriptly.services.sheets.batch import (
+    add_conditional_format_rule_request,
     add_sheet_request,
     batch_update,
     cell_format,
@@ -549,3 +550,97 @@ def rename_sheet(
         "sheet_id": sheet_id,
         "title": title.strip(),
     }
+
+
+def apply_conditional_format(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    condition_type: str,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    values: list[str] | None = None,
+    background_color: tuple[float, float, float] | None = None,
+    bold: bool | None = None,
+    index: int = 0,
+) -> dict:
+    """Add a conditional-format rule to a cell range via ``batchUpdate``.
+
+    Composes a single ``addConditionalFormatRule`` request from a
+    ``GridRange`` + a boolean condition + the format to apply when the
+    condition matches, then dispatches it. Reuses the reusable batch
+    request-builder (``services/sheets/batch.py``) — the same seam
+    ``format_range`` uses, just a different request type.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        condition_type: A Sheets ``ConditionType`` enum value, e.g.
+            ``"NUMBER_GREATER"``, ``"NUMBER_LESS"``, ``"NUMBER_BETWEEN"``,
+            ``"TEXT_CONTAINS"``, ``"TEXT_EQ"``, ``"DATE_BEFORE"``,
+            ``"BLANK"``, ``"NOT_BLANK"``, ``"CUSTOM_FORMULA"``. Passed
+            through verbatim (the enum set is large + Google-versioned, so
+            an invalid value surfaces Google's own enum error).
+        start_row / end_row / start_col / end_col: 0-based, half-open
+            GridRange bounds (``end`` exclusive, like a Python slice). Omit
+            a bound to leave that side unbounded; omit all four to target
+            the whole sheet. See ``batch.grid_range``.
+        values: the condition's comparison value(s) as strings — e.g.
+            ``["100"]`` for ``NUMBER_GREATER``, ``["10", "20"]`` for
+            ``NUMBER_BETWEEN``, ``["=A1>AVERAGE(A:A)"]`` for
+            ``CUSTOM_FORMULA``. Omit for valueless conditions (``BLANK`` /
+            ``NOT_BLANK``).
+        background_color: ``(r, g, b)`` fill applied to matching cells,
+            each channel in ``[0.0, 1.0]`` (Sheets colors are floats, not
+            0-255). At least one of ``background_color`` / ``bold`` is
+            required.
+        bold: when ``True``, bold the text of matching cells.
+        index: insertion priority among existing rules (0 = highest, run
+            first).
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}`` — the flat
+        ``batch_update`` envelope (``total_requests`` is 1).
+
+    Raises:
+        ValueError: neither ``background_color`` nor ``bold`` supplied (a
+            rule with no format does nothing), or an inverted GridRange —
+            both caught client-side by the ``batch.py`` builders before
+            the round-trip.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+
+    Note:
+        Dispatched with ``idempotent=False`` (the ``batch_update``
+        default): ``addConditionalFormatRule`` APPENDS a rule, so a
+        transient-error replay could add the SAME rule twice (two stacked
+        identical rules). Not blanket-retried — matches the
+        ``execute_with_retry`` safety floor for append-style mutations.
+    """
+    grid = grid_range(
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+    )
+    request = add_conditional_format_rule_request(
+        grid,
+        condition_type=condition_type,
+        values=values,
+        background_color=(
+            color(*background_color) if background_color is not None else None
+        ),
+        bold=bold,
+        index=index,
+    )
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.addConditionalFormatRule",
+    )

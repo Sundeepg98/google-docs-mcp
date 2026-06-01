@@ -44,6 +44,7 @@ from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
     add_sheet,
     append_rows,
+    apply_conditional_format,
     create_spreadsheet,
     delete_sheet,
     format_range,
@@ -645,3 +646,115 @@ def test_rename_sheet_returns_echo_envelope(stub_sheets_for_lifecycle):
 def test_rename_sheet_rejects_blank_title(stub_sheets_for_lifecycle):
     with pytest.raises(ValueError, match="title cannot be empty"):
         rename_sheet(MagicMock(), "SPREAD1", 0, "")
+
+
+# ---------------------------------------------------------------------
+# apply_conditional_format — composes the builder + dispatches batchUpdate
+# ---------------------------------------------------------------------
+# (The pure add_conditional_format_rule_request builder is unit-tested in
+# test_batch.py; here we cover the api wrapper: grid assembly, color-tuple
+# conversion, the request reaching batchUpdate, and the envelope.)
+
+
+@pytest.fixture
+def stub_sheets_for_cond():
+    sheets = MagicMock(name="sheets-v4-stub-cond")
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_cond_batch_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().batchUpdate.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no batchUpdate() call captured spreadsheetId")
+
+
+def test_apply_conditional_format_builds_rule_request(stub_sheets_for_cond):
+    """The api layer composes ONE addConditionalFormatRule request with the
+    grid, the boolean condition (+ values), and the match format."""
+    apply_conditional_format(
+        MagicMock(),
+        "SPREAD-ABC",
+        sheet_id=0,
+        condition_type="NUMBER_GREATER",
+        start_row=1,
+        end_row=100,
+        start_col=2,
+        end_col=3,
+        values=["1000"],
+        background_color=(1.0, 0.0, 0.0),
+    )
+    kw = _last_cond_batch_kwargs(stub_sheets_for_cond)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    requests = kw["body"]["requests"]
+    assert len(requests) == 1
+    rule = requests[0]["addConditionalFormatRule"]["rule"]
+    assert rule["ranges"] == [{
+        "sheetId": 0,
+        "startRowIndex": 1,
+        "endRowIndex": 100,
+        "startColumnIndex": 2,
+        "endColumnIndex": 3,
+    }]
+    boolean = rule["booleanRule"]
+    assert boolean["condition"] == {
+        "type": "NUMBER_GREATER",
+        "values": [{"userEnteredValue": "1000"}],
+    }
+    assert boolean["format"]["backgroundColor"] == {
+        "red": 1.0, "green": 0.0, "blue": 0.0,
+    }
+
+
+def test_apply_conditional_format_valueless_condition(stub_sheets_for_cond):
+    """BLANK takes no comparison value — the condition carries no
+    ``values`` key, and a bold-only format is accepted."""
+    apply_conditional_format(
+        MagicMock(),
+        "SPREAD1",
+        sheet_id=0,
+        condition_type="BLANK",
+        bold=True,
+    )
+    kw = _last_cond_batch_kwargs(stub_sheets_for_cond)
+    cond = kw["body"]["requests"][0]["addConditionalFormatRule"]["rule"][
+        "booleanRule"
+    ]["condition"]
+    assert cond == {"type": "BLANK"}
+
+
+def test_apply_conditional_format_returns_batch_envelope(stub_sheets_for_cond):
+    result = apply_conditional_format(
+        MagicMock(), "SPREAD1", sheet_id=0,
+        condition_type="NOT_BLANK", bold=True,
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_apply_conditional_format_rejects_empty_format(stub_sheets_for_cond):
+    """A rule with neither background_color nor bold does nothing — the
+    builder rejects it before the round-trip."""
+    with pytest.raises(ValueError, match="needs a format to apply"):
+        apply_conditional_format(
+            MagicMock(), "SPREAD1", sheet_id=0,
+            condition_type="NUMBER_GREATER", values=["5"],
+        )
+
+
+def test_apply_conditional_format_propagates_grid_validation(stub_sheets_for_cond):
+    """An inverted GridRange is caught by the grid_range builder."""
+    with pytest.raises(ValueError, match="end_col.*must be >"):
+        apply_conditional_format(
+            MagicMock(), "SPREAD1", sheet_id=0,
+            condition_type="NOT_BLANK", bold=True,
+            start_col=5, end_col=2,
+        )

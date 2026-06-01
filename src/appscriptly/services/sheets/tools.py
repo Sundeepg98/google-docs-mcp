@@ -45,6 +45,7 @@ from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
     add_sheet as _add_sheet,
     append_rows as _append_rows,
+    apply_conditional_format as _apply_conditional_format,
     create_spreadsheet as _create_spreadsheet,
     delete_sheet as _delete_sheet,
     format_range as _format_range,
@@ -55,6 +56,7 @@ from appscriptly.services.sheets.api import (
 from appscriptly.tool_schemas import (
     GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
     GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
+    GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
     GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA,
     GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
@@ -574,3 +576,109 @@ def gsheets_rename_sheet(
     ``Sheet1`` tab into something meaningful.
     """
     return _rename_sheet(creds, spreadsheet_id, sheet_id, title)
+
+
+# ---------------------------------------------------------------------
+# 9. gsheets_apply_conditional_format — batchUpdate (addConditionalFormatRule)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Add a conditional-format rule to a Google Sheet range",
+    # Adding a rule layers formatting on top of existing cells without
+    # altering their values — not "destructive" (same as gsheets_format_range).
+    readonly=False,
+    destructive=False,
+    # NOT idempotent: addConditionalFormatRule APPENDS a rule, so re-running
+    # stacks a SECOND identical rule. Unlike gsheets_format_range's
+    # repeatCell (which overwrites to the same state). Same convention as
+    # gsheets_append_rows. The api layer dispatches idempotent=False.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
+)
+def gsheets_apply_conditional_format(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    condition_type: str,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    values: list[str] | None = None,
+    background_color: tuple[float, float, float] | None = None,
+    bold: bool | None = None,
+    index: int = 0,
+) -> dict:
+    """Highlight cells that meet a condition (conditional formatting).
+
+    USE WHEN: the agent should make a spreadsheet self-highlight by RULE
+    rather than by fixed formatting — e.g. "shade overdue rows red",
+    "bold totals over 1000", "flag blank cells", "color cells containing
+    'FAIL'". Unlike ``gsheets_format_range`` (which formats cells
+    unconditionally, right now), this installs a LIVE rule: Sheets
+    re-applies it automatically as the data changes.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with a single
+    ``addConditionalFormatRule`` request (a BooleanRule), composed via the
+    reusable request-builder in ``services/sheets/batch.py`` (the same
+    batchUpdate plumbing ``gsheets_format_range`` uses).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric sheet (tab) id — the ``gid``, NOT the tab
+            name and NOT the spreadsheet id. The first/default tab is
+            ``0`` (find a tab's gid in its URL ``#gid=...``).
+        condition_type: a Sheets ``ConditionType`` — common values:
+            ``"NUMBER_GREATER"``, ``"NUMBER_LESS"``, ``"NUMBER_BETWEEN"``,
+            ``"NUMBER_EQ"``, ``"TEXT_CONTAINS"``, ``"TEXT_EQ"``,
+            ``"TEXT_STARTS_WITH"``, ``"DATE_BEFORE"``, ``"DATE_AFTER"``,
+            ``"BLANK"``, ``"NOT_BLANK"``, ``"CUSTOM_FORMULA"``. Passed to
+            Sheets verbatim (an invalid value surfaces Google's own enum
+            error).
+        start_row / end_row / start_col / end_col: 0-based, half-open cell
+            bounds (``end`` EXCLUSIVE, like a Python slice — so
+            ``start_row=0, end_row=1`` is just the first row). Omit a bound
+            to leave that side unbounded; omit all four to target the
+            whole sheet.
+        values: the condition's comparison value(s) as strings — e.g.
+            ``["100"]`` for ``NUMBER_GREATER``, ``["10", "20"]`` for
+            ``NUMBER_BETWEEN``, ``["FAIL"]`` for ``TEXT_CONTAINS``,
+            ``["=A1>AVERAGE(A:A)"]`` for ``CUSTOM_FORMULA``. OMIT for
+            valueless conditions (``BLANK`` / ``NOT_BLANK``).
+        background_color: ``(r, g, b)`` fill for matching cells, each
+            channel in ``[0.0, 1.0]`` (Sheets colors are floats, not 0-255
+            ints — red is ``(1.0, 0.0, 0.0)``).
+        bold: when ``True``, bold matching cells. Pass at least one of
+            ``background_color`` / ``bold`` (a rule with no format does
+            nothing — an all-``None`` format raises ValueError).
+        index: priority among existing rules (``0`` = highest, evaluated
+            first).
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}`` — ``total_requests``
+        is 1; ``replies`` is Sheets' raw reply list.
+
+    Choreography: typically follows ``gsheets_write_range`` /
+    ``gsheets_append_rows`` (highlight the data you just wrote). Get the
+    ``sheet_id`` (gid) from ``gsheets_add_sheet`` or the tab URL. Re-running
+    ADDS another rule (rules stack) rather than replacing — apply each
+    distinct highlight once.
+    """
+    return _apply_conditional_format(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        condition_type=condition_type,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+        values=values,
+        background_color=background_color,
+        bold=bold,
+        index=index,
+    )
