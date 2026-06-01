@@ -72,6 +72,11 @@ DESTRUCTIVE_TOOLS = {
     "gdocs_trash_file",
     "gdocs_reset_authorization",
     "gsheets_delete_sheet",  # removes a tab + all its cell data
+    # Revokes a share (permissions.delete) — removes someone's access,
+    # the inverse of gdocs_share_file. Destructive so MCP clients can
+    # prompt for confirmation. (gdocs_create_folder is NOT here — it
+    # only adds state.)
+    "gdocs_revoke_permission",
 }
 
 

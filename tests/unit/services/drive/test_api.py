@@ -52,6 +52,7 @@ from appscriptly.services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
     MAX_UPLOAD_BYTES,
+    create_folder,
     find_doc_by_title,
     upload_and_convert_docx,
 )
@@ -438,3 +439,124 @@ def test_find_doc_by_title_no_matches_skips_probe_regardless_of_verify_writable(
                 f"and zero matches — probe should be guarded by "
                 f"``and matches`` clause."
             )
+
+
+# ---------------------------------------------------------------------
+# create_folder — files.create with folder mimeType
+#
+# A folder is a Drive file whose mimeType is the folder type. The
+# function is NOT idempotent (no execute_with_retry), so it's called
+# exactly once — stub files().create() and assert on the body it built
+# plus the flat response envelope. Mirrors the q= DSL capture pattern.
+# ---------------------------------------------------------------------
+
+
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+@pytest.fixture
+def stub_drive_for_create_folder():
+    """A Drive Resource stub whose files().create().execute() returns a
+    plausible folder response. Enough to let create_folder complete and
+    let us inspect the body / fields it passed."""
+    drive = MagicMock(name="drive-v3-stub-create-folder")
+    drive.files().create().execute.return_value = {
+        "id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def _last_create_kwargs(drive: MagicMock) -> dict:
+    """The kwargs of the most recent files().create(...) call that
+    actually carried a ``body`` (filters out the bare ``()`` chain-build
+    lookups MagicMock records). Mirrors ``_last_q_passed_to_list``."""
+    for call in reversed(drive.files().create.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no files().create() call captured a body= kwarg")
+
+
+def test_create_folder_rejects_blank_name():
+    """Empty / whitespace name is a caller bug (Drive would name it
+    'Untitled folder'). Rejected client-side BEFORE the Drive round-trip
+    — no get_service call needed, so MagicMock creds suffice."""
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        create_folder(MagicMock(), "   ")
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        create_folder(MagicMock(), "")
+
+
+def test_create_folder_builds_folder_mimetype_body(stub_drive_for_create_folder):
+    """The request body must carry the documented folder mimeType — a
+    Drive folder IS a file with this exact mimeType. A stray edit would
+    create a regular (empty) file instead of a folder."""
+    create_folder(MagicMock(), "Q3 Onboarding")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["mimeType"] == _FOLDER_MIME
+    assert kw["body"]["name"] == "Q3 Onboarding"
+
+
+def test_create_folder_strips_whitespace_from_name(stub_drive_for_create_folder):
+    """Leading / trailing whitespace on the name is stripped before the
+    Drive call (consistent with grant_permission's email handling)."""
+    create_folder(MagicMock(), "  Padded Name  ")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["name"] == "Padded Name"
+
+
+def test_create_folder_omits_parents_when_no_parent_given(
+    stub_drive_for_create_folder,
+):
+    """No parent_folder_id → the body MUST NOT carry a ``parents`` key
+    (Drive lands the folder in root). Passing ``parents: [None]`` or an
+    empty list would be a 400."""
+    create_folder(MagicMock(), "Root Folder")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert "parents" not in kw["body"]
+
+
+def test_create_folder_nests_under_parent_when_given(
+    stub_drive_for_create_folder,
+):
+    """A parent_folder_id → ``parents: [parent_id]`` so the folder is
+    created INSIDE the parent."""
+    create_folder(MagicMock(), "Child", parent_folder_id="PARENT-123")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["parents"] == ["PARENT-123"]
+
+
+def test_create_folder_returns_flat_envelope_with_url(
+    stub_drive_for_create_folder,
+):
+    """The returned dict is the flat ``{folder_id, name, url,
+    parent_folder_id}`` envelope. ``folder_id`` maps Drive's ``id``
+    (so the agent can pipe it into move_to_folder); ``url`` deep-links
+    to the Drive folder UI; ``parent_folder_id`` echoes the parent back
+    (None when created in root)."""
+    stub_drive_for_create_folder.files().create().execute.return_value = {
+        "id": "FOLDER-ABC",
+        "name": "Reports",
+    }
+    result = create_folder(MagicMock(), "Reports")
+    assert result == {
+        "folder_id": "FOLDER-ABC",
+        "name": "Reports",
+        "url": "https://drive.google.com/drive/folders/FOLDER-ABC",
+        "parent_folder_id": None,
+    }
+
+
+def test_create_folder_echoes_parent_folder_id_in_envelope(
+    stub_drive_for_create_folder,
+):
+    """When created under a parent, the envelope echoes that parent back
+    so the caller can confirm the nesting landed."""
+    stub_drive_for_create_folder.files().create().execute.return_value = {
+        "id": "F-CHILD",
+        "name": "Sub",
+    }
+    result = create_folder(MagicMock(), "Sub", parent_folder_id="P-1")
+    assert result["parent_folder_id"] == "P-1"
+    assert result["folder_id"] == "F-CHILD"

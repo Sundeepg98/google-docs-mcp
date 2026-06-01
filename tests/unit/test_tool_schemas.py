@@ -45,6 +45,8 @@ EXPECTED_TOOLS = {
     "gdocs_untrash_file",
     "gdocs_share_file",  # v2.3.0: Drive permissions.create
     "gdocs_list_permissions",  # v2.3.0: Drive permissions.list
+    "gdocs_create_folder",  # Drive files.create (folder mimeType) — move destination
+    "gdocs_revoke_permission",  # Drive permissions.delete — inverse of share_file
     "gsheets_read_range",  # v2.3.1: Sheets values.get
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create

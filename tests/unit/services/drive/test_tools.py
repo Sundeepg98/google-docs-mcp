@@ -5,7 +5,7 @@ not delivered for the drive service either. Sister file to
 ``tests/unit/services/docs/test_tools.py``, applying the same canonical
 pattern (PR #103 → PR #110 → here) at the drive surface.
 
-The 6 drive tools:
+The 8 drive tools:
 
   1. gdocs_find_doc_by_title — title search; q= DSL construction
   2. gdocs_move_to_folder    — addParents/removeParents
@@ -13,6 +13,8 @@ The 6 drive tools:
   4. gdocs_untrash_file      — single-ID + list-batch untrash
   5. gdocs_share_file        — permissions.create (v2.3.0)
   6. gdocs_list_permissions  — permissions.list (v2.3.0)
+  7. gdocs_create_folder     — files.create (folder mimeType)
+  8. gdocs_revoke_permission — permissions.delete
 
 The trash/untrash tools accept either a single ``file_id`` (str) or
 a list (batch); a happy-path test for each form exercises the
@@ -366,3 +368,75 @@ def test_gdocs_list_permissions_happy_path_returns_envelope(with_drive_stub):
     assert result["file_id"] == "FILE-SHARED"
     assert len(result["permissions"]) == 2
     assert result["permissions"][0]["role"] == "owner"
+
+
+# ---------------------------------------------------------------------
+# 7. gdocs_create_folder — happy-path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_create_folder_happy_path_returns_flat_envelope(with_drive_stub):
+    """The tool delegates to ``api.create_folder`` and surfaces its
+    ``{folder_id, name, url, parent_folder_id}`` envelope through the
+    standard ``@workspace_tool(creds=True)`` boundary."""
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+    }
+    result = tools.gdocs_create_folder(name="Q3 Onboarding")
+    assert result == {
+        "folder_id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+        "url": "https://drive.google.com/drive/folders/FOLDER-NEW",
+        "parent_folder_id": None,
+    }
+
+
+def test_gdocs_create_folder_forwards_parent_to_api(with_drive_stub):
+    """A parent_folder_id passed at the tool layer must reach the Drive
+    body as ``parents: [parent_id]`` (forwarded through the api layer)."""
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "F-CHILD", "name": "Sub",
+    }
+    result = tools.gdocs_create_folder(name="Sub", parent_folder_id="PARENT-1")
+    last = with_drive_stub.files().create.call_args_list[-1]
+    assert last.kwargs["body"]["parents"] == ["PARENT-1"]
+    assert result["parent_folder_id"] == "PARENT-1"
+
+
+def test_gdocs_create_folder_rejects_blank_name_via_api(with_drive_stub):
+    """Blank-name rejection from the api module bubbles up through the
+    decorator envelope as ValueError (the decorator wraps it for
+    cloud-mode callers; raises bare ValueError in test contexts)."""
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        tools.gdocs_create_folder(name="   ")
+
+
+# ---------------------------------------------------------------------
+# 8. gdocs_revoke_permission — happy-path + validation + soft-failure
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_revoke_permission_happy_path_returns_revoked_true(with_drive_stub):
+    """The tool delegates to ``sharing.revoke_permission`` and surfaces
+    its ``{file_id, permission_id, revoked, was_already_absent}``
+    envelope through the standard decorator boundary."""
+    with_drive_stub.permissions().delete().execute.return_value = ""
+    result = tools.gdocs_revoke_permission(
+        drive_file_id="FILE-ABC", permission_id="PERM-1",
+    )
+    assert result == {
+        "file_id": "FILE-ABC",
+        "permission_id": "PERM-1",
+        "revoked": True,
+        "was_already_absent": False,
+    }
+
+
+def test_gdocs_revoke_permission_rejects_blank_permission_id(with_drive_stub):
+    """Pre-API validation (blank permission_id) from the sharing module
+    bubbles up through the tool layer."""
+    with pytest.raises(ValueError, match="permission_id cannot be empty"):
+        tools.gdocs_revoke_permission(
+            drive_file_id="FILE1", permission_id="   ",
+        )
