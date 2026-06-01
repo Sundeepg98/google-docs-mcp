@@ -23,6 +23,8 @@ EXPECTED: frozenset[str] = frozenset({
     "gdocs_get_tab_url",
     "gdocs_delete_tab",
     "gdocs_replace_all_text",
+    "gdocs_insert_table",
+    "gdocs_format_range",
     "gdocs_set_tab_icons",
     "gdocs_preview_tab_split",
 })

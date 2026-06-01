@@ -133,6 +133,34 @@ GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gdocs_insert_table`` echoes the inserted table's shape + location.
+# ``tab_id`` is nullable (None = default/first tab).
+GDOCS_INSERT_TABLE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 1},
+        "columns": {"type": "integer", "minimum": 1},
+        "index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+    },
+    required=["doc_id", "rows", "columns", "index"],
+)
+
+
+# ``gdocs_format_range`` echoes the formatted range + the list of style
+# fields actually applied (the updateTextStyle ``fields`` mask).
+GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "start_index": {"type": "integer", "minimum": 1},
+        "end_index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+        "applied": {"type": "array", "items": {"type": "string"}},
+    },
+    required=["doc_id", "start_index", "end_index", "applied"],
+)
+
+
 GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA = _object(
     properties={
         "updated_count": {"type": "integer", "minimum": 0},
@@ -828,6 +856,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_rename_tab": GDOCS_RENAME_TAB_OUTPUT_SCHEMA,
     "gdocs_delete_tab": GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
     "gdocs_replace_all_text": GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    "gdocs_insert_table": GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
+    "gdocs_format_range": GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     "gdocs_set_tab_icons": GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
     "gdocs_get_doc_outline": GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
     "gdocs_read_doc": GDOCS_READ_DOC_OUTPUT_SCHEMA,
