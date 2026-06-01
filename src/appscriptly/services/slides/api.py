@@ -358,6 +358,236 @@ def add_slide(
     }
 
 
+# EMU (English Metric Units) — Slides' geometry unit. 914400 EMU = 1
+# inch. A default slide is 10in × 5.63in (16:9). These defaults place a
+# created element at a comfortable inset with a readable size; callers
+# can override. Kept module-level so create_image / create_table share
+# one source of truth.
+_EMU_PER_INCH = 914400
+_DEFAULT_X_EMU = _EMU_PER_INCH * 1          # 1in from the left
+_DEFAULT_Y_EMU = _EMU_PER_INCH * 1          # 1in from the top
+_DEFAULT_W_EMU = _EMU_PER_INCH * 4          # 4in wide
+_DEFAULT_H_EMU = _EMU_PER_INCH * 3          # 3in tall
+
+
+def _element_properties(
+    slide_object_id: str,
+    width_emu: int,
+    height_emu: int,
+    x_emu: int,
+    y_emu: int,
+) -> dict:
+    """Build the ``elementProperties`` block shared by create requests.
+
+    Pins the element to ``slide_object_id`` with an explicit size (EMU)
+    and an affine ``transform`` placing its top-left at (x, y). This is
+    the standard Slides positioning envelope used by createImage,
+    createTable, createShape, etc.
+    """
+    return {
+        "pageObjectId": slide_object_id,
+        "size": {
+            "width": {"magnitude": width_emu, "unit": "EMU"},
+            "height": {"magnitude": height_emu, "unit": "EMU"},
+        },
+        "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "translateX": x_emu,
+            "translateY": y_emu,
+            "unit": "EMU",
+        },
+    }
+
+
+def create_image(
+    creds: Credentials,
+    presentation_id: str,
+    slide_object_id: str,
+    image_url: str,
+    width_inches: float = 4.0,
+    height_inches: float = 3.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert an image (by public URL) onto a slide via ``createImage``.
+
+    Uses ``presentations.batchUpdate`` with a single ``createImage``
+    request. Slides fetches the image from ``image_url`` at insert time
+    (the URL must be publicly reachable AND ≤ 50 MB / supported format
+    per Slides' constraints — Google copies the bytes into the deck, so
+    the URL doesn't need to stay live afterward).
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline — no extra grant).
+        presentation_id: The Slides file ID.
+        slide_object_id: The slide to place the image on (an
+            ``object_id`` from ``gslides_add_slide`` /
+            ``gslides_get_outline``).
+        image_url: Publicly-accessible image URL (https). Slides
+            rejects unreachable / oversized / unsupported-format URLs
+            with HTTP 400.
+        width_inches: Image width in inches (default 4.0).
+        height_inches: Image height in inches (default 3.0).
+        x_inches: Left inset in inches (default 1.0).
+        y_inches: Top inset in inches (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, image_object_id, url}`` —
+        ``image_object_id`` is the created image element's stable ID
+        (a valid target for later transform / delete batchUpdates);
+        ``url`` deep-links to the slide.
+
+    Raises:
+        ValueError: empty ``image_url`` / ``slide_object_id``, or a
+            non-positive dimension.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if not image_url or not image_url.strip():
+        raise ValueError("image_url cannot be empty.")
+    if not slide_object_id or not slide_object_id.strip():
+        raise ValueError("slide_object_id cannot be empty.")
+    if width_inches <= 0 or height_inches <= 0:
+        raise ValueError("width_inches and height_inches must be positive.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    image_id = "appscriptly_image"
+    requests = [
+        {
+            "createImage": {
+                "objectId": image_id,
+                "url": image_url.strip(),
+                "elementProperties": _element_properties(
+                    slide_object_id,
+                    int(width_inches * _EMU_PER_INCH),
+                    int(height_inches * _EMU_PER_INCH),
+                    int(x_inches * _EMU_PER_INCH),
+                    int(y_inches * _EMU_PER_INCH),
+                ),
+            },
+        },
+    ]
+    # NOT idempotent: each call adds ANOTHER image. Same convention as
+    # add_slide / create_presentation.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.createImage",
+    )
+    created_id = image_id
+    for reply in resp.get("replies", []) or []:
+        ci = reply.get("createImage")
+        if ci and ci.get("objectId"):
+            created_id = ci["objectId"]
+            break
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": slide_object_id,
+        "image_object_id": created_id,
+        "url": (
+            f"https://docs.google.com/presentation/d/{presentation_id}"
+            f"/edit#slide=id.{slide_object_id}"
+        ),
+    }
+
+
+def create_table(
+    creds: Credentials,
+    presentation_id: str,
+    slide_object_id: str,
+    rows: int,
+    columns: int,
+    width_inches: float = 6.0,
+    height_inches: float = 3.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert an empty ``rows`` × ``columns`` table onto a slide.
+
+    Uses ``presentations.batchUpdate`` with a single ``createTable``
+    request. The table is created empty; populate cells afterward with
+    ``gslides_replace_all_text`` (template tokens) or a future
+    cell-level insertText tool.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline — no extra grant).
+        presentation_id: The Slides file ID.
+        slide_object_id: The slide to place the table on.
+        rows: Number of rows (≥ 1).
+        columns: Number of columns (≥ 1).
+        width_inches: Table width in inches (default 6.0).
+        height_inches: Table height in inches (default 3.0).
+        x_inches: Left inset in inches (default 1.0).
+        y_inches: Top inset in inches (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, table_object_id, rows,
+        columns, url}``. ``table_object_id`` is the created table's
+        stable ID; ``url`` deep-links to the slide.
+
+    Raises:
+        ValueError: empty ``slide_object_id``, or ``rows`` / ``columns``
+            < 1, or a non-positive dimension.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if not slide_object_id or not slide_object_id.strip():
+        raise ValueError("slide_object_id cannot be empty.")
+    if rows < 1 or columns < 1:
+        raise ValueError("rows and columns must each be >= 1.")
+    if width_inches <= 0 or height_inches <= 0:
+        raise ValueError("width_inches and height_inches must be positive.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    table_id = "appscriptly_table"
+    requests = [
+        {
+            "createTable": {
+                "objectId": table_id,
+                "elementProperties": _element_properties(
+                    slide_object_id,
+                    int(width_inches * _EMU_PER_INCH),
+                    int(height_inches * _EMU_PER_INCH),
+                    int(x_inches * _EMU_PER_INCH),
+                    int(y_inches * _EMU_PER_INCH),
+                ),
+                "rows": rows,
+                "columns": columns,
+            },
+        },
+    ]
+    # NOT idempotent: each call adds ANOTHER table.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.createTable",
+    )
+    created_id = table_id
+    for reply in resp.get("replies", []) or []:
+        ct = reply.get("createTable")
+        if ct and ct.get("objectId"):
+            created_id = ct["objectId"]
+            break
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": slide_object_id,
+        "table_object_id": created_id,
+        "rows": rows,
+        "columns": columns,
+        "url": (
+            f"https://docs.google.com/presentation/d/{presentation_id}"
+            f"/edit#slide=id.{slide_object_id}"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------

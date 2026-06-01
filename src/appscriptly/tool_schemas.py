@@ -340,6 +340,46 @@ GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gslides_create_image`` inserts an image (by URL) onto a slide and
+# returns the new image element's stable objectId + deep-link URL.
+GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "image_object_id": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "presentation_id",
+        "slide_object_id",
+        "image_object_id",
+        "url",
+    ],
+)
+
+
+# ``gslides_create_table`` inserts an empty rows×columns table onto a
+# slide; echoes the dimensions + the table element's stable objectId.
+GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "table_object_id": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 1},
+        "columns": {"type": "integer", "minimum": 1},
+        "url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "presentation_id",
+        "slide_object_id",
+        "table_object_id",
+        "rows",
+        "columns",
+        "url",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Apps Script — bound-script generator (PR-Δ7)
 # ---------------------------------------------------------------------
@@ -734,6 +774,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gslides_create_presentation": GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     "gslides_add_slide": GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
+    "gslides_create_image": GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
+    "gslides_create_table": GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)

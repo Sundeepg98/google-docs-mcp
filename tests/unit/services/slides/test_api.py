@@ -43,7 +43,9 @@ from appscriptly.google_api_client import (
 from appscriptly.services.slides.api import (
     _extract_slide_text,
     add_slide,
+    create_image,
     create_presentation,
+    create_table,
     get_outline,
     replace_all_text,
 )
@@ -606,3 +608,181 @@ def test_add_slide_falls_back_to_requested_id_when_reply_omits_it(
     }
     result = add_slide(MagicMock(), "DECK-1", title="X")
     assert result["slide_object_id"] == "appscriptly_slide"
+
+
+# ---------------------------------------------------------------------
+# create_image — validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+_EMU = 914400  # EMU per inch — mirrors api._EMU_PER_INCH
+
+
+@pytest.fixture
+def stub_slides_for_image():
+    slides = MagicMock(name="slides-v1-stub-image")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createImage": {"objectId": "appscriptly_image"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_image_rejects_empty_url():
+    with pytest.raises(ValueError, match="image_url cannot be empty"):
+        create_image(MagicMock(), "DECK1", "SLIDE1", "")
+
+
+def test_create_image_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_image(MagicMock(), "DECK1", "", "https://x/y.png")
+
+
+def test_create_image_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="must be positive"):
+        create_image(
+            MagicMock(), "DECK1", "SLIDE1", "https://x/y.png", width_inches=0,
+        )
+    with pytest.raises(ValueError, match="must be positive"):
+        create_image(
+            MagicMock(), "DECK1", "SLIDE1", "https://x/y.png", height_inches=-1,
+        )
+
+
+def test_create_image_passes_presentationId(stub_slides_for_image):
+    create_image(MagicMock(), "DECK-XYZ", "SLIDE1", "https://x/y.png")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_image)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_create_image_builds_createImage_request_with_url_and_placement(
+    stub_slides_for_image,
+):
+    """The createImage request carries the url + an elementProperties
+    block pinning the image to the slide with EMU size + transform."""
+    create_image(
+        MagicMock(), "DECK1", "SLIDE_7", "https://example.com/logo.png",
+        width_inches=2, height_inches=1, x_inches=3, y_inches=4,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_image)["body"]["requests"]
+    assert len(reqs) == 1
+    ci = reqs[0]["createImage"]
+    assert ci["url"] == "https://example.com/logo.png"
+    ep = ci["elementProperties"]
+    assert ep["pageObjectId"] == "SLIDE_7"
+    assert ep["size"]["width"] == {"magnitude": 2 * _EMU, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 1 * _EMU, "unit": "EMU"}
+    assert ep["transform"]["translateX"] == 3 * _EMU
+    assert ep["transform"]["translateY"] == 4 * _EMU
+    assert ep["transform"]["unit"] == "EMU"
+
+
+def test_create_image_returns_flat_envelope(stub_slides_for_image):
+    result = create_image(
+        MagicMock(), "DECK-1", "SLIDE_1", "https://x/y.png",
+    )
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "image_object_id": "appscriptly_image",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_image_strips_whitespace_from_url(stub_slides_for_image):
+    create_image(MagicMock(), "DECK1", "S1", "  https://x/y.png  ")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_image)["body"]["requests"]
+    assert reqs[0]["createImage"]["url"] == "https://x/y.png"
+
+
+def test_create_image_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_image,
+):
+    stub_slides_for_image.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_image(MagicMock(), "DECK-1", "S1", "https://x/y.png")
+    assert result["image_object_id"] == "appscriptly_image"
+
+
+# ---------------------------------------------------------------------
+# create_table — validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_table():
+    slides = MagicMock(name="slides-v1-stub-table")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createTable": {"objectId": "appscriptly_table"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_table_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_table(MagicMock(), "DECK1", "", rows=2, columns=2)
+
+
+def test_create_table_rejects_subunit_rows_or_columns():
+    with pytest.raises(ValueError, match="rows and columns must each be >= 1"):
+        create_table(MagicMock(), "DECK1", "S1", rows=0, columns=3)
+    with pytest.raises(ValueError, match="rows and columns must each be >= 1"):
+        create_table(MagicMock(), "DECK1", "S1", rows=3, columns=0)
+
+
+def test_create_table_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="must be positive"):
+        create_table(
+            MagicMock(), "DECK1", "S1", rows=2, columns=2, width_inches=0,
+        )
+
+
+def test_create_table_builds_createTable_request(stub_slides_for_table):
+    """The createTable request carries rows + columns + an
+    elementProperties block pinning it to the slide."""
+    create_table(
+        MagicMock(), "DECK1", "SLIDE_9", rows=3, columns=4,
+        width_inches=5, height_inches=2, x_inches=1, y_inches=1,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_table)["body"]["requests"]
+    assert len(reqs) == 1
+    ct = reqs[0]["createTable"]
+    assert ct["rows"] == 3
+    assert ct["columns"] == 4
+    assert ct["elementProperties"]["pageObjectId"] == "SLIDE_9"
+    assert ct["elementProperties"]["size"]["width"] == {
+        "magnitude": 5 * _EMU, "unit": "EMU",
+    }
+
+
+def test_create_table_returns_flat_envelope(stub_slides_for_table):
+    result = create_table(MagicMock(), "DECK-1", "SLIDE_1", rows=2, columns=2)
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "table_object_id": "appscriptly_table",
+        "rows": 2,
+        "columns": 2,
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_table_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_table,
+):
+    stub_slides_for_table.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_table(MagicMock(), "DECK-1", "S1", rows=1, columns=1)
+    assert result["table_object_id"] == "appscriptly_table"
