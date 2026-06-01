@@ -506,6 +506,24 @@ GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
+# project carrying a doGet/doPost handler as a Web App, returning the
+# live /exec endpoint + the IDs/version. ``exec_url`` is the load-bearing
+# field (the webhook/HTTP endpoint the caller wires into Slack/Stripe/cron).
+AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "exec_url": {"type": "string", "format": "uri"},
+        "execute_as": {"type": "string"},
+        "access": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=["script_id", "deployment_id", "version", "exec_url"],
+)
+
+
 # ---------------------------------------------------------------------
 # Apps Script — bound-script generator (PR-Δ7)
 # ---------------------------------------------------------------------
@@ -914,6 +932,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_add_slide": GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
     "gslides_create_image": GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
     "gslides_create_table": GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
+    # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
+    "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)

@@ -321,7 +321,8 @@ def test_drive_service_tools_register_from_services_drive_tools_module():
 
 
 def test_gas_deploy_service_tools_register_from_services_gas_deploy_tools_module():
-    """The 2 gas_deploy-service tools must be defined in
+    """The gas_deploy-service tools (install-automation canonical + alias,
+    plus as_deploy_web_app) must be defined in
     ``services/gas_deploy/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["gas_deploy"],

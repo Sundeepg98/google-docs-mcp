@@ -12,4 +12,7 @@ from __future__ import annotations
 EXPECTED: frozenset[str] = frozenset({
     "gdocs_install_automation",   # PR-α canonical name
     "gdocs_setup_apps_script",    # deprecated alias (planned removal v3.0)
+    # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
+    # (webhook / HTTP endpoint). Reuses AppsScriptClient; as_* prefix.
+    "as_deploy_web_app",
 })
