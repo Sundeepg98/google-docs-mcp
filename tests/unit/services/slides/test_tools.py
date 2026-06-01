@@ -252,6 +252,99 @@ def test_gslides_add_slide_rejects_body_without_body_layout(with_slides_stub):
 
 
 # ---------------------------------------------------------------------
+# 5. gslides_create_image — happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_create_image_happy_path(with_slides_stub):
+    """Insert image → flat ``{presentation_id, slide_object_id,
+    image_object_id, url}`` envelope through the decorator boundary."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"createImage": {"objectId": "appscriptly_image"}}],
+    }
+    result = tools.gslides_create_image(
+        presentation_id="DECK1",
+        slide_object_id="SLIDE1",
+        image_url="https://example.com/x.png",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "SLIDE1",
+        "image_object_id": "appscriptly_image",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK1"
+            "/edit#slide=id.SLIDE1"
+        ),
+    }
+
+
+def test_gslides_create_image_forwards_url_to_createImage(with_slides_stub):
+    tools.gslides_create_image(
+        presentation_id="DECK1",
+        slide_object_id="SLIDE1",
+        image_url="https://example.com/logo.png",
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    req = last.kwargs["body"]["requests"][0]
+    assert req["createImage"]["url"] == "https://example.com/logo.png"
+
+
+def test_gslides_create_image_rejects_empty_url(with_slides_stub):
+    with pytest.raises(ValueError, match="image_url cannot be empty"):
+        tools.gslides_create_image(
+            presentation_id="DECK1", slide_object_id="SLIDE1", image_url="",
+        )
+
+
+# ---------------------------------------------------------------------
+# 6. gslides_create_table — happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_create_table_happy_path(with_slides_stub):
+    """Insert table → flat envelope echoing rows/columns + table id."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"createTable": {"objectId": "appscriptly_table"}}],
+    }
+    result = tools.gslides_create_table(
+        presentation_id="DECK1",
+        slide_object_id="SLIDE1",
+        rows=3,
+        columns=2,
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "SLIDE1",
+        "table_object_id": "appscriptly_table",
+        "rows": 3,
+        "columns": 2,
+        "url": (
+            "https://docs.google.com/presentation/d/DECK1"
+            "/edit#slide=id.SLIDE1"
+        ),
+    }
+
+
+def test_gslides_create_table_forwards_dimensions(with_slides_stub):
+    tools.gslides_create_table(
+        presentation_id="DECK1", slide_object_id="SLIDE1", rows=4, columns=5,
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    ct = last.kwargs["body"]["requests"][0]["createTable"]
+    assert (ct["rows"], ct["columns"]) == (4, 5)
+
+
+def test_gslides_create_table_rejects_subunit_dims(with_slides_stub):
+    with pytest.raises(ValueError, match="rows and columns must each be >= 1"):
+        tools.gslides_create_table(
+            presentation_id="DECK1", slide_object_id="SLIDE1",
+            rows=0, columns=2,
+        )
+
+
+# ---------------------------------------------------------------------
 # Decorator-envelope cross-check: _get_credentials_fn is invoked
 # ---------------------------------------------------------------------
 

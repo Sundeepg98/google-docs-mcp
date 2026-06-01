@@ -4,25 +4,28 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (4 slides-service tools):
+**Tools registered here** (6 slides-service tools):
 
 1. ``gslides_get_outline``         — read structure + per-slide text
 2. ``gslides_replace_all_text``    — find/replace across all slides
 3. ``gslides_create_presentation`` — create an empty new deck
 4. ``gslides_add_slide``           — append a slide (+ title/body text)
+5. ``gslides_create_image``        — insert an image (by URL) on a slide
+6. ``gslides_create_table``        — insert an empty table on a slide
 
-The first three were the minimal trio; ``gslides_add_slide`` closes
-the population gap so ``create_presentation`` → ``add_slide`` (×N) →
-``get_outline`` is a complete create-and-fill workflow (previously a
-fresh deck could only be edited via ``replace_all_text`` against text
-that already existed — leaving no way to populate an empty deck).
+The first three were the minimal trio; ``gslides_add_slide`` closed
+the slide-population gap, and ``gslides_create_image`` /
+``gslides_create_table`` add visual + tabular content so a deck can
+be authored end-to-end: ``create_presentation`` → ``add_slide`` (×N)
+→ ``create_image`` / ``create_table`` → ``get_outline`` to verify.
 
 **Still deferred to a follow-up PR**: the rest of the Slides
-``batchUpdate`` tagged-union (replaceImage, updateTextStyle,
-updateShapeProperties, createTable, etc.). ``gslides_add_slide`` is
-the first ``createSlide``/``insertText`` carve-out from that surface;
-the broader tagged-union abstraction can be designed when more
-request types have real consumers.
+``batchUpdate`` tagged-union (createShape, createLine,
+updateTextStyle, updateShapeProperties, element transform/delete,
+speaker notes, etc.). The four write tools here are
+``createSlide``/``insertText``/``createImage``/``createTable``
+carve-outs from that surface; the broader tagged-union abstraction
+can be designed when more request types have real consumers.
 
 **Import discipline.** Same as ``services/sheets/tools.py``:
 
@@ -37,13 +40,17 @@ from __future__ import annotations
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.slides.api import (
     add_slide as _add_slide,
+    create_image as _create_image,
     create_presentation as _create_presentation,
+    create_table as _create_table,
     get_outline as _get_outline,
     replace_all_text as _replace_all_text,
 )
 from appscriptly.tool_schemas import (
     GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
+    GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
+    GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
 )
@@ -307,4 +314,149 @@ def gslides_add_slide(
         title=title,
         body=body,
         layout=layout,
+    )
+
+
+# ---------------------------------------------------------------------
+# 5. gslides_create_image — batchUpdate (createImage)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Insert an image (by URL) onto a slide",
+    # Adds an image element to a slide — a write, but not destructive
+    # (existing content untouched; the image can be deleted later).
+    readonly=False,
+    destructive=False,
+    # Re-running adds ANOTHER image — NOT idempotent. Matches
+    # gslides_add_slide / gslides_create_presentation.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
+)
+def gslides_create_image(
+    creds,
+    presentation_id: str,
+    slide_object_id: str,
+    image_url: str,
+    width_inches: float = 4.0,
+    height_inches: float = 3.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert an image onto a slide from a public URL.
+
+    USE WHEN: adding a logo, chart export, screenshot, or any image to
+    a slide. Pairs with ``gslides_add_slide`` (add a slide, then place
+    images/tables on it).
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``createImage`` request. Slides fetches the bytes from
+    ``image_url`` at insert time and copies them into the deck — so
+    the URL must be publicly reachable when this runs, but need not
+    stay live afterward. Slides constraints: image ≤ 50 MB, ≤ 25
+    megapixels, PNG/JPEG/GIF.
+
+    Args:
+        presentation_id: The presentation to add the image to.
+        slide_object_id: The slide to place it on (an ``object_id``
+            from ``gslides_add_slide`` / ``gslides_get_outline``).
+        image_url: Publicly-accessible https image URL. Unreachable /
+            oversized / unsupported URLs are rejected by Slides (400).
+        width_inches: Image width in inches (default 4.0).
+        height_inches: Image height in inches (default 3.0).
+        x_inches: Left inset from the slide's top-left (default 1.0).
+        y_inches: Top inset from the slide's top-left (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, image_object_id, url}``.
+        ``image_object_id`` is the created image element's stable ID
+        (a valid target for a future transform / delete tool); ``url``
+        deep-links to the slide.
+
+    Choreography: ``gslides_create_presentation`` →
+    ``gslides_add_slide`` → ``gslides_create_image`` →
+    ``gslides_get_outline`` to verify.
+    """
+    return _create_image(
+        creds,
+        presentation_id=presentation_id,
+        slide_object_id=slide_object_id,
+        image_url=image_url,
+        width_inches=width_inches,
+        height_inches=height_inches,
+        x_inches=x_inches,
+        y_inches=y_inches,
+    )
+
+
+# ---------------------------------------------------------------------
+# 6. gslides_create_table — batchUpdate (createTable)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Insert an empty table onto a slide",
+    readonly=False,
+    destructive=False,
+    # Re-running adds ANOTHER table — NOT idempotent.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
+)
+def gslides_create_table(
+    creds,
+    presentation_id: str,
+    slide_object_id: str,
+    rows: int,
+    columns: int,
+    width_inches: float = 6.0,
+    height_inches: float = 3.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert an empty ``rows`` × ``columns`` table onto a slide.
+
+    USE WHEN: laying out tabular content on a slide (comparison grids,
+    schedules, specs). The table is created EMPTY; populate cells
+    afterward by seeding template tokens and calling
+    ``gslides_replace_all_text``, or via a future cell-level text tool.
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``createTable`` request.
+
+    Args:
+        presentation_id: The presentation to add the table to.
+        slide_object_id: The slide to place it on (an ``object_id``
+            from ``gslides_add_slide`` / ``gslides_get_outline``).
+        rows: Number of rows (>= 1).
+        columns: Number of columns (>= 1).
+        width_inches: Table width in inches (default 6.0).
+        height_inches: Table height in inches (default 3.0).
+        x_inches: Left inset from the slide's top-left (default 1.0).
+        y_inches: Top inset from the slide's top-left (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, table_object_id, rows,
+        columns, url}``. ``table_object_id`` is the created table's
+        stable ID; ``url`` deep-links to the slide.
+
+    Choreography: ``gslides_add_slide`` → ``gslides_create_table`` →
+    seed tokens + ``gslides_replace_all_text`` to fill cells →
+    ``gslides_get_outline`` to verify.
+    """
+    return _create_table(
+        creds,
+        presentation_id=presentation_id,
+        slide_object_id=slide_object_id,
+        rows=rows,
+        columns=columns,
+        width_inches=width_inches,
+        height_inches=height_inches,
+        x_inches=x_inches,
+        y_inches=y_inches,
     )
