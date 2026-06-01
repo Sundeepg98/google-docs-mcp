@@ -41,6 +41,7 @@ from .markdown_render import (
     _plain_text_requests,
     _rename_tab_request,
     _tab_properties,
+    parse_markdown_table,
     render_content_to_requests,
 )
 from .tab_tree import (
@@ -718,6 +719,349 @@ def format_range(
         "tab_id": tab_id,
         "applied": fields,
     }
+
+
+# Allowed paragraph alignment values → Docs ``Alignment`` enum. Docs
+# uses START/CENTER/END/JUSTIFIED; we accept the friendlier aliases.
+_ALIGNMENT_MAP = {
+    "left": "START",
+    "start": "START",
+    "center": "CENTER",
+    "right": "END",
+    "end": "END",
+    "justify": "JUSTIFIED",
+    "justified": "JUSTIFIED",
+}
+
+# Allowed named paragraph styles (Docs ``NamedStyleType``). Restricting
+# to this set keeps the surface predictable; the full enum has a few
+# more (e.g. SUBTITLE) that can be added if a consumer needs them.
+_NAMED_STYLES = {
+    "NORMAL_TEXT",
+    "TITLE",
+    "SUBTITLE",
+    "HEADING_1",
+    "HEADING_2",
+    "HEADING_3",
+    "HEADING_4",
+    "HEADING_5",
+    "HEADING_6",
+}
+
+
+def format_paragraph(
+    creds: Credentials,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    *,
+    tab_id: str | None = None,
+    alignment: str | None = None,
+    named_style: str | None = None,
+    line_spacing: float | None = None,
+    space_above_pt: float | None = None,
+    space_below_pt: float | None = None,
+) -> dict:
+    """Apply paragraph formatting to a range via ``updateParagraphStyle``.
+
+    Complements ``format_range`` (which does *character* styling). Builds
+    a single ``updateParagraphStyle`` ``batchUpdate`` request over
+    ``[start_index, end_index)`` (optionally tab-scoped) with a precise
+    ``fields`` mask, so only the attributes you pass change.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline — no extra grant).
+        doc_id: The Google Doc ID.
+        start_index: Range start (inclusive), >= 1.
+        end_index: Range end (exclusive), > ``start_index``.
+        tab_id: Optional tab to target; ``None`` = default/first tab.
+        alignment: One of ``"left"``/``"center"``/``"right"``/
+            ``"justify"`` (aliases ``start``/``end``/``justified`` also
+            accepted) → Docs ``START``/``CENTER``/``END``/``JUSTIFIED``.
+        named_style: A Docs ``NamedStyleType`` (e.g. ``"HEADING_1"``,
+            ``"NORMAL_TEXT"``, ``"TITLE"``).
+        line_spacing: Line spacing as a PERCENT (Docs convention):
+            ``100`` = single, ``150`` = 1.5×, ``200`` = double. > 0.
+        space_above_pt: Space before the paragraph, in points (>= 0).
+        space_below_pt: Space after the paragraph, in points (>= 0).
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, applied}`` —
+        ``applied`` is the list of paragraph-style fields that were set.
+
+    Raises:
+        ValueError: bad range, no attributes supplied, unknown
+            alignment / named_style, or a negative spacing value.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if start_index < 1:
+        raise ValueError("start_index must be >= 1.")
+    if end_index <= start_index:
+        raise ValueError("end_index must be greater than start_index.")
+
+    paragraph_style: dict[str, Any] = {}
+    fields: list[str] = []
+
+    if alignment is not None:
+        key = alignment.strip().lower()
+        if key not in _ALIGNMENT_MAP:
+            raise ValueError(
+                f"alignment must be one of "
+                f"{sorted(set(_ALIGNMENT_MAP))} — got {alignment!r}."
+            )
+        paragraph_style["alignment"] = _ALIGNMENT_MAP[key]
+        fields.append("alignment")
+    if named_style is not None:
+        ns = named_style.strip().upper()
+        if ns not in _NAMED_STYLES:
+            raise ValueError(
+                f"named_style must be one of {sorted(_NAMED_STYLES)} — "
+                f"got {named_style!r}."
+            )
+        paragraph_style["namedStyleType"] = ns
+        fields.append("namedStyleType")
+    if line_spacing is not None:
+        if line_spacing <= 0:
+            raise ValueError("line_spacing must be positive (100 = single).")
+        paragraph_style["lineSpacing"] = line_spacing
+        fields.append("lineSpacing")
+    if space_above_pt is not None:
+        if space_above_pt < 0:
+            raise ValueError("space_above_pt cannot be negative.")
+        paragraph_style["spaceAbove"] = {"magnitude": space_above_pt, "unit": "PT"}
+        fields.append("spaceAbove")
+    if space_below_pt is not None:
+        if space_below_pt < 0:
+            raise ValueError("space_below_pt cannot be negative.")
+        paragraph_style["spaceBelow"] = {"magnitude": space_below_pt, "unit": "PT"}
+        fields.append("spaceBelow")
+
+    if not fields:
+        raise ValueError(
+            "no paragraph attributes supplied — pass at least one of "
+            "alignment / named_style / line_spacing / space_above_pt / "
+            "space_below_pt."
+        )
+
+    docs = get_service("docs", "v1", credentials=creds)
+    rng: dict[str, Any] = {"startIndex": start_index, "endIndex": end_index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        rng["tabId"] = tab_id
+    req = {
+        "updateParagraphStyle": {
+            "range": rng,
+            "paragraphStyle": paragraph_style,
+            "fields": ",".join(fields),
+        }
+    }
+    # Idempotent: same paragraph style on the same range twice = same
+    # state. Matches format_range.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.updateParagraphStyle",
+    )
+    return {
+        "doc_id": doc_id,
+        "start_index": start_index,
+        "end_index": end_index,
+        "tab_id": tab_id,
+        "applied": fields,
+    }
+
+
+def insert_markdown_table(
+    creds: Credentials,
+    doc_id: str,
+    markdown: str,
+    *,
+    index: int = 1,
+    tab_id: str | None = None,
+) -> dict:
+    """Parse a markdown table and insert it as a real Google Docs table.
+
+    Two-phase (the only reliable way to populate Docs table cells, whose
+    content indices are server-assigned only AFTER the table exists):
+
+      1. Parse the markdown into a rectangular grid
+         (``parse_markdown_table``) and ``insertTable`` an empty table
+         of that shape at ``index`` (optionally tab-scoped).
+      2. Re-fetch the document, read each cell's start index from the
+         created table, and ``insertText`` the cell contents in a single
+         batchUpdate processed in REVERSE document order (so earlier
+         inserts don't shift the indices of later ones).
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope.
+        doc_id: The Google Doc ID.
+        markdown: A GFM markdown table (header row, ``|---|---|``
+            separator, body rows).
+        index: Body location index to insert at. Default 1. >= 1.
+        tab_id: Optional tab to target; ``None`` = default/first tab.
+
+    Returns:
+        ``{doc_id, rows, columns, index, tab_id, cells_filled}`` —
+        ``cells_filled`` is the count of non-empty cells written.
+
+    Raises:
+        ValueError: malformed markdown table, or ``index`` < 1.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if index < 1:
+        raise ValueError("index must be >= 1 (index 0 is reserved by Docs).")
+    parsed = parse_markdown_table(markdown)  # raises ValueError if bad
+    rows, columns, cells = parsed["rows"], parsed["columns"], parsed["cells"]
+
+    docs = get_service("docs", "v1", credentials=creds)
+    location: dict[str, Any] = {"index": index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        location["tabId"] = tab_id
+
+    # Phase 1: create the empty table.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id,
+            body={"requests": [{
+                "insertTable": {
+                    "location": location, "rows": rows, "columns": columns,
+                }
+            }]},
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.insertTable",
+    )
+
+    # Phase 2: re-fetch, find the table, map (row, col) -> cell start
+    # index, then insert text in reverse index order.
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True,
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.afterInsertTable",
+    )
+    cell_starts = _locate_table_cell_starts(fetched, index, tab_id, rows, columns)
+
+    text_requests: list[tuple[int, dict]] = []
+    for r in range(rows):
+        for c in range(columns):
+            text = cells[r][c]
+            if not text:
+                continue
+            start = cell_starts[(r, c)]
+            text_requests.append((
+                start,
+                {"insertText": {
+                    "location": (
+                        {"index": start, "tabId": tab_id}
+                        if tab_id is not None else {"index": start}
+                    ),
+                    "text": text,
+                }},
+            ))
+    # Reverse document order so each insertion's index stays valid as we
+    # mutate the doc from the bottom up.
+    text_requests.sort(key=lambda pair: pair[0], reverse=True)
+    cells_filled = len(text_requests)
+    if text_requests:
+        execute_with_retry(
+            lambda: docs.documents().batchUpdate(
+                documentId=doc_id,
+                body={"requests": [req for _idx, req in text_requests]},
+            ).execute(),
+            idempotent=False,
+            op_name="docs.documents.batchUpdate.fillTableCells",
+        )
+
+    return {
+        "doc_id": doc_id,
+        "rows": rows,
+        "columns": columns,
+        "index": index,
+        "tab_id": tab_id,
+        "cells_filled": cells_filled,
+    }
+
+
+def _locate_table_cell_starts(
+    document: dict,
+    insert_index: int,
+    tab_id: str | None,
+    rows: int,
+    columns: int,
+) -> dict[tuple[int, int], int]:
+    """Map ``(row, col)`` → first content index of each cell in the table.
+
+    Finds the ``table`` structural element at/after ``insert_index`` in
+    the target tab's body, then walks its ``tableRows[].tableCells[]``,
+    reading each cell's first paragraph element ``startIndex`` (the
+    index at which inserted text lands).
+
+    Raises:
+        RuntimeError: the inserted table can't be found / has an
+            unexpected shape (defensive — should not happen right after
+            a successful insertTable).
+    """
+    body_content = _table_search_content(document, tab_id)
+    table = None
+    for element in body_content:
+        if "table" in element and element.get("startIndex", -1) >= insert_index:
+            table = element["table"]
+            break
+    if table is None:
+        raise RuntimeError(
+            "could not locate the inserted table in the re-fetched document."
+        )
+    table_rows = table.get("tableRows", [])
+    if len(table_rows) != rows:
+        raise RuntimeError(
+            f"inserted table row count {len(table_rows)} != expected {rows}."
+        )
+    starts: dict[tuple[int, int], int] = {}
+    for r, table_row in enumerate(table_rows):
+        table_cells = table_row.get("tableCells", [])
+        if len(table_cells) != columns:
+            raise RuntimeError(
+                f"row {r} cell count {len(table_cells)} != expected {columns}."
+            )
+        for c, cell in enumerate(table_cells):
+            cell_content = cell.get("content", [])
+            # A fresh cell has one empty paragraph; its startIndex is
+            # where text should be inserted.
+            if not cell_content:
+                raise RuntimeError(f"cell ({r},{c}) has no content element.")
+            starts[(r, c)] = cell_content[0]["startIndex"]
+    return starts
+
+
+def _table_search_content(document: dict, tab_id: str | None) -> list[dict]:
+    """Return the body content list to search for the table.
+
+    With ``tab_id``, descends into that tab; otherwise uses the default
+    tab (``tabs[0]``) when the doc is tab-structured, else the top-level
+    ``body`` (older non-tabbed docs).
+    """
+    tabs = document.get("tabs")
+    if tabs:
+        if tab_id is not None:
+            tab = _find_tab_by_id(tabs, tab_id)
+            if tab is None:
+                raise RuntimeError(f"tab {tab_id} not found in re-fetched doc.")
+        else:
+            tab = tabs[0]
+        return (
+            tab.get("documentTab", {})
+            .get("body", {})
+            .get("content", [])
+        )
+    return document.get("body", {}).get("content", [])
 
 
 def read_all_tabs(creds: Credentials, doc_id: str) -> dict:

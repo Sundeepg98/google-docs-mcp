@@ -161,6 +161,35 @@ GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gdocs_format_paragraph`` echoes the range + the paragraph-style
+# fields actually applied (the updateParagraphStyle ``fields`` mask).
+GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "start_index": {"type": "integer", "minimum": 1},
+        "end_index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+        "applied": {"type": "array", "items": {"type": "string"}},
+    },
+    required=["doc_id", "start_index", "end_index", "applied"],
+)
+
+
+# ``gdocs_insert_markdown_table`` echoes the parsed shape + how many
+# non-empty cells were populated.
+GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 1},
+        "columns": {"type": "integer", "minimum": 1},
+        "index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+        "cells_filled": {"type": "integer", "minimum": 0},
+    },
+    required=["doc_id", "rows", "columns", "index", "cells_filled"],
+)
+
+
 GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA = _object(
     properties={
         "updated_count": {"type": "integer", "minimum": 0},
@@ -899,6 +928,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_replace_all_text": GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gdocs_insert_table": GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
     "gdocs_format_range": GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
+    "gdocs_format_paragraph": GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
+    "gdocs_insert_markdown_table": GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
     "gdocs_set_tab_icons": GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
     "gdocs_get_doc_outline": GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
     "gdocs_read_doc": GDOCS_READ_DOC_OUTPUT_SCHEMA,

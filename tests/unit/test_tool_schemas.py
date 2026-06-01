@@ -36,6 +36,8 @@ EXPECTED_TOOLS = {
     "gdocs_replace_all_text",
     "gdocs_insert_table",  # documents.batchUpdate (insertTable)
     "gdocs_format_range",  # documents.batchUpdate (updateTextStyle)
+    "gdocs_format_paragraph",  # documents.batchUpdate (updateParagraphStyle)
+    "gdocs_insert_markdown_table",  # parse markdown table -> Docs table
     "gdocs_reset_authorization",  # v1.1.1+: force re-consent / recovery
     "gdocs_server_info",
     "gdocs_test_manifest",  # v1.1.3+: surface test inventory + outcomes

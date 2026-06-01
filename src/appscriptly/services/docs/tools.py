@@ -52,8 +52,10 @@ from appscriptly.services.docs.api import (
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
     delete_tab as _delete_tab,
+    format_paragraph as _format_paragraph,
     format_range as _format_range,
     get_doc_outline as _get_doc_outline,
+    insert_markdown_table as _insert_markdown_table,
     insert_table as _insert_table,
     make_doc_with_tabs,
     read_all_tabs as _read_all_tabs,
@@ -66,9 +68,11 @@ from appscriptly.tool_schemas import (
     GDOCS_ADD_TABS_OUTPUT_SCHEMA,
     GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
     GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
+    GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
     GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
     GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
+    GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
     GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
     GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
     GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA,
@@ -1054,6 +1058,128 @@ def gdocs_format_range(
             strikethrough=strikethrough,
             font_size_pt=font_size_pt, font_family=font_family,
             foreground_color=foreground_color,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_format_paragraph — documents.batchUpdate (updateParagraphStyle)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Apply paragraph formatting to a text range",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
+)
+def gdocs_format_paragraph(
+    creds,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    tab_id: str | None = None,
+    alignment: str | None = None,
+    named_style: str | None = None,
+    line_spacing: float | None = None,
+    space_above_pt: float | None = None,
+    space_below_pt: float | None = None,
+) -> dict:
+    """Apply paragraph formatting to a ``[start_index, end_index)`` range.
+
+    USE WHEN: setting alignment, line/paragraph spacing, or a named
+    paragraph style (heading/title/normal) on a span. Complements
+    ``gdocs_format_range`` (character styling) — this is the
+    *paragraph*-level counterpart via ``updateParagraphStyle``, with a
+    precise ``fields`` mask (only supplied attributes change).
+
+    Args:
+        doc_id: Document ID.
+        start_index: Range start (inclusive), >= 1.
+        end_index: Range end (exclusive), > start_index.
+        tab_id: Optional tab (from ``gdocs_get_doc_outline``); omit /
+            None = default/first tab.
+        alignment: ``"left"`` / ``"center"`` / ``"right"`` /
+            ``"justify"`` (aliases start/end/justified accepted).
+        named_style: A Docs named style — ``"HEADING_1".."HEADING_6"``,
+            ``"TITLE"``, ``"SUBTITLE"``, ``"NORMAL_TEXT"``.
+        line_spacing: Percent — ``100`` single, ``150`` 1.5×, ``200``
+            double. > 0.
+        space_above_pt / space_below_pt: Space before/after the
+            paragraph, in points (>= 0).
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, applied}`` —
+        ``applied`` lists the paragraph-style fields that were set.
+
+    Choreography: ``gdocs_read_doc`` to find the range →
+    ``gdocs_format_paragraph`` to style it (pair with
+    ``gdocs_format_range`` for character styling).
+    """
+    try:
+        return _format_paragraph(
+            creds, doc_id, start_index, end_index,
+            tab_id=tab_id,
+            alignment=alignment, named_style=named_style,
+            line_spacing=line_spacing,
+            space_above_pt=space_above_pt, space_below_pt=space_below_pt,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_markdown_table — parse markdown → real Docs table
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Insert a markdown table as a real Google Docs table",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
+)
+def gdocs_insert_markdown_table(
+    creds,
+    doc_id: str,
+    markdown: str,
+    index: int = 1,
+    tab_id: str | None = None,
+) -> dict:
+    """Parse a markdown table and insert it as a native Docs table.
+
+    USE WHEN: you have tabular content as markdown (``| a | b |`` …) and
+    want it rendered as a real, editable Google Docs table — not literal
+    text. Builds on ``gdocs_insert_table``: it creates the table of the
+    parsed shape, then fills each cell with its markdown content.
+
+    Args:
+        doc_id: Document ID.
+        markdown: A GFM markdown table — a header row, a ``|---|---|``
+            separator row, then body rows. Short rows are padded and
+            long rows truncated to the header's column count.
+        index: Body location index to insert at. Default 1. >= 1.
+        tab_id: Optional tab (from ``gdocs_get_doc_outline``); omit /
+            None = default/first tab.
+
+    Returns:
+        ``{doc_id, rows, columns, index, tab_id, cells_filled}`` —
+        ``rows`` includes the header; ``cells_filled`` is the count of
+        non-empty cells written.
+
+    Choreography: ``gdocs_make_tabbed_doc`` →
+    ``gdocs_insert_markdown_table`` → ``gdocs_read_doc`` to verify.
+
+    NOTE: cell *content* is inserted as plain text (markdown inside a
+    cell — bold, links — is not re-parsed). Cell styling/merge is a
+    separate follow-up.
+    """
+    try:
+        return _insert_markdown_table(
+            creds, doc_id, markdown, index=index, tab_id=tab_id,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
