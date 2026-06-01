@@ -44,7 +44,11 @@ sweep; with it, a single ``set_google_api_client(adapter)``.
 """
 from __future__ import annotations
 
+import errno
 import logging
+import math
+import os
+import socket
 import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator, Protocol, TypeVar, runtime_checkable
@@ -79,6 +83,129 @@ _T = TypeVar("_T")
 #   504 Gateway Timeout          (slow backend)
 # All other 4xx are caller bugs (auth, validation) — NEVER retry.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# ---------------------------------------------------------------------
+# Socket / transport deadline (ROADMAP Hardening-P1)
+# ---------------------------------------------------------------------
+#
+# Without this, ``googleapiclient.discovery.build(credentials=...)``
+# constructs its AuthorizedHttp around a bare ``httplib2.Http()`` whose
+# socket has NO timeout — so a stalled TCP connection (dropped packets,
+# a half-open Google LB socket, a network partition) hangs the
+# ``.execute()`` call FOREVER and never raises. That silently defeats
+# the retry layer below: tenacity can only retry an attempt that
+# *finishes* (by raising), and a hung socket never finishes.
+#
+# Fix: attach a connect+read deadline to the underlying transport so a
+# stall raises ``socket.timeout`` (== ``TimeoutError``, an OSError) fast.
+# The retry predicate then treats that as transient, so the EXISTING
+# backoff actually kicks in on a hang instead of the call wedging.
+#
+# 30s is comfortably above Google's p99 latency for the calls this
+# server makes (single Docs/Drive/Sheets/Slides operations) while still
+# bounding a true stall. Override via env for slow links / debugging.
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
+_HTTP_TIMEOUT_ENV = "GOOGLE_API_HTTP_TIMEOUT_SECONDS"
+
+
+def _resolve_http_timeout_seconds() -> float:
+    """Return the socket timeout (seconds) for the Google API transport.
+
+    Reads ``GOOGLE_API_HTTP_TIMEOUT_SECONDS`` if set to a positive
+    number; otherwise falls back to ``_DEFAULT_HTTP_TIMEOUT_SECONDS``.
+    A malformed or non-positive value is ignored (with a warning) in
+    favor of the default — a bad env var must never silently disable
+    the deadline (that would re-introduce the hang this fixes).
+    """
+    raw = os.environ.get(_HTTP_TIMEOUT_ENV)
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        _log.warning(
+            "ignoring non-numeric %s=%r; using default %.0fs",
+            _HTTP_TIMEOUT_ENV,
+            raw,
+            _DEFAULT_HTTP_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    # Require a FINITE positive value. ``float("nan")`` parses fine but
+    # fails ``nan > 0`` *and* ``nan <= 0`` (both False) — a nan timeout
+    # would silently disable the socket deadline, re-introducing the very
+    # hang this guards against. ``inf`` likewise means "no deadline".
+    if not math.isfinite(value) or value <= 0:
+        _log.warning(
+            "ignoring non-positive/non-finite %s=%r; using default %.0fs",
+            _HTTP_TIMEOUT_ENV,
+            raw,
+            _DEFAULT_HTTP_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    return value
+
+
+def _is_retryable_transport_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is a transient network/transport failure.
+
+    Covers the socket-deadline hang this module guards against plus the
+    adjacent transient connection failures that are safe to retry on an
+    **idempotent** call:
+
+    - ``socket.timeout`` / ``TimeoutError`` — our connect/read deadline
+      fired (or the OS connect timer did).
+    - ``ConnectionError`` (``ConnectionReset/Aborted/Refused``) — the
+      socket dropped mid-flight.
+    - ``OSError`` with errno ``ETIMEDOUT`` / ``ECONNRESET`` /
+      ``ECONNABORTED`` — the same conditions surfaced as a raw OSError
+      by httplib2's socket layer.
+
+    Deliberately NARROW: a generic ``OSError`` with some other errno
+    (e.g. ``ENOENT`` from a misconfigured cert path, ``EACCES``) is a
+    config/programmer bug, NOT a transient blip, and must propagate
+    immediately — same philosophy as the 4xx-never-retry rule for
+    ``HttpError``. ``ServerNotFoundError`` (DNS) is intentionally NOT
+    retried: a name that doesn't resolve won't resolve on attempt 2.
+    """
+    if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError)):
+        return True
+    if isinstance(exc, OSError) and exc.errno in _RETRYABLE_ERRNOS:
+        return True
+    return False
+
+
+# errno values that map to a transient transport blip (see
+# _is_retryable_transport_error). socket.timeout already covers the
+# deadline case; these catch the raw-OSError form some platforms raise.
+_RETRYABLE_ERRNOS = frozenset(
+    getattr(errno, _name)
+    for _name in ("ETIMEDOUT", "ECONNRESET", "ECONNABORTED")
+    if hasattr(errno, _name)
+)
+
+
+def _build_authorized_http(credentials: Credentials) -> object:
+    """Build a credentialed HTTP transport carrying a socket deadline.
+
+    Returns a ``google_auth_httplib2.AuthorizedHttp`` wrapping an
+    ``httplib2.Http(timeout=N)`` — i.e. exactly the transport
+    ``googleapiclient.discovery.build(credentials=...)`` builds for
+    itself, but with a connect+read timeout on the socket. ``build()``
+    accepts this via its ``http=`` parameter, and the deadline then
+    applies to every request the resulting Resource issues (and to the
+    discovery-document fetch ``build`` itself performs).
+
+    Imports are local so module import stays light and the dependency
+    surface is explicit at the one place it's used. Both libraries are
+    hard transitive deps of ``google-api-python-client`` (already
+    installed), so this adds no new top-level requirement.
+    """
+    import google_auth_httplib2
+    import httplib2
+
+    timeout = _resolve_http_timeout_seconds()
+    base_http = httplib2.Http(timeout=timeout)
+    return google_auth_httplib2.AuthorizedHttp(credentials, http=base_http)
 
 
 # ---------------------------------------------------------------------
@@ -119,12 +246,14 @@ class GoogleAPIClient(Protocol):
 
 
 class GoogleApiClientAdapter:
-    """Production adapter: pure passthrough to ``googleapiclient.discovery.build``.
+    """Production adapter: wraps ``googleapiclient.discovery.build``.
 
-    Same behavior as pre-v2.1.2 ``google_clients.get_service``. No
-    caching, no retry — those are deferred behind this port for a
-    future ``CachingGoogleApiClientAdapter`` to layer in without
-    touching the 14 call sites.
+    Behavior is byte-equivalent to pre-v2.1.2 ``google_clients.get_service``
+    with ONE deliberate hardening (ROADMAP Hardening-P1): the underlying
+    HTTP transport now carries a connect+read **socket timeout** so a
+    stalled connection fails fast (and retryably) instead of hanging
+    ``.execute()`` forever. No caching — that's still deferred behind
+    this port for a future ``CachingGoogleApiClientAdapter``.
 
     Stateless — safe to share a single instance process-wide
     (the module-level ``_active_client`` is one).
@@ -137,7 +266,20 @@ class GoogleApiClientAdapter:
         *,
         credentials: Credentials,
     ) -> Resource:
-        return build(service, version, credentials=credentials)
+        # Build the SAME AuthorizedHttp that ``build(credentials=...)``
+        # would construct internally, except the wrapped ``httplib2.Http``
+        # carries a socket deadline. We pass ``http=`` (NOT ``credentials=``
+        # — passing both raises) so the deadline reaches every request,
+        # including the discovery-document fetch build() performs.
+        #
+        # IMPORTANT (auth-path isolation, per the timeout-PR gate): this
+        # does NOT touch credential resolution. ``AuthorizedHttp`` is the
+        # exact wrapper googleapiclient uses under the hood; we hand it
+        # the already-resolved ``credentials`` object unchanged and only
+        # set ``timeout`` on the transport socket. Token refresh, scopes,
+        # and the per-user credential plumbing are entirely unaffected.
+        authorized_http = _build_authorized_http(credentials)
+        return build(service, version, http=authorized_http)
 
 
 # ---------------------------------------------------------------------
@@ -215,12 +357,13 @@ class InMemoryGoogleAPIClient:
 
 
 def _is_retryable_http_error(exc: BaseException) -> bool:
-    """Predicate for tenacity: True iff ``exc`` is a Google ``HttpError``
-    whose status code is in ``_RETRYABLE_STATUS``.
+    """Predicate: True iff ``exc`` is a Google ``HttpError`` whose status
+    code is in ``_RETRYABLE_STATUS`` (429 / 500 / 502 / 503 / 504).
 
-    All other exceptions (network errors, programmer bugs, 4xx
-    validation errors) propagate immediately — caller bugs MUST NOT
-    be retried.
+    4xx validation/auth errors and any non-``HttpError`` propagate
+    immediately — caller bugs MUST NOT be retried. (Transient transport
+    failures are handled separately by ``_is_retryable_transport_error``;
+    the combined ``_is_retryable`` is what the retry machinery uses.)
     """
     if not isinstance(exc, HttpError):
         return False
@@ -230,6 +373,19 @@ def _is_retryable_http_error(exc: BaseException) -> bool:
     if status is None:
         status = getattr(getattr(exc, "resp", None), "status", None)
     return status in _RETRYABLE_STATUS
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Combined retry predicate used by the retry machinery.
+
+    Retries BOTH transient Google ``HttpError`` responses (429/5xx) AND
+    transient transport failures (the socket-deadline hang this module
+    guards against, plus connection drops) — see
+    ``_is_retryable_http_error`` and ``_is_retryable_transport_error``.
+    This is the single predicate tenacity is wired to, so a timed-out
+    socket now triggers the existing backoff instead of wedging the call.
+    """
+    return _is_retryable_http_error(exc) or _is_retryable_transport_error(exc)
 
 
 def _retry_after_seconds(exc: BaseException) -> float | None:
@@ -341,10 +497,12 @@ class RetryingGoogleApiClientAdapter:
         partially-completed mutating call cannot be replayed without
         risking duplicates.
 
-        If ``idempotent=True``, transient ``HttpError`` responses
-        (429 / 5xx) trigger exponential backoff + jitter retry up to
-        ``self._max_attempts`` total attempts. ``Retry-After`` from
-        Google is honored as the floor.
+        If ``idempotent=True``, transient failures trigger exponential
+        backoff + jitter retry up to ``self._max_attempts`` total
+        attempts: both ``HttpError`` responses (429 / 5xx) and transient
+        transport failures (socket timeout from the deadline on the
+        Google API transport, connection resets). ``Retry-After`` from
+        Google is honored as the floor for the HTTP case.
         """
         if not idempotent:
             return fn()
@@ -357,8 +515,8 @@ class RetryingGoogleApiClientAdapter:
                 base=self._base_wait,
                 cap=self._max_wait,
             ),
-            retry=retry_if_exception(_is_retryable_http_error),
-            reraise=True,  # surface the real HttpError, not RetryError
+            retry=retry_if_exception(_is_retryable),
+            reraise=True,  # surface the real error, not RetryError
         )
 
         attempt_num = 0
@@ -367,7 +525,12 @@ class RetryingGoogleApiClientAdapter:
             with attempt:
                 try:
                     return fn()
-                except HttpError as e:
+                except Exception as e:  # noqa: BLE001 — log+reraise; tenacity's retry= decides
+                    # Log-only; we re-raise unconditionally and let the
+                    # Retrying ``retry=`` predicate (_is_retryable) decide
+                    # whether another attempt happens. Two transient
+                    # classes get an info line so a retry is visible in
+                    # logs; everything else falls straight through.
                     if _is_retryable_http_error(e):
                         _log.info(
                             "transient_google_api_error op=%s attempt=%d/%d "
@@ -377,6 +540,15 @@ class RetryingGoogleApiClientAdapter:
                             self._max_attempts,
                             getattr(e, "status_code", "?"),
                             _retry_after_seconds(e),
+                        )
+                    elif _is_retryable_transport_error(e):
+                        _log.info(
+                            "transient_google_api_transport_error op=%s "
+                            "attempt=%d/%d error=%s",
+                            op_name,
+                            attempt_num,
+                            self._max_attempts,
+                            type(e).__name__,
                         )
                     raise
         # Should be unreachable — Retrying with reraise=True always
