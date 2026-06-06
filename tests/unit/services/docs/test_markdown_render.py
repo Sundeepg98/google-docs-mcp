@@ -426,3 +426,268 @@ def test_parse_markdown_table_rejects_missing_separator():
 def test_parse_markdown_table_rejects_single_line():
     with pytest.raises(ValueError, match="at least a header"):
         parse_markdown_table("| just a header |")
+
+
+# ---------------------------------------------------------------------
+# SEMANTIC render tests — assert the EXACT request a construct produces
+# (R2 audit Gap #1 — the renderer's actual job, previously untested)
+#
+# The Hypothesis property tests above pin STRUCTURAL invariants:
+# monotonic indices, single-key requests, an op-key allow-list, linear
+# offset. None of them assert that a SPECIFIC markdown construct emits
+# the SPECIFIC Google-Docs request that construct is supposed to emit.
+# A regression that swapped HEADING_1 for HEADING_2, emitted an empty
+# or wrong ``fields`` mask, or picked the wrong bulletPreset would sail
+# past every structural property (it's still one monotonic single-key
+# allow-listed request) yet be REJECTED by the live Docs ``batchUpdate``
+# API at runtime — a silent, user-facing break.
+#
+# These example-based tests close that gap by asserting the exact
+# payload dict for each construct the renderer documents it supports:
+# headings 1-6, bold/italic/strike, inline + fenced code, links,
+# bullet vs numbered lists, nested-list tab indent, and blockquotes.
+# The ``fields`` mask (the field-update bitmask Docs requires to be
+# accurate or it silently no-ops / 400s) is asserted explicitly because
+# it is the single most regression-prone, least-visible part of each
+# request and appears in NO existing assertion.
+# ---------------------------------------------------------------------
+
+
+def _ops(requests: list[dict], op_key: str) -> list[dict]:
+    """Return the inner payloads of every request of type ``op_key``."""
+    return [r[op_key] for r in requests if op_key in r]
+
+
+def _one_op(requests: list[dict], op_key: str) -> dict:
+    """Return the single payload of type ``op_key``; assert exactly one."""
+    found = _ops(requests, op_key)
+    assert len(found) == 1, (
+        f"expected exactly one {op_key} request, got {len(found)}: {found!r}"
+    )
+    return found[0]
+
+
+def _inserted_text(requests: list[dict]) -> str:
+    """Concatenate every insertText in emission order (the literal body)."""
+    return "".join(
+        r["insertText"]["text"] for r in requests if "insertText" in r
+    )
+
+
+@pytest.mark.parametrize("level", [1, 2, 3, 4, 5, 6])
+def test_heading_emits_updateParagraphStyle_with_matching_named_style(level):
+    """``#``..``######`` must emit updateParagraphStyle whose
+    namedStyleType is exactly ``HEADING_<level>`` with a
+    ``fields="namedStyleType"`` mask — the contract the Docs API
+    enforces. A regression mapping level→style off-by-one (the classic
+    ``HEADING_1`` vs ``HEADING_2`` swap) is caught here and nowhere else.
+    """
+    md = ("#" * level) + " The Heading"
+    requests = render_content_to_requests(md, "tab-1")
+
+    ps = _one_op(requests, "updateParagraphStyle")
+    assert ps["paragraphStyle"] == {"namedStyleType": f"HEADING_{level}"}
+    assert ps["fields"] == "namedStyleType"
+    # The heading text itself is still inserted verbatim.
+    assert "The Heading" in _inserted_text(requests)
+
+
+def test_heading_level_clamped_to_6():
+    """markdown-it caps ATX headings at 6 (``#######`` is a paragraph),
+    and the renderer additionally clamps via ``min(level, 6)``. Either
+    way a 6-hash heading must never produce HEADING_7 (not a valid Docs
+    namedStyleType — it would 400)."""
+    requests = render_content_to_requests("###### Six", "tab-1")
+    ps = _one_op(requests, "updateParagraphStyle")
+    assert ps["paragraphStyle"]["namedStyleType"] == "HEADING_6"
+
+
+def test_bold_emits_updateTextStyle_bold_true_with_bold_fields_mask():
+    """``**b**`` → updateTextStyle{textStyle:{bold:true}, fields:"bold"}.
+    The fields mask MUST be exactly "bold" — a mask that omits the
+    changed field makes Docs silently ignore the style."""
+    requests = render_content_to_requests("a **bold** word", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {"bold": True}
+    assert ts["fields"] == "bold"
+    # The range must cover exactly the bolded run ("bold"), not the
+    # surrounding text — the renderer records the range around the run.
+    body = _inserted_text(requests)
+    start = ts["range"]["startIndex"]
+    end = ts["range"]["endIndex"]
+    # current_index starts at 1; the inserted body begins at index 1.
+    assert body[start - 1:end - 1] == "bold"
+
+
+def test_italic_emits_updateTextStyle_italic_true():
+    requests = render_content_to_requests("an *em* word", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {"italic": True}
+    assert ts["fields"] == "italic"
+
+
+def test_strikethrough_emits_updateTextStyle_strikethrough_true():
+    """GFM ``~~x~~`` (the renderer enables markdown-it 'strikethrough')
+    → updateTextStyle{strikethrough:true, fields:"strikethrough"}."""
+    requests = render_content_to_requests("a ~~gone~~ word", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {"strikethrough": True}
+    assert ts["fields"] == "strikethrough"
+
+
+def test_nested_bold_italic_merges_both_styles_in_one_range():
+    """``***x***`` nests strong+em → the merged style carries BOTH
+    bold and italic, and the fields mask lists both (order: bold then
+    italic, matching _finalize's emission order)."""
+    requests = render_content_to_requests("***both***", "tab-1")
+    # The innermost run "both" gets the merged style.
+    styled = [
+        ts for ts in _ops(requests, "updateTextStyle")
+        if ts["textStyle"].get("bold") and ts["textStyle"].get("italic")
+    ]
+    assert len(styled) == 1, (
+        f"expected one run carrying both bold+italic, got: "
+        f"{_ops(requests, 'updateTextStyle')!r}"
+    )
+    ts = styled[0]
+    assert ts["textStyle"] == {"bold": True, "italic": True}
+    assert ts["fields"] == "bold,italic"
+
+
+def test_inline_code_emits_code_font_and_background_with_correct_fields():
+    """`` `code` `` → updateTextStyle carrying the monospace font AND the
+    code background, with fields="weightedFontFamily,backgroundColor".
+    Both the font family string (Roboto Mono) and the exact RGB are
+    pinned — a regression in either would render code as plain text or
+    with the wrong highlight."""
+    requests = render_content_to_requests("call `fn()` now", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {
+        "weightedFontFamily": {"fontFamily": "Roboto Mono"},
+        "backgroundColor": {
+            "color": {"rgbColor": {"red": 0.945, "green": 0.957, "blue": 0.965}}
+        },
+    }
+    assert ts["fields"] == "weightedFontFamily,backgroundColor"
+    assert "fn()" in _inserted_text(requests)
+
+
+def test_fenced_code_block_emits_code_style_over_the_block_body():
+    """A fenced ``` block emits the same code text-style over the block
+    body. The body text is inserted with a trailing newline; the style
+    range covers the body WITHOUT the trailing newline (s..s+len(body))."""
+    md = "```\nx = 1\ny = 2\n```"
+    requests = render_content_to_requests(md, "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"]["weightedFontFamily"] == {"fontFamily": "Roboto Mono"}
+    assert "backgroundColor" in ts["textStyle"]
+    assert ts["fields"] == "weightedFontFamily,backgroundColor"
+    body = _inserted_text(requests)
+    assert "x = 1\ny = 2" in body
+    # The styled range length equals the block body length (no trailing \n).
+    span = ts["range"]["endIndex"] - ts["range"]["startIndex"]
+    assert span == len("x = 1\ny = 2")
+
+
+def test_link_emits_updateTextStyle_with_url_and_link_fields_mask():
+    """``[t](https://e.com)`` → updateTextStyle{link:{url:...}, fields:"link"}.
+    The URL must round-trip exactly; the anchor text is what's inserted."""
+    requests = render_content_to_requests("see [docs](https://example.com/x)", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {"link": {"url": "https://example.com/x"}}
+    assert ts["fields"] == "link"
+    assert "docs" in _inserted_text(requests)
+
+
+def test_bulleted_list_emits_createParagraphBullets_disc_preset():
+    """A ``- a`` bullet list → createParagraphBullets with the
+    BULLET_DISC_CIRCLE_SQUARE preset (the disc/circle/square cascade).
+    Picking the numbered preset here would render bullets as numbers."""
+    md = "- first\n- second"
+    requests = render_content_to_requests(md, "tab-1")
+    bullets = _ops(requests, "createParagraphBullets")
+    assert len(bullets) >= 1
+    assert all(
+        b["bulletPreset"] == "BULLET_DISC_CIRCLE_SQUARE" for b in bullets
+    ), f"bulleted list used wrong preset(s): {[b['bulletPreset'] for b in bullets]!r}"
+
+
+def test_numbered_list_emits_createParagraphBullets_numbered_preset():
+    """A ``1.`` ordered list → createParagraphBullets with
+    NUMBERED_DECIMAL_NESTED. This is the exact preset the gap calls out:
+    a swap to a bullet preset would silently turn ``1. 2. 3.`` into
+    discs."""
+    md = "1. one\n2. two\n3. three"
+    requests = render_content_to_requests(md, "tab-1")
+    bullets = _ops(requests, "createParagraphBullets")
+    assert len(bullets) >= 1
+    assert all(
+        b["bulletPreset"] == "NUMBERED_DECIMAL_NESTED" for b in bullets
+    ), f"numbered list used wrong preset(s): {[b['bulletPreset'] for b in bullets]!r}"
+
+
+def test_nested_list_item_inserts_tab_indent_before_child():
+    """A nested list item is indented by inserting a literal TAB per
+    depth level before the item text (``\\t`` * depth). Docs'
+    createParagraphBullets then consumes the leading tab to set the
+    nesting level. Without the tab insert, nested items render flat.
+    Here the child ('child') sits one level deep, so exactly one TAB
+    must precede it in the inserted body."""
+    md = "- parent\n    - child"
+    requests = render_content_to_requests(md, "tab-1")
+    body = _inserted_text(requests)
+    # The child line must be preceded by a tab; the parent line must not.
+    assert "\tchild" in body, (
+        f"nested item missing its tab indent. inserted body={body!r}"
+    )
+    assert "\tparent" not in body, (
+        f"top-level item wrongly indented. inserted body={body!r}"
+    )
+
+
+def test_blockquote_text_is_inserted_and_no_quote_style_leaks_named_style():
+    """``> quoted`` inserts its text verbatim and emits NO
+    updateParagraphStyle in the current renderer.
+
+    DOCUMENTED LATENT BUG (verified against the source at R2): the QUOTE
+    rendering in ``_finalize`` (``indentStart`` 36pt for the ``_QUOTE``
+    sentinel) is currently DEAD. ``blockquote_open`` records
+    ``ctx.para_start``, but the inner ``paragraph_open`` immediately
+    OVERWRITES it (and ``paragraph_close`` then sets it back to None), so
+    by ``blockquote_close`` ``ctx.para_start is None`` and the ``_QUOTE``
+    range is never appended. A blockquote therefore produces only
+    insertText today — no indent.
+
+    This test pins the ACTUAL behavior (not the intended one) so it is a
+    truthful regression guard:
+      * If someone fixes the para_start clobber, this test will fail and
+        force a deliberate update to the asserted contract (emit
+        indentStart, fields="indentStart", NO namedStyleType — never the
+        internal ``_QUOTE`` sentinel, which is not a real Docs style and
+        would 400).
+      * If the insert path itself regresses, it fails too.
+    """
+    requests = render_content_to_requests("> a quote", "tab-1")
+    # Text is inserted verbatim.
+    assert "a quote" in _inserted_text(requests)
+    # Current contract: the QUOTE paragraph style is not emitted (latent
+    # bug above). Crucially, the internal ``_QUOTE`` sentinel must NEVER
+    # leak into a real updateParagraphStyle request even if the code path
+    # changes — that would be a guaranteed Docs 400.
+    for ps in _ops(requests, "updateParagraphStyle"):
+        assert ps.get("paragraphStyle", {}).get("namedStyleType") != "_QUOTE", (
+            "the internal _QUOTE sentinel leaked into a batchUpdate "
+            "request; it is not a valid Docs namedStyleType and will 400."
+        )
+
+
+def test_plain_paragraph_emits_no_styling_requests():
+    """A plain paragraph with no inline marks emits ONLY insertText —
+    no updateTextStyle / updateParagraphStyle / createParagraphBullets.
+    Guards against the renderer emitting spurious empty-style requests
+    (which Docs rejects as having an empty fields mask)."""
+    requests = render_content_to_requests("just plain text here", "tab-1")
+    assert _ops(requests, "updateTextStyle") == []
+    assert _ops(requests, "updateParagraphStyle") == []
+    assert _ops(requests, "createParagraphBullets") == []
+    assert _inserted_text(requests).startswith("just plain text here")
