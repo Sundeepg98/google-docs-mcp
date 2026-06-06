@@ -42,13 +42,25 @@ async def upload_frame_endpoint(request: Request) -> JSONResponse:
     ``drive.readonly`` Drive round-trip). Public (no bearer): auth is the
     HMAC batch token in the query string, exactly like the docx signed
     upload path — so the bound Apps Script (running as the user) can POST
-    each rendered frame straight to the server via ``UrlFetchApp``. The
-    batch token authorizes the whole render; the per-frame ``index`` is a
-    bounded integer validated in the staging layer (no path traversal).
-    Raw PNG bytes in the request body. Size-capped by
-    ``BodySizeLimitMiddleware``.
+    each rendered frame straight to the server via ``UrlFetchApp``.
+
+    Hardened to mirror the docx convert path (v2.1):
+
+    - the token is **single-use + user-bound** (see
+      ``_frames_staging.verify_frames_token``); a captured token can't be
+      replayed across all indices for the TTL, and is bound to one tenant;
+    - the body is **size-capped at the endpoint** — both the declared
+      Content-Length AND the chunked / Content-Length-omitting case (which
+      ``BodySizeLimitMiddleware`` lets fall through). Over-cap → 413;
+    - the staging layer additionally enforces per-batch frame-count +
+      cumulative-byte caps, so a token holder can't disk-fill the box.
+
+    The per-frame ``index`` is a bounded integer validated in the staging
+    layer (no path traversal). Raw PNG bytes in the request body.
     """
     from appscriptly.services.apps_script._frames_staging import (
+        _MAX_FRAME_BYTES,
+        FrameUploadTooLarge,
         stage_frame_bytes,
         verify_frames_token,
     )
@@ -56,16 +68,50 @@ async def upload_frame_endpoint(request: Request) -> JSONResponse:
     batch_id = request.path_params["batch_id"]
     index = request.path_params["index"]
     token = request.query_params.get("token", "")
-    if not verify_frames_token(batch_id, token):
+    # verify_frames_token returns the bound user_id (truthy str) on success
+    # or None on failure (invalid / expired / replayed token).
+    token_uid = verify_frames_token(batch_id, token)
+    if token_uid is None:
         return JSONResponse(
             {"error": "Invalid or expired frame upload token"}, status_code=403
         )
 
-    body = await request.body()
+    # Reject an over-cap DECLARED Content-Length before reading any body.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > _MAX_FRAME_BYTES:
+                return JSONResponse(
+                    {"error": "frame too large", "max_bytes": _MAX_FRAME_BYTES},
+                    status_code=413,
+                )
+        except ValueError:
+            return JSONResponse(
+                {"error": "invalid Content-Length"}, status_code=400
+            )
+
+    # Read the body with a hard cap so a CHUNKED / Content-Length-omitting
+    # POST (which the body-size middleware lets through) can't stream an
+    # unbounded payload into memory. Stop as soon as we exceed the cap.
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _MAX_FRAME_BYTES:
+            return JSONResponse(
+                {"error": "frame too large", "max_bytes": _MAX_FRAME_BYTES},
+                status_code=413,
+            )
+        chunks.append(chunk)
+    body = b"".join(chunks)
+
     if not body:
         return JSONResponse({"error": "Empty frame body"}, status_code=400)
     try:
         stage_frame_bytes(batch_id, index, body)
+    except FrameUploadTooLarge as e:
+        # Per-batch count / cumulative-byte cap hit — Payload Too Large.
+        return JSONResponse({"error": str(e)}, status_code=413)
     except ValueError as e:
         # Malformed batch_id / index (e.g. a traversal attempt) — reject.
         return JSONResponse(

@@ -72,6 +72,48 @@ def test_save_merges_existing_state_not_overwrites():
     assert state["apps_script_deployment_id"] == "D1"
 
 
+def test_save_state_update_binds_multiple_keys_to_correct_columns():
+    """REGRESSION (audit needs-checkpoint): the SqliteBackend UPDATE path
+    builds its SET clause + bind values; a positional drift between the
+    two would write the WRONG value into a column (or corrupt the WHERE
+    user_id bind). Update an EXISTING row with MULTIPLE keys at once and
+    assert (a) every value lands in its own column — not shifted — and
+    (b) the WHERE bind still targets the right user (a misaligned bind
+    would either error or hit the wrong/zero rows). Two users present so
+    a corrupted WHERE would be observable as cross-row damage."""
+    from appscriptly.user_store import get_state, save_state
+
+    # Seed two distinct users so the WHERE clause has to discriminate.
+    save_state("multi-a", {"apps_script_url": "https://script.google.com/macros/s/AV1/exec"})
+    save_state("multi-b", {"apps_script_url": "https://script.google.com/macros/s/BV1/exec"})
+
+    # UPDATE multi-a with THREE fields at once (exercises the SET-clause
+    # value binding under multiple placeholders + the trailing WHERE bind).
+    save_state(
+        "multi-a",
+        {
+            "apps_script_url": "https://script.google.com/macros/s/AV2/exec",
+            "apps_script_script_id": "SCRIPT-A",
+            "apps_script_deployment_id": "DEPLOY-A",
+        },
+    )
+
+    a = get_state("multi-a")
+    # Each value in its OWN column (no left/right shift).
+    assert a["apps_script_url"] == "https://script.google.com/macros/s/AV2/exec"
+    assert a["apps_script_script_id"] == "SCRIPT-A"
+    assert a["apps_script_deployment_id"] == "DEPLOY-A"
+    assert a["user_id"] == "multi-a"
+
+    # The OTHER user's row is completely untouched — proves the WHERE
+    # user_id bind was correct (not corrupted by the SET value list).
+    b = get_state("multi-b")
+    assert b["apps_script_url"] == "https://script.google.com/macros/s/BV1/exec"
+    assert b["user_id"] == "multi-b"
+    assert "apps_script_script_id" not in b
+    assert "apps_script_deployment_id" not in b
+
+
 def test_save_preserves_created_at_but_bumps_updated_at():
     from appscriptly.user_store import get_state, save_state
 

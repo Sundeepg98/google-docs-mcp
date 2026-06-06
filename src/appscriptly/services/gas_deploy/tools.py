@@ -7,7 +7,9 @@ registration with the live ``mcp`` instance — ``server.py`` performs
 the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the decorator.
 
-**Tools registered here** (2 surfaces, 1 underlying implementation):
+**Tools registered here** (3 tools). The first two share one
+underlying implementation (install/alias); the third is a distinct
+surface with its own implementation:
 
 1. ``gdocs_install_automation`` — CANONICAL (PR-α / v2.3.4+). User-
    facing automation-install tool: provisions the per-user Workspace
@@ -20,6 +22,14 @@ and AFTER ``decorators.register(mcp, ...)`` wires the decorator.
    external integrations don't break. Emits a runtime
    ``DeprecationWarning`` on call and instructs the caller to use
    ``gdocs_install_automation`` instead. Planned removal in v3.0.
+
+3. ``as_deploy_web_app`` — deploy a caller-supplied doGet/doPost
+   project as an Apps Script Web App / webhook (ROADMAP 59). A
+   separate surface with its own ``_deploy_web_app_project``
+   implementation, layered on the existing ``AppsScriptClient``
+   machinery (NOT the install path's implementation).
+
+(Authoritative declaration: ``services/gas_deploy/_expected_tools.py``.)
 
 Why the rename: the original ``setup_apps_script`` name framed this
 as infrastructure plumbing (a "second consent" for an "Apps Script

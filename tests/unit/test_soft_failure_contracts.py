@@ -272,3 +272,45 @@ def test_move_returns_soft_failure_on_folder_not_found(mock_drive):
 
     result = move_to_folder(MagicMock(), "F", "BOGUS_FOLDER")
     assert result["reason"] == "folder_not_found"
+
+
+def test_move_app_not_authorized_message_names_file_and_destination(mock_drive):
+    """A move (addParents) needs write access to BOTH the file AND the
+    destination folder; a 403 appNotAuthorizedToFile can be caused by
+    EITHER. The soft-failure message must therefore name both the file
+    and the folder rather than wrongly attributing it to the file alone
+    (the audit's clarity gap). Also re-confirms the 403 is returned as
+    DATA, not raised."""
+    from appscriptly.services.drive.api import move_to_folder
+
+    folder_mime = "application/vnd.google-apps.folder"
+
+    # get() #1 = file exists; get() #2 = folder exists + is a folder.
+    call_count = {"n": 0}
+
+    def get_side_effect(**kw):
+        call_count["n"] += 1
+        ret = MagicMock()
+        if call_count["n"] == 1:
+            ret.execute.return_value = {
+                "id": "FILE-X", "name": "report", "mimeType": "x",
+                "parents": ["root"],
+            }
+        else:
+            ret.execute.return_value = {"id": "DEST-Y", "mimeType": folder_mime}
+        return ret
+
+    mock_drive.files().get.side_effect = get_side_effect
+
+    # The move update() 403s with appNotAuthorizedToFile.
+    update_ret = MagicMock()
+    update_ret.execute.side_effect = _mock_http_error(403, "appNotAuthorizedToFile")
+    mock_drive.files().update.return_value = update_ret
+
+    result = move_to_folder(MagicMock(), "FILE-X", "DEST-Y")
+
+    # Returned as data, not raised.
+    assert result["reason"] == "app_not_authorized"
+    # Message names BOTH the file and the destination folder.
+    assert "FILE-X" in result["message"]
+    assert "DEST-Y" in result["message"]

@@ -41,10 +41,12 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 23 tools
-(`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
-find, retrofit, trash/untrash, convert existing docs, one-shot
-per-user Apps Script Web App setup, plus introspection tools that
+wraps that flow + the supporting Drive / Sheets / Slides / Apps Script
+operations into 57 tools (primarily `gdocs_*`, plus `gsheets_*` /
+`gslides_*` / `as_*` for the newer services) covering the full
+lifecycle: create, edit, read, find, retrofit, trash/untrash, convert
+existing docs, one-shot per-user Apps Script Web App setup, plus
+Sheets / Slides editing and introspection tools that
 surface the server's CI test status over the MCP interface (so an
 agent can verify the running build was actually tested, not just
 trust a green badge). v1.3.0+: the server is **self-documenting** —
@@ -54,8 +56,10 @@ No external reference file required.
 
 ## Tool index
 
-All tools prefixed `gdocs_` for namespacing. Call `gdocs_server_info`
-on a live server to get the authoritative list with descriptions.
+Most tools are prefixed `gdocs_`; the Sheets / Slides verticals use
+`gsheets_` / `gslides_` and the appscriptly-native automation tools use
+`as_`. Call `gdocs_server_info` on a live server to get the
+authoritative list (all 57 tools) with descriptions.
 
 | Purpose | Tool |
 |---|---|
@@ -265,7 +269,7 @@ Verify: `curl https://<your-app>.fly.dev/health` returns `{"ok":true,...}`.
 1. Settings → Connectors → **Add custom connector**
 2. URL: `https://<your-app>.fly.dev/mcp`
 3. (No OAuth fields needed — the `/mcp` endpoint is open by convention; auth lives at `/api/*` and is bypassed by signed URLs)
-4. Save → start a new chat. The 23 `gdocs_*` tools appear.
+4. Save → start a new chat. All 57 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
 
 **Also add `<your-app>.fly.dev` to Settings → Capabilities → Additional allowed domains** so cloud chat's Python sandbox can POST to `/api/convert`.
 
@@ -313,24 +317,24 @@ Claude shapes the request into `gdocs_make_tabbed_doc(title, tabs)` and returns 
 
 ```bash
 pip install -e ".[test]"
-pytest tests/unit -v              # 340 unit tests, no network
-pytest tests/integration --live   # 13 live tests, real Drive + OAuth
+pytest tests/unit -v              # ~1,550 unit tests, no network
+pytest tests/integration --live   # 21 live tests, real Drive + OAuth
 ```
 
-Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). `deploy.sh` runs them locally before any Fly deploy; override with `SKIP_TESTS=1` for emergency hotfixes only.
+The counts above are approximate; `gdocs_test_manifest()` / `gdocs_server_info()` report the authoritative live numbers (computed at runtime). Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). `deploy.sh` runs them locally before any Fly deploy; override with `SKIP_TESTS=1` for emergency hotfixes only.
 
 ## Architecture / source map
 
 | File | What it does |
 |---|---|
 | `src/appscriptly/server.py` | FastMCP tool wrappers; routing + validation |
-| `src/appscriptly/docs_api.py` | Google Docs API: tab/content operations |
-| `src/appscriptly/drive_api.py` | Google Drive API: upload, trash, search, move |
+| `src/appscriptly/services/docs/api.py` | Google Docs API: tab/content operations |
+| `src/appscriptly/services/drive/api.py` | Google Drive API: upload, trash, search, move |
 | `src/appscriptly/docx_import.py` | `.docx` → tabbed Google Doc pipeline |
 | `src/appscriptly/retrofit.py` | Inject Heading 1 markers into styled `.docx` |
 | `src/appscriptly/preview.py` | Dry-run tab-split detection |
 | `src/appscriptly/restructure.gs` | Apps Script Web App for lossless content moves |
-| `src/appscriptly/http_server.py` | Starlette REST + signed-URL middleware |
+| `src/appscriptly/http_server/` | Starlette REST + signed-URL middleware (package: `app.py` + `middleware.py` + `routes/`) |
 | `src/appscriptly/crypto.py` | HMAC signing for upload URLs |
 | `src/appscriptly/errors.py` | Friendly error mapping for known Google API failures |
 
