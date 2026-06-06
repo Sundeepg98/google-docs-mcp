@@ -61,6 +61,62 @@ if TYPE_CHECKING:
     from google.auth.credentials import Credentials
 
 
+# Currency symbols common enough to infer a CURRENCY number format from.
+# (A literal symbol in the pattern is how Sheets renders currency; there
+# is no dedicated currency token.)
+_CURRENCY_SYMBOLS = "$€£¥₹"
+
+
+def _infer_number_format_type(pattern: str) -> str:
+    """Infer the Sheets ``NumberFormat.type`` from its ``pattern`` string.
+
+    Previously every pattern was sent as ``type="NUMBER"``, which renders
+    DATE / TIME / PERCENT / CURRENCY patterns WRONG (e.g. a
+    ``"yyyy-mm-dd"`` pattern under NUMBER does not produce a date). Sheets
+    requires the ``type`` to match the pattern's intent.
+
+    Inference (date/time tokens per the Sheets Date/Number Formats guide):
+
+      * date tokens   = ``y`` (year) or ``d`` (day) — unambiguous markers;
+        ``m`` is month ONLY in a date context (it means *minutes* when
+        adjacent to hours/seconds), so it's counted as a date marker only
+        when a ``y``/``d`` is also present.
+      * time tokens   = ``h`` (hours), ``s`` (seconds), or an AM/PM marker.
+      * both date and time present → ``DATE_TIME``;
+        date only → ``DATE``; time only → ``TIME``.
+      * else trailing/again ``%`` → ``PERCENT``;
+        a currency symbol → ``CURRENCY``;
+        otherwise ``NUMBER`` (the safe default).
+
+    Tokens are matched case-insensitively. This is a pragmatic classifier
+    (Sheets is the final validator) whose job is to stop the silent
+    mis-typing of the date/time/percent/currency patterns this tool's own
+    docstring advertises. Returns a ``NumberFormatType`` enum string.
+    """
+    p = pattern.lower()
+
+    has_year_or_day = ("y" in p) or ("d" in p)
+    has_hours = "h" in p
+    has_seconds = "s" in p
+    has_ampm = ("am/pm" in p) or ("a/p" in p)
+    has_time = has_hours or has_seconds or has_ampm
+    # ``m`` is month in a date context, minutes in a time context. Treat a
+    # bare ``m`` as a date marker only alongside an unambiguous y/d.
+    has_date = has_year_or_day or (("m" in p) and has_year_or_day)
+
+    if has_date and has_time:
+        return "DATE_TIME"
+    if has_date:
+        return "DATE"
+    if has_time:
+        return "TIME"
+    if "%" in pattern:
+        return "PERCENT"
+    if any(sym in pattern for sym in _CURRENCY_SYMBOLS):
+        return "CURRENCY"
+    return "NUMBER"
+
+
 # Horizontal-alignment values Sheets accepts for a CellFormat. Pinned
 # as a module constant so the builder can validate client-side (a typo
 # like ``"centre"`` otherwise bounces off a generic Google 400).
@@ -209,7 +265,11 @@ def cell_format(
         horizontal_alignment: One of ``LEFT`` / ``CENTER`` / ``RIGHT``.
         number_format: A Sheets number-format pattern string (e.g.
             ``"#,##0.00"``, ``"0.00%"``, ``"$#,##0"``, ``"yyyy-mm-dd"``).
-            Applied as a ``NUMBER``-type format.
+            The ``NumberFormat.type`` is inferred from the pattern
+            (date tokens → ``DATE`` / ``DATE_TIME``, time tokens →
+            ``TIME``, trailing ``%`` → ``PERCENT``, a currency symbol →
+            ``CURRENCY``, else ``NUMBER``) so each pattern renders
+            correctly rather than being forced to ``NUMBER``.
 
     Returns:
         A ``CellFormat`` dict containing only the supplied options.
@@ -250,7 +310,13 @@ def cell_format(
     if horizontal_alignment is not None:
         fmt["horizontalAlignment"] = horizontal_alignment
     if number_format is not None:
-        fmt["numberFormat"] = {"type": "NUMBER", "pattern": number_format}
+        # Infer the NumberFormat type from the pattern so DATE / TIME /
+        # PERCENT / CURRENCY patterns render correctly (a blanket
+        # type="NUMBER" mis-renders e.g. "yyyy-mm-dd").
+        fmt["numberFormat"] = {
+            "type": _infer_number_format_type(number_format),
+            "pattern": number_format,
+        }
     return fmt
 
 
