@@ -607,7 +607,63 @@ def test_add_slide_falls_back_to_requested_id_when_reply_omits_it(
         "replies": [{}],  # no createSlide objectId echoed
     }
     result = add_slide(MagicMock(), "DECK-1", title="X")
-    assert result["slide_object_id"] == "appscriptly_slide"
+    # The requested id is now unique-per-call (appscriptly_slide_<hex>);
+    # the fallback must echo that requested id, not a constant.
+    assert result["slide_object_id"].startswith("appscriptly_slide_")
+
+
+def _created_object_ids(slides: MagicMock, request_key: str) -> list[str]:
+    """All requested objectIds for ``request_key`` (e.g. 'createSlide')
+    across EVERY batchUpdate call captured on the stub — so a 2nd call's
+    id can be compared against the 1st's."""
+    ids: list[str] = []
+    for call in slides.presentations().batchUpdate.call_args_list:
+        if "presentationId" not in call.kwargs:
+            continue
+        for req in call.kwargs["body"]["requests"]:
+            if request_key in req:
+                ids.append(req[request_key]["objectId"])
+    return ids
+
+
+def test_add_slide_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_add,
+):
+    """REGRESSION (HIGH): a constant slide objectId 400s 'object ID already
+    in use' on the 2nd add_slide against the same deck. Two calls must
+    request DISTINCT createSlide objectIds (and distinct placeholder ids),
+    so repeated calls succeed."""
+    add_slide(MagicMock(), "DECK-SAME", title="First", body="B1",
+              layout="TITLE_AND_BODY")
+    add_slide(MagicMock(), "DECK-SAME", title="Second", body="B2",
+              layout="TITLE_AND_BODY")
+
+    slide_ids = _created_object_ids(stub_slides_for_add, "createSlide")
+    assert len(slide_ids) == 2
+    assert slide_ids[0] != slide_ids[1], (
+        f"both add_slide calls requested the SAME slide objectId "
+        f"({slide_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(sid.startswith("appscriptly_slide_") for sid in slide_ids)
+
+    # Placeholder ids must also differ across the two calls (they live in
+    # the same presentation namespace and would collide too).
+    call_lists = [
+        c.kwargs["body"]["requests"]
+        for c in stub_slides_for_add.presentations().batchUpdate.call_args_list
+        if "presentationId" in c.kwargs
+    ]
+    ph_ids_call1 = {
+        m["objectId"]
+        for m in call_lists[0][0]["createSlide"].get("placeholderIdMappings", [])
+    }
+    ph_ids_call2 = {
+        m["objectId"]
+        for m in call_lists[1][0]["createSlide"].get("placeholderIdMappings", [])
+    }
+    assert ph_ids_call1.isdisjoint(ph_ids_call2), (
+        f"placeholder ids collide across calls: {ph_ids_call1 & ph_ids_call2}"
+    )
 
 
 # ---------------------------------------------------------------------
@@ -706,7 +762,25 @@ def test_create_image_falls_back_to_requested_id_when_reply_omits_it(
         "replies": [{}],
     }
     result = create_image(MagicMock(), "DECK-1", "S1", "https://x/y.png")
-    assert result["image_object_id"] == "appscriptly_image"
+    # Unique-per-call requested id (appscriptly_image_<hex>).
+    assert result["image_object_id"].startswith("appscriptly_image_")
+
+
+def test_create_image_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_image,
+):
+    """REGRESSION (HIGH): a constant image objectId 400s on the 2nd
+    create_image against the same deck. Two calls must request DISTINCT
+    createImage objectIds."""
+    create_image(MagicMock(), "DECK-SAME", "S1", "https://x/a.png")
+    create_image(MagicMock(), "DECK-SAME", "S1", "https://x/b.png")
+    image_ids = _created_object_ids(stub_slides_for_image, "createImage")
+    assert len(image_ids) == 2
+    assert image_ids[0] != image_ids[1], (
+        f"both create_image calls requested the SAME objectId "
+        f"({image_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(iid.startswith("appscriptly_image_") for iid in image_ids)
 
 
 # ---------------------------------------------------------------------
@@ -785,4 +859,22 @@ def test_create_table_falls_back_to_requested_id_when_reply_omits_it(
         "replies": [{}],
     }
     result = create_table(MagicMock(), "DECK-1", "S1", rows=1, columns=1)
-    assert result["table_object_id"] == "appscriptly_table"
+    # Unique-per-call requested id (appscriptly_table_<hex>).
+    assert result["table_object_id"].startswith("appscriptly_table_")
+
+
+def test_create_table_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_table,
+):
+    """REGRESSION (HIGH): a constant table objectId 400s on the 2nd
+    create_table against the same deck. Two calls must request DISTINCT
+    createTable objectIds."""
+    create_table(MagicMock(), "DECK-SAME", "S1", rows=2, columns=2)
+    create_table(MagicMock(), "DECK-SAME", "S1", rows=3, columns=3)
+    table_ids = _created_object_ids(stub_slides_for_table, "createTable")
+    assert len(table_ids) == 2
+    assert table_ids[0] != table_ids[1], (
+        f"both create_table calls requested the SAME objectId "
+        f"({table_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(tid.startswith("appscriptly_table_") for tid in table_ids)
