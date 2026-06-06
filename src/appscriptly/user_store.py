@@ -348,11 +348,19 @@ class SqliteBackend:
                     vals,
                 )
             else:
-                cols = [*updates.keys(), "updated_at"]
-                vals = [*updates.values(), now, user_id]
-                set_clause = ", ".join(f"{c} = ?" for c in cols)
+                # Build the SET clause and its bind values TOGETHER from
+                # one source so a placeholder can never drift from its
+                # value. ``updated_at`` is always set; the WHERE bind
+                # (user_id) is appended LAST and explicitly — it is NOT a
+                # SET column. (Previously cols/vals were two separate
+                # lists whose lengths only matched by positional luck —
+                # fragile under any future edit or a Postgres port.)
+                set_pairs = [*updates.items(), ("updated_at", now)]
+                set_clause = ", ".join(f"{col} = ?" for col, _ in set_pairs)
+                set_values = [val for _, val in set_pairs]
                 conn.execute(
-                    f"UPDATE user_state SET {set_clause} WHERE user_id = ?", vals,
+                    f"UPDATE user_state SET {set_clause} WHERE user_id = ?",
+                    [*set_values, user_id],  # WHERE bind appended last
                 )
 
     def clear_state(self, user_id: str) -> None:

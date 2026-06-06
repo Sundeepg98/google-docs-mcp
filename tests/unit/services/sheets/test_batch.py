@@ -33,6 +33,7 @@ from appscriptly.google_api_client import (
 )
 from appscriptly.services.sheets.batch import (
     _format_field_mask,
+    _infer_number_format_type,
     add_conditional_format_rule_request,
     add_sheet_request,
     batch_update,
@@ -137,7 +138,9 @@ def test_cell_format_top_level_fields():
     assert fmt == {
         "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
         "horizontalAlignment": "CENTER",
-        "numberFormat": {"type": "NUMBER", "pattern": "0.00%"},
+        # "0.00%" is a percent pattern → type inferred as PERCENT (not the
+        # old blanket NUMBER, which mis-rendered it).
+        "numberFormat": {"type": "PERCENT", "pattern": "0.00%"},
     }
 
 
@@ -163,6 +166,60 @@ def test_cell_format_rejects_bad_alignment():
 def test_cell_format_rejects_nonpositive_font_size():
     with pytest.raises(ValueError, match="font_size must be > 0"):
         cell_format(font_size=0)
+
+
+# ---------------------------------------------------------------------
+# _infer_number_format_type — pattern → NumberFormatType
+# ---------------------------------------------------------------------
+
+
+def test_cell_format_date_pattern_infers_date_type():
+    """REGRESSION (the bug): a date pattern must NOT be sent as
+    type=NUMBER — that mis-renders it. ``yyyy-mm-dd`` → type=DATE so the
+    advertised date format actually renders as a date."""
+    fmt = cell_format(number_format="yyyy-mm-dd")
+    assert fmt["numberFormat"] == {"type": "DATE", "pattern": "yyyy-mm-dd"}
+
+
+@pytest.mark.parametrize(
+    "pattern,expected_type",
+    [
+        # date
+        ("yyyy-mm-dd", "DATE"),
+        ("m/d/yyyy", "DATE"),
+        ("dddd, mmmm d", "DATE"),
+        # time (hours/seconds/AM-PM, no date component)
+        ("hh:mm:ss", "TIME"),
+        ("h:mm AM/PM", "TIME"),
+        # date + time → DATE_TIME
+        ("yyyy-mm-dd hh:mm", "DATE_TIME"),
+        ("m/d/yy h:mm:ss", "DATE_TIME"),
+        # percent
+        ("0.00%", "PERCENT"),
+        ("#,##0%", "PERCENT"),
+        # currency
+        ("$#,##0.00", "CURRENCY"),
+        ("€#,##0", "CURRENCY"),
+        # plain number (the safe default)
+        ("#,##0.00", "NUMBER"),
+        ("0.000", "NUMBER"),
+        ("#,##0", "NUMBER"),
+    ],
+)
+def test_infer_number_format_type(pattern, expected_type):
+    assert _infer_number_format_type(pattern) == expected_type
+
+
+def test_cell_format_currency_pattern_infers_currency_type():
+    fmt = cell_format(number_format="$#,##0.00")
+    assert fmt["numberFormat"]["type"] == "CURRENCY"
+
+
+def test_cell_format_plain_number_pattern_stays_number():
+    """A non-date/time/percent/currency pattern still maps to NUMBER —
+    the inference doesn't over-classify ordinary numeric patterns."""
+    fmt = cell_format(number_format="#,##0.00")
+    assert fmt["numberFormat"]["type"] == "NUMBER"
 
 
 # ---------------------------------------------------------------------

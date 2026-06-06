@@ -303,7 +303,7 @@ def _assert_tools_live_in_module(tool_names, expected_module: str) -> None:
 
 
 def test_docs_service_tools_register_from_services_docs_tools_module():
-    """The 12 docs-service tools must be defined in
+    """The 16 docs-service tools must be defined in
     ``services/docs/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["docs"],
@@ -340,7 +340,7 @@ def test_admin_service_tools_register_from_services_admin_tools_module():
 
 
 def test_sheets_service_tools_register_from_services_sheets_tools_module():
-    """The 3 sheets-service tools must be defined in
+    """The 9 sheets-service tools must be defined in
     ``services/sheets/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["sheets"],
@@ -349,7 +349,7 @@ def test_sheets_service_tools_register_from_services_sheets_tools_module():
 
 
 def test_slides_service_tools_register_from_services_slides_tools_module():
-    """The 3 slides-service tools must be defined in
+    """The 6 slides-service tools must be defined in
     ``services/slides/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["slides"],

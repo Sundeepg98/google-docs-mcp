@@ -24,7 +24,18 @@ helpers from their new homes.
 """
 from __future__ import annotations
 
-from appscriptly.services.docs.api import _summarize_body_paragraphs
+from unittest.mock import MagicMock
+
+import pytest
+
+from appscriptly.google_api_client import (
+    InMemoryGoogleAPIClient,
+    with_google_api_client,
+)
+from appscriptly.services.docs.api import (
+    _summarize_body_paragraphs,
+    read_tab_content,
+)
 
 
 # ---------------------------------------------------------------------
@@ -116,3 +127,218 @@ def test_api_module_reexports_pure_helpers_for_backward_compat():
     assert api_mod.CODE_FONT == markdown_render.CODE_FONT
     assert api_mod.CODE_BG_RGB == markdown_render.CODE_BG_RGB
     assert api_mod.TabSpec is markdown_render.TabSpec
+
+
+# ---------------------------------------------------------------------
+# read_tab_content — body-content element-type sentinels (R2 audit Gap #5)
+#
+# read_tab_content walks a tab's body and maps each Docs structural
+# element type to a text sentinel:
+#   textRun             -> its content
+#   inlineObjectElement -> "[image]"            (+ image_count)
+#   person              -> "[person:<email>]"
+#   richLink            -> "[link]"
+#   table               -> "[table RxC]"         (+ table_count)
+#   tableOfContents     -> "[table of contents]"
+#
+# The pure helper _summarize_body_paragraphs (tested above) only covers
+# textRun + table + TOC — it does NOT have the person / richLink /
+# inline-image branches at all. Those branches live ONLY in the inline
+# walker inside read_tab_content, and read_tab_content had no direct
+# test. A wrong sentinel or a dropped branch silently corrupts what the
+# model "reads" from a doc (the parsing-side analogue of the
+# markdown_render rendering-side risk). Also uncovered: the
+# tab-not-found ValueError and the tab_title (vs tab_id) resolution.
+#
+# read_tab_content makes two API calls: docs.documents().get(...) for
+# the body, and (via is_file_trashed) drive.files().get(...). Both are
+# stubbed through the GoogleAPIClient port — same dual-stub pattern as
+# test_tools.py's gdocs_read_doc tests.
+# ---------------------------------------------------------------------
+
+
+def _para(*elements: dict, style: str = "NORMAL_TEXT") -> dict:
+    """Wrap paragraph elements in the Docs structural-element shape."""
+    return {
+        "paragraph": {
+            "paragraphStyle": {"namedStyleType": style},
+            "elements": list(elements),
+        }
+    }
+
+
+def _docs_drive_stubs(tabs: list[dict], *, trashed: bool = False):
+    """Build (docs, drive) stubs for a read_tab_content call.
+
+    docs.documents().get().execute() -> a doc carrying ``tabs``.
+    drive.files().get().execute()    -> {"trashed": trashed} for the
+    is_file_trashed lookup read_tab_content performs at the end.
+    """
+    docs = MagicMock(name="docs-v1")
+    docs.documents().get().execute.return_value = {"documentId": "DOC1", "tabs": tabs}
+    drive = MagicMock(name="drive-v3")
+    drive.files().get().execute.return_value = {"trashed": trashed}
+    client = InMemoryGoogleAPIClient({("docs", "v1"): docs, ("drive", "v3"): drive})
+    return docs, drive, client
+
+
+def _read_tab(tabs, *, tab_id=None, tab_title=None, trashed=False):
+    _docs, _drive, client = _docs_drive_stubs(tabs, trashed=trashed)
+    with with_google_api_client(client):
+        return read_tab_content(
+            MagicMock(), "DOC1", tab_id=tab_id, tab_title=tab_title
+        )
+
+
+def test_read_tab_content_emits_image_sentinel_and_counts_images():
+    """An inlineObjectElement renders as '[image]' inside the paragraph
+    text AND increments image_count. Two images in one paragraph ->
+    image_count == 2 and two '[image]' markers."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "Pics"},
+        "documentTab": {
+            "body": {
+                "content": [
+                    _para(
+                        {"textRun": {"content": "before "}},
+                        {"inlineObjectElement": {"inlineObjectId": "io1"}},
+                        {"textRun": {"content": " mid "}},
+                        {"inlineObjectElement": {"inlineObjectId": "io2"}},
+                    )
+                ]
+            }
+        },
+    }
+    result = _read_tab([tab], tab_id="T0")
+    assert result["image_count"] == 2
+    [para] = result["paragraphs"]
+    assert para["text"] == "before [image] mid [image]"
+
+
+def test_read_tab_content_emits_person_sentinel_with_email():
+    """A person element renders as '[person:<email>]' using the
+    personProperties.email. The email must be interpolated exactly."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "People"},
+        "documentTab": {
+            "body": {
+                "content": [
+                    _para(
+                        {"textRun": {"content": "ping "}},
+                        {"person": {"personProperties": {"email": "amy@example.com"}}},
+                    )
+                ]
+            }
+        },
+    }
+    result = _read_tab([tab], tab_id="T0")
+    [para] = result["paragraphs"]
+    assert para["text"] == "ping [person:amy@example.com]"
+
+
+def test_read_tab_content_person_without_email_uses_question_mark():
+    """A person element missing personProperties.email falls back to
+    '[person:?]' rather than raising a KeyError."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "People"},
+        "documentTab": {
+            "body": {"content": [_para({"person": {"personProperties": {}}})]}
+        },
+    }
+    result = _read_tab([tab], tab_id="T0")
+    assert result["paragraphs"][0]["text"] == "[person:?]"
+
+
+def test_read_tab_content_emits_richlink_sentinel():
+    """A richLink element renders as the '[link]' sentinel."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "Links"},
+        "documentTab": {
+            "body": {
+                "content": [
+                    _para(
+                        {"textRun": {"content": "see "}},
+                        {"richLink": {"richLinkProperties": {"uri": "https://x"}}},
+                    )
+                ]
+            }
+        },
+    }
+    result = _read_tab([tab], tab_id="T0")
+    assert result["paragraphs"][0]["text"] == "see [link]"
+
+
+def test_read_tab_content_emits_table_sentinel_with_dimensions():
+    """A table renders as a style='TABLE' entry whose text is
+    '[table RxC]' with the real row/column counts, and increments
+    table_count. table_count entries are excluded from paragraph_count."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "Grid"},
+        "documentTab": {
+            "body": {
+                "content": [
+                    _para({"textRun": {"content": "intro\n"}}),
+                    {"table": {"rows": 3, "columns": 4}},
+                ]
+            }
+        },
+    }
+    result = _read_tab([tab], tab_id="T0")
+    assert result["table_count"] == 1
+    table_entries = [p for p in result["paragraphs"] if p["style"] == "TABLE"]
+    assert table_entries == [{"style": "TABLE", "text": "[table 3x4]"}]
+    # paragraph_count counts only real paragraphs (not TABLE/TOC).
+    assert result["paragraph_count"] == 1
+
+
+def test_read_tab_content_emits_toc_sentinel():
+    """A tableOfContents renders as style='TOC', text='[table of contents]'."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "Outline"},
+        "documentTab": {"body": {"content": [{"tableOfContents": {}}]}},
+    }
+    result = _read_tab([tab], tab_id="T0")
+    toc = [p for p in result["paragraphs"] if p["style"] == "TOC"]
+    assert toc == [{"style": "TOC", "text": "[table of contents]"}]
+
+
+def test_read_tab_content_raises_valueerror_when_tab_not_found():
+    """A tab_id that matches no tab must raise ValueError naming the
+    missing id — not return an empty/None result the caller would
+    mishandle."""
+    tab = {
+        "tabProperties": {"tabId": "T0", "title": "Only"},
+        "documentTab": {"body": {"content": []}},
+    }
+    with pytest.raises(ValueError, match="Tab not found"):
+        _read_tab([tab], tab_id="DOES-NOT-EXIST")
+
+
+def test_read_tab_content_resolves_by_tab_title():
+    """When tab_title (not tab_id) is given, the correct tab is located
+    by exact title match — the tab_title resolution branch. Two tabs
+    present; selecting by title must return the matching one's content."""
+    tabs = [
+        {
+            "tabProperties": {"tabId": "T0", "title": "First"},
+            "documentTab": {
+                "body": {"content": [_para({"textRun": {"content": "first body\n"}})]}
+            },
+        },
+        {
+            "tabProperties": {"tabId": "T1", "title": "Second"},
+            "documentTab": {
+                "body": {"content": [_para({"textRun": {"content": "second body\n"}})]}
+            },
+        },
+    ]
+    result = _read_tab(tabs, tab_title="Second")
+    assert result["tab_id"] == "T1"
+    assert result["title"] == "Second"
+    assert result["paragraphs"][0]["text"] == "second body"
+
+
+def test_read_tab_content_requires_an_identifier():
+    """Neither tab_id nor tab_title -> ValueError (the up-front guard)."""
+    with pytest.raises(ValueError, match="Provide either tab_id or tab_title"):
+        _read_tab([], tab_id=None, tab_title=None)
