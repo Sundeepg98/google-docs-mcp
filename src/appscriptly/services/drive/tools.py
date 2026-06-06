@@ -41,6 +41,8 @@ shim (let the second/third consumer drive the shape).
 """
 from __future__ import annotations
 
+import logging
+
 from fastmcp.exceptions import ToolError
 
 from appscriptly.decorators import workspace_tool
@@ -54,6 +56,7 @@ from appscriptly.services.drive.api import (
     untrash_drive_file as _untrash_drive_file,
 )
 from appscriptly.services.drive.sharing import (
+    _VALID_ROLES,
     grant_permission as _grant_permission,
     list_permissions as _list_permissions,
     revoke_permission as _revoke_permission,
@@ -85,6 +88,9 @@ from appscriptly._tool_helpers import (
     _format_http_error,
     _get_credentials,
 )
+
+
+_logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
@@ -122,6 +128,13 @@ def _run_batch(items: list[str], fn, success_key: str) -> dict:
                 skipped += 1
         except Exception as e:  # noqa: BLE001
             failed += 1
+            # Return a bounded message (guards against a 500+ char Google
+            # API body bloating every per-item result in a large batch),
+            # but log the FULL exception at debug so the operator doesn't
+            # lose the tail when diagnosing a failure.
+            _logger.debug(
+                "drive batch item %s failed: %s", fid, e, exc_info=True
+            )
             results.append({
                 "file_id": fid,
                 "reason": "unexpected_error",
@@ -437,14 +450,29 @@ def gdocs_share_file(
     ``appNotAuthorizedToFile``; the file's owner must grant access
     via the Drive UI instead.
     """
-    return _grant_permission(
-        creds,
-        drive_file_id=drive_file_id,
-        email=email,
-        role=role,
-        notify=notify,
-        message=message,
-    )
+    # Fail-fast at the tool boundary (matching gdocs_set_tab_icons):
+    # reject a bad role / blank email as a structured ToolError BEFORE
+    # delegating, rather than letting sharing.grant_permission's bare
+    # ValueError surface. ``_VALID_ROLES`` is the single source of truth
+    # in sharing.py; the delegate re-checks (defense in depth).
+    if role not in _VALID_ROLES:
+        raise ToolError(
+            f"role must be one of {sorted(_VALID_ROLES)}, got {role!r}. "
+            "Drive accepts only reader / writer / commenter for "
+            "user-type permissions ('editor' is a UI label, not an API "
+            "role literal)."
+        )
+    try:
+        return _grant_permission(
+            creds,
+            drive_file_id=drive_file_id,
+            email=email,
+            role=role,
+            notify=notify,
+            message=message,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 # ---------------------------------------------------------------------

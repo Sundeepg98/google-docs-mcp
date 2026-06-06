@@ -39,6 +39,7 @@ copy text.
 """
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from appscriptly.google_api_client import execute_with_retry
@@ -46,6 +47,21 @@ from appscriptly.google_clients import get_service
 
 if TYPE_CHECKING:
     from google.auth.credentials import Credentials
+
+
+def _unique_object_id(prefix: str) -> str:
+    """A fresh Slides objectId: ``<prefix>_<12 hex>``.
+
+    Slides ``createSlide`` / ``createImage`` / ``createTable`` reject a
+    duplicate objectId within one presentation, so a CONSTANT id 400s
+    ('object ID already in use') on the second call against the same
+    deck. Generating a unique id per call makes these create tools
+    repeatable. Slides requires objectIds to match ``[a-zA-Z0-9_-]`` and
+    be 5-50 chars; the longest prefix here (``appscriptly_title_ph``,
+    20 chars) + ``_`` + 12 hex = 33 chars, comfortably within range, and
+    every character is in the allowed set.
+    """
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
 def get_outline(creds: Credentials, presentation_id: str) -> dict:
@@ -285,13 +301,14 @@ def add_slide(
 
     slides = get_service("slides", "v1", credentials=creds)
 
-    # Deterministic objectIds so the follow-up insertText requests can
+    # UNIQUE objectIds (per call) so the follow-up insertText requests can
     # target the placeholders created in the SAME batch (Slides assigns
     # random IDs otherwise, which we couldn't reference until a second
-    # round trip).
-    slide_id = "appscriptly_slide"
-    title_ph_id = "appscriptly_title_ph"
-    body_ph_id = "appscriptly_body_ph"
+    # round trip) WITHOUT colliding on a second add_slide against the same
+    # deck — a constant id 400s 'object ID already in use'.
+    slide_id = _unique_object_id("appscriptly_slide")
+    title_ph_id = _unique_object_id("appscriptly_title_ph")
+    body_ph_id = _unique_object_id("appscriptly_body_ph")
 
     placeholder_mappings: list[dict] = []
     want_title = bool(title) and layout in _LAYOUTS_WITH_TITLE
@@ -325,11 +342,9 @@ def add_slide(
         })
 
     # NOT idempotent: each call appends ANOTHER slide. Same convention
-    # as create_presentation. (We pass a fixed objectId for terseness;
-    # Slides rejects a duplicate objectId within one presentation, so a
-    # naive re-run would 400 rather than silently double-insert — but
-    # the agent-facing contract is "appends a slide", annotated
-    # idempotent=False, so retries are the caller's concern.)
+    # as create_presentation. The objectIds are unique per call (see
+    # _unique_object_id) so repeated calls against the same deck don't
+    # collide on 'object ID already in use'.
     resp = execute_with_retry(
         lambda: slides.presentations().batchUpdate(
             presentationId=presentation_id,
@@ -452,7 +467,9 @@ def create_image(
         raise ValueError("width_inches and height_inches must be positive.")
 
     slides = get_service("slides", "v1", credentials=creds)
-    image_id = "appscriptly_image"
+    # Unique per call — a constant objectId 400s on the second create_image
+    # against the same deck ('object ID already in use').
+    image_id = _unique_object_id("appscriptly_image")
     requests = [
         {
             "createImage": {
@@ -543,7 +560,9 @@ def create_table(
         raise ValueError("width_inches and height_inches must be positive.")
 
     slides = get_service("slides", "v1", credentials=creds)
-    table_id = "appscriptly_table"
+    # Unique per call — a constant objectId 400s on the second create_table
+    # against the same deck ('object ID already in use').
+    table_id = _unique_object_id("appscriptly_table")
     requests = [
         {
             "createTable": {
