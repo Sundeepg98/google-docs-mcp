@@ -79,7 +79,7 @@ test = [
     # and unittest.mock.patch on Flow.from_client_config (matches the
     # existing test_oauth_google.py pattern). pytest-asyncio is here
     # for forthcoming async paths but unused today.
-    "pytest-asyncio>=0.23",
+    "pytest-asyncio>=1.4.0",
     # === v2.0.6: coverage gate (R33) ===
     # pytest-cov drives the --cov-fail-under floor configured in
     # pytest.ini (currently 55%, set by the Py 3.11 outlier on Linux
