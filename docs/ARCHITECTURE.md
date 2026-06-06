@@ -102,7 +102,7 @@ The 2 candidates below were considered and rejected. Documenting them so future 
 
 ### 4.1 `HTTPServer` — NOT PROMOTED
 
-- **Today:** `http_server.py` wires Starlette routes + middleware directly.
+- **Today:** the `http_server/` package (`app.py` + `middleware.py` + `routes/`) wires Starlette routes + middleware directly.
 - **Why not:** Starlette IS FastAPI's foundation. There is no credible swap target — moving to FastAPI would inherit Starlette anyway; moving to aiohttp / Quart / litestar requires a full rewrite that no current requirement motivates. Abstracting now is abstraction without alternative.
 - **Re-evaluate if:** a concrete reason to swap appears (e.g. a SaaS deployment variant that requires a non-Starlette framework). Until then, the current shape is correct.
 
@@ -113,6 +113,17 @@ The 2 candidates below were considered and rejected. Documenting them so future 
 - **Re-evaluate if:** we ever add a second class of signed URL (e.g. signed download URLs, signed share URLs) with a different canonical-string format. The natural shape at that point is one signer per URL class, not one Protocol over all of them.
 
 ## 5. Service-layer pattern
+
+> **STATUS — SHIPPED.** The per-service restructure described in this
+> section is complete on `main`. The live layout is
+> `services/{docs,drive,gas_deploy,admin,sheets,slides,apps_script}/`
+> (each with `api.py` + `tools.py` + `_expected_tools.py`), and the
+> HTTP server is the `http_server/` package. The tree and phase
+> narrative below are kept as the original design record; annotations
+> like "`docs_api.py` moves here" and the Phase A/B/C "Status" column
+> describe the migration as it was planned, not work still pending.
+> The illustrative `gmail/` service is still hypothetical (no Gmail
+> service ships yet).
 
 Per-service folder shape, inspired by `taylorwilsdon/google_workspace_mcp`:
 
@@ -264,13 +275,13 @@ The `asyncio.run(mcp.list_tools())` pattern matches the existing precedent in `t
 
 | Phase | Scope | Status |
 |---|---|---|
-| **A** | `services/docs/` POC. Move `docs_api.py` → `services/docs/api.py`; carve docs tool bodies from `server.py` → `services/docs/tools.py`. Land the fixture-discovery test in the SAME PR. | In flight on `ship-d1` |
-| **PAUSE** | Operator review of the docs/ shape before propagating. Verifies the import-order guarantee, the test-layout mirror, and the fixture-discovery test all behave as spec'd. | Triggered post-Phase A merge |
-| **B** | `services/drive/` migration. Same shape as A; `sharing.py` sub-module split per §5 if `drive_api.py` exceeds the ~400 LOC threshold (current: check at migration time). | After PAUSE |
-| **C** | `gas_deploy/` is already a sub-package boundary (per README:165); move to `services/gas_deploy/` with the same shape. Mostly file moves; expect minimal call-site churn. | After B |
-| **D** | Final `server.py` cleanup — remove now-empty helper blocks, verify the LOC target (~500–800), update the LOC reference at the top of this sub-section. | After C |
+| **A** | `services/docs/` POC. Move `docs_api.py` → `services/docs/api.py`; carve docs tool bodies from `server.py` → `services/docs/tools.py`. Land the fixture-discovery test in the SAME PR. | Done |
+| **PAUSE** | Operator review of the docs/ shape before propagating. Verifies the import-order guarantee, the test-layout mirror, and the fixture-discovery test all behave as spec'd. | Done |
+| **B** | `services/drive/` migration. Same shape as A; `sharing.py` sub-module split per §5 if `drive_api.py` exceeds the ~400 LOC threshold (current: check at migration time). | Done |
+| **C** | `gas_deploy/` is already a sub-package boundary (per README:165); move to `services/gas_deploy/` with the same shape. Mostly file moves; expect minimal call-site churn. | Done |
+| **D** | Final `server.py` cleanup — remove now-empty helper blocks, verify the LOC target (~500–800), update the LOC reference at the top of this sub-section. | Done |
 
-PAUSE between A and B is deliberate — same rationale as M1a → M1b (the pattern set in Phase A flows to B/C/D; better to discover shape problems once than three times).
+PAUSE between A and B was deliberate — same rationale as M1a → M1b (the pattern set in Phase A flows to B/C/D; better to discover shape problems once than three times). (The restructure has since extended past docs/drive/gas_deploy to admin/sheets/slides/apps_script — see the service tag canon table in §5.2.)
 
 ### 5.2 `@workspace_tool` — canonical decorator post-M4 (v2.2.0)
 
@@ -278,21 +289,26 @@ M4 renames the composite tool decorator from `@gdocs_tool` to `@workspace_tool(s
 
 **Why the rename:** when this repo adds its first non-docs Workspace service (Sheets, Slides, Gmail, Calendar — see the long-term vision note), `@gdocs_tool` would be misleading on tools that have nothing to do with Google Docs. `@workspace_tool(service=...)` carries the per-service tag explicitly and survives the expansion without another rename.
 
-**Service tag canon (post-M4):**
+**Service tag canon** (counts are authoritatively declared in each
+`services/<svc>/_expected_tools.py::EXPECTED` and enforced by the
+partition test below):
 
 | `service=` value | Tools | File |
 |---|---|---|
-| `"docs"` | 12 | `services/docs/tools.py` |
-| `"drive"` | 4 | `services/drive/tools.py` |
-| `"gas_deploy"` | 1 | `services/gas_deploy/tools.py` |
-| `"admin"` | 7 | `server.py` (admin / introspection / auth / signed URLs) |
-| | **24 total** | |
+| `"docs"` | 16 | `services/docs/tools.py` |
+| `"drive"` | 10 | `services/drive/tools.py` |
+| `"gas_deploy"` | 3 | `services/gas_deploy/tools.py` |
+| `"admin"` | 7 | `services/admin/tools.py` (admin / introspection / auth / signed URLs) |
+| `"sheets"` | 9 | `services/sheets/tools.py` |
+| `"slides"` | 6 | `services/slides/tools.py` |
+| `"apps_script"` | 6 | `services/apps_script/tools.py` |
+| | **57 total** | |
 
 **Where the tag lives at runtime:** `ToolAnnotations` is pydantic-backed with `extra: "allow"`, so the `service` value rides as an extra attribute on every registered tool. Access via `tool.annotations.service` from `mcp.list_tools()`. Verified by `tests/unit/services/test_tool_registration.py::test_every_tool_carries_service_annotation` + `::test_service_annotation_matches_expected_per_file_partition`.
 
 **Deprecation window for `@gdocs_tool`:** the old name is preserved as a thin shim that emits `DeprecationWarning` and delegates to `workspace_tool(service="docs", ...)`. Planned removal in v2.2.x per Hex specialist Round 2 ("one-release deprecation window, then remove"). New code MUST use `@workspace_tool(service=..., ...)` with an explicit tag.
 
-**The `service="admin"` judgment call:** the 7 stay-in-server tools (`gdocs_admin_audit`, `gdocs_get_signed_upload_url`, `gdocs_guide`, `gdocs_help`, `gdocs_reset_authorization`, `gdocs_server_info`, `gdocs_test_manifest`) all share `service="admin"` as a single bucket. The 3-way split (`introspection` / `admin` / `auth`) was considered and rejected because it added enum values without behavioral payoff at this scale — operations parlance already treats "operates on the MCP server itself or its meta-state" as admin. Re-visit if a new tool genuinely fits one of those splits and is awkward under `"admin"`.
+**The `service="admin"` judgment call:** the 7 admin tools (`gdocs_admin_audit`, `gdocs_get_signed_upload_url`, `gdocs_guide`, `gdocs_help`, `gdocs_reset_authorization`, `gdocs_server_info`, `gdocs_test_manifest`) — now in `services/admin/tools.py` — all share `service="admin"` as a single bucket. The 3-way split (`introspection` / `admin` / `auth`) was considered and rejected because it added enum values without behavioral payoff at this scale — operations parlance already treats "operates on the MCP server itself or its meta-state" as admin. Re-visit if a new tool genuinely fits one of those splits and is awkward under `"admin"`.
 
 ## 6. Test architecture impact
 
@@ -327,8 +343,8 @@ v2.1.0        promoted —     Client  ice   tool rename
 | **M1a** | `KeyProvider` Protocol + 3 adapters + `InMemoryKeyProvider` for tests | LANDED v2.1.0 (PR #88) + test migration v2.1.1 (PR #90) |
 | ~~**M1b**~~ | ~~`CredentialStore` decision~~ | **SKIPPED v2.1.2.** `credentials.py` is a transaction script with no credible swap candidate. See §3.4.1. |
 | **M2** | `GoogleAPIClient` promoted to Protocol. Migrate consumers from `get_service` calls to `client.docs()`, `client.drive()`, etc. Real swap candidate: `aiogoogle` for async (in-flight Gmail integration needs streaming + concurrent message fetches). | In flight on `ship-d1` parallel worktree |
-| **M3** | Service-layer folder restructure. Move `docs_api.py` → `services/docs/api.py`, etc. Pure file moves + import updates; no semantic change. | After M2 |
-| **M4** | Rename `@gdocs_tool` → `@workspace_tool(service=...)` to reflect the multi-service reality. Backward-compat alias kept for one release. | After M3 — cosmetic capstone |
+| **M3** | Service-layer folder restructure. Move `docs_api.py` → `services/docs/api.py`, etc. Pure file moves + import updates; no semantic change. | Done — shipped on `main` (extended to all 7 services; see §5). |
+| **M4** | Rename `@gdocs_tool` → `@workspace_tool(service=...)` to reflect the multi-service reality. Backward-compat alias kept for one release. | Done — `@workspace_tool(service=...)` is the live decorator (see §5.2). |
 
 **Why this order:** M1a was the highest-leverage / lowest-risk port (3 mechanisms already existed, ports-earn-their-keep was most visible). It established the pattern and proved the Protocol shape works for a security-critical surface. M1b was the planned soak-and-decide checkpoint; the soak surfaced that `credentials.py` doesn't fit the Hex pattern (one coherent protocol, not 4 cross-cutting concerns) and the milestone collapsed to "documented why, no code change." M2 is now the next concrete ship — `aiogoogle` is a real alternative implementation, which makes `GoogleAPIClient` the next port that earns its keep.
 
