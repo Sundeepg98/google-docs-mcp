@@ -7,12 +7,19 @@ imported. ``server.py`` performs the import at the bottom AFTER
 constructing ``mcp``, the same side-effect pattern as Phase A/B/C
 and Gap #7.
 
-**Tools registered here** (4 sheets-service tools):
+**Tools registered here** (9 sheets-service tools):
 
-1. ``gsheets_read_range``         — read cell values from a range
-2. ``gsheets_write_range``        — write 2D values to a range
-3. ``gsheets_create_spreadsheet`` — create an empty new spreadsheet
-4. ``gsheets_format_range``       — format a cell block (batchUpdate)
+1. ``gsheets_read_range``               — read cell values from a range
+2. ``gsheets_write_range``              — write 2D values to a range
+3. ``gsheets_create_spreadsheet``       — create an empty new spreadsheet
+4. ``gsheets_format_range``             — format a cell block (batchUpdate)
+5. ``gsheets_append_rows``              — append rows after the last row of data
+6. ``gsheets_add_sheet``                — add a tab/sheet to a spreadsheet
+7. ``gsheets_delete_sheet``             — delete a tab/sheet by id
+8. ``gsheets_rename_sheet``             — rename a tab/sheet
+9. ``gsheets_apply_conditional_format`` — apply a conditional-format rule
+
+(Authoritative declaration: ``services/sheets/_expected_tools.py``.)
 
 The first trio enables a complete 3-call workflow:
 ``create_spreadsheet`` → ``write_range`` → ``read_range``.

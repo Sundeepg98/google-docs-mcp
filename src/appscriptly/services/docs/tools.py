@@ -6,7 +6,7 @@ with the live ``mcp`` instance — ``server.py`` performs the import
 at the bottom of its module, AFTER constructing ``mcp`` and AFTER
 registering its remaining (non-docs) tools.
 
-**Tools registered here** (12 docs-service tools, in canonical order):
+**Tools registered here** (16 docs-service tools, in canonical order):
 
 1.  ``gdocs_make_tabbed_doc``       — create a new tabbed Google Doc from text
 2.  ``gdocs_add_tabs``              — append tabs to an existing doc
@@ -20,16 +20,22 @@ registering its remaining (non-docs) tools.
 10. ``gdocs_replace_all_text``      — find-and-replace across tabs
 11. ``gdocs_set_tab_icons``         — set emoji icons on tabs
 12. ``gdocs_preview_tab_split``     — dry-run a doc's tab split (no API call)
+13. ``gdocs_insert_table``          — insert a table at a location in a tab
+14. ``gdocs_format_range``          — apply text formatting to a range
+15. ``gdocs_format_paragraph``      — apply paragraph-level formatting
+16. ``gdocs_insert_markdown_table`` — render a markdown table into a doc
 
-The remaining 12 tools (drive, gas_deploy, admin, introspection,
-auth) stay in ``server.py`` for the M3 POC. Migrating them follows
-in the next phase pending user review of this POC.
+The authoritative declaration of this surface lives in
+``services/docs/_expected_tools.py`` (``EXPECTED``), which the
+registration tests enforce against the live registry.
 
-**Import discipline.** This module imports from ``server.py`` (for
-``_validate_title`` and the ``_*`` API helper aliases). ``server.py``
-imports this module ONCE at module bottom — AFTER its own tool
-decorators run and AFTER ``decorators.register(mcp, ...)`` wires the
-``@gdocs_tool`` decorator. The asymmetric order avoids a circular
+**Import discipline.** This module imports the shared tool-layer
+helpers (``_get_credentials`` / ``_format_http_error``) directly from
+``appscriptly._tool_helpers`` (see the Phase-C import block below), and
+lazy-imports the docs-only ``_validate_title`` from ``server.py``.
+``server.py`` imports this module ONCE at module bottom — AFTER its own
+tool decorators run and AFTER ``decorators.register(mcp, ...)`` wires
+the ``@gdocs_tool`` decorator. The asymmetric order avoids a circular
 import: tools.py → server.py runs first; server.py → tools.py runs
 second (via the bottom-of-file import).
 """

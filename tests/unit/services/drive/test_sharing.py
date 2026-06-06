@@ -102,6 +102,21 @@ def test_grant_permission_rejects_blank_email():
         grant_permission(MagicMock(), "FILE1", "", role="writer")
 
 
+def test_grant_permission_whitespace_only_email_never_reaches_drive():
+    """REGRESSION (audit): a whitespace-only email ('   ') must be
+    rejected by the strip-FIRST validation and must NEVER reach Drive's
+    ``permissions.create`` as an empty ``emailAddress``. If the Drive
+    stub's create() is ever invoked here, the validation order regressed
+    (the old ``not email or not email.strip()`` form was confusing; the
+    fix strips first then checks)."""
+    drive = MagicMock(name="drive-should-not-be-called")
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match="email cannot be empty"):
+            grant_permission(MagicMock(), "FILE1", "   ", role="writer")
+    # The Drive round-trip must not have happened at all.
+    drive.permissions().create.assert_not_called()
+
+
 def test_grant_permission_accepts_all_three_documented_roles():
     """All three role literals (reader / writer / commenter) must be
     accepted without raising. The Drive call is stubbed so we only
