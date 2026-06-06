@@ -101,7 +101,12 @@ def grant_permission(
             "Drive's permissions API accepts only reader / writer / "
             "commenter for user-type permissions."
         )
-    if not email or not email.strip():
+    # Strip FIRST, then check — so a whitespace-only address ("   ") is
+    # rejected here rather than silently reaching the Drive API as an
+    # empty ``emailAddress`` (Drive would 400). Reuse the stripped value
+    # for the body so the round-trip sends the normalized address.
+    email = (email or "").strip()
+    if not email:
         raise ValueError(
             "email cannot be empty — Drive requires a recipient "
             "address to grant a permission to."
@@ -111,7 +116,7 @@ def grant_permission(
     body = {
         "type": "user",
         "role": role,
-        "emailAddress": email.strip(),
+        "emailAddress": email,
     }
     # ``emailMessage`` MUST be omitted (not empty) when blank — Drive
     # otherwise sends a notification with a literal empty body, which
