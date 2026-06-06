@@ -437,7 +437,7 @@ def gdocs_share_file(
     Returns:
         ``{permission_id, role, granted_to, file_id}``. Record the
         ``permission_id`` if you might want to revoke the share later
-        (a future ``gdocs_revoke_permission`` tool will accept it).
+        (pass it to ``gdocs_revoke_permission`` to revoke the share).
 
     Choreography: ``drive_file_id`` typically from a recent create
     call (``gdocs_make_tabbed_doc`` / ``gdocs_tab_existing_doc``) or
@@ -517,8 +517,8 @@ def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
         ``role="owner"``.
 
     Choreography: pair with ``gdocs_share_file`` for verify-after-grant.
-    The ``permission_id`` on each entry is the handle a future
-    ``gdocs_revoke_permission`` tool will accept.
+    The ``permission_id`` on each entry is the handle
+    ``gdocs_revoke_permission`` accepts to revoke that share.
 
     NOTE: same app-ownership constraint as the rest of the drive
     tools — ``drive.file`` scope limits visibility to files this app
