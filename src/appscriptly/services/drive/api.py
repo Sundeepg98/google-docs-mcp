@@ -794,9 +794,12 @@ def move_to_folder(
                     "parents": current_parents,
                     "reason": "app_not_authorized",
                     "message": (
-                        "OAuth app lacks write access — file wasn't created "
-                        "by this app. drive.file scope only permits writes "
-                        "to app-created files."
+                        "OAuth app lacks write access for the move. A move "
+                        "(addParents) needs write access to BOTH the file "
+                        f"({drive_file_id!r}) AND the destination folder "
+                        f"({folder_id!r}); the drive.file scope only permits "
+                        "writes to files/folders THIS app created. One of "
+                        "the two wasn't created by this app."
                     ),
                 }
         raise
