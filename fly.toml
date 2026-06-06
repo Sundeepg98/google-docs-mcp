@@ -1,6 +1,72 @@
-# Fly.io config for google-docs-mcp remote HTTP server.
+# Fly.io config for appscriptly (pre-rename: google-docs-mcp) remote HTTP server.
 #
-# Setup (one-time):
+# ====================================================================
+# PR-Δ5.5 (2026-05-27) — Planned migration to appscriptly.fly.dev
+# ====================================================================
+#
+# The ``app`` line below intentionally still says ``sundeepg98-docs-mcp``
+# because changing it here would BREAK the current production deploy —
+# Fly resolves the app name from this field and the existing app holds
+# all the live secrets, the SQLite database in the /data volume, every
+# user's OAuth tokens, and the URL claude.ai connectors are pointed at.
+#
+# The new ``appscriptly`` app on Fly is RESERVED (created 2026-05-27,
+# verified via `fly apps create appscriptly --org personal`) but not
+# yet deployed. Cutover is a scheduled operator decision, not part of
+# this PR. The path:
+#
+#   1. Update Google OAuth Console redirect URIs to ADD
+#      https://appscriptly.fly.dev/oauth/google/api/callback
+#      (keep the existing sundeepg98-docs-mcp.fly.dev URL too —
+#      both must resolve while users migrate).
+#
+#   2. Migrate Fly secrets from the legacy app to the new app:
+#        fly secrets list -a sundeepg98-docs-mcp
+#        # then for each secret name:
+#        fly secrets set NAME=$(fly ssh console -a sundeepg98-docs-mcp \
+#          -C "printenv NAME") -a appscriptly
+#      (manual `fly secrets set` is unavoidable — Fly's CLI has no
+#      app-to-app secrets copy. Operator should do this in a single
+#      maintenance window so the env is consistent.)
+#
+#   3. Create the data volume on the new app and seed it:
+#        fly volumes create gdmcp_data --size 1 --region bom -a appscriptly
+#        fly ssh sftp shell -a sundeepg98-docs-mcp
+#          get /data/user_state.db /tmp/user_state.db
+#          ...
+#        fly ssh sftp shell -a appscriptly
+#          put /tmp/user_state.db /data/user_state.db
+#          ...
+#      OR (cleaner): rely on the Litestream → R2 backup that PR-Δ4
+#      shipped — restore from R2 into the new app's volume.
+#
+#   4. Deploy this codebase under the new app name:
+#        fly deploy -a appscriptly
+#      and verify /health + /.well-known/oauth-protected-resource on
+#      appscriptly.fly.dev before pointing claude.ai at it.
+#
+#   5. Update claude.ai custom-connector URLs and user-facing
+#      documentation (USER_GUIDE.md, README.md) to point at
+#      https://appscriptly.fly.dev.
+#
+#   6. Set the legacy sundeepg98-docs-mcp app to serve HTTP 308
+#      Permanent Redirect → appscriptly.fly.dev for ~90 days (one
+#      OAuth-token-refresh cycle). Update existing users transparently.
+#
+#   7. After the 90-day grace window, destroy the legacy app:
+#        fly apps destroy sundeepg98-docs-mcp
+#      Litestream backup retention covers the historical data per
+#      docs/runbooks/backup-restore.md.
+#
+# Until those seven steps complete, this PR's rename is INTERNAL ONLY
+# (PyPI distribution name, FastMCP server identity, health-endpoint
+# service field, CLI binary alias) — the production URL stays at
+# sundeepg98-docs-mcp.fly.dev.
+#
+# ====================================================================
+# Setup (one-time) — original instructions, unchanged by the rename:
+# ====================================================================
+#
 #   fly launch --no-deploy           # generate the app
 #   fly volumes create gdmcp_data --size 1 --region <your-region>
 #   fly secrets set MCP_BEARER_TOKEN=$(openssl rand -hex 32)
@@ -18,6 +84,21 @@ primary_region = "bom"
 [[mounts]]
   source = "gdmcp_data"
   destination = "/data"
+
+[env]
+  # Pin FastMCP's data home onto the /data volume so the OAuth-proxy
+  # state survives deploys/restarts. Without this, FastMCP's
+  # GoogleProvider/OAuthProxy writes the connector DCR client
+  # registration AND the upstream Google refresh token to its
+  # platformdirs default (~/.local/share/fastmcp on the EPHEMERAL
+  # container fs), which is wiped on every deploy — forcing claude.ai
+  # through the full browser consent flow again instead of a silent
+  # refresh. This mirrors the ENV set in the Dockerfile (belt and
+  # suspenders: fly.toml [env] is where operators look; the Dockerfile
+  # ENV makes a plain `docker run` of the image correct too). The boot
+  # guard in oauth_google.configure_auth_for_http refuses to start if
+  # this ever resolves off-volume on a Fly machine.
+  FASTMCP_HOME = "/data/fastmcp"
 
 [http_service]
   internal_port = 8080

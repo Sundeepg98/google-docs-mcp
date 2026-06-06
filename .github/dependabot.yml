@@ -29,3 +29,22 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # PR-Δ3: keep the SHA-pinned `python:3.13-slim` digest in the
+  # Dockerfile current. Dependabot watches Docker Hub for new
+  # manifests on the `3.13-slim` tag and opens a weekly PR to bump
+  # `FROM python:3.13-slim@sha256:...`. Without this, a SHA-pin is
+  # supply-chain-safe but rots — we'd ship stale Debian base packages
+  # (= unpatched CVEs in libc, openssl, etc.) until someone manually
+  # checked Docker Hub.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+      - "docker"

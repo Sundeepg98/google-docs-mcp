@@ -1,0 +1,83 @@
+# OpenSSF Scorecard — continuous security posture monitoring (PR-Δ2).
+#
+# Scorecard scans the repo on every push to main + weekly, and emits a
+# score across 19 security-best-practice checks (branch protection,
+# dependency pinning, signed releases, security policy presence, etc.).
+# Publishes a SARIF result that surfaces in GitHub's Security tab AND
+# updates the public Scorecard API so the badge in README.md stays live.
+#
+# See https://github.com/ossf/scorecard-action for the canonical
+# upstream config. This file follows the recommended template
+# verbatim except where noted below.
+#
+# Read-only by default; the explicit `permissions:` block adds only
+# what each step needs:
+#   - id-token: write    → required for the action's OIDC attestation
+#                          of the scan run itself (chain of custody for
+#                          the published score)
+#   - security-events: write → upload SARIF to GitHub's code-scanning
+#                              surface so findings show up in the
+#                              repo's Security tab
+#   - contents: read     → checkout
+#
+# No other permissions are granted; the action cannot push to the
+# repo, create issues, or open PRs.
+
+name: scorecard
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Weekly on Tuesday 06:00 UTC. Off-peak relative to merge cadence
+    # so a regression introduced by a Monday merge surfaces Tuesday
+    # morning rather than burying in noise.
+    - cron: '0 6 * * 2'
+  push:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # See header comment for the rationale on each.
+      security-events: write
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          # Scorecard needs full history to evaluate branch protection
+          # and commit signing checks accurately.
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results: true → push the score to the public
+          # Scorecard API so the README badge stays live. The action
+          # documentation notes this is the only safe enablement of
+          # the public publish path; it does NOT publish source code,
+          # only the scorecard result.
+          publish_results: true
+
+      # Upload the SARIF so findings surface in GitHub Security tab.
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+
+      # Also upload as an artifact for ad-hoc inspection without
+      # leaving the run page.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 14

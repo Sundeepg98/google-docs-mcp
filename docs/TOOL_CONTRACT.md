@@ -24,6 +24,20 @@ Special hard-fatal: `NeedsReauthError → ToolError` containing a Markdown link 
 
 ## 3. Per-tool contracts
 
+> **This section is an ABBREVIATED contract surface, not the full tool
+> inventory.** It details one tool fully (§3.1) and names ~22 of the
+> `gdocs_*` tools (§3.2–3.22). The **live** surface is **57 tools** and
+> includes the Sheets / Slides / Apps Script verticals (`gsheets_*`,
+> `gslides_*`, `as_*`) plus newer `gdocs_*` tools (e.g.
+> `gdocs_insert_table`, `gdocs_format_range`, `gdocs_export_doc`,
+> `gdocs_find_file`, `gdocs_create_folder`, `gdocs_share_file`,
+> `gdocs_list_permissions`, `gdocs_revoke_permission`) that this
+> abbreviated doc does not yet enumerate. **The authoritative,
+> always-current inventory is `gdocs_server_info()` (full `tools`
+> list + contract metadata) and `gdocs_guide()`** — treat those as the
+> source of truth; this doc is a hand-written excerpt that trails the
+> code.
+
 ### 3.1 `gdocs_make_tabbed_doc`
 
 **Added:** v0.5.0. **Contract version:** 1.3. **Status:** stable.
@@ -50,9 +64,9 @@ tabs: list[TabSpec]              # ≥1 item
 
 ### 3.2–3.22
 
-Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference `src/google_docs_mcp/server.py` for the live docstrings + contract versions for: `gdocs_tab_existing_doc`, `gdocs_preview_tab_split`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_delete_tab`, `gdocs_get_doc_outline`, `gdocs_read_doc`, `gdocs_replace_all_text`, `gdocs_get_tab_url`, `gdocs_find_doc_by_title`, `gdocs_move_to_folder`, `gdocs_trash_file`, `gdocs_untrash_file`, `gdocs_get_signed_upload_url`, `gdocs_setup_apps_script`, `gdocs_reset_authorization`, `gdocs_guide`, `gdocs_server_info`, `gdocs_test_manifest`.
+Tools 3.2 through 3.22 follow the same per-tool entry pattern. Reference the per-service `src/appscriptly/services/*/tools.py` modules (or `gdocs_server_info()` / `gdocs_guide()` on a live server) for the live docstrings + contract versions for: `gdocs_tab_existing_doc`, `gdocs_preview_tab_split`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_rename_tab`, `gdocs_set_tab_icons`, `gdocs_delete_tab`, `gdocs_get_doc_outline`, `gdocs_read_doc`, `gdocs_replace_all_text`, `gdocs_get_tab_url`, `gdocs_find_doc_by_title`, `gdocs_move_to_folder`, `gdocs_trash_file`, `gdocs_untrash_file`, `gdocs_get_signed_upload_url`, `gdocs_install_automation` (and its deprecated alias `gdocs_setup_apps_script`), `gdocs_reset_authorization`, `gdocs_guide`, `gdocs_server_info`, `gdocs_test_manifest`.
 
-(NOTE: this is the abbreviated version of the full doc. The full per-tool table is documented inline in `server.py` and queryable via `gdocs_guide()`. Future PRs will expand this doc with full per-tool entries for each.)
+(NOTE: this is the abbreviated version of the full doc — see the callout at the top of §3. The per-tool docstrings live in the `services/*/tools.py` modules and are queryable via `gdocs_guide()` / `gdocs_server_info()`. Future PRs will expand this doc with full per-tool entries, including the `gsheets_*` / `gslides_*` / `as_*` surfaces.)
 
 ### Previously planned, now deferred indefinitely
 

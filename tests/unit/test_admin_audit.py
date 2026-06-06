@@ -40,7 +40,7 @@ def clean_admin_env(monkeypatch):
 
 def _seed_user(user_id: str, *, updated_at: int | None = None) -> None:
     """Insert a user_state row. If ``updated_at`` given, back-/forward-date it."""
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     user_store.save_state(user_id, {})  # row with no fields; just timestamps
     if updated_at is not None:
         import sqlite3
@@ -62,7 +62,7 @@ def _call(admin_token, user_id, since_hours=24):
     without the wrapper so we can assert on raw return values + raises
     instead of fighting the wire-protocol layer.
     """
-    from google_docs_mcp.server import gdocs_admin_audit
+    from appscriptly.services.admin.tools import gdocs_admin_audit
     fn = getattr(gdocs_admin_audit, "fn", gdocs_admin_audit)
     return fn(admin_token, user_id, since_hours)
 
@@ -100,7 +100,7 @@ def test_admin_audit_uses_compare_digest_not_equality(monkeypatch):
         return real_compare_digest(a, b)
 
     monkeypatch.setattr(
-        "google_docs_mcp.server.hmac.compare_digest", _spy,
+        "appscriptly.server.hmac.compare_digest", _spy,
     )
 
     with pytest.raises(ToolError, match="does not match"):
@@ -228,7 +228,9 @@ def test_admin_audit_truncates_user_id_in_logs(monkeypatch, caplog):
     full_user_id = "1234567890abcdef-this-must-not-leak-in-full"
     _seed_user(full_user_id)
 
-    with caplog.at_level(logging.INFO, logger="google_docs_mcp.server"):
+    # v2.2.2 (Gap #7): _log moved with gdocs_admin_audit to
+    # services/admin/tools.py; logger name updated accordingly.
+    with caplog.at_level(logging.INFO, logger="appscriptly.services.admin"):
         result = _call("secret", full_user_id, 24)
 
     # Sanity: the call succeeded.

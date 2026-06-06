@@ -141,23 +141,87 @@ jobs:
           echo "test-results.json:   $(wc -c < test-results.json) bytes"
           echo "mutation-check.json: $(wc -c < mutation-check.json) bytes"
 
-      - name: deploy
+      # ---------------------------------------------------------------
+      # v2.3.3: switched from `flyctl deploy --remote-only` (which
+      # delegates the build to depot.dev, Fly's paid CI builder) to
+      # GitHub-Actions-builder + buildx GHA cache, then deploy a
+      # pre-built image to Fly's container registry.
+      #
+      # Why: depot.dev is a paid service; an unpaid invoice took
+      # production offline for 6 days in May 2026 (35 PRs of work
+      # blocked). GitHub Actions runners + GHA cache are free with
+      # this repo's plan and the buildkit layer cache keeps warm
+      # builds at ~3-5 min vs depot.dev's ~2-3 min — acceptable.
+      #
+      # The Dockerfile was split (v2.3.3) so deps install once and
+      # only a code edit re-runs the cheap project-install step.
+      # ---------------------------------------------------------------
+
+      - name: validate FLY_API_TOKEN secret
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          GIT_COMMIT: ${{ github.sha }}
-          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
           if [ -z "${FLY_API_TOKEN}" ]; then
-            echo "❌ FLY_API_TOKEN secret not set."
+            echo "::error::FLY_API_TOKEN secret not set."
             echo "   Run locally: flyctl tokens create deploy -a sundeepg98-docs-mcp -j | jq -r .token | gh secret set FLY_API_TOKEN"
             exit 1
           fi
+
+      - name: compute deploy provenance vars
+        id: provenance
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
+        run: |
           GIT_COMMIT_SHORT="${GIT_COMMIT:0:7}"
           BUILD_TIME_SAFE="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-          echo "deploying GIT_COMMIT=${GIT_COMMIT_SHORT} BUILD_TIME=${BUILD_TIME_SAFE}"
-          flyctl deploy --remote-only \
-              --build-arg "GIT_COMMIT=${GIT_COMMIT_SHORT}" \
-              --build-arg "BUILD_TIME=${BUILD_TIME_SAFE}"
+          IMAGE_TAG="registry.fly.io/sundeepg98-docs-mcp:deployment-${GIT_COMMIT_SHORT}"
+          {
+            echo "git_commit_short=${GIT_COMMIT_SHORT}"
+            echo "build_time=${BUILD_TIME_SAFE}"
+            echo "image_tag=${IMAGE_TAG}"
+          } >> "$GITHUB_OUTPUT"
+          echo "deploying GIT_COMMIT=${GIT_COMMIT_SHORT} BUILD_TIME=${BUILD_TIME_SAFE} IMAGE=${IMAGE_TAG}"
+
+      - name: set up Docker Buildx
+        # SHA-pinned per supply-chain best-practice (matches the
+        # flyctl-actions pin policy on line ~123). Bump via dependabot
+        # github-actions ecosystem when a new release ships.
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: login to Fly registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: registry.fly.io
+          # Fly's registry accepts any username when the password is
+          # a deploy token — `x` is the convention from Fly's docs.
+          username: x
+          password: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: build and push Docker image with buildx GHA cache
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.provenance.outputs.image_tag }}
+          # GHA cache backend (free with this repo's plan). `mode=max`
+          # exports every layer (not just final). Hits warm at ~3-5
+          # min cached vs ~10 min cold for our image.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GIT_COMMIT=${{ steps.provenance.outputs.git_commit_short }}
+            BUILD_TIME=${{ steps.provenance.outputs.build_time }}
+
+      - name: deploy pre-built image to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          # --image: skip the build step entirely; deploy the image
+          # we just pushed to registry.fly.io. No flyctl-side build
+          # → no depot.dev → no billing wall.
+          flyctl deploy \
+              --image "${{ steps.provenance.outputs.image_tag }}"
 
       - name: smoke check
         run: |

@@ -30,12 +30,12 @@ def isolated_user_store(tmp_path, monkeypatch):
 def mock_setup():
     """Mock AppsScriptClient with sensible cold-start return values."""
     with patch(
-        "google_docs_mcp.setup_apps_script.AppsScriptClient"
+        "appscriptly.setup_apps_script.AppsScriptClient"
     ) as client_class:
         client = MagicMock()
         client_class.return_value = client
 
-        from google_docs_mcp.gas_deploy.client import WebAppDeployment
+        from appscriptly.services.gas_deploy.api import WebAppDeployment
         client.script_exists.return_value = True
         client.create_project.return_value = "SCRIPT_ID_NEW"
         client.create_version.return_value = 1
@@ -56,7 +56,7 @@ def _fake_creds():
 
 
 def test_cold_start_creates_project_once(mock_setup):
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     setup_apps_script_for_user(_fake_creds(), "user-1")
     assert mock_setup.create_project.call_count == 1
@@ -66,8 +66,8 @@ def test_cold_start_persists_url_and_ids_to_user_store(mock_setup):
     """The headline integration: setup writes the URL/IDs into
     user_store under the user's row. Downstream tools (Phase 6)
     will read this same row."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly import user_store
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     setup_apps_script_for_user(_fake_creds(), "user-1")
 
@@ -84,7 +84,7 @@ def test_second_run_same_user_same_content_does_not_re_create_project(mock_setup
     projects — same shape, but per user. Second setup call for the
     same user must NOT call create_project again, otherwise we'd
     accumulate ghost scripts in their Drive over time."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     setup_apps_script_for_user(_fake_creds(), "user-1")
     setup_apps_script_for_user(_fake_creds(), "user-1")
@@ -101,7 +101,7 @@ def test_second_run_same_user_same_content_does_not_re_create_project(mock_setup
 def test_two_users_get_independent_projects(mock_setup):
     """Cross-user isolation: setup for user-A must not look at
     user-B's ledger row. Both users get their own create_project call."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     mock_setup.create_project.side_effect = ["SCRIPT_A", "SCRIPT_B"]
     mock_setup.deploy_webapp.side_effect = [
@@ -114,7 +114,7 @@ def test_two_users_get_independent_projects(mock_setup):
 
     assert mock_setup.create_project.call_count == 2
 
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     assert user_store.get_state("alice")["apps_script_script_id"] == "SCRIPT_A"
     assert user_store.get_state("bob")["apps_script_script_id"] == "SCRIPT_B"
 
@@ -123,7 +123,7 @@ def test_resume_after_push_files_failure(mock_setup):
     """First call: create_project ok, push_files raises. Retry must
     skip create_project (use cached script_id from user_store) and
     continue from push_files. NO orphan project created."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     mock_setup.push_files.side_effect = RuntimeError("network blip")
     with pytest.raises(RuntimeError, match="network blip"):
@@ -141,7 +141,7 @@ def test_resume_after_push_files_failure(mock_setup):
 def test_resume_after_deploy_failure(mock_setup):
     """deploy_webapp fails after version is cut. Retry must not
     re-create project OR re-cut version; just retry the deploy."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     mock_setup.deploy_webapp.side_effect = RuntimeError("deploy timeout")
     with pytest.raises(RuntimeError, match="deploy timeout"):
@@ -162,7 +162,7 @@ def test_content_change_resets_user_ledger_starts_fresh(mock_setup, tmp_path):
     """Operator updated restructure.gs between runs (different content
     hash). The user's cached ledger must be discarded so they get a
     fresh deploy of the new content."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     setup_apps_script_for_user(_fake_creds(), "user-1")
     assert mock_setup.create_project.call_count == 1
@@ -171,7 +171,7 @@ def test_content_change_resets_user_ledger_starts_fresh(mock_setup, tmp_path):
     fake_path = tmp_path / "edited_restructure.gs"
     fake_path.write_text("// totally different content")
     with patch(
-        "google_docs_mcp.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path,
+        "appscriptly.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path,
     ):
         mock_setup.create_project.return_value = "SCRIPT_ID_FRESH"
         setup_apps_script_for_user(_fake_creds(), "user-1")
@@ -186,7 +186,7 @@ def test_manual_deletion_in_drive_triggers_fresh_deploy(mock_setup):
 
     Without this, the next push_files call would 404 against a
     nonexistent script and fail confusingly."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     setup_apps_script_for_user(_fake_creds(), "user-1")
     assert mock_setup.create_project.call_count == 1
@@ -205,8 +205,8 @@ def test_clear_preserves_google_creds_json(mock_setup):
     """When the apps_script_* ledger is cleared (hash mismatch or
     manual delete), the user's google_creds_json must survive — those
     are independent OAuth tokens that the user already authorized."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.setup_apps_script import setup_apps_script_for_user
+    from appscriptly import user_store
+    from appscriptly.setup_apps_script import setup_apps_script_for_user
 
     # Seed creds independently (as the OAuth callback would).
     user_store.save_state("user-1", {"google_creds_json": '{"token":"X"}'})
@@ -252,7 +252,7 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
     import json as _json
     from datetime import datetime, timedelta, timezone
 
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
 
     # Seed creds for a user with ONLY the post-reduction default scopes —
     # the script.* scopes are NOT present, mirroring real life after
@@ -276,8 +276,12 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
     user_store.save_state(user_id, {"google_creds_json": _json.dumps(payload)})
 
     # Force the cloud-mode branch by making the tool see a user_id.
+    # M3 Phase C (v2.1.5): gdocs_setup_apps_script now lives in
+    # services/gas_deploy/tools.py — patches target that module's
+    # namespace (where the tool reads its dependencies from), not
+    # server.py.
     monkeypatch.setattr(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "appscriptly.services.gas_deploy.tools.current_user_id_or_none",
         lambda: user_id,
     )
 
@@ -295,7 +299,7 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
         },
     }
     monkeypatch.setattr(
-        "google_docs_mcp.server.resolve_runtime_oauth_config",
+        "appscriptly.services.gas_deploy.tools.resolve_runtime_oauth_config",
         lambda: {
             "client_config": client_config,
             # v2.0b: resolve_runtime_oauth_config returns signing_key
@@ -306,7 +310,9 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
         },
     )
 
-    from google_docs_mcp.server import gdocs_setup_apps_script
+    # M3 Phase C (v2.1.5): gdocs_setup_apps_script moved from server.py
+    # to services/gas_deploy/tools.py per the per-service folder pattern.
+    from appscriptly.services.gas_deploy.tools import gdocs_setup_apps_script
 
     result = gdocs_setup_apps_script()
 
@@ -330,7 +336,7 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
 
 # Helpers
 def _deployment(script_id: str, deployment_id: str, url: str):
-    from google_docs_mcp.gas_deploy.client import WebAppDeployment
+    from appscriptly.services.gas_deploy.api import WebAppDeployment
     return WebAppDeployment(
         script_id=script_id,
         deployment_id=deployment_id,
