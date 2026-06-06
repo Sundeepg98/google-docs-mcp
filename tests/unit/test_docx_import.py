@@ -28,7 +28,7 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from google_docs_mcp.docx_import import (
+from appscriptly.docx_import import (
     _SplitPoint,
     _detect_splits,
     _extract_paragraph_text,

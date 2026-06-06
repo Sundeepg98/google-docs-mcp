@@ -18,7 +18,7 @@ isolation — no ``with_google_api_client(...)`` needed.
 """
 from __future__ import annotations
 
-from google_docs_mcp.services.docs.tab_tree import (
+from appscriptly.services.docs.tab_tree import (
     _find_tab_by_id,
     _find_tab_by_title,
     _flatten_tab_tree,

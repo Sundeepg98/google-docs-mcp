@@ -96,7 +96,7 @@ Rolling back is mechanical: delete the `useradd` + `USER app` lines, redeploy. N
 
 ### 6. Structured audit log per upload session
 
-`src/google_docs_mcp/http_server/routes/convert.py` now emits one log line per upload via a new dedicated logger `google_docs_mcp.audit.upload`:
+`src/appscriptly/http_server/routes/convert.py` now emits one log line per upload via a new dedicated logger `appscriptly.audit.upload`:
 
 ```
 upload_session session_id=<uuid4> user_id=sub:<8char>… file_size_bytes=<n>
@@ -154,3 +154,55 @@ If the retry adapter misbehaves in production (e.g. introduces an unexpected del
 If the non-root container fails on Fly (volume permission edge case the local audit missed), the rollback is to delete the `useradd` + `USER app` block in the Dockerfile and redeploy. The volume's uid 10001 ownership from this PR persists, but `root` inside the container can read/write uid-10001-owned files normally.
 
 If the SHA-pin pins an unintentionally-broken digest, dependabot's next weekly run produces a bump PR; manual override is editing the digest in one line.
+
+## Addendum (PR-Δ3.5, 2026-05-27) — adoption sweep
+
+PR-Δ3 wired the adapter but explicitly left every existing `.execute()` call untouched. PR-Δ3.5 is the mechanical adoption sweep that resolves the "wired but not adopted" consequence flagged in the original ADR's negative-consequences section.
+
+### Classification rule
+
+For each `.execute()` call site, decide adoption from the **calling tool's `@workspace_tool` annotation**:
+
+| Annotation | Action |
+|---|---|
+| `readonly=True` | Wrap with `idempotent=True` |
+| `readonly=False AND idempotent=True` | Wrap with `idempotent=True` |
+| `readonly=False AND idempotent=False` | **Do not wrap** — first transient propagates |
+
+Idempotence is the **safety floor against duplicate side effects**, not a performance optimization. A retry on `gdocs_make_tabbed_doc` after a 503 mid-create could yield two near-identical Docs in the user's Drive; that's strictly worse than the user seeing the 503 and re-issuing the tool call deliberately.
+
+### Adoption counts
+
+| File | Total `.execute()` sites | Wrapped | Un-wrapped (with reason) |
+|---|---|---|---|
+| `services/docs/api.py` | 19 | 9 | 10 (`make_doc_with_tabs`, `_materialize_tab_tree`, `add_tabs_to_doc`, `append_to_tab` — all `idempotent=False`) |
+| `services/drive/api.py` | 16 | 9 | 7 (`upload_and_convert_docx`, `fetch_and_convert_drive_docx`, `copy_google_doc`, find_doc_by_title's writability-probe batch — non-idempotent or batch-shaped) |
+| `services/drive/sharing.py` | 2 | 1 | 1 (`grant_permission` is `idempotent=False`) |
+| `services/sheets/api.py` | 3 | 2 | 1 (`create_spreadsheet` is `idempotent=False`) |
+| `services/slides/api.py` | 3 | 2 | 1 (`create_presentation` is `idempotent=False`) |
+| `services/gas_deploy/api.py` | 5 | 0 | 5 (entire `AppsScriptClient` install flow is `idempotent=False` — creates new project + version + deployment) |
+| `preview.py` | 3 | 3 | 0 (`gdocs_preview_tab_split` is `readonly=True`) |
+| `retrofit.py` | 3 | 0 | 3 (caller `retrofit_existing_docx` feeds non-idempotent `tab_existing_doc`) |
+| `docx_import.py` | 1 | 0 | 1 (called from `tab_existing_doc`, `idempotent=False`) |
+| **Total** | **55** | **31** | **24** |
+
+### Edge cases worth noting
+
+- **`gdocs_delete_tab` is `destructive=True` but `idempotent=True`.** Deleting an already-deleted tab returns a 400 `invalidArgument` (non-retryable 4xx; propagates immediately). So the wrap is safe: a 503 on the first delete retries against the still-present tab; the second attempt either succeeds (if the first 503 was network-only and the delete actually happened, the retry hits "already deleted" → 400 → propagates as a surprise but rare 400) or succeeds normally. The brief window where this races is identical to the pre-Δ3.5 behavior — a 503 in mid-flight has always been observably indistinguishable from "did the delete commit or not?" on the client side. The retry just adds a free second chance for the genuinely-transient cases.
+- **`find_doc_by_title`'s writability-probe `batch.execute()` is intentionally left un-wrapped.** The batch shape (multiple sub-requests with per-callback error handling) makes retry semantics ambiguous — retrying the whole batch on a single sub-request's 503 would replay the writability probe against the other matches too. The individual `drive.files().list().execute()` immediately preceding the batch IS wrapped; just not the batch dispatcher itself.
+- **The `set_tab_icons` api function** is called from two paths: the `gdocs_set_tab_icons` tool (`idempotent=True`) AND indirectly from the `/api/convert` pipeline as a post-conversion icon decorator (the convert pipeline as a whole is `idempotent=False`, but the icon-setting sub-step within it IS idempotent — setting the same emoji twice is a no-op). Wrapping `set_tab_icons` is safe in both contexts because the api function itself is idempotent regardless of the caller's overall transactional shape.
+
+### Verification
+
+- `pytest tests/unit/test_retry_adoption_in_apis.py` — 4 new tests, all pass.
+- `pytest tests/unit` — 853 + 4 = **857 pass**, zero regressions across all 31 wraps.
+- `ruff check src/ tests/` — All checks passed.
+- `pyright src/` — 0 errors, 0 warnings.
+
+### Consequence
+
+The headline value of PR-Δ3 (fewer user-visible transient errors from Google's routine 429/5xx) materializes from this PR. The 31 wrapped tools — every read tool plus the safely-idempotent mutations — now silently retry 503s instead of surfacing them. The 24 un-wrapped tools surface transients exactly as before, which is the right behavior for non-idempotent mutations.
+
+### Follow-up
+
+`gas_deploy/api.py`'s `AppsScriptClient` install flow is wholesale un-wrapped today. The install flow internals could be decomposed into idempotent sub-steps (project existence check, version creation, deployment creation) so retry adoption is possible per-sub-step. Tracked as a future micro-PR; out of scope for PR-Δ3.5's mechanical sweep.

@@ -45,7 +45,7 @@ def test_sqlite_backend_satisfies_protocol():
     If a future refactor renames a method on SqliteBackend (e.g.
     `get_state` → `read_state`), this test fails BEFORE any caller
     breaks. The Protocol is the contract everything else trusts."""
-    from google_docs_mcp.user_store import SqliteBackend, StorageBackend
+    from appscriptly.user_store import SqliteBackend, StorageBackend
     assert isinstance(SqliteBackend(), StorageBackend), (
         "SqliteBackend no longer satisfies StorageBackend Protocol — "
         "a method was renamed or its signature changed"
@@ -54,7 +54,7 @@ def test_sqlite_backend_satisfies_protocol():
 
 def test_inmemory_backend_satisfies_protocol():
     """Same shape check for InMemoryBackend so the two stay swappable."""
-    from google_docs_mcp.user_store import InMemoryBackend, StorageBackend
+    from appscriptly.user_store import InMemoryBackend, StorageBackend
     assert isinstance(InMemoryBackend(), StorageBackend)
 
 
@@ -62,7 +62,7 @@ def test_protocol_requires_all_four_methods():
     """A class missing any one of the four methods must NOT satisfy
     the Protocol — guards against a future Postgres backend that
     silently forgets to implement, say, ``clear_state``."""
-    from google_docs_mcp.user_store import StorageBackend
+    from appscriptly.user_store import StorageBackend
 
     class IncompleteBackend:
         def init_schema(self) -> None: ...
@@ -85,7 +85,7 @@ def test_inmemory_backend_round_trip_via_facade():
     """Plug InMemoryBackend in via with_backend; the public save_state /
     get_state functions must behave identically — same merge semantics,
     same return shape, same validator pass."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_state, save_state, with_backend,
     )
 
@@ -110,7 +110,7 @@ def test_inmemory_backend_merges_updates_not_overwrites():
     partial update must NOT erase other fields. SqliteBackend gets
     this from the SET-clause-of-only-given-cols UPDATE; InMemoryBackend
     must give the same answer via ``row.update(updates)``."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_state, save_state, with_backend,
     )
 
@@ -134,7 +134,7 @@ def test_inmemory_backend_facade_runs_field_validators():
     """The facade's _FIELD_VALIDATORS pass must fire regardless of
     backend — otherwise InMemoryBackend tests could accidentally
     write data SqliteBackend would reject."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, save_state, with_backend,
     )
 
@@ -153,7 +153,7 @@ def test_inmemory_backend_isolates_users():
     versa. Pinned separately from SQLite's isolation because future
     changes to InMemoryBackend (e.g. an indexing layer for faster
     iteration) could break this property without breaking SQLite."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_state, save_state, with_backend,
     )
 
@@ -173,7 +173,7 @@ def test_inmemory_backend_isolates_users():
 def test_inmemory_backend_clear_state_is_idempotent():
     """clear_state on an absent user_id must NOT raise — matches the
     SqliteBackend's idempotent DELETE-WHERE semantics."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, clear_state, with_backend,
     )
 
@@ -186,7 +186,7 @@ def test_inmemory_backend_get_state_omits_none_columns():
     so callers can use ``if "field" in state``. InMemoryBackend must
     match — otherwise tests using it would silently see None-valued
     keys that SQLite-backed code paths never see."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_state, save_state, with_backend,
     )
 
@@ -209,7 +209,7 @@ def test_with_backend_restores_previous_backend_on_normal_exit():
     """After ``with with_backend(X)`` exits normally, get_backend()
     returns the previous backend — not X. This is what makes the
     helper safe to use in test fixtures without explicit teardown."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_backend, with_backend,
     )
 
@@ -223,7 +223,7 @@ def test_with_backend_restores_previous_backend_on_exception():
     """Same restore guarantee when the with-body raises — a test that
     crashes inside the block must NOT poison subsequent tests with
     a leftover InMemoryBackend."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_backend, with_backend,
     )
 
@@ -237,7 +237,7 @@ def test_with_backend_restores_previous_backend_on_exception():
 def test_set_backend_returns_previous_for_manual_restore():
     """The non-context-manager form (``set_backend``) returns the
     previous backend so callers without ``with`` can still restore."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_backend, set_backend,
     )
 
@@ -262,7 +262,7 @@ def test_inmemory_backend_handles_concurrent_writes_to_different_users():
     writing to DIFFERENT user_ids must all land cleanly. InMemoryBackend
     serializes via a single threading.Lock, but the contract is the
     same: no torn writes, last-write-wins per user."""
-    from google_docs_mcp.user_store import (
+    from appscriptly.user_store import (
         InMemoryBackend, get_state, save_state, with_backend,
     )
 
@@ -299,7 +299,7 @@ def test_default_backend_is_sqlite():
     """A regression guard: a careless module-level edit setting
     ``_backend = InMemoryBackend()`` would silently make production
     runs in-memory. The default must always be SqliteBackend."""
-    from google_docs_mcp.user_store import SqliteBackend, get_backend
+    from appscriptly.user_store import SqliteBackend, get_backend
     assert isinstance(get_backend(), SqliteBackend), (
         f"default backend is no longer SqliteBackend (got "
         f"{type(get_backend()).__name__}) — production data would not "

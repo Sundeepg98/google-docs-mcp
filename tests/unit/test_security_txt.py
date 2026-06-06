@@ -29,7 +29,7 @@ def _build_well_known_app() -> Starlette:
     ``BearerTokenMiddleware`` bypass of ``/.well-known/*`` is
     verified separately by the middleware tests — here we exercise
     the handler in isolation."""
-    from google_docs_mcp.http_server.routes.observability import security_txt
+    from appscriptly.http_server.routes.observability import security_txt
     return Starlette(routes=[
         Route("/.well-known/security.txt", security_txt, methods=["GET"]),
     ])

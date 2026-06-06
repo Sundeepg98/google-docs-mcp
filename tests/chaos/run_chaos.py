@@ -136,7 +136,7 @@ def _run_s1(
     # Clear the module-level path cache so the new path actually inits.
     # Late import: only pull in user_store after env is set, so
     # default_data_dir() picks up the override.
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     user_store._initialized_paths.clear()
 
     latencies_ms: list[float] = []

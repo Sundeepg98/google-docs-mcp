@@ -47,8 +47,8 @@ def setup_keys():
     assertion below. Wrapping in Layered restores the observability
     discipline without re-introducing env-var coupling.
     """
-    from google_docs_mcp import keys
-    from google_docs_mcp.key_provider import (
+    from appscriptly import keys
+    from appscriptly.key_provider import (
         InMemoryKeyProvider,
         LayeredKeyProvider,
         with_key_provider,
@@ -79,7 +79,7 @@ def _build_info_app() -> Starlette:
     Reuses the production ``info_endpoint`` + ``BearerTokenMiddleware``
     instead of a hand-rolled stub, so a regression in either gets
     caught here (the whole point is to exercise the live wire-up)."""
-    from google_docs_mcp.http_server import (
+    from appscriptly.http_server import (
         BearerTokenMiddleware,
         info_endpoint,
     )
@@ -109,7 +109,7 @@ def _build_info_app() -> Starlette:
 def test_info_endpoint_returns_keys_observability():
     """A correctly-authed GET returns 200 + the contract fields the
     preflight script depends on."""
-    from google_docs_mcp import keys
+    from appscriptly import keys
 
     # Land at least one get_key call so the counters/ages have non-default
     # values to verify (the field shape is the contract, not zero-state).
@@ -198,8 +198,8 @@ def test_info_endpoint_response_matches_gdocs_server_info(monkeypatch):
     would let an operator pass the preflight against /info while the
     MCP tool reports a problem (or vice versa).
     """
-    from google_docs_mcp import keys
-    from google_docs_mcp.services.admin.tools import gdocs_server_info as _info_tool
+    from appscriptly import keys
+    from appscriptly.services.admin.tools import gdocs_server_info as _info_tool
 
     # Land at least one call so both surfaces have non-zero state to
     # compare. The shape contract is what matters; the exact values

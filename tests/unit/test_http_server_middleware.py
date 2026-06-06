@@ -28,7 +28,7 @@ def test_explicit_trusted_hosts_env_wins(monkeypatch):
     monkeypatch.setenv("FLY_APP_NAME", "should-be-ignored")
     monkeypatch.delenv("FLY_REGION", raising=False)
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     result = derive_trusted_hosts()
     assert result == ["a.example.com", "b.example.com"]
 
@@ -38,7 +38,7 @@ def test_fly_app_name_derivation(monkeypatch):
     monkeypatch.setenv("FLY_APP_NAME", "my-app")
     monkeypatch.delenv("FLY_REGION", raising=False)
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     result = derive_trusted_hosts()
     assert "my-app.fly.dev" in result
     assert "*.my-app.fly.dev" in result
@@ -58,7 +58,7 @@ def test_derive_trusted_hosts_includes_fly_internal(monkeypatch):
     monkeypatch.setenv("FLY_APP_NAME", "my-app")
     monkeypatch.delenv("FLY_REGION", raising=False)
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     result = derive_trusted_hosts()
     # The two Fly-internal-probe entries:
     assert "my-app.internal" in result, (
@@ -76,7 +76,7 @@ def test_fail_open_with_warn_when_neither_env_set(monkeypatch, caplog):
     monkeypatch.delenv("FLY_APP_NAME", raising=False)
     monkeypatch.delenv("FLY_REGION", raising=False)
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     with caplog.at_level("WARNING"):
         result = derive_trusted_hosts()
     assert result == ["*"]
@@ -89,7 +89,7 @@ def test_refuses_startup_on_fly_region_without_fly_app_name(monkeypatch):
     monkeypatch.delenv("FLY_APP_NAME", raising=False)
     monkeypatch.setenv("FLY_REGION", "iad")  # presence of FLY_REGION = "on Fly"
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     with pytest.raises(RuntimeError, match="FLY_REGION"):
         derive_trusted_hosts()
 
@@ -100,7 +100,7 @@ def test_explicit_trusted_hosts_works_even_on_fly(monkeypatch):
     monkeypatch.setenv("FLY_REGION", "iad")
     monkeypatch.delenv("FLY_APP_NAME", raising=False)
 
-    from google_docs_mcp.http_server import derive_trusted_hosts
+    from appscriptly.http_server import derive_trusted_hosts
     # The explicit override path returns BEFORE the FLY_REGION assertion.
     result = derive_trusted_hosts()
     assert result == ["explicit.fly.dev"]
@@ -113,7 +113,7 @@ def test_explicit_trusted_hosts_works_even_on_fly(monkeypatch):
 
 def _build_test_app(max_bytes: int = 10):
     """A minimal Starlette app with only BodySizeLimitMiddleware wired."""
-    from google_docs_mcp.http_server import BodySizeLimitMiddleware
+    from appscriptly.http_server import BodySizeLimitMiddleware
 
     async def echo(_request):
         return JSONResponse({"ok": True})
@@ -159,7 +159,7 @@ def test_body_size_passes_small_payload():
 
 def test_error_page_escapes_html_metachars():
     """Reflected XSS prevention: _error_page must escape HTML metachars."""
-    from google_docs_mcp.http_server import _error_page
+    from appscriptly.http_server import _error_page
     resp = _error_page("<script>alert(1)</script>", 400)
     body = resp.body.decode("utf-8")
     assert "&lt;script&gt;" in body
@@ -175,7 +175,7 @@ def test_error_page_escapes_html_metachars():
 def test_oauth_error_page_includes_csp_header():
     """Defense-in-depth: if a future edit forgets to escape the body
     substitution, CSP must block the injected script from loading."""
-    from google_docs_mcp.http_server import _error_page
+    from appscriptly.http_server import _error_page
     resp = _error_page("test", 400)
     csp = resp.headers.get("content-security-policy", "")
     assert csp, "expected Content-Security-Policy header on _error_page"
@@ -194,7 +194,7 @@ def test_oauth_success_page_includes_csp_header():
     """Same defense-in-depth on the success page — even though the
     success page's body is server-controlled and not user-influenced
     today, future edits could change that."""
-    from google_docs_mcp.http_server import _success_page
+    from appscriptly.http_server import _success_page
     resp = _success_page()
     csp = resp.headers.get("content-security-policy", "")
     assert csp, "expected Content-Security-Policy header on _success_page"
@@ -206,7 +206,7 @@ def test_oauth_pages_csp_allows_inline_style():
     """The _OAUTH_SUCCESS_HTML template carries an inline <style> block;
     CSP must permit it via style-src 'unsafe-inline' or the page renders
     unstyled. Regression guard against an over-aggressive future CSP edit."""
-    from google_docs_mcp.http_server import _error_page, _success_page
+    from appscriptly.http_server import _error_page, _success_page
     for resp in (_error_page("x", 400), _success_page()):
         csp = resp.headers["content-security-policy"]
         assert "style-src 'unsafe-inline'" in csp, (
@@ -236,10 +236,10 @@ def _build_app_with_health_exempt(allowed_hosts):
     """A minimal Starlette app wired only with the new health-exempt
     TrustedHost middleware, plus a /health route and an /other route
     so we can prove the exemption is route-scoped."""
-    from google_docs_mcp.http_server import HealthExemptTrustedHostMiddleware
+    from appscriptly.http_server import HealthExemptTrustedHostMiddleware
 
     async def health(_request):
-        return JSONResponse({"ok": True, "service": "google-docs-mcp"})
+        return JSONResponse({"ok": True, "service": "appscriptly"})
 
     async def other(_request):
         return JSONResponse({"other": True})
@@ -274,7 +274,7 @@ def test_health_accepts_fly_internal_probe_with_raw_ip_host():
         f"Fly probe would still be rejected: {resp.status_code} "
         f"{resp.text[:200]!r}"
     )
-    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+    assert resp.json() == {"ok": True, "service": "appscriptly"}
 
 
 def test_health_accepts_any_raw_ip_host_header():
@@ -322,7 +322,7 @@ def test_health_accepts_canonical_host_too():
     client = TestClient(app)
     resp = client.get("/health", headers={"Host": "my-app.fly.dev"})
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "service": "google-docs-mcp"}
+    assert resp.json() == {"ok": True, "service": "appscriptly"}
 
 
 def test_health_exempt_middleware_passes_lifespan_through():

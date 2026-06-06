@@ -36,7 +36,7 @@ def _add_fragmented_para(doc, parts):
 
 def test_inject_matches_fragmented_runs():
     """marker_text crossing <w:r> boundaries still matches."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     _add_fragmented_para(doc, ["Sec", "tion", " ", "Banner"])
@@ -51,7 +51,7 @@ def test_inject_matches_fragmented_runs():
 
 def test_inject_matches_nbsp_via_sym():
     """NBSP appearing as <w:sym w:char='00A0'/> must read as a space."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     _add_fragmented_para(doc, ["Section", "NBSP", "Two"])
@@ -65,7 +65,7 @@ def test_inject_matches_nbsp_via_sym():
 
 def test_inject_folds_smart_quotes_to_ascii():
     """Doc has smart quotes; marker has ASCII; must match."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     _add_fragmented_para(doc, ["Smart “Quotes” Banner"])
@@ -79,7 +79,7 @@ def test_inject_folds_smart_quotes_to_ascii():
 
 def test_inject_folds_em_dash_to_hyphen():
     """Doc has em-dash; marker has hyphen; must match."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     _add_fragmented_para(doc, ["Em—dash Banner"])
@@ -93,7 +93,7 @@ def test_inject_folds_em_dash_to_hyphen():
 
 def test_inject_case_insensitive_by_default():
     """Default matching is case-insensitive (Word autocorrects case)."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     doc.add_paragraph("SECTION FOUR")
@@ -106,7 +106,7 @@ def test_inject_case_insensitive_by_default():
 
 def test_inject_case_sensitive_when_requested():
     """case_sensitive=True respects case differences."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     doc.add_paragraph("SECTION FOUR")
@@ -123,7 +123,7 @@ def test_inject_case_sensitive_when_requested():
 
 def test_inject_missed_marker_returns_candidate_blocks():
     """A miss must include candidate_blocks so the caller can debug."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     doc.add_paragraph("The first paragraph")
@@ -142,7 +142,7 @@ def test_inject_missed_marker_returns_candidate_blocks():
 
 def test_inject_one_block_per_marker_no_double_claim():
     """Two markers with overlapping text don't both target the same block."""
-    from google_docs_mcp.retrofit import _inject_headings
+    from appscriptly.retrofit import _inject_headings
 
     doc = Document()
     doc.add_paragraph("Section Alpha")

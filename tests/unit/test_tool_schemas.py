@@ -34,6 +34,10 @@ EXPECTED_TOOLS = {
     "gdocs_read_doc",
     "gdocs_rename_tab",
     "gdocs_replace_all_text",
+    "gdocs_insert_table",  # documents.batchUpdate (insertTable)
+    "gdocs_format_range",  # documents.batchUpdate (updateTextStyle)
+    "gdocs_format_paragraph",  # documents.batchUpdate (updateParagraphStyle)
+    "gdocs_insert_markdown_table",  # parse markdown table -> Docs table
     "gdocs_reset_authorization",  # v1.1.1+: force re-consent / recovery
     "gdocs_server_info",
     "gdocs_test_manifest",  # v1.1.3+: surface test inventory + outcomes
@@ -45,19 +49,39 @@ EXPECTED_TOOLS = {
     "gdocs_untrash_file",
     "gdocs_share_file",  # v2.3.0: Drive permissions.create
     "gdocs_list_permissions",  # v2.3.0: Drive permissions.list
+    "gdocs_create_folder",  # Drive files.create (folder mimeType) — move destination
+    "gdocs_revoke_permission",  # Drive permissions.delete — inverse of share_file
+    "gdocs_export_doc",  # Drive files.export — Google-native → PDF/Office/etc.
+    "gdocs_find_file",  # Drive files.list — any mimeType, app-accessible corpus
     "gsheets_read_range",  # v2.3.1: Sheets values.get
     "gsheets_write_range",  # v2.3.1: Sheets values.update
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create
+    "gsheets_format_range",  # Sheets batchUpdate (repeatCell) via the request-builder
+    "gsheets_apply_conditional_format",  # Sheets batchUpdate (addConditionalFormatRule)
+    "gsheets_append_rows",  # Sheets values.append — race-free row append
+    "gsheets_add_sheet",  # Sheets batchUpdate (addSheet) — tab lifecycle
+    "gsheets_delete_sheet",  # Sheets batchUpdate (deleteSheet) — tab lifecycle
+    "gsheets_rename_sheet",  # Sheets batchUpdate (updateSheetProperties) — tab lifecycle
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create
+    "gslides_add_slide",  # Slides batchUpdate (createSlide + insertText) — deck population
+    "gslides_create_image",  # Slides batchUpdate (createImage) — image by URL
+    "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
+    "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
+    "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
+    "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
+    "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
+    "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
+    "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
+    "as_encode_video",  # PR-Δ12: encode rendered frames into an MP4 (ffmpeg, server-side)
 }
 
 
 @pytest.fixture(scope="module")
 def all_tools():
     """Snapshot the live tool registry once per module."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     tools = asyncio.run(mcp.list_tools())
     return {t.name: t for t in tools}
 
@@ -136,7 +160,7 @@ def test_tool_discoverability_via_server_info(all_tools):
     """
     import asyncio
 
-    from google_docs_mcp.services.admin.tools import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     info_tools = set(info["tools"])
@@ -227,7 +251,7 @@ def test_tab_nesting_depth_cap_enforced():
     an empty doc + the user gets a confusing API error from Google.
     """
     from unittest.mock import MagicMock
-    from google_docs_mcp.services.docs.api import make_doc_with_tabs
+    from appscriptly.services.docs.api import make_doc_with_tabs
 
     # 4-level nesting: root → child → grandchild → great-grandchild.
     # Should raise ValueError before any Google API call (so the

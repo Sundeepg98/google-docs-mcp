@@ -89,9 +89,9 @@ def reset_nonce_store():
     that module, so reassigning the package-level ``_NONCE_STORE``
     re-export alone would NOT propagate.
     """
-    from google_docs_mcp import http_server
-    from google_docs_mcp.crypto import NonceStore
-    from google_docs_mcp.http_server import _state
+    from appscriptly import http_server
+    from appscriptly.crypto import NonceStore
+    from appscriptly.http_server import _state
     fresh = NonceStore()
     _state._NONCE_STORE = fresh
     http_server._NONCE_STORE = fresh  # keep the re-export in sync
@@ -145,7 +145,7 @@ def _build_convert_app():
     """Production Starlette app wired against a stub FastMCP — the
     /api/convert route is what we exercise; /mcp is never called."""
     from fastmcp import FastMCP
-    from google_docs_mcp.http_server import build_app
+    from appscriptly.http_server import build_app
     return build_app(FastMCP("stub-for-r33-roundtrip"))
 
 
@@ -169,10 +169,10 @@ def test_oauth_callback_rejects_hmac_tampered_state():
     HTTP callback handler before any token exchange or user_store
     write. Catches the joint failure where ``verify_state`` returns
     False but the handler ignores it and persists anyway."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.http_server import oauth_google_api_callback
-    from google_docs_mcp.oauth_google import CALLBACK_PATH
-    from google_docs_mcp.oauth_state import sign_state
+    from appscriptly import user_store
+    from appscriptly.http_server import oauth_google_api_callback
+    from appscriptly.oauth_google import CALLBACK_PATH
+    from appscriptly.oauth_state import sign_state
 
     user_id = "tampered-state-user"
     # v2.0b: oauth_state.sign_state / verify_state take bytes (matches
@@ -191,7 +191,7 @@ def test_oauth_callback_rejects_hmac_tampered_state():
     ])
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         # If the handler ignores the verify_state failure and proceeds,
         # this mock would supply tokens AND the AssertionError below
@@ -236,7 +236,7 @@ def test_signed_url_from_mcp_tool_roundtrips_through_convert_endpoint():
     URL the tool emits ever drifts from what BearerTokenMiddleware
     accepts — different param names, different signing base, key-
     derivation mismatch — this test fails."""
-    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     user_id = "roundtrip-user-A"
 
@@ -245,7 +245,7 @@ def test_signed_url_from_mcp_tool_roundtrips_through_convert_endpoint():
     # to services/admin/tools.py; the current_user_id_or_none binding
     # the tool consults lives in that module now.
     with patch(
-        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
+        "appscriptly.services.admin.tools.current_user_id_or_none",
         return_value=user_id,
     ), patch.dict(
         os.environ, {"PUBLIC_BASE_URL": "http://testserver"},
@@ -276,13 +276,13 @@ def test_signed_url_from_mcp_tool_roundtrips_through_convert_endpoint():
     client = TestClient(app)
 
     with patch(
-        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=fake_get_creds_for_user,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._convert_docx",
+        "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value=_client_config(),
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -320,8 +320,8 @@ def test_invalid_grant_at_bottom_surfaces_as_401_with_auth_url_through_convert()
     only show up in production."""
     from google.auth.exceptions import RefreshError
 
-    from google_docs_mcp import user_store
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly import user_store
+    from appscriptly.crypto import sign_upload_url
 
     user_id = "revoked-roundtrip-user"
 
@@ -366,7 +366,7 @@ def test_invalid_grant_at_bottom_surfaces_as_401_with_auth_url_through_convert()
             "{'error': 'invalid_grant'})"
         ),
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value=_client_config(),
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())

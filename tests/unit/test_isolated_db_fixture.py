@@ -1,5 +1,5 @@
 """R23 B3: prove the canonical ``isolated_db`` fixture really does reset
-every shared module-level dict in ``google_docs_mcp``.
+every shared module-level dict in ``appscriptly``.
 
 Before consolidation, five test files each declared a local ``isolated_db``
 with subtly different cleanup discipline. That divergence was the symptom of
@@ -18,10 +18,10 @@ from __future__ import annotations
 
 def test_isolated_db_fixture_clears_all_module_state(isolated_db):
     """Every shared module-level dict starts each test in a known-empty state."""
-    from google_docs_mcp import credentials, keys, user_store
+    from appscriptly import credentials, keys, user_store
     # M3 Phase C (v2.1.5): _creds_cache moved from server.py to
     # _tool_helpers.py with _get_credentials.
-    from google_docs_mcp import _tool_helpers as server_mod
+    from appscriptly import _tool_helpers as server_mod
 
     assert credentials._per_user_locks == {}, (
         "credentials._per_user_locks not cleared — per-user lock "
@@ -59,10 +59,10 @@ def test_isolated_db_pollutes_shared_state_then_next_test_sees_clean(
     """
     import threading
 
-    from google_docs_mcp import credentials, keys, user_store
+    from appscriptly import credentials, keys, user_store
     # M3 Phase C (v2.1.5): _creds_cache moved from server.py to
     # _tool_helpers.py with _get_credentials.
-    from google_docs_mcp import _tool_helpers as server_mod
+    from appscriptly import _tool_helpers as server_mod
 
     credentials._per_user_locks["poison-user"] = threading.Lock()
     user_store._initialized_paths.add(isolated_db)  # any Path works
@@ -82,10 +82,10 @@ def test_qq_followup_after_pollution_starts_clean(isolated_db):
     """Second half. Name starts with ``test_qq`` so it sorts AFTER
     ``test_isolated_db_pollutes_shared_state_then_next_test_sees_clean``
     in the same module — pytest default order is lexicographic."""
-    from google_docs_mcp import credentials, keys, user_store
+    from appscriptly import credentials, keys, user_store
     # M3 Phase C (v2.1.5): _creds_cache moved from server.py to
     # _tool_helpers.py with _get_credentials.
-    from google_docs_mcp import _tool_helpers as server_mod
+    from appscriptly import _tool_helpers as server_mod
 
     assert credentials._per_user_locks == {}, "post-yield reset regressed"
     assert user_store._initialized_paths == set(), "post-yield reset regressed"

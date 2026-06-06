@@ -42,7 +42,7 @@ def base_url():
 
 @pytest.fixture
 def fresh_nonce_store():
-    from google_docs_mcp.crypto import NonceStore
+    from appscriptly.crypto import NonceStore
     return NonceStore()
 
 
@@ -52,7 +52,7 @@ def fresh_nonce_store():
 
 
 def test_load_client_config_accepts_web_shape(tmp_path, client_config):
-    from google_docs_mcp.oauth_google import load_client_config
+    from appscriptly.oauth_google import load_client_config
 
     p = tmp_path / "client_secrets.json"
     p.write_text(json.dumps(client_config))
@@ -61,7 +61,7 @@ def test_load_client_config_accepts_web_shape(tmp_path, client_config):
 
 
 def test_load_client_config_accepts_installed_shape(tmp_path):
-    from google_docs_mcp.oauth_google import load_client_config
+    from appscriptly.oauth_google import load_client_config
     p = tmp_path / "client_secrets.json"
     p.write_text(json.dumps({"installed": {"client_id": "X", "client_secret": "Y"}}))
     loaded = load_client_config(p)
@@ -69,7 +69,7 @@ def test_load_client_config_accepts_installed_shape(tmp_path):
 
 
 def test_load_client_config_rejects_garbage(tmp_path):
-    from google_docs_mcp.oauth_google import load_client_config
+    from appscriptly.oauth_google import load_client_config
     p = tmp_path / "garbage.json"
     p.write_text(json.dumps({"random": "junk"}))
     with pytest.raises(ValueError, match="doesn't look like"):
@@ -84,7 +84,7 @@ def test_load_client_config_rejects_garbage(tmp_path):
 def test_build_authorization_url_contains_signed_state(
     client_config, signing_key, base_url
 ):
-    from google_docs_mcp.oauth_google import build_authorization_url
+    from appscriptly.oauth_google import build_authorization_url
 
     url = build_authorization_url(
         "user-sub-1",
@@ -115,7 +115,7 @@ def test_auth_pkce_consistency_every_url(
     verifier reuse). Same user_id → different URLs → different
     challenges (each call generates fresh verifier).
     """
-    from google_docs_mcp.oauth_google import build_authorization_url
+    from appscriptly.oauth_google import build_authorization_url
 
     challenges_seen = set()
     for _ in range(5):
@@ -149,7 +149,7 @@ def test_auth_pkce_consistency_every_url(
 def test_build_authorization_url_uses_correct_redirect(
     client_config, signing_key, base_url
 ):
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         CALLBACK_PATH, build_authorization_url,
     )
 
@@ -169,7 +169,7 @@ def test_build_authorization_url_requests_offline_access_and_consent_prompt(
 ):
     """Without these flags, Google may omit refresh_token on re-auth —
     breaking our long-lived background refresh story."""
-    from google_docs_mcp.oauth_google import build_authorization_url
+    from appscriptly.oauth_google import build_authorization_url
 
     url = build_authorization_url(
         "user-1",
@@ -186,7 +186,7 @@ def test_build_authorization_url_requests_offline_access_and_consent_prompt(
 def test_build_authorization_url_includes_all_default_scopes(
     client_config, signing_key, base_url
 ):
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, build_authorization_url,
     )
 
@@ -203,7 +203,7 @@ def test_build_authorization_url_includes_all_default_scopes(
 def test_build_authorization_url_rejects_empty_user_id(
     client_config, signing_key, base_url
 ):
-    from google_docs_mcp.oauth_google import build_authorization_url
+    from appscriptly.oauth_google import build_authorization_url
     with pytest.raises(ValueError, match="user_id is required"):
         build_authorization_url(
             "", base_url=base_url, client_config=client_config,
@@ -235,7 +235,7 @@ def _mock_flow_with_creds(
 def test_exchange_code_returns_user_id_and_creds_json(
     client_config, signing_key, base_url, fresh_nonce_store
 ):
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         build_authorization_url, exchange_code_for_credentials,
     )
 
@@ -246,7 +246,7 @@ def test_exchange_code_returns_user_id_and_creds_json(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_with_creds()
         user_id, creds_json = exchange_code_for_credentials(
@@ -266,7 +266,7 @@ def test_exchange_code_returns_user_id_and_creds_json(
 def test_exchange_code_rejects_bad_state(
     client_config, signing_key, base_url, fresh_nonce_store
 ):
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         OAuthCallbackError, exchange_code_for_credentials,
     )
 
@@ -285,7 +285,7 @@ def test_exchange_code_rejects_replayed_state(
     client_config, signing_key, base_url, fresh_nonce_store
 ):
     """A state token consumed once must not work a second time."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         OAuthCallbackError, build_authorization_url,
         exchange_code_for_credentials,
     )
@@ -297,7 +297,7 @@ def test_exchange_code_rejects_replayed_state(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_with_creds()
         # First redemption: succeeds.
@@ -322,7 +322,7 @@ def test_exchange_code_rejects_creds_without_refresh_token(
 ):
     """If Google returns access_token but no refresh_token, fail loudly
     rather than silently saving short-lived creds that'll break in 1h."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         OAuthCallbackError, build_authorization_url,
         exchange_code_for_credentials,
     )
@@ -334,7 +334,7 @@ def test_exchange_code_rejects_creds_without_refresh_token(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_with_creds(refresh_token=None)
         with pytest.raises(OAuthCallbackError, match="without a refresh_token"):
@@ -351,7 +351,7 @@ def test_exchange_code_wraps_fetch_token_errors_with_502(
 ):
     """If google-auth-oauthlib raises (network blip, invalid code, etc.)
     we want a clean OAuthCallbackError, not a 500 leaking internals."""
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         OAuthCallbackError, build_authorization_url,
         exchange_code_for_credentials,
     )
@@ -363,7 +363,7 @@ def test_exchange_code_wraps_fetch_token_errors_with_502(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         flow_mock = MagicMock()
         flow_mock.fetch_token.side_effect = RuntimeError("network blip")

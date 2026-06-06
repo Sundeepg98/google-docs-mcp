@@ -35,12 +35,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.docs import tools
+from appscriptly.services.docs import tools
 
 
 @pytest.fixture
@@ -499,3 +499,324 @@ def test_gdocs_preview_tab_split_dispatches_to_preview_module(monkeypatch):
     assert result["tab_count"] == 0
     assert captured["creds"] is None
     assert captured["split_by"] == "heading_1"
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_table — batchUpdate (insertTable)
+# ---------------------------------------------------------------------
+
+
+def _last_batchupdate_body(stub):
+    """Body kwarg of the most recent documents().batchUpdate() call."""
+    for call in reversed(stub.documents().batchUpdate.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs["body"]
+    raise AssertionError("no documents().batchUpdate() call captured a body")
+
+
+def test_gdocs_insert_table_happy_path(with_docs_stub):
+    """Inserts a table; returns the echo envelope through the
+    @workspace_tool(creds=True) boundary."""
+    result = tools.gdocs_insert_table(
+        doc_id="DOC1", rows=3, columns=2,
+    )
+    assert result == {
+        "doc_id": "DOC1",
+        "rows": 3,
+        "columns": 2,
+        "index": 1,
+        "tab_id": None,
+    }
+
+
+def test_gdocs_insert_table_builds_insertTable_request(with_docs_stub):
+    """The batchUpdate body wraps a single insertTable with a Location
+    (index) + rows + columns."""
+    tools.gdocs_insert_table(doc_id="DOC1", rows=4, columns=5, index=7)
+    body = _last_batchupdate_body(with_docs_stub)
+    assert body == {
+        "requests": [
+            {
+                "insertTable": {
+                    "location": {"index": 7},
+                    "rows": 4,
+                    "columns": 5,
+                },
+            },
+        ],
+    }
+
+
+def test_gdocs_insert_table_scopes_to_tab_when_given(with_docs_stub):
+    """A tab_id adds ``tabId`` to the insertTable Location."""
+    tools.gdocs_insert_table(
+        doc_id="DOC1", rows=1, columns=1, index=2, tab_id="t.abc",
+    )
+    body = _last_batchupdate_body(with_docs_stub)
+    loc = body["requests"][0]["insertTable"]["location"]
+    assert loc == {"index": 2, "tabId": "t.abc"}
+
+
+def test_gdocs_insert_table_rejects_subunit_dims(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="rows and columns must each be >= 1"):
+        tools.gdocs_insert_table(doc_id="DOC1", rows=0, columns=2)
+
+
+def test_gdocs_insert_table_rejects_index_below_one(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="index must be >= 1"):
+        tools.gdocs_insert_table(doc_id="DOC1", rows=2, columns=2, index=0)
+
+
+# ---------------------------------------------------------------------
+# gdocs_format_range — batchUpdate (updateTextStyle)
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_format_range_happy_path_bold(with_docs_stub):
+    """Bold over a range → envelope echoing the applied fields."""
+    result = tools.gdocs_format_range(
+        doc_id="DOC1", start_index=5, end_index=12, bold=True,
+    )
+    assert result == {
+        "doc_id": "DOC1",
+        "start_index": 5,
+        "end_index": 12,
+        "tab_id": None,
+        "applied": ["bold"],
+    }
+
+
+def test_gdocs_format_range_builds_updateTextStyle_with_fields_mask(
+    with_docs_stub,
+):
+    """Multiple styles → one updateTextStyle with the right textStyle
+    payload AND a fields mask naming exactly those styles."""
+    tools.gdocs_format_range(
+        doc_id="DOC1", start_index=1, end_index=10,
+        bold=True, italic=True, font_size_pt=14, font_family="Roboto",
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateTextStyle"]
+    assert req["range"] == {"startIndex": 1, "endIndex": 10}
+    assert req["textStyle"]["bold"] is True
+    assert req["textStyle"]["italic"] is True
+    assert req["textStyle"]["fontSize"] == {"magnitude": 14, "unit": "PT"}
+    assert req["textStyle"]["weightedFontFamily"] == {"fontFamily": "Roboto"}
+    # fields mask names exactly the four set styles (order-independent)
+    assert set(req["fields"].split(",")) == {
+        "bold", "italic", "fontSize", "weightedFontFamily",
+    }
+
+
+def test_gdocs_format_range_color_hex_to_rgbcolor(with_docs_stub):
+    """A #RRGGBB color becomes a Docs RgbColor with [0,1] channels."""
+    tools.gdocs_format_range(
+        doc_id="DOC1", start_index=1, end_index=3, foreground_color="#FF8000",
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateTextStyle"]
+    rgb = req["textStyle"]["foregroundColor"]["color"]["rgbColor"]
+    assert rgb["red"] == 1.0
+    assert abs(rgb["green"] - 128 / 255) < 1e-9
+    assert rgb["blue"] == 0.0
+    assert "foregroundColor" in req["fields"].split(",")
+
+
+def test_gdocs_format_range_scopes_to_tab_when_given(with_docs_stub):
+    tools.gdocs_format_range(
+        doc_id="DOC1", start_index=2, end_index=4, tab_id="t.xyz", bold=True,
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateTextStyle"]
+    assert req["range"] == {"startIndex": 2, "endIndex": 4, "tabId": "t.xyz"}
+
+
+def test_gdocs_format_range_requires_at_least_one_style(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="no styles supplied"):
+        tools.gdocs_format_range(doc_id="DOC1", start_index=1, end_index=5)
+
+
+def test_gdocs_format_range_rejects_bad_range(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="end_index must be greater"):
+        tools.gdocs_format_range(
+            doc_id="DOC1", start_index=5, end_index=5, bold=True,
+        )
+    with pytest.raises(ToolError, match="start_index must be >= 1"):
+        tools.gdocs_format_range(
+            doc_id="DOC1", start_index=0, end_index=5, bold=True,
+        )
+
+
+def test_gdocs_format_range_rejects_bad_color(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="6-digit hex"):
+        tools.gdocs_format_range(
+            doc_id="DOC1", start_index=1, end_index=5, foreground_color="blue",
+        )
+
+
+# ---------------------------------------------------------------------
+# gdocs_format_paragraph — batchUpdate (updateParagraphStyle)
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_format_paragraph_happy_path_alignment(with_docs_stub):
+    result = tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=1, end_index=10, alignment="center",
+    )
+    assert result == {
+        "doc_id": "DOC1",
+        "start_index": 1,
+        "end_index": 10,
+        "tab_id": None,
+        "applied": ["alignment"],
+    }
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    assert req["paragraphStyle"]["alignment"] == "CENTER"
+    assert req["fields"] == "alignment"
+
+
+def test_gdocs_format_paragraph_multiple_attrs_and_fields_mask(with_docs_stub):
+    tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=2, end_index=20,
+        named_style="HEADING_1", line_spacing=150, space_above_pt=6,
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    ps = req["paragraphStyle"]
+    assert ps["namedStyleType"] == "HEADING_1"
+    assert ps["lineSpacing"] == 150
+    assert ps["spaceAbove"] == {"magnitude": 6, "unit": "PT"}
+    assert set(req["fields"].split(",")) == {
+        "namedStyleType", "lineSpacing", "spaceAbove",
+    }
+
+
+def test_gdocs_format_paragraph_alignment_aliases(with_docs_stub):
+    tools.gdocs_format_paragraph(
+        doc_id="DOC1", start_index=1, end_index=5, alignment="right",
+    )
+    req = _last_batchupdate_body(with_docs_stub)["requests"][0]["updateParagraphStyle"]
+    assert req["paragraphStyle"]["alignment"] == "END"
+
+
+def test_gdocs_format_paragraph_rejects_unknown_alignment(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="alignment must be one of"):
+        tools.gdocs_format_paragraph(
+            doc_id="DOC1", start_index=1, end_index=5, alignment="sideways",
+        )
+
+
+def test_gdocs_format_paragraph_rejects_unknown_named_style(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="named_style must be one of"):
+        tools.gdocs_format_paragraph(
+            doc_id="DOC1", start_index=1, end_index=5, named_style="HEADING_9",
+        )
+
+
+def test_gdocs_format_paragraph_requires_at_least_one_attr(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="no paragraph attributes supplied"):
+        tools.gdocs_format_paragraph(doc_id="DOC1", start_index=1, end_index=5)
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_markdown_table — parse + insertTable + fill cells
+# ---------------------------------------------------------------------
+
+
+def _table_doc_fixture(rows: int, columns: int, base: int = 2):
+    """Build a documents().get() response whose default-tab body has one
+    table with deterministic per-cell startIndex values."""
+    idx = base
+    table_rows = []
+    for _r in range(rows):
+        cells = []
+        for _c in range(columns):
+            cells.append({"content": [{"startIndex": idx}]})
+            idx += 2  # each empty cell occupies a couple of indices
+        table_rows.append({"tableCells": cells})
+    return {
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "t.0"},
+                "documentTab": {
+                    "body": {
+                        "content": [
+                            {"startIndex": 1, "table": {"tableRows": table_rows}},
+                        ],
+                    },
+                },
+            },
+        ],
+    }
+
+
+def test_gdocs_insert_markdown_table_happy_path(with_docs_stub):
+    """Parses a 2-col table, inserts it, and fills the non-empty cells.
+    Verifies the envelope + that an insertTable + a fill batchUpdate ran."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=2, columns=2,
+    )
+    md = "| H1 | H2 |\n|----|----|\n| a | b |"
+    result = tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    assert result == {
+        "doc_id": "DOC1",
+        "rows": 2,
+        "columns": 2,
+        "index": 1,
+        "tab_id": None,
+        "cells_filled": 4,  # H1,H2,a,b all non-empty
+    }
+    # insertTable was issued
+    bodies = [
+        c.kwargs["body"] for c in with_docs_stub.documents().batchUpdate.call_args_list
+        if "body" in c.kwargs
+    ]
+    assert any(
+        "insertTable" in b["requests"][0] for b in bodies
+    ), "no insertTable batchUpdate was issued"
+
+
+def test_gdocs_insert_markdown_table_fills_in_reverse_index_order(with_docs_stub):
+    """The cell-fill batchUpdate must order insertText requests by
+    DESCENDING index so earlier inserts don't shift later ones."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=1, columns=3,
+    )
+    md = "| a | b | c |\n|---|---|---|"
+    tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    # Find the fill batchUpdate (the one with insertText requests)
+    fill = None
+    for c in with_docs_stub.documents().batchUpdate.call_args_list:
+        body = c.kwargs.get("body", {})
+        reqs = body.get("requests", [])
+        if reqs and "insertText" in reqs[0]:
+            fill = reqs
+            break
+    assert fill is not None, "no cell-fill batchUpdate found"
+    indices = [r["insertText"]["location"]["index"] for r in fill]
+    assert indices == sorted(indices, reverse=True), (
+        f"insertText requests not in descending index order: {indices}"
+    )
+
+
+def test_gdocs_insert_markdown_table_skips_empty_cells(with_docs_stub):
+    """Empty cells produce no insertText (cells_filled counts only
+    non-empty)."""
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=2, columns=2,
+    )
+    md = "| H1 | H2 |\n|----|----|\n| a |  |"  # second body cell empty
+    result = tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    assert result["cells_filled"] == 3  # H1, H2, a (not the empty one)
+
+
+def test_gdocs_insert_markdown_table_rejects_bad_markdown(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="separator row"):
+        tools.gdocs_insert_markdown_table(
+            doc_id="DOC1", markdown="| a | b |\n| c | d |",
+        )
