@@ -2,7 +2,7 @@
 
 Source-of-truth mapping from server failure shapes to LLM recovery
 actions. Mirrored at runtime by `_RECOVERY_TABLE` in
-`src/google_docs_mcp/resources.py` and surfaced via:
+`src/appscriptly/resources.py` and surfaced via:
 
 - MCP resource `gdocs://error-recovery` (full table)
 - MCP resource `gdocs://error-recovery/{key}` (single entry)
@@ -77,7 +77,7 @@ that document. Want me to try a different split style (e.g. Heading
 2 or page breaks), or do you have specific phrases I should use as
 section markers?"
 
-**Emitter:** `src/google_docs_mcp/restructure.gs:69` returns
+**Emitter:** `src/appscriptly/restructure.gs:69` returns
 `warnings: ['no_splits']` which serializes over JSON as
 `"warnings": ["no_splits"]`. Pattern `no_splits` matches the bare
 token — robust across JSON / Python repr / future array renames.
@@ -103,7 +103,7 @@ through this connection — Google's permissions stop me from editing or
 deleting files I do not own. I can still read it. Would you like me to
 read it, or re-create it through me?"
 
-**Emitter:** `src/google_docs_mcp/drive_api.py:392` sets
+**Emitter:** `src/appscriptly/drive_api.py:392` sets
 `m["owned_by_app"] = write_results.get(m["file_id"], False)`. MCP
 transports return JSON, so the LLM sees `"owned_by_app": false`
 (lowercase boolean, double-quoted key). Pattern targets the JSON form;
@@ -129,7 +129,7 @@ original tool call once.
 open the 'Click here to authorize' link in the error message to
 re-consent, then tell me to retry."
 
-**Emitter:** `src/google_docs_mcp/server.py:206-210` raises
+**Emitter:** `src/appscriptly/server.py:206-210` raises
 `ToolError("Google API access required.\n\n**[Click here to
 authorize](...)**\n\nAfter granting access, re-run this tool.")` —
 also `server.py:1807-1808` for the setup_apps_script path. The
@@ -146,17 +146,17 @@ in both emitter paths.
 **Severity:** error
 **Retriable:** true
 **Wait seconds:** null
-**Related tool:** `gdocs_setup_apps_script`
+**Related tool:** `gdocs_install_automation`
 **Planned:** true
 
 **Do:** PLANNED v2.0 entry — no current code path emits this string.
-When v2.0 ships, the Apps Script Web App attached to the user will
-be hash-checked; an out-of-band edit will surface this error.
-Recovery: call `gdocs_setup_apps_script` to regenerate the deployment
-and refresh cached state, then retry the original tool once.
+When v2.0 ships, the Workspace automation runtime attached to the
+user will be hash-checked; an out-of-band edit will surface this
+error. Recovery: call `gdocs_install_automation` to re-install the
+runtime and refresh cached state, then retry the original tool once.
 
-**User message:** "Your Apps Script helper was changed outside this
-connection. I am re-deploying a fresh copy now — one moment."
+**User message:** "Your Workspace automation runtime was changed
+outside this connection. I am re-installing it now — one moment."
 
 **Emitter:** none yet (planned for v2.0 strict-flip). Round-trip test
 skips `planned=true` entries because there's no real failure
@@ -182,7 +182,7 @@ of looping per-paragraph.
 and retry — or I can batch the remaining work into one call if you
 want to skip the wait."
 
-**Emitter:** `src/google_docs_mcp/errors.py:69`
+**Emitter:** `src/appscriptly/errors.py:69`
 `friendly_http_error_message` returns
 `f"Google API error: {status_code} {reason}. Details: {details}"`.
 For HTTP 429 that's `"Google API error: 429 Too Many Requests. ..."`.
@@ -207,7 +207,7 @@ ask them to delete it from Drive UI themselves.
 created through me. You can remove it directly from Google Drive, or
 ask me to read its contents instead."
 
-**Emitter:** `src/google_docs_mcp/drive_api.py:260` (trash path),
+**Emitter:** `src/appscriptly/drive_api.py:260` (trash path),
 `drive_api.py:493` (move path), `drive_api.py:606` (untrash path) all
 return soft-failure dicts `{"reason": "app_not_authorized", ...}`
 serialized to JSON wire as `"reason": "app_not_authorized"`.
@@ -232,7 +232,7 @@ the doc title to recover the correct ID.
 deleted, or the ID I have is wrong. Do you remember the title? I can
 search by name."
 
-**Emitter:** `src/google_docs_mcp/drive_api.py:229` (trash path),
+**Emitter:** `src/appscriptly/drive_api.py:229` (trash path),
 `drive_api.py:426` (move path), `drive_api.py:571` (untrash path) all
 return soft-failure dicts `{"reason": "not_found", ...}` serialized
 to JSON wire as `"reason": "not_found"`.
@@ -279,7 +279,7 @@ bug reports when the pattern misses.
 **Do:** The response refers to the `placeholder_behavior` kwarg
 (controls what `gdocs_tab_existing_doc` does with the leading
 placeholder tab after retrofit). The real enum
-(`src/google_docs_mcp/server.py:509`) is
+(`src/appscriptly/server.py:509`) is
 `Literal["delete", "rename", "keep"]`. Choose by intent:
 `"delete"` removes the placeholder once content is split (default,
 cleanest for human-readable docs); `"rename"` keeps it as the tab

@@ -46,7 +46,7 @@ def isolated_user_store(tmp_path, monkeypatch):
     behind the module's back must clear this cache so the next call
     re-runs ``CREATE TABLE IF NOT EXISTS`` against the new state.
     """
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     db_file = tmp_path / "user_state.db"
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
@@ -70,7 +70,7 @@ def test_pre_setup_row_round_trips_through_get_state(isolated_user_store):
     None values, which would break ``if "apps_script_url" in state``
     checks all over the codebase.
     """
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state("pre-setup-user", {"google_creds_json": '{"token": "x"}'})
     state = get_state("pre-setup-user")
@@ -95,7 +95,7 @@ def test_pre_setup_row_can_be_enriched_with_setup_columns(isolated_user_store):
     save_state's merge semantics must preserve google_creds_json
     while adding the new fields.
     """
-    from google_docs_mcp.user_store import get_state, save_state
+    from appscriptly.user_store import get_state, save_state
 
     save_state("upgrade-user", {"google_creds_json": '{"token": "creds"}'})
     save_state("upgrade-user", {
@@ -182,7 +182,7 @@ def test_legacy_schema_with_missing_columns_still_reads_old_rows(
     finally:
         conn.close()
 
-    from google_docs_mcp.user_store import get_state
+    from appscriptly.user_store import get_state
 
     state = get_state("legacy-user")
     assert state["user_id"] == "legacy-user"
@@ -209,12 +209,12 @@ def test_get_state_on_fresh_schema_is_lazy_initialized(
     nested = tmp_path / "nested" / "subdir" / "fresh_user_state.db"
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(nested))
     # Clear the path cache so the new path triggers real init.
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     user_store._initialized_paths.clear()
 
     assert not nested.exists()
 
-    from google_docs_mcp.user_store import get_state
+    from appscriptly.user_store import get_state
     assert get_state("never-seen-user") == {}
     assert nested.exists(), "first call did not create the DB file"
 

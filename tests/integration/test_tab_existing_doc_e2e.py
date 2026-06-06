@@ -37,7 +37,7 @@ def test_tab_existing_doc_with_heading1_sections(
 ):
     """Heading-1-styled docx converts to one native tab per heading,
     no warnings. Guards the convert_docx_to_tabbed_doc happy path."""
-    from google_docs_mcp.docx_import import convert_docx_to_tabbed_doc
+    from appscriptly.docx_import import convert_docx_to_tabbed_doc
 
     section_titles = ["Intro", "Background", "Method", "Results", "Discussion"]
     docx_path = tmp_path / "flat_headings.docx"

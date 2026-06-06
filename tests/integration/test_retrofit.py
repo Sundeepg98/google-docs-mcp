@@ -59,8 +59,8 @@ def _build_pathological_docx() -> bytes:
 
 def test_retrofit_pathological_e2e(live_creds, tmp_path):
     """All 4 pathological markers match end-to-end through upload+convert+restructure."""
-    from google_docs_mcp.services.drive.api import trash_drive_file
-    from google_docs_mcp.retrofit import retrofit_existing_docx
+    from appscriptly.services.drive.api import trash_drive_file
+    from appscriptly.retrofit import retrofit_existing_docx
 
     docx_path = tmp_path / "retrofit_live.docx"
     docx_path.write_bytes(_build_pathological_docx())

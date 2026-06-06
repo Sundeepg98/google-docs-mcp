@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     GoogleApiClientAdapter,
     GoogleAPIClient,
     InMemoryGoogleAPIClient,
@@ -124,19 +124,33 @@ def test_inmemory_credentials_keyword_is_ignored_by_lookup():
 def test_production_adapter_delegates_to_build():
     """The production adapter is a thin wrapper around
     ``googleapiclient.discovery.build``. Patch the upstream and verify
-    the adapter hands back exactly what build() returned."""
+    the adapter hands back exactly what build() returned.
+
+    v#152 socket-timeout hardening: the adapter now calls
+    ``build(service, version, http=AuthorizedHttp(credentials, http=
+    httplib2.Http(timeout=N)))`` instead of ``credentials=`` — so the
+    credentials reach build() wrapped inside the ``http=`` transport
+    (passing both ``credentials=`` and ``http=`` raises). We assert the
+    new shape: build is called with the service/version positionally and
+    an ``http`` whose ``.credentials`` is the creds we passed in."""
     from unittest.mock import patch
 
     adapter = GoogleApiClientAdapter()
     sentinel_resource = MagicMock(name="drive-v3-resource")
     fake_creds = MagicMock(name="creds")
 
-    with patch("google_docs_mcp.google_api_client.build") as mk_build:
+    with patch("appscriptly.google_api_client.build") as mk_build:
         mk_build.return_value = sentinel_resource
         result = adapter.get_service("drive", "v3", credentials=fake_creds)
 
     assert result is sentinel_resource
-    mk_build.assert_called_once_with("drive", "v3", credentials=fake_creds)
+    mk_build.assert_called_once()
+    args, kwargs = mk_build.call_args
+    assert args == ("drive", "v3")
+    # credentials are wrapped in the AuthorizedHttp handed to http=, not a
+    # direct build() kwarg.
+    assert "credentials" not in kwargs
+    assert kwargs["http"].credentials is fake_creds
 
 
 # ---------------------------------------------------------------------
@@ -145,15 +159,21 @@ def test_production_adapter_delegates_to_build():
 
 
 def test_with_google_api_client_swaps_active():
+    from appscriptly.google_api_client import RetryingGoogleApiClientAdapter
+
     stub_drive = MagicMock(name="drive-stub")
     injected = InMemoryGoogleAPIClient({("drive", "v3"): stub_drive})
 
     with with_google_api_client(injected):
         assert get_active_client() is injected
 
-    # After exit: default restored to a production adapter.
-    assert get_active_client() is not injected
-    assert isinstance(get_active_client(), GoogleApiClientAdapter)
+    # After exit: default restored. PR-Δ3 made the production default
+    # a ``RetryingGoogleApiClientAdapter`` composed over the bare
+    # ``GoogleApiClientAdapter`` — assert the OUTER composing type,
+    # since that's what production now wires by default.
+    after = get_active_client()
+    assert after is not injected
+    assert isinstance(after, RetryingGoogleApiClientAdapter)
 
 
 def test_with_google_api_client_restores_on_exception():
@@ -196,7 +216,7 @@ def test_facade_delegation_routes_to_active_client():
     public entry point) now delegates to the active GoogleAPIClient.
     A test that injects an InMemoryGoogleAPIClient must see its stubs
     returned through the legacy import path."""
-    from google_docs_mcp import google_clients
+    from appscriptly import google_clients
 
     stub = MagicMock(name="docs-v1-stub")
     fake_creds = MagicMock()
@@ -208,9 +228,9 @@ def test_facade_delegation_routes_to_active_client():
 
 
 def test_facade_keeps_resource_reexport_for_backward_compat():
-    """Pre-v2.1.2 code that did ``from google_docs_mcp.google_clients
+    """Pre-v2.1.2 code that did ``from appscriptly.google_clients
     import Resource`` for type hints must continue to work."""
-    from google_docs_mcp.google_clients import Resource
+    from appscriptly.google_clients import Resource
 
     # Resource is the googleapiclient.discovery.Resource class itself.
     # We can't easily isinstance-check a real Resource (it's dynamically

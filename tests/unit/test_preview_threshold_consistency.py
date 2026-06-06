@@ -32,7 +32,7 @@ def test_preview_flags_what_convert_truncates(tmp_path):
     what convert_docx_to_tabbed_doc actually does. If the two
     thresholds drift apart, the dry-run lies.
     """
-    from google_docs_mcp.preview import preview_tab_split
+    from appscriptly.preview import preview_tab_split
 
     docx_path = tmp_path / "oversize.docx"
     docx_path.write_bytes(_docx_with_oversized_heading())

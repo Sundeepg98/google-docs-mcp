@@ -11,7 +11,8 @@ import asyncio
 
 def test_server_info_self_consistency():
     """tool_count == len(tools) == number of FastMCP-registered tools."""
-    from google_docs_mcp.server import mcp, gdocs_server_info
+    from appscriptly.server import mcp
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     # gdocs_server_info is registered as an async MCP tool; the
     # FastMCP wrapper makes it callable as a coroutine.
@@ -26,7 +27,7 @@ def test_server_info_self_consistency():
 
 def test_server_info_tools_is_sorted():
     """Sorted output gives a stable diff for change detection."""
-    from google_docs_mcp.server import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     assert info["tools"] == sorted(info["tools"])
@@ -34,7 +35,7 @@ def test_server_info_tools_is_sorted():
 
 def test_server_info_version_string_present():
     """version must be a non-empty string for deploy fingerprinting."""
-    from google_docs_mcp.server import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     assert isinstance(info["version"], str)
@@ -47,7 +48,7 @@ def test_server_info_version_string_present():
 
 def test_server_info_includes_build_provenance_keys():
     """build_time and git_commit keys must exist even if values are 'unknown'."""
-    from google_docs_mcp.server import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     assert "build_time" in info
@@ -66,7 +67,7 @@ def test_server_info_includes_shim_hit_counters(monkeypatch):
     # assertion since we only read counters, but keeps the env sane).
     monkeypatch.setenv("MCP_BEARER_TOKEN", "x" * 32)
 
-    from google_docs_mcp.server import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     assert "key_back_compat_shim_active_hits" in info, (
@@ -110,7 +111,7 @@ def test_canonical_digest_excludes_meta_block_and_is_stable():
     time with the same canonicalization rules. Tests the hashing
     contract: sort_keys + tight separators + _meta excluded.
     """
-    from google_docs_mcp.server import _canonical_digest
+    from appscriptly.services.admin.tools import _canonical_digest
 
     # Same payload, different dict-iteration order → identical digest.
     a = {"summary": {"passed": 5}, "_git_commit": "abc", "_meta": {"digest": "old"}}
@@ -127,7 +128,7 @@ def test_test_suite_status_tampered_when_digest_mismatches(tmp_path, monkeypatch
     """The killer guard: edit the numbers in test-results.json without
     re-signing → server reports status='tampered', not 'passed'."""
     import json
-    from google_docs_mcp.server import _read_test_suite_status, _canonical_digest
+    from appscriptly.services.admin.tools import _read_test_suite_status, _canonical_digest
 
     # Build a legit results file with correct digest.
     legit = {
@@ -167,7 +168,7 @@ def test_server_info_includes_test_suite_block():
     field entirely would break the agreement that a single shape can
     be relied on.
     """
-    from google_docs_mcp.server import gdocs_server_info
+    from appscriptly.services.admin.tools import gdocs_server_info
 
     info = asyncio.run(gdocs_server_info())
     assert "test_suite" in info, (
@@ -214,7 +215,7 @@ def test_gdocs_test_manifest_exists_and_returns_required_shape():
     Status varies (ok/unknown/tampered) depending on artifact state.
     Shape is constant."""
     import asyncio
-    from google_docs_mcp.server import gdocs_test_manifest
+    from appscriptly.services.admin.tools import gdocs_test_manifest
 
     result = asyncio.run(gdocs_test_manifest()) if asyncio.iscoroutinefunction(
         gdocs_test_manifest,
@@ -238,7 +239,7 @@ def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
     external file) and the 5 operating rules (the failure modes that
     used to require trial-and-error to discover).
     """
-    from google_docs_mcp.server import gdocs_guide
+    from appscriptly.services.admin.tools import gdocs_guide
 
     guide = gdocs_guide()
 
@@ -253,15 +254,23 @@ def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
         assert key in guide["server"], f"guide.server missing {key}"
     assert guide["server"]["all_tools_prefixed"] == "gdocs_"
 
-    # All 5 named workflows present. If any of these names changes
-    # the external doc is no longer the canonical source — update
-    # this list deliberately.
+    # Exact workflow set — the test analog of the golden tool-surface
+    # snapshot. If any name changes the external doc is no longer the
+    # canonical source — update this list deliberately. The tool-DX
+    # enrichment added the spreadsheet / presentation / install_automation
+    # flows so the Sheets/Slides verticals + the automation moat are
+    # discoverable from the orientation payload (was Docs-only).
     expected_workflow_names = {
+        # The 5 original core flows.
         "new_doc",
         "convert_doc_with_headings",
         "retrofit_styled_doc",
         "convert_sandbox_docx",
         "cleanup",
+        # tool-DX enrichment: automation moat + Sheets/Slides verticals.
+        "install_automation",
+        "spreadsheet",
+        "presentation",
     }
     actual_workflow_names = {w["name"] for w in guide["workflows"]}
     assert actual_workflow_names == expected_workflow_names, (

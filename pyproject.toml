@@ -3,14 +3,32 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "google-docs-mcp"
+# PR-Δ5.5 (2026-05-27): renamed from ``google-docs-mcp`` to ``appscriptly``.
+# The Python module path ``src/appscriptly/`` is INTENTIONALLY kept
+# at its original location — a full module rename would touch ~hundreds
+# of imports across src/, tests/, and every consumer's pinned imports.
+# The user-facing product name is ``appscriptly``; the implementation
+# package stays at ``appscriptly`` until a separate planned ops
+# move addresses the module-path rename. See
+# ``docs/adr/2026-05-27-rename-to-appscriptly.md`` for the staged plan.
+#
+# The CLI binary ``google-docs-mcp`` is preserved as a backward-compat
+# alias alongside the new ``appscriptly`` entry-point (see
+# ``[project.scripts]`` below) so existing users' shell scripts /
+# install instructions / muscle memory don't break on the rename.
+name = "appscriptly"
 version = "1.5.1"
-description = "MCP server that creates Google Docs with native Tabs (Oct 2024 sidebar feature) — for Claude Desktop and Claude Code"
+description = "MCP server for Apps Script automation across Google Workspace — generates persistent workflows (time-driven jobs, custom menus, reactive automations) that live in your Workspace and run on Google's infrastructure"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Sundeep Gunda" }]
 requires-python = ">=3.10"
-keywords = ["mcp", "google-docs", "claude", "anthropic", "tabs"]
+keywords = [
+    "mcp", "claude", "anthropic",
+    "appscript", "apps-script-generator",
+    "workspace-automation", "google-workspace",
+    "google-docs", "tabs",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -22,7 +40,7 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
-    "fastmcp>=3.3.1",  # v1.1: GoogleProvider + OAuthProxy + get_access_token deps
+    "fastmcp>=3.4.2",  # v1.1: GoogleProvider + OAuthProxy + get_access_token deps; v1.5.2: minor bump 3.3.1->3.4.2 (same major, dependabot.yml ignores only major fastmcp bumps)
     "google-api-python-client>=2.196.0",
     "google-auth>=2.53.0",
     "google-auth-oauthlib>=1.4.0",
@@ -40,12 +58,16 @@ dependencies = [
     # anywhere in src/. Pin kept because CVE-2026-32597 (RFC 7515 §4.1.11
     # `crit` header validation, fixed in 2.12.0) is real + active; without
     # the floor, a future solver could resolve down to a vulnerable
-    # version. Independent of PYSEC-2025-183 — that's a disputed key-length
+    # version. Floor raised to 2.13.0 to close PYSEC-2026-175/-177/-178/
+    # -179 (HIGH/CRITICAL, all fixed in 2.13.0) flagged by the pip-audit
+    # gate. Independent of PYSEC-2025-183 — that's a disputed key-length
     # CVE we ignore in CI; see .github/workflows/e2e.yml pip-audit step
     # for the non-applicability rationale.
-    "pyjwt>=2.12.1,<3",          # CVE-2026-32597 (transitive via mcp[crypto])
+    "pyjwt>=2.13.0,<3",          # CVE-2026-32597 + PYSEC-2026-175/177/178/179 (transitive via mcp[crypto])
     "urllib3>=2.7.0,<3",         # CVE-2026-44431, -44432
     "requests>=2.34.2,<3",       # CVE-2026-25645
+    "tenacity>=9.1.4",
+    "sentry-sdk>=2.60.0",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +86,14 @@ test = [
     # which measures 55.21% vs 56.5%+ on every other version).
     # Ratchet policy in docs/COVERAGE.md (+1pp/release toward 80%).
     "pytest-cov>=4.1",
+    # === v2.2.2: property-based testing (R1 prediction / R5 audit Gap #6) ===
+    # Hypothesis powers the property tests in
+    # tests/unit/services/docs/test_tab_tree.py + test_markdown_render.py.
+    # Generates random inputs against module invariants (depth-first
+    # ordering, path uniqueness, insertText-index monotonicity, etc.).
+    # The R6 UTF-16 bug class is the headline unblock — once the source
+    # is fixed, the hypothesis tests pin the fix permanently.
+    "hypothesis>=6.115",
 ]
 # === v2.0.6: lint extras (closes pyright/ruff CI gap) ===
 # e2e.yml's `lint` job invokes `uv run pyright src/` and
@@ -76,16 +106,47 @@ lint = [
     "pyright>=1.1.400",
     "ruff>=0.7",
 ]
+# === PR-Δ6: Vercel pilot extras ===
+# The VercelKvBackend talks to Upstash KV via the HTTP REST API; the
+# implementation uses httpx (already transitive via FastMCP), so no
+# net-new runtime dependency is required for the backend itself.
+#
+# This extras group exists for symmetry + future-proofing: when
+# Vercel-specific tooling lands (Vercel CLI for local dev, vercel-sdk
+# for programmatic deploy operations, upstash-redis if we ever decide
+# the SDK is worth the dep), it goes here. Today the group is empty;
+# `pip install appscriptly[vercel]` is a no-op extras-resolve that
+# documents the intent without forcing the install.
+#
+# The Vercel deploy itself (api/index.py) needs only the base
+# dependencies — no extras required to run on Vercel.
+vercel = [
+    # (Intentionally empty as of PR-Δ6. See comment above.)
+]
 
 [project.urls]
+# PR-Δ5.5: repository URLs unchanged for now — the repo transfer to
+# the ``appscriptly`` GitHub org (https://github.com/appscriptly) is a
+# separate operator-scheduled cutover. When that lands, update both
+# entries below + run a sweep on any hardcoded URL strings in docs/
+# + the OpenSSF Scorecard badge in README.md.
 Homepage = "https://github.com/Sundeepg98/google-docs-mcp"
 Issues = "https://github.com/Sundeepg98/google-docs-mcp/issues"
 
 [project.scripts]
-google-docs-mcp = "google_docs_mcp.server:main"
+# PR-Δ5.5: ``appscriptly`` is the canonical CLI entry-point post-rename;
+# ``google-docs-mcp`` is preserved as a backward-compat alias so existing
+# user shell scripts / install instructions / muscle memory keep working.
+# Both delegate to the same ``main`` function — no behavior difference.
+# The alias stays until v3.0 (the same removal horizon as
+# ``gdocs_setup_apps_script`` → ``gdocs_install_automation`` per PR-α).
+appscriptly = "appscriptly.server:main"
+google-docs-mcp = "appscriptly.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/google_docs_mcp"]
+# PR-Δ5.5: still points at ``src/appscriptly`` because the module
+# path rename is deferred — see the ``[project]`` comment block above.
+packages = ["src/appscriptly"]
 
 # ---------------------------------------------------------------------
 # Ruff lint config (v2.6a)
@@ -106,22 +167,24 @@ packages = ["src/google_docs_mcp"]
 select = ["TID"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"googleapiclient.discovery.build" = { msg = "Use google_docs_mcp.google_clients.get_service instead — single chokepoint for retry, logging, cache, etc. See PR #47 (v2.0.3 operator-secret leak) for the anti-pattern this lint prevents: a wrapper that's bypassed by direct imports." }
+"googleapiclient.discovery.build" = { msg = "Use appscriptly.google_clients.get_service instead — single chokepoint for retry, logging, cache, etc. See PR #47 (v2.0.3 operator-secret leak) for the anti-pattern this lint prevents: a wrapper that's bypassed by direct imports." }
 
 [tool.ruff.lint.per-file-ignores]
-# These two files own the legitimate use of googleapiclient.discovery.build.
+# google_api_client.py owns the SOLE legitimate use of
+# googleapiclient.discovery.build (inside GoogleApiClientAdapter).
 # PR2-A (v2.6b) removed docs_api.py from this list.
 # PR2-B (v2.6b) removed drive_api.py from this list.
 # PR2-C (v2.6b) removed the final 4 — docx_import.py, preview.py,
 # retrofit.py, and gas_deploy/client.py — closing the bypass class.
 # M2 (v2.1.2) promoted the actual ``build()`` call from google_clients.py
 # into the new google_api_client.GoogleApiClientAdapter — google_clients.py
-# is now a thin delegating facade that only re-exports the Resource type.
-# Any direct `from googleapiclient.discovery import build` outside these
-# two files is a lint failure (= a reintroduced bypass that defeats the
-# retry / logging / cache chokepoint).
-"src/google_docs_mcp/google_clients.py" = ["TID251"]
-"src/google_docs_mcp/google_api_client.py" = ["TID251"]
+# is now a thin delegating facade that only re-exports the Resource type
+# (which TID251 does not ban), so its own per-file ignore is dead weight
+# and was removed in v2.3.0.
+# Any direct `from googleapiclient.discovery import build` outside
+# google_api_client.py is a lint failure (= a reintroduced bypass that
+# defeats the retry / logging / cache chokepoint).
+"src/appscriptly/google_api_client.py" = ["TID251"]
 
 # ---------------------------------------------------------------------
 # Pyright config (v2.0.6)

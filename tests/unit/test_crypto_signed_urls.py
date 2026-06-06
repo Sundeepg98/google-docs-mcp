@@ -25,7 +25,7 @@ import pytest
 
 
 def test_sign_url_requires_non_empty_user_id():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     with pytest.raises(ValueError, match="user_id"):
         sign_upload_url(
@@ -43,7 +43,7 @@ def test_sign_url_requires_non_empty_user_id():
 
 
 def test_sign_url_returns_user_id_in_payload():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -54,7 +54,7 @@ def test_sign_url_returns_user_id_in_payload():
 
 
 def test_sign_url_query_string_contains_uid():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -75,7 +75,7 @@ def test_sign_url_query_string_contains_uid():
 
 def _verify_minted(minted: dict, *, signing_key: bytes, override_uid: str | None = "use-minted"):
     """Round-trip helper: extract params from minted URL and call verify."""
-    from google_docs_mcp.crypto import NonceStore, verify_signed_params
+    from appscriptly.crypto import NonceStore, verify_signed_params
 
     qs = parse_qs(urlparse(minted["url"]).query)
     uid = qs["uid"][0] if override_uid == "use-minted" else override_uid
@@ -91,7 +91,7 @@ def _verify_minted(minted: dict, *, signing_key: bytes, override_uid: str | None
 
 
 def test_verify_happy_path_returns_user_id():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -111,7 +111,7 @@ def test_verify_happy_path_returns_user_id():
 
 def test_verify_rejects_missing_uid():
     """Pre-v2.1 URLs lack the uid query param; verify must refuse them."""
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -128,7 +128,7 @@ def test_verify_rejects_missing_uid():
 
 
 def test_verify_rejects_empty_uid():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -150,7 +150,7 @@ def test_verify_rejects_empty_uid():
 def test_verify_rejects_swapped_uid_signed_for_other_user():
     """Cross-tenant exploit prevention: A's URL with B substituted as uid
     must fail HMAC compare — the canonical no longer matches the sig."""
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -166,7 +166,7 @@ def test_verify_rejects_swapped_uid_signed_for_other_user():
 
 def test_verify_rejects_tampered_exp():
     """Tamper-evidence: changing exp must break HMAC."""
-    from google_docs_mcp.crypto import NonceStore, sign_upload_url, verify_signed_params
+    from appscriptly.crypto import NonceStore, sign_upload_url, verify_signed_params
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -193,7 +193,7 @@ def test_verify_rejects_tampered_exp():
 
 
 def test_verify_rejects_expired():
-    from google_docs_mcp.crypto import NonceStore, sign_upload_url, verify_signed_params
+    from appscriptly.crypto import NonceStore, sign_upload_url, verify_signed_params
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -218,7 +218,7 @@ def test_verify_rejects_expired():
 
 
 def test_verify_nonce_is_single_use():
-    from google_docs_mcp.crypto import NonceStore, sign_upload_url, verify_signed_params
+    from appscriptly.crypto import NonceStore, sign_upload_url, verify_signed_params
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",
@@ -246,7 +246,7 @@ def test_verify_nonce_is_single_use():
 
 
 def test_verify_rejects_wrong_signing_key():
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
 
     minted = sign_upload_url(
         base_url="https://x.example/api/convert",

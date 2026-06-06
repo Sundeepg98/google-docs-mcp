@@ -48,7 +48,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(tmp_path / "user_state.db"))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TRUSTED_HOSTS", "testserver,localhost")
-    from google_docs_mcp.key_provider import (
+    from appscriptly.key_provider import (
         InMemoryKeyProvider,
         with_key_provider,
     )
@@ -63,10 +63,19 @@ def isolated_state(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_nonce_store():
     """Each test starts with a fresh process-global nonce store so
-    nonces from prior tests don't collide."""
-    from google_docs_mcp import http_server
-    from google_docs_mcp.crypto import NonceStore
-    http_server._NONCE_STORE = NonceStore()
+    nonces from prior tests don't collide.
+
+    v2.2.1: the canonical binding lives in ``http_server._state``;
+    middleware + oauth route both access it via late binding through
+    that module, so reassigning the package-level ``_NONCE_STORE``
+    re-export (in ``http_server.__init__``) would NOT propagate.
+    """
+    from appscriptly import http_server
+    from appscriptly.crypto import NonceStore
+    from appscriptly.http_server import _state
+    fresh = NonceStore()
+    _state._NONCE_STORE = fresh
+    http_server._NONCE_STORE = fresh  # keep the re-export in sync for any test that reads it
     yield
 
 
@@ -74,12 +83,12 @@ def _build_app_under_test():
     """Build the production Starlette app with a stub FastMCP — we
     never actually call /mcp so we don't need a real MCP wired."""
     from fastmcp import FastMCP
-    from google_docs_mcp.http_server import build_app
+    from appscriptly.http_server import build_app
     return build_app(FastMCP("stub-for-test"))
 
 
 def _mint_signed_url_for(user_id: str, *, base="http://testserver/api/convert") -> str:
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
     # v2.1.1: signed-URL HMAC uses the same _TEST_KEY_BYTES that the
     # fixture injected via InMemoryKeyProvider, so the middleware's
     # keys.get_key("signed_url") and this helper agree on the key
@@ -105,7 +114,7 @@ def test_middleware_stashes_user_id_on_request_state_for_signed_url():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def echo_uid(request):
         return JSONResponse(
@@ -141,7 +150,7 @@ def test_middleware_rejects_pre_v21_signed_url_without_uid():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def ok(_request):
         return JSONResponse({"reached_handler": True})
@@ -181,7 +190,7 @@ def test_middleware_rejects_swapped_uid_cross_tenant_attack():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def ok(_request):
         return JSONResponse({"reached_handler": True})
@@ -249,16 +258,16 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=fake_get_creds_for_user,
     ), patch(
-        "google_docs_mcp.http_server.load_credentials",
+        "appscriptly.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server._convert_docx",
+        "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -275,7 +284,7 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
 def test_convert_endpoint_returns_401_with_auth_url_on_needs_reauth():
     """A signed-URL caller whose stored Google creds are absent / revoked
     must get a clean 401 with an auth_url, not a 500."""
-    from google_docs_mcp.credentials import NeedsReauthError
+    from appscriptly.credentials import NeedsReauthError
 
     app = _build_app_under_test()
     client = TestClient(app)
@@ -291,10 +300,10 @@ def test_convert_endpoint_returns_401_with_auth_url_on_needs_reauth():
         )
 
     with patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=raise_needs_reauth,
     ), patch(
-        "google_docs_mcp.http_server._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -327,13 +336,13 @@ def test_convert_endpoint_bearer_header_still_uses_operator_creds():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.load_credentials",
+        "appscriptly.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=fail_get_per_user,
     ), patch(
-        "google_docs_mcp.http_server._convert_docx",
+        "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ):
         resp = client.post(
@@ -359,8 +368,8 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
     """When called with explicit user_id (REST path), pick that user's
     apps_script_url from user_store — NOT current_user_id_or_none()'s
     answer and NOT the operator's local config."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly import user_store
+    from appscriptly.docx_import import _resolve_webapp_url
 
     user_store.save_state(
         "user-A",
@@ -373,7 +382,7 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
 
     # Explicit user_id wins over current_user_id_or_none.
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value="user-B",
     ):
         resolved = _resolve_webapp_url(user_id="user-A")
@@ -383,8 +392,8 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
 def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
     """Without explicit user_id, use current_user_id_or_none — the MCP
     tool path (HTTP mode)."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly import user_store
+    from appscriptly.docx_import import _resolve_webapp_url
 
     user_store.save_state(
         "user-B",
@@ -392,7 +401,7 @@ def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
     )
 
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value="user-B",
     ):
         resolved = _resolve_webapp_url(user_id=None)
@@ -402,13 +411,13 @@ def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
 def test_resolve_webapp_url_falls_back_to_operator_config_outside_auth():
     """No explicit user_id AND no MCP auth context — fall through to
     operator's local config (stdio mode)."""
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly.docx_import import _resolve_webapp_url
 
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value=None,
     ), patch(
-        "google_docs_mcp.docx_import.get_webapp_url",
+        "appscriptly.docx_import.get_webapp_url",
         return_value="https://script.google.com/macros/s/OPERATOR_DEPLOY/exec",
     ):
         resolved = _resolve_webapp_url()
@@ -426,10 +435,10 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
     write into the operator's Drive."""
     from fastmcp.exceptions import ToolError
 
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "appscriptly.services.admin.tools.current_user_id_or_none",
         return_value=None,
     ):
         with pytest.raises(ToolError, match="authenticated MCP session"):
@@ -439,10 +448,10 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
 def test_gdocs_get_signed_upload_url_binds_to_caller_user_id():
     """When called inside an MCP auth context, the minted URL embeds the
     caller's Google sub as ``uid``."""
-    from google_docs_mcp.server import gdocs_get_signed_upload_url
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.server.current_user_id_or_none",
+        "appscriptly.services.admin.tools.current_user_id_or_none",
         return_value="user-A",
     ):
         result = gdocs_get_signed_upload_url()

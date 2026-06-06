@@ -125,5 +125,5 @@ The `user_state.db` schema is forward-compatible. v1.5.x ignores the `apps_scrip
 - `docs/COMPATIBILITY_POLICY.md` § 4 — what generally breaks across major versions; § 2 — v1.x EOL window
 - `scripts/migrate_existing_users.py` — the schema backfill referenced in Step 2 + Step 4
 - `scripts/preflight_strict_flip.sh` — the soak-signal assertion referenced in Step 5
-- `src/google_docs_mcp/keys.py` — the HKDF derivation + `_BACK_COMPAT_RAW_MASTER` shim
+- `src/appscriptly/keys.py` — the HKDF derivation + `_BACK_COMPAT_RAW_MASTER` shim
 - CHANGELOG.md — the per-release notes that anchor "v1.5.x", "v2.0.x", etc. to specific commits

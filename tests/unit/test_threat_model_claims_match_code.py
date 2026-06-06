@@ -209,7 +209,7 @@ def test_hmac_claims_paired_with_status_qualifier():
 def test_restructure_gs_has_no_hmac_validation():
     """Reality-check: if this test starts failing, restructure.gs gained
     HMAC validation — update the docs AND remove the hedges."""
-    gs_text = _read("src/google_docs_mcp/restructure.gs")
+    gs_text = _read("src/appscriptly/restructure.gs")
     assert "computeHmacSha256Signature" not in gs_text, (
         "restructure.gs now has HMAC validation! Time to remove the "
         "'NOT YET WIRED' / 'planned for v2.0c' hedges in THREAT_MODEL.md, "

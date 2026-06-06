@@ -34,7 +34,7 @@ def test_cli_subcommands_includes_setup_apps_script_auto():
     documents `google-docs-mcp setup-apps-script-auto` as THE
     recommended setup path. Pre-fix, that command fell through to the
     stdio MCP handler and silently died."""
-    from google_docs_mcp.server import _CLI_SUBCOMMANDS
+    from appscriptly.server import _CLI_SUBCOMMANDS
     assert "setup-apps-script-auto" in _CLI_SUBCOMMANDS, (
         "'setup-apps-script-auto' missing from _CLI_SUBCOMMANDS — every "
         "user following the README's recommended setup steps will hit a "
@@ -47,7 +47,7 @@ def test_all_readme_documented_commands_are_dispatched():
     """Every command the README tells users to run must be in the
     dispatch set. Catches the v2.0.4 bug class generally (not just the
     one symptom that surfaced)."""
-    from google_docs_mcp.server import _CLI_SUBCOMMANDS
+    from appscriptly.server import _CLI_SUBCOMMANDS
     missing = [c for c in README_DOCUMENTED_COMMANDS if c not in _CLI_SUBCOMMANDS]
     assert not missing, (
         f"README-documented commands missing from _CLI_SUBCOMMANDS: {missing}. "
@@ -61,7 +61,7 @@ def test_every_dispatched_subcommand_has_a_cli_handler():
     branch in cli.cli_main(). Otherwise we route to cli.py and get
     'Unknown command' instead of either MCP startup or the intended
     CLI tool — equally broken, just a different failure shape."""
-    from google_docs_mcp import cli, server
+    from appscriptly import cli, server
 
     # Drive cli_main with each subcommand and assert it does NOT take
     # the "Unknown command" branch (which returns 2). The handlers
@@ -90,14 +90,14 @@ def test_every_dispatched_subcommand_has_a_cli_handler():
 def test_error_recovery_references_exist_as_cli_subcommands():
     """errors.py guidance saying 'Run `google-docs-mcp X`' — X must be
     a real subcommand. Catches N2-class broken recovery instructions."""
-    from google_docs_mcp.cli import cli_main  # noqa: F401
+    from appscriptly.cli import cli_main  # noqa: F401
     errors_text = (
         Path(__file__).resolve().parents[2]
-        / "src" / "google_docs_mcp" / "errors.py"
+        / "src" / "appscriptly" / "errors.py"
     ).read_text(encoding="utf-8")
     cli_text = (
         Path(__file__).resolve().parents[2]
-        / "src" / "google_docs_mcp" / "cli.py"
+        / "src" / "appscriptly" / "cli.py"
     ).read_text(encoding="utf-8")
 
     known = set(re.findall(r'cmd\s*==\s*"([\w\-]+)"', cli_text))
@@ -118,7 +118,7 @@ def test_cli_setup_auto_prints_traceback_on_exception(capsys, monkeypatch):
     chained exceptions (e.g. HttpError wrapped in RuntimeError) hid
     the root cause and made setup failures undebuggable from the
     operator console alone."""
-    from google_docs_mcp import cli, setup_apps_script
+    from appscriptly import cli, setup_apps_script
 
     def boom(*a, **kw):
         raise RuntimeError("simulated chain") from ValueError("root cause")
