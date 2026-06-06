@@ -134,7 +134,47 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         set_tab_icons. Example: '{"Profile":"\\ud83d\\udc64","Skills":"\\ud83d\\udee0"}'.
         Matching is case-insensitive substring (same semantics as the
         set_tab_icons MCP tool).
+
+    **Upload-size cap (signed-URL path).** When the caller authenticated
+    via a signed URL, ``BearerTokenMiddleware`` has stashed the verified
+    per-URL cap on ``request.state.signed_url_max_bytes``. We enforce it
+    here — the cap was HMAC-signed into the URL and previously returned to
+    the caller but never checked (a dead contract). Two layers, mirroring
+    ``upload_frame_endpoint``:
+
+      1. a fast reject of an honestly-DECLARED over-cap ``Content-Length``
+         before the multipart body is parsed; and
+      2. an authoritative post-read check on the ACTUAL decoded ``.docx``
+         byte count — this is what catches a chunked / Content-Length-
+         omitting POST that slips past every Content-Length guard.
+
+    Bearer-header callers (no signed URL) have no per-URL cap; they're
+    bounded only by ``BodySizeLimitMiddleware`` / Drive's own ceiling, as
+    before.
     """
+    # Per-URL upload cap from the signed URL (None for bearer-header
+    # callers). Read once up front so both the pre-parse Content-Length
+    # fast-reject and the post-read actual-bytes check use the same value.
+    signed_max_bytes = getattr(request.state, "signed_url_max_bytes", None)
+
+    # Layer 1: reject an honestly-DECLARED over-cap upload before parsing
+    # the body. A chunked / Content-Length-omitting POST has no usable
+    # header here and falls through to the post-read check below.
+    if signed_max_bytes is not None:
+        declared_cl = request.headers.get("content-length")
+        if declared_cl is not None:
+            try:
+                declared_len = int(declared_cl)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "invalid Content-Length"}, status_code=400
+                )
+            if declared_len > signed_max_bytes:
+                return JSONResponse(
+                    {"error": "payload too large", "max_bytes": signed_max_bytes},
+                    status_code=413,
+                )
+
     form = await request.form()
     upload = form.get("file")
     if not isinstance(upload, UploadFile):
@@ -211,13 +251,29 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             )
         icons_by_title = parsed
 
-    # Stream the upload to a temp file so docx_import can read it as a
-    # path. Avoids holding the full payload in memory + reuses the
+    # Read the uploaded part into memory once. Starlette has already
+    # buffered the multipart body (spooled to a temp file past
+    # ``max_part_size``), so this measures the ACTUAL decoded ``.docx``
+    # byte count regardless of how the body arrived on the wire.
+    contents = await upload.read()
+
+    # Layer 2 (authoritative): enforce the signed-URL cap on the real
+    # byte count. This is the guard that catches a chunked /
+    # Content-Length-omitting POST — the only place we know the true size
+    # is after the bytes are in hand. Reject BEFORE writing the temp file
+    # so an over-cap payload is never persisted to disk.
+    if signed_max_bytes is not None and len(contents) > signed_max_bytes:
+        return JSONResponse(
+            {"error": "payload too large", "max_bytes": signed_max_bytes},
+            status_code=413,
+        )
+
+    # Stream the (now size-checked) upload to a temp file so docx_import
+    # can read it as a path. Avoids re-holding the payload + reuses the
     # existing local-file code path.
     with tempfile.NamedTemporaryFile(
         suffix=".docx", delete=False
     ) as tmp:
-        contents = await upload.read()
         tmp.write(contents)
         tmp_path = Path(tmp.name)
 

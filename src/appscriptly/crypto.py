@@ -39,6 +39,29 @@ from urllib.parse import urlencode
 DEFAULT_TTL_SECONDS = 600  # 10 minutes
 MAX_TTL_SECONDS = 3600  # 1 hour ceiling
 
+# Default upload-size cap baked into a signed URL when the caller doesn't
+# override it. 50 MiB is Drive's docx-converter ceiling — uploading more
+# than this can't succeed downstream anyway.
+DEFAULT_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+# Floor/ceiling for the per-URL ``max_bytes`` cap. The cap is now ENFORCED
+# (the convert endpoint rejects bodies over it), so an out-of-range value
+# is no longer a harmless advisory — it must be validated at both the mint
+# and verify boundaries:
+#   * floor (1 byte): a 0 / negative cap is nonsensical and, once
+#     enforced, would reject every upload — almost certainly a bug or a
+#     forged URL, not an intent. Reject rather than silently brick uploads.
+#   * ceiling (100 MiB): an attacker who could mint or forge a URL with
+#     ``max=<huge>`` would defeat the cap's purpose (memory-exhaustion
+#     protection). 100 MiB sits comfortably above the 50 MiB default so
+#     legitimate callers are unaffected; anything larger is out of policy.
+#     Defense-in-depth: the HMAC already stops a third party forging
+#     ``max``, but bounding it at the crypto layer means even a
+#     mis-configured mint (or a future bug that lets max grow unbounded)
+#     can't produce an unbounded-cap URL.
+MIN_MAX_BYTES = 1
+MAX_MAX_BYTES = 100 * 1024 * 1024  # 100 MiB hard ceiling
+
 
 def _canonical(exp: int, nonce: str, max_bytes: int, user_id: str) -> str:
     """v2.1 canonical: include user_id so a signed URL is bound to one tenant.
@@ -60,7 +83,7 @@ def sign_upload_url(
     signing_key: bytes,
     user_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
-    max_bytes: int = 50 * 1024 * 1024,
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict:
     """Mint a fresh signed upload URL bound to ``user_id``.
 
@@ -78,12 +101,28 @@ def sign_upload_url(
     service the eventual ``/api/convert`` POST. The server-side verify
     refuses to dispatch a request whose URL was signed for a different
     user (because the canonical wouldn't match and HMAC would fail).
+
+    ``max_bytes`` is the upload-size cap baked into the signature and
+    ENFORCED by the convert endpoint (over-cap → 413). Validated against
+    ``[MIN_MAX_BYTES, MAX_MAX_BYTES]`` so a caller can't mint a URL whose
+    cap is nonsensical (≤0 → bricks every upload) or unbounded (defeats
+    the memory-exhaustion protection the cap exists for).
     """
     if not isinstance(user_id, str) or not user_id:
         raise ValueError("user_id must be a non-empty string")
     if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
         raise ValueError(
             f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}], got {ttl_seconds}"
+        )
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)  # True/False are ints in Python
+        or max_bytes < MIN_MAX_BYTES
+        or max_bytes > MAX_MAX_BYTES
+    ):
+        raise ValueError(
+            f"max_bytes must be an int in "
+            f"[{MIN_MAX_BYTES}, {MAX_MAX_BYTES}], got {max_bytes!r}"
         )
     exp = int(time.time()) + ttl_seconds
     nonce = secrets.token_urlsafe(16)
@@ -181,6 +220,21 @@ def verify_signed_params(
     ).hexdigest()
     if not hmac.compare_digest(expected, sig):
         return False, "signature mismatch", None, None
+
+    # Policy bound on the (now authenticated) cap. Checked AFTER the HMAC
+    # so we only reason about a genuinely-signed value, and BEFORE the
+    # nonce is consumed so an out-of-policy URL doesn't burn its one use.
+    # ``sign_upload_url`` already enforces these bounds at mint time, so a
+    # current-code URL always passes; this rejects a URL signed by older
+    # code (pre-bounds) or one minted after the ceiling was tightened —
+    # i.e. a value the enforcing endpoint should never have honored.
+    if max_i < MIN_MAX_BYTES or max_i > MAX_MAX_BYTES:
+        return (
+            False,
+            f"max out of bounds [{MIN_MAX_BYTES}, {MAX_MAX_BYTES}]",
+            None,
+            None,
+        )
 
     if not nonce_store.consume(nonce, exp_i):
         return False, "URL already used", None, None

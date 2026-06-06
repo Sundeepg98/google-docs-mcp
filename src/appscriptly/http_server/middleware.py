@@ -301,10 +301,11 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         qp = request.query_params
         if all(k in qp for k in ("exp", "nonce", "max", "sig")):
             # v2.1: ``uid`` is required. verify_signed_params returns the
-            # validated user_id; stash it on request.state so the
-            # downstream handler can resolve per-user creds without
-            # re-parsing the query string.
-            ok, err, _max, user_id = verify_signed_params(
+            # validated user_id AND the signed ``max`` (the per-URL upload
+            # cap); stash both on request.state so the downstream handler
+            # can resolve per-user creds AND enforce the size cap without
+            # re-parsing / re-trusting the query string.
+            ok, err, signed_max, user_id = verify_signed_params(
                 signing_key=self._signing_key,
                 exp=qp["exp"],
                 nonce=qp["nonce"],
@@ -315,6 +316,38 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             )
             if ok:
                 request.state.signed_url_user_id = user_id
+                # Stash the VERIFIED cap (not qp["max"], which is
+                # attacker-controlled until the HMAC validates it). The
+                # convert endpoint reads this and rejects an over-cap body
+                # with 413 — closing the dead-contract where ``max`` was
+                # signed + returned but never enforced.
+                request.state.signed_url_max_bytes = signed_max
+                # Defense-in-depth fast path: reject an honestly-DECLARED
+                # over-cap upload before the body is read. This does NOT
+                # replace the endpoint's post-read check — a chunked /
+                # Content-Length-omitting POST has no Content-Length here
+                # and falls through to the endpoint, which measures actual
+                # bytes. (The nonce was already consumed by
+                # verify_signed_params; an over-cap attempt burns the URL,
+                # which is intended — retrying requires a fresh mint.)
+                if signed_max is not None:
+                    cl = request.headers.get("content-length")
+                    if cl is not None:
+                        try:
+                            declared = int(cl)
+                        except ValueError:
+                            return JSONResponse(
+                                {"error": "invalid Content-Length"},
+                                status_code=400,
+                            )
+                        if declared > signed_max:
+                            return JSONResponse(
+                                {
+                                    "error": "payload too large",
+                                    "max_bytes": signed_max,
+                                },
+                                status_code=413,
+                            )
                 return await call_next(request)
             return JSONResponse(
                 {"error": f"signed URL rejected: {err}"}, status_code=401

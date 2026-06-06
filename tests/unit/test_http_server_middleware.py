@@ -153,6 +153,96 @@ def test_body_size_passes_small_payload():
 
 
 # ---------------------------------------------------------------------
+# BearerTokenMiddleware — signed-URL max_bytes plumbing
+# (dd-apps-maxbytes-enforce)
+#
+# The middleware now stashes the VERIFIED per-URL cap on
+# request.state.signed_url_max_bytes (previously the value was discarded)
+# and fast-rejects an honestly-declared over-cap Content-Length with 413.
+# ---------------------------------------------------------------------
+
+
+_MW_KEY = b"test-signing-key-32-characters-long"
+
+
+@pytest.fixture
+def _fresh_nonce_store():
+    """Give the middleware a clean process-global nonce store per test
+    (verify_signed_params consumes nonces from http_server._state)."""
+    from appscriptly.crypto import NonceStore
+    from appscriptly.http_server import _state
+    saved = _state._NONCE_STORE
+    _state._NONCE_STORE = NonceStore()
+    yield
+    _state._NONCE_STORE = saved
+
+
+def _bearer_app_echoing_max():
+    """Minimal app behind BearerTokenMiddleware that echoes the cap the
+    middleware stashed on request.state."""
+    from appscriptly.http_server import BearerTokenMiddleware
+
+    async def echo_max(request):
+        return JSONResponse(
+            {"max": getattr(request.state, "signed_url_max_bytes", "UNSET")}
+        )
+
+    return Starlette(
+        routes=[Route("/api/echo", echo_max, methods=["GET", "POST"])],
+        middleware=[Middleware(
+            BearerTokenMiddleware,
+            bearer_token=_MW_KEY,
+            signed_url_key=_MW_KEY,
+        )],
+    )
+
+
+def _signed_qs(user_id="user-A", *, max_bytes=None, base="http://testserver/api/echo"):
+    from urllib.parse import urlparse
+
+    from appscriptly.crypto import sign_upload_url
+    kwargs = {} if max_bytes is None else {"max_bytes": max_bytes}
+    minted = sign_upload_url(
+        base_url=base, signing_key=_MW_KEY, user_id=user_id, **kwargs,
+    )
+    return urlparse(minted["url"]).query, minted["max_bytes"]
+
+
+def test_middleware_stashes_verified_max_bytes_on_request_state(_fresh_nonce_store):
+    """The signed cap must reach the handler via request.state — this is
+    the wiring the dead contract was missing."""
+    app = _bearer_app_echoing_max()
+    client = TestClient(app)
+    qs, cap = _signed_qs(max_bytes=1234)
+    resp = client.get(f"/api/echo?{qs}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["max"] == cap == 1234
+
+
+def test_middleware_413_on_declared_over_cap_content_length(_fresh_nonce_store):
+    """Honestly-declared over-cap Content-Length is rejected BEFORE the
+    handler runs (fast path), with the cap echoed in the body."""
+    app = _bearer_app_echoing_max()
+    client = TestClient(app)
+    qs, cap = _signed_qs(max_bytes=50)
+    # POST a 200-byte body — Content-Length=200 > cap=50.
+    resp = client.post(f"/api/echo?{qs}", content=b"x" * 200)
+    assert resp.status_code == 413, resp.text
+    assert resp.json()["max_bytes"] == cap == 50
+
+
+def test_middleware_passes_under_cap_content_length(_fresh_nonce_store):
+    """A within-cap declared body passes the fast path and reaches the
+    handler (which echoes the stashed cap)."""
+    app = _bearer_app_echoing_max()
+    client = TestClient(app)
+    qs, cap = _signed_qs(max_bytes=5000)
+    resp = client.post(f"/api/echo?{qs}", content=b"x" * 100)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["max"] == cap == 5000
+
+
+# ---------------------------------------------------------------------
 # OAuth callback HTML escaping (reflected XSS prevention, v2.0.5)
 # ---------------------------------------------------------------------
 

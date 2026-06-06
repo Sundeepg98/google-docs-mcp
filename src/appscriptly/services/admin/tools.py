@@ -58,8 +58,11 @@ from fastmcp.exceptions import ToolError
 from appscriptly.auth import default_data_dir
 from appscriptly.credentials import current_user_id_or_none
 from appscriptly.crypto import (
+    DEFAULT_MAX_BYTES,
     DEFAULT_TTL_SECONDS,
+    MAX_MAX_BYTES,
     MAX_TTL_SECONDS,
+    MIN_MAX_BYTES,
     sign_upload_url,
 )
 from appscriptly.keys import (
@@ -945,7 +948,7 @@ def gdocs_help(error_message: str) -> dict:
 )
 def gdocs_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
-    max_bytes: int = 50 * 1024 * 1024,
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict:
     """Mint a signed URL ONLY for uploading an existing .docx file's bytes.
 
@@ -975,8 +978,10 @@ def gdocs_get_signed_upload_url(
         ttl_seconds: How long the URL stays valid. Default 600s; keep
             short to limit blast radius if the URL leaks into a chat
             transcript.
-        max_bytes: Advisory upload size cap baked into the signature.
-            Defaults to 50 MB (Drive's converter ceiling).
+        max_bytes: Upload size cap baked into the signature and ENFORCED
+            by /api/convert — an upload whose body exceeds it is rejected
+            with HTTP 413. Defaults to 50 MB (Drive's converter ceiling);
+            must be in [1, 100 MB].
 
     Returns:
         ``{"url", "expires_at", "max_bytes", "nonce", "user_id",
@@ -1013,6 +1018,21 @@ def gdocs_get_signed_upload_url(
     if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
         raise ToolError(
             f"ttl_seconds must be 1..{MAX_TTL_SECONDS}, got {ttl_seconds}"
+        )
+    # Validate the cap up front so a bad value surfaces as a clean
+    # ToolError (Markdown-renderable in the connector UI) rather than the
+    # ValueError sign_upload_url would otherwise raise. Bounds are the
+    # crypto-layer floor/ceiling — now that the cap is enforced, ≤0 would
+    # brick every upload and an unbounded value would defeat the cap.
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)  # True/False are ints in Python
+        or max_bytes < MIN_MAX_BYTES
+        or max_bytes > MAX_MAX_BYTES
+    ):
+        raise ToolError(
+            f"max_bytes must be an int in [{MIN_MAX_BYTES}, {MAX_MAX_BYTES}], "
+            f"got {max_bytes!r}"
         )
 
     # v2.1: every signed URL is bound to the calling user. Without a
