@@ -45,9 +45,21 @@ def inject_stub_creds_and_staging(stub_creds, monkeypatch, tmp_path):
 
 
 def _stage(batch_id: str, n: int, size_each: int = 1000) -> None:
+    """Write ``n`` frame files directly into the batch dir for ENCODE tests.
+
+    These tests exercise the encode READ path (``_collect_staged_frames``
+    + its ``_MAX_FRAMES`` / byte-budget enforcement), so they deliberately
+    write the files directly rather than through
+    ``_frames_staging.stage_frame_bytes`` — the latter now enforces an
+    UPLOAD-side per-batch count + size cap (its own dedicated tests live in
+    test_frames_staging.py), which would otherwise reject the
+    over-the-encode-cap setups these encode tests need to construct.
+    """
     payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * max(0, size_each - 8)
+    d = _frames_staging._batch_dir(batch_id)
+    d.mkdir(parents=True, exist_ok=True)
     for i in range(1, n + 1):
-        _frames_staging.stage_frame_bytes(batch_id, str(i), payload)
+        (d / f"frame_{i:04d}.png").write_bytes(payload)
 
 
 def _make_drive_stub() -> MagicMock:
