@@ -269,6 +269,37 @@ def test_gdocs_untrash_file_list_form_dispatches_through_run_batch(
 
 
 # ---------------------------------------------------------------------
+# _run_batch — long-error handling: truncate the returned message but
+# log the FULL exception at debug (no context lost when diagnosing).
+# ---------------------------------------------------------------------
+
+
+def test_run_batch_truncates_returned_message_but_logs_full(caplog):
+    """A per-item exception with a long message must surface a bounded
+    300-char ``message`` in the result (guards batch-loop memory) while
+    the FULL exception text is logged at DEBUG so the operator keeps the
+    tail when diagnosing."""
+    import logging
+
+    long_msg = "X" * 900  # well over the 300-char return cap
+
+    def _boom(_creds, _fid):
+        raise RuntimeError(long_msg)
+
+    with caplog.at_level(logging.DEBUG, logger="appscriptly.services.drive.tools"):
+        result = tools._run_batch(["F1"], _boom, success_key="trashed")
+
+    item = result["results"][0]
+    assert item["file_id"] == "F1"
+    assert item["reason"] == "unexpected_error"
+    # Returned message is truncated to the 300-char cap.
+    assert len(item["message"]) == 300
+    assert result["summary"]["failed"] == 1
+    # The FULL message survives in the debug log (not truncated).
+    assert long_msg in caplog.text
+
+
+# ---------------------------------------------------------------------
 # Decorator-envelope cross-check: _get_credentials_fn is invoked
 # ---------------------------------------------------------------------
 
@@ -333,18 +364,31 @@ def test_gdocs_share_file_happy_path_returns_flat_envelope(with_drive_stub):
     }
 
 
-def test_gdocs_share_file_rejects_invalid_role_via_sharing_module(
-    with_drive_stub,
-):
-    """The ``role`` allowlist is enforced by the sharing module's
-    pre-API validation. The tool layer passes inputs through verbatim,
-    so an invalid role bubbles up as ValueError (which the decorator
-    envelope wraps into a structured response for cloud-chat callers)."""
-    with pytest.raises(ValueError, match="role must be one of"):
+def test_gdocs_share_file_rejects_invalid_role_at_tool_boundary():
+    """The ``role`` allowlist is enforced FAIL-FAST at the tool boundary
+    (matching ``gdocs_set_tab_icons``): an invalid role raises
+    ``ToolError`` BEFORE delegating to the sharing module / any Drive
+    round-trip. ``_VALID_ROLES`` is the single source of truth; the
+    delegate re-checks for defense in depth."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="role must be one of"):
         tools.gdocs_share_file(
             drive_file_id="FILE1",
             email="u@e.com",
             role="editor",  # Drive UI label, NOT a valid API literal
+        )
+
+
+def test_gdocs_share_file_rejects_blank_email_as_tool_error(with_drive_stub):
+    """A whitespace-only email is rejected as a structured ``ToolError``
+    at the tool boundary — the delegate's ``ValueError`` is wrapped so
+    the failure surfaces cleanly (not a raw ValueError) for callers."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="email cannot be empty"):
+        tools.gdocs_share_file(
+            drive_file_id="FILE1",
+            email="   ",
+            role="writer",
         )
 
 

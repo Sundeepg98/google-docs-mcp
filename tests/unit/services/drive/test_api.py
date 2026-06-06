@@ -856,6 +856,85 @@ def test_escape_q_literal_leaves_plain_text_untouched():
     assert _escape_q_literal("plain text 123") == "plain text 123"
 
 
+def test_escape_q_literal_backslash_boundary_cases():
+    """SECURITY (escape ORDER): the only correct order is backslash-FIRST
+    then quote — escaping the quote first would let an attacker-supplied
+    backslash re-escape our quote-escape and break out of the literal.
+    Pin the exact boundary inputs the audit called out:
+
+      ``test'name``   -> ``test\\'name``       (quote only)
+      ``test\\name``  -> ``test\\\\name``      (backslash only, doubled)
+      ``test\\'name`` -> ``test\\\\\\'name``   (backslash + quote, combined)
+
+    The combined case is the discriminator: with the WRONG order
+    (quote-first) ``test\\'name`` would become ``test\\\\'name`` — the
+    user's backslash escapes OUR added backslash, leaving the quote
+    UNescaped and the literal broken/injectable. Backslash-first yields
+    ``\\\\`` (the user backslash, doubled) + ``\\'`` (our quote-escape),
+    which is correct.
+    """
+    # quote only
+    assert _escape_q_literal("test'name") == "test\\'name"
+    # backslash only — one backslash becomes two
+    assert _escape_q_literal("test\\name") == "test\\\\name"
+    # combined backslash + quote — user backslash doubled, then quote escaped
+    assert _escape_q_literal("test\\'name") == "test\\\\\\'name"
+
+
+def _q_literal_is_balanced(q: str) -> bool:
+    """True if every ``q=`` string literal is properly closed — i.e. the
+    count of UNESCAPED single quotes is even. Strips escaped quotes
+    (``\\'``) first so only literal-delimiting quotes are counted. A
+    crafted operand that broke out would leave an odd count."""
+    return q.replace("\\'", "").count("'") % 2 == 0
+
+
+def test_find_doc_by_title_backslash_in_name_produces_balanced_literal(
+    stubbed_drive_with_empty_list,
+):
+    """END-TO-END (call site): a name carrying BOTH a backslash and a
+    quote must flow through ``_escape_q_literal`` and land in a balanced,
+    correctly-escaped ``name =`` clause — not just the helper in
+    isolation. This is the injection-boundary the audit flagged, proven
+    at the real q-builder."""
+    find_doc_by_title(
+        MagicMock(), "test\\'name", exact=True, verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    # The fully-escaped operand appears verbatim inside the name clause.
+    assert "name = 'test\\\\\\'name'" in q
+    # And no literal is left hanging open.
+    assert _q_literal_is_balanced(q), (
+        f"q= literal is unbalanced — backslash escape order is broken: q={q!r}"
+    )
+
+
+def test_find_file_backslash_quote_in_filters_stay_balanced(
+    stubbed_drive_with_empty_list,
+):
+    """END-TO-END across MULTIPLE filters: name + full_text + folder each
+    carry a backslash+quote payload simultaneously. Every operand must be
+    escaped via the shared helper so the COMBINED q= remains balanced —
+    proving the escape rule holds uniformly across all string filters,
+    not just the name clause."""
+    find_file(
+        MagicMock(),
+        query="a\\'b",
+        full_text="c\\'d",
+        parent_folder_id="e\\'f",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    # Each operand is backslash-first escaped in its respective clause.
+    assert "name contains 'a\\\\\\'b'" in q
+    assert "fullText contains 'c\\\\\\'d'" in q
+    assert "'e\\\\\\'f' in parents" in q
+    # The whole composed query has no unbalanced (broken-out) literal.
+    assert _q_literal_is_balanced(q), (
+        f"composed q= literal is unbalanced across filters: q={q!r}"
+    )
+
+
 # ---------------------------------------------------------------------
 # find_file — generalized q= DSL construction (any mimeType, filters)
 #

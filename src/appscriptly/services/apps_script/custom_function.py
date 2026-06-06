@@ -84,6 +84,30 @@ _JS_IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 # The JSDoc tag Sheets looks for to expose a function in cells.
 _CUSTOM_FUNCTION_TAG = "@customfunction"
 
+
+def _jsdoc_safe(text: str) -> list[str]:
+    """Render free-text as JSDoc-comment-safe body lines (no code injection).
+
+    The generated ``@customfunction`` block embeds the caller's
+    ``description`` INSIDE a ``/** ... */`` comment. A raw ``description``
+    containing ``*/`` would CLOSE the comment early and turn the remainder
+    into live Apps Script in the deployed bound script — a code-injection
+    vector. Sibling codegen escapes user text into generated JS:
+    ``doc_menu``/``video_deck`` use ``_js_string`` (json.dumps) for JS
+    *string literals*; this is a *comment* body, so we instead neutralize
+    the only comment-terminator (``*/``) — mirroring
+    ``sheet_dashboard``'s ``replace("*/", "* /")`` — and split into lines
+    so a multi-line description stays inside the block (each line is
+    prefixed with `` * `` by the caller).
+
+    Returns the description's lines with every ``*/`` defanged to ``* /``;
+    an empty / whitespace-only input returns ``[]`` (no description line).
+    """
+    if not text or not text.strip():
+        return []
+    safe = text.replace("*/", "* /")
+    return safe.splitlines()
+
 # Reserved JS words that can't be a function name. A custom function
 # named e.g. ``return`` or ``function`` would be a syntax error in the
 # generated .gs; reject early with a clear message rather than letting
@@ -217,11 +241,16 @@ def build_custom_function_script(
 
     # Otherwise prepend a minimal JSDoc carrying the tag. The
     # @customfunction tag is what makes Sheets surface the function in a
-    # cell; the description line (if any) shows in the formula help.
-    desc_line = f" * {description.strip()}\n" if description and description.strip() else ""
+    # cell; the description line(s) (if any) show in the formula help.
+    # description is JSDoc-comment-escaped (a `*/` would otherwise close
+    # the comment and the rest would deploy as live code) and split per
+    # line so a multi-line description can't break out of the block.
+    desc_block = "".join(
+        f" * {line}\n" for line in _jsdoc_safe(description or "")
+    )
     jsdoc = (
         "/**\n"
-        f"{desc_line}"
+        f"{desc_block}"
         f" * {_CUSTOM_FUNCTION_TAG}\n"
         " */\n"
     )
