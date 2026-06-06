@@ -1,0 +1,56 @@
+# PR-Δ4 — Litestream config for /data SQLite backup.
+#
+# Activation is via env vars (see scripts/entrypoint.sh):
+#   LITESTREAM_BUCKET           — S3-compatible bucket name (e.g. "gdmcp-backup")
+#   LITESTREAM_ENDPOINT         — bucket endpoint URL (R2: https://<account>.r2.cloudflarestorage.com)
+#   LITESTREAM_ACCESS_KEY_ID    — S3-compatible access key
+#   LITESTREAM_SECRET_ACCESS_KEY — paired secret
+#
+# When LITESTREAM_BUCKET is set, entrypoint.sh runs the server under
+# `litestream replicate -exec`, which:
+#   - takes an initial snapshot of every db listed below
+#   - streams WAL frames to the replica continuously (RPO ~1 second)
+#   - takes a final WAL checkpoint when the server exits
+#
+# Restore procedure: see docs/runbooks/backup-restore.md.
+#
+# WHY Cloudflare R2 vs alternatives (per the ADR):
+#   - R2: 10 GB free forever, zero egress charges, S3-compatible
+#   - Backblaze B2: 10 GB free, but $0.01/GB egress beyond a small allowance
+#   - AWS S3: cheapest paid; no free tier worth speaking of
+# R2 wins on $0 + restore-friendliness (egress is free, so DR pulls
+# don't cost anything).
+
+# Top-level access creds — Litestream reads these from env vars
+# matching the keys below (its standard S3-replica syntax).
+access-key-id:     ${LITESTREAM_ACCESS_KEY_ID}
+secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+
+dbs:
+  # The user state DB — OAuth tokens + Apps Script URLs + per-user
+  # signing keys. Loss = every user re-auths AND loses their per-
+  # user signed-URL HMAC continuity. This is the operationally
+  # critical one.
+  - path: /data/google-docs-mcp/user_state.db
+    replicas:
+      - type:     s3
+        bucket:   ${LITESTREAM_BUCKET}
+        endpoint: ${LITESTREAM_ENDPOINT}
+        # R2 has no concept of regions but the S3 SDK requires one;
+        # "auto" is R2's documented sentinel value.
+        region:   auto
+        # Within-bucket key prefix. Keeps multiple replicated DBs
+        # tidy if the operator ever points a second app at the same
+        # bucket.
+        path:     user_state
+        # Retention: keep ~7 days of WAL frames so a restore can roll
+        # back to any point in the last week (vs the default 24h).
+        # WAL frames are tiny; 7d is cheap on R2's 10 GB free tier.
+        retention: 168h
+        # Snapshot cadence: a full snapshot every 24h. Restore takes
+        # the most recent snapshot + replays WAL frames from there to
+        # the requested point in time.
+        snapshot-interval: 24h
+        # Sync cadence: flush WAL frames to the replica every 1s.
+        # RPO target = 1s; a crash loses at most ~1s of writes.
+        sync-interval: 1s

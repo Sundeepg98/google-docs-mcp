@@ -5,7 +5,7 @@ not delivered for the drive service either. Sister file to
 ``tests/unit/services/docs/test_tools.py``, applying the same canonical
 pattern (PR #103 → PR #110 → here) at the drive surface.
 
-The 6 drive tools:
+The 10 drive tools:
 
   1. gdocs_find_doc_by_title — title search; q= DSL construction
   2. gdocs_move_to_folder    — addParents/removeParents
@@ -13,6 +13,10 @@ The 6 drive tools:
   4. gdocs_untrash_file      — single-ID + list-batch untrash
   5. gdocs_share_file        — permissions.create (v2.3.0)
   6. gdocs_list_permissions  — permissions.list (v2.3.0)
+  7. gdocs_create_folder     — files.create (folder mimeType)
+  8. gdocs_revoke_permission — permissions.delete
+  9. gdocs_export_doc        — files.export (Google-native → portable)
+  10. gdocs_find_file        — files.list (any mimeType, app-accessible)
 
 The trash/untrash tools accept either a single ``file_id`` (str) or
 a list (batch); a happy-path test for each form exercises the
@@ -35,12 +39,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.drive import tools
+from appscriptly.services.drive import tools
 
 
 @pytest.fixture
@@ -265,6 +269,37 @@ def test_gdocs_untrash_file_list_form_dispatches_through_run_batch(
 
 
 # ---------------------------------------------------------------------
+# _run_batch — long-error handling: truncate the returned message but
+# log the FULL exception at debug (no context lost when diagnosing).
+# ---------------------------------------------------------------------
+
+
+def test_run_batch_truncates_returned_message_but_logs_full(caplog):
+    """A per-item exception with a long message must surface a bounded
+    300-char ``message`` in the result (guards batch-loop memory) while
+    the FULL exception text is logged at DEBUG so the operator keeps the
+    tail when diagnosing."""
+    import logging
+
+    long_msg = "X" * 900  # well over the 300-char return cap
+
+    def _boom(_creds, _fid):
+        raise RuntimeError(long_msg)
+
+    with caplog.at_level(logging.DEBUG, logger="appscriptly.services.drive.tools"):
+        result = tools._run_batch(["F1"], _boom, success_key="trashed")
+
+    item = result["results"][0]
+    assert item["file_id"] == "F1"
+    assert item["reason"] == "unexpected_error"
+    # Returned message is truncated to the 300-char cap.
+    assert len(item["message"]) == 300
+    assert result["summary"]["failed"] == 1
+    # The FULL message survives in the debug log (not truncated).
+    assert long_msg in caplog.text
+
+
+# ---------------------------------------------------------------------
 # Decorator-envelope cross-check: _get_credentials_fn is invoked
 # ---------------------------------------------------------------------
 
@@ -329,18 +364,31 @@ def test_gdocs_share_file_happy_path_returns_flat_envelope(with_drive_stub):
     }
 
 
-def test_gdocs_share_file_rejects_invalid_role_via_sharing_module(
-    with_drive_stub,
-):
-    """The ``role`` allowlist is enforced by the sharing module's
-    pre-API validation. The tool layer passes inputs through verbatim,
-    so an invalid role bubbles up as ValueError (which the decorator
-    envelope wraps into a structured response for cloud-chat callers)."""
-    with pytest.raises(ValueError, match="role must be one of"):
+def test_gdocs_share_file_rejects_invalid_role_at_tool_boundary():
+    """The ``role`` allowlist is enforced FAIL-FAST at the tool boundary
+    (matching ``gdocs_set_tab_icons``): an invalid role raises
+    ``ToolError`` BEFORE delegating to the sharing module / any Drive
+    round-trip. ``_VALID_ROLES`` is the single source of truth; the
+    delegate re-checks for defense in depth."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="role must be one of"):
         tools.gdocs_share_file(
             drive_file_id="FILE1",
             email="u@e.com",
             role="editor",  # Drive UI label, NOT a valid API literal
+        )
+
+
+def test_gdocs_share_file_rejects_blank_email_as_tool_error(with_drive_stub):
+    """A whitespace-only email is rejected as a structured ``ToolError``
+    at the tool boundary — the delegate's ``ValueError`` is wrapped so
+    the failure surfaces cleanly (not a raw ValueError) for callers."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="email cannot be empty"):
+        tools.gdocs_share_file(
+            drive_file_id="FILE1",
+            email="   ",
+            role="writer",
         )
 
 
@@ -366,3 +414,205 @@ def test_gdocs_list_permissions_happy_path_returns_envelope(with_drive_stub):
     assert result["file_id"] == "FILE-SHARED"
     assert len(result["permissions"]) == 2
     assert result["permissions"][0]["role"] == "owner"
+
+
+# ---------------------------------------------------------------------
+# 7. gdocs_create_folder — happy-path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_create_folder_happy_path_returns_flat_envelope(with_drive_stub):
+    """The tool delegates to ``api.create_folder`` and surfaces its
+    ``{folder_id, name, url, parent_folder_id}`` envelope through the
+    standard ``@workspace_tool(creds=True)`` boundary."""
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+    }
+    result = tools.gdocs_create_folder(name="Q3 Onboarding")
+    assert result == {
+        "folder_id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+        "url": "https://drive.google.com/drive/folders/FOLDER-NEW",
+        "parent_folder_id": None,
+    }
+
+
+def test_gdocs_create_folder_forwards_parent_to_api(with_drive_stub):
+    """A parent_folder_id passed at the tool layer must reach the Drive
+    body as ``parents: [parent_id]`` (forwarded through the api layer)."""
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "F-CHILD", "name": "Sub",
+    }
+    result = tools.gdocs_create_folder(name="Sub", parent_folder_id="PARENT-1")
+    last = with_drive_stub.files().create.call_args_list[-1]
+    assert last.kwargs["body"]["parents"] == ["PARENT-1"]
+    assert result["parent_folder_id"] == "PARENT-1"
+
+
+def test_gdocs_create_folder_rejects_blank_name_via_api(with_drive_stub):
+    """Blank-name rejection from the api module bubbles up through the
+    decorator envelope as ValueError (the decorator wraps it for
+    cloud-mode callers; raises bare ValueError in test contexts)."""
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        tools.gdocs_create_folder(name="   ")
+
+
+# ---------------------------------------------------------------------
+# 8. gdocs_revoke_permission — happy-path + validation + soft-failure
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_revoke_permission_happy_path_returns_revoked_true(with_drive_stub):
+    """The tool delegates to ``sharing.revoke_permission`` and surfaces
+    its ``{file_id, permission_id, revoked, was_already_absent}``
+    envelope through the standard decorator boundary."""
+    with_drive_stub.permissions().delete().execute.return_value = ""
+    result = tools.gdocs_revoke_permission(
+        drive_file_id="FILE-ABC", permission_id="PERM-1",
+    )
+    assert result == {
+        "file_id": "FILE-ABC",
+        "permission_id": "PERM-1",
+        "revoked": True,
+        "was_already_absent": False,
+    }
+
+
+def test_gdocs_revoke_permission_rejects_blank_permission_id(with_drive_stub):
+    """Pre-API validation (blank permission_id) from the sharing module
+    bubbles up through the tool layer."""
+    with pytest.raises(ValueError, match="permission_id cannot be empty"):
+        tools.gdocs_revoke_permission(
+            drive_file_id="FILE1", permission_id="   ",
+        )
+
+
+# ---------------------------------------------------------------------
+# 9. gdocs_export_doc — happy-path + validation + soft-failure
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def _patch_export_media(monkeypatch):
+    """Patch the api module's MediaIoBaseDownload / MediaIoBaseUpload so
+    the export stream-download + re-upload don't touch real HTTP. (The
+    tool-layer test only needs the body to run through the decorator
+    envelope; api-shape detail is covered in test_api.py.)"""
+    import appscriptly.services.drive.api as api_mod
+
+    class _FakeDownloader:
+        def __init__(self, _buf, _request):
+            pass
+
+        def next_chunk(self):
+            return (None, True)
+
+    monkeypatch.setattr(api_mod, "MediaIoBaseDownload", _FakeDownloader)
+    monkeypatch.setattr(
+        api_mod, "MediaIoBaseUpload", lambda *a, **k: MagicMock(name="media-upload")
+    )
+
+
+def test_gdocs_export_doc_happy_path_returns_envelope(
+    with_drive_stub, _patch_export_media,
+):
+    """The tool delegates to ``api.export_doc`` and surfaces its
+    export envelope through the standard ``@workspace_tool(creds=True)``
+    boundary. Source is a Google Doc → pdf."""
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "SRC-1", "name": "Plan",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    with_drive_stub.files().export_media.return_value = MagicMock(name="req")
+    with_drive_stub.files().create().execute.return_value = {
+        "id": "EXP-1", "name": "Plan.pdf", "size": "1024",
+        "webViewLink": "https://drive.google.com/file/d/EXP-1/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-1",
+    }
+    result = tools.gdocs_export_doc(drive_file_id="SRC-1", export_format="pdf")
+    assert result["exported_file_id"] == "EXP-1"
+    assert result["export_format"] == "pdf"
+    assert result["export_mime_type"] == "application/pdf"
+    assert result["download_url"] == "https://drive.google.com/uc?id=EXP-1"
+
+
+def test_gdocs_export_doc_rejects_unknown_format_via_api(with_drive_stub):
+    """An unrecognized format token bubbles from the api module through
+    the decorator envelope as ValueError (no Drive call needed)."""
+    with pytest.raises(ValueError, match="is not recognized"):
+        tools.gdocs_export_doc(drive_file_id="SRC-1", export_format="bogus")
+
+
+def test_gdocs_export_doc_soft_failure_passthrough(
+    with_drive_stub, _patch_export_media,
+):
+    """A not_exportable source (binary blob) is surfaced as data through
+    the tool layer — the decorator does not turn it into an error."""
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "BLOB", "name": "scan.pdf", "mimeType": "application/pdf",
+    }
+    result = tools.gdocs_export_doc(drive_file_id="BLOB", export_format="pdf")
+    assert result["reason"] == "not_exportable"
+    assert result["source_file_id"] == "BLOB"
+
+
+# ---------------------------------------------------------------------
+# 10. gdocs_find_file — happy-path + filter forwarding through envelope
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_find_file_returns_envelope_for_empty_result(with_drive_stub):
+    """Default stub returns no files → {matches: [], count: 0} through
+    the standard @workspace_tool(creds=True) boundary."""
+    result = tools.gdocs_find_file(query="nothing", verify_writable=False)
+    assert result == {"matches": [], "count": 0}
+
+
+def test_gdocs_find_file_surfaces_non_doc_types(with_drive_stub):
+    """A Sheet match flows through the tool — proving the generalized
+    find returns non-Doc types (the whole point vs find_doc_by_title)."""
+    sheet_mime = "application/vnd.google-apps.spreadsheet"
+    with_drive_stub.files().list().execute.return_value = {
+        "files": [{
+            "id": "SHEET-1", "name": "Budget", "mimeType": sheet_mime,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    result = tools.gdocs_find_file(mime_type=sheet_mime, verify_writable=False)
+    assert result["count"] == 1
+    assert result["matches"][0]["file_id"] == "SHEET-1"
+    assert result["matches"][0]["mimeType"] == sheet_mime
+
+
+def test_gdocs_find_file_forwards_filters_into_query(with_drive_stub):
+    """Filters passed at the tool layer reach the Drive q= (forwarded
+    through the api layer): mime_type + parent_folder_id + full_text."""
+    slides_mime = "application/vnd.google-apps.presentation"
+    tools.gdocs_find_file(
+        query="deck",
+        mime_type=slides_mime,
+        full_text="roadmap",
+        parent_folder_id="FOLDER-1",
+        verify_writable=False,
+    )
+    last = with_drive_stub.files().list.call_args_list[-1]
+    q = last.kwargs["q"]
+    assert "name contains 'deck'" in q
+    assert f"mimeType = '{slides_mime}'" in q
+    assert "fullText contains 'roadmap'" in q
+    assert "'FOLDER-1' in parents" in q
+
+
+def test_gdocs_find_file_invokes_get_credentials_fn(with_drive_stub, monkeypatch):
+    """Canary: the @workspace_tool(creds=True) decorator must inject
+    creds before delegating (same pattern as the other drive tools)."""
+    call_count = {"n": 0}
+
+    def counting_creds_fn():
+        call_count["n"] += 1
+        return MagicMock(name="stub-creds-canary")
+
+    monkeypatch.setattr(decorators, "_get_credentials_fn", counting_creds_fn)
+    tools.gdocs_find_file(query="x", verify_writable=False)
+    assert call_count["n"] == 1

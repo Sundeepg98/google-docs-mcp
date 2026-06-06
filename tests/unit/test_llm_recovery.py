@@ -48,7 +48,7 @@ def _read_resource_payload(uri: str) -> dict:
     ``.contents[0].content`` is a JSON string for dict-returning
     resource handlers.
     """
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
 
     result = asyncio.run(mcp.read_resource(uri))
     body = result.contents[0].content
@@ -155,7 +155,7 @@ def test_resource_index_returns_full_table():
     placeholder_behavior) must be present, with the fully-normalized
     field shape (including the v2.2b-fix ``planned`` field).
     """
-    from google_docs_mcp.resources import _RECOVERY_TABLE
+    from appscriptly.resources import _RECOVERY_TABLE
 
     payload = _read_resource_payload("gdocs://error-recovery")
 
@@ -207,7 +207,7 @@ def test_resource_lookup_returns_known_key():
 
 def test_resource_lookup_unknown_key_returns_available_keys():
     """Miss must surface available_keys so the caller can recover."""
-    from google_docs_mcp.resources import _RECOVERY_TABLE
+    from appscriptly.resources import _RECOVERY_TABLE
 
     payload = _read_resource_payload(
         "gdocs://error-recovery/garbage_nonexistent_key"
@@ -234,7 +234,7 @@ def test_gdocs_help_matches_known_pattern():
     JSON-wire form the LLM sees. Round-trip via ``json.dumps`` to
     mirror what MCP transport actually produces.
     """
-    from google_docs_mcp.services.admin.tools import gdocs_help
+    from appscriptly.services.admin.tools import gdocs_help
 
     # Mirror the wire form: tool returns a dict, MCP json-encodes
     # it before handing it to the client.
@@ -259,8 +259,8 @@ def test_gdocs_help_matches_known_pattern():
 
 def test_gdocs_help_no_match_returns_available():
     """Totally unrelated input must return matched=False + suggestion."""
-    from google_docs_mcp.resources import _RECOVERY_TABLE
-    from google_docs_mcp.services.admin.tools import gdocs_help
+    from appscriptly.resources import _RECOVERY_TABLE
+    from appscriptly.services.admin.tools import gdocs_help
 
     result = gdocs_help("the quick brown fox jumps over the lazy dog")
 
@@ -277,7 +277,7 @@ def test_gdocs_help_no_match_returns_available():
 
 def test_gdocs_help_matches_429_rate_limit():
     """Sanity guard: rate_limited pattern works on a real-shaped string."""
-    from google_docs_mcp.services.admin.tools import gdocs_help
+    from appscriptly.services.admin.tools import gdocs_help
 
     result = gdocs_help("Google API error: 429 Too Many Requests. quota...")
 
@@ -297,7 +297,7 @@ def test_gdocs_help_is_case_insensitive():
     case-insensitive matching keeps gdocs_help symmetric with the
     rest of the error-handling code.
     """
-    from google_docs_mcp.services.admin.tools import gdocs_help
+    from appscriptly.services.admin.tools import gdocs_help
 
     # Lowercased version of the rate_limited pattern.
     result_lower = gdocs_help("google api error: 429 too many requests")
@@ -326,7 +326,7 @@ def _live_keys() -> list[str]:
     Planned entries are aspirational (no current emitter), so the
     round-trip test cannot construct a realistic response for them.
     """
-    from google_docs_mcp.resources import _RECOVERY_TABLE
+    from appscriptly.resources import _RECOVERY_TABLE
 
     return [
         k for k, v in _RECOVERY_TABLE.items()
@@ -380,7 +380,7 @@ def test_round_trip_realistic_response_matches(key):
     strings) skip the ``json.dumps`` step — they're already string
     on the wire.
     """
-    from google_docs_mcp.services.admin.tools import gdocs_help
+    from appscriptly.services.admin.tools import gdocs_help
 
     response = _REALISTIC_RESPONSES[key]
     if isinstance(response, str):
@@ -420,7 +420,7 @@ def test_recovery_table_matches_doc():
     to one, you add a row to the other. This test fails the build
     if they desync.
     """
-    from google_docs_mcp.resources import _RECOVERY_TABLE
+    from appscriptly.resources import _RECOVERY_TABLE
 
     assert DOC_PATH.exists(), (
         f"Expected source-of-truth doc at {DOC_PATH} — missing. "
@@ -472,7 +472,7 @@ def test_recovery_table_matches_doc():
 ])
 def test_required_v2_2b_entries_are_complete(key):
     """All 9 baseline v2.2b entries must be fully populated."""
-    from google_docs_mcp.resources import _RECOVERY_TABLE
+    from appscriptly.resources import _RECOVERY_TABLE
 
     entry = _RECOVERY_TABLE.get(key)
     assert entry is not None, f"missing required v2.2b entry: {key}"

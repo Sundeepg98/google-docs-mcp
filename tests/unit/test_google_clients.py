@@ -11,8 +11,8 @@ to another, and that test fails immediately on such a regression.
 **v2.1.2 (M2)**: the actual ``build()`` call moved into
 ``google_api_client.GoogleApiClientAdapter`` (the production adapter
 behind the new Hex-style Port). The patch target updated from
-``google_docs_mcp.google_clients.build`` to
-``google_docs_mcp.google_api_client.build`` — both call shapes
+``appscriptly.google_clients.build`` to
+``appscriptly.google_api_client.build`` — both call shapes
 are equivalent since the facade delegates straight through. Port-level
 tests (Protocol satisfaction, InMemoryGoogleAPIClient behavior,
 injection ergonomics) live in ``tests/unit/test_google_api_client.py``.
@@ -39,9 +39,9 @@ def test_get_service_returns_what_build_returns():
     holds — the cache returns the cached Resource, which IS what
     build() returned the first time.
     """
-    from google_docs_mcp.google_clients import get_service
+    from appscriptly.google_clients import get_service
 
-    with patch("google_docs_mcp.google_api_client.build") as mk_build:
+    with patch("appscriptly.google_api_client.build") as mk_build:
         sentinel_resource = MagicMock(name="drive-v3-resource")
         mk_build.return_value = sentinel_resource
 
@@ -51,12 +51,18 @@ def test_get_service_returns_what_build_returns():
         "get_service must return the Resource produced by build() — "
         "wrapping it would break callers that expect a Resource."
     )
-    # Sanity check: build was actually called with the args we passed,
-    # keyword-only for credentials.
+    # Sanity check: build was called with the service/version positionally
+    # and a deadline-bearing transport via ``http=`` (v#152 socket-timeout
+    # hardening). Credentials are NO LONGER a direct build() kwarg — they
+    # are wrapped inside the AuthorizedHttp handed to ``http=`` (passing
+    # both ``credentials=`` and ``http=`` to build() raises). The
+    # credentials still flow to the request layer; see
+    # test_distinct_credentials_get_distinct_resources for that invariant.
     mk_build.assert_called_once()
     args, kwargs = mk_build.call_args
     assert args == ("drive", "v3")
-    assert "credentials" in kwargs
+    assert "http" in kwargs
+    assert "credentials" not in kwargs
 
 
 def test_distinct_service_tuples_get_distinct_resources():
@@ -68,9 +74,9 @@ def test_distinct_service_tuples_get_distinct_resources():
     is caught — see test_distinct_credentials_get_distinct_resources.
     Same shape, different axis.
     """
-    from google_docs_mcp.google_clients import get_service
+    from appscriptly.google_clients import get_service
 
-    with patch("google_docs_mcp.google_api_client.build") as mk_build:
+    with patch("appscriptly.google_api_client.build") as mk_build:
         # Return a distinct Resource per call so we can tell them apart.
         mk_build.side_effect = lambda *args, **kwargs: MagicMock(
             name=f"resource-{args[0]}-{args[1]}",
@@ -103,17 +109,27 @@ def test_distinct_credentials_get_distinct_resources():
     the only correct cache key includes credentials (or a stable
     identity derived from them, like the refresh_token hash).
     """
-    from google_docs_mcp.google_clients import get_service
+    from appscriptly.google_clients import get_service
 
-    with patch("google_docs_mcp.google_api_client.build") as mk_build:
+    with patch("appscriptly.google_api_client.build") as mk_build:
         # Return a distinct Resource per call so we can tell them apart.
         # If a future cache uses (service, version) as key and ignores
         # credentials, the SECOND call below would return the cached
         # MagicMock from the first call, and the assertion below would
         # fire with a clear message.
-        mk_build.side_effect = lambda *args, **kwargs: MagicMock(
-            name=f"resource-for-{kwargs['credentials']._mock_name}",
-        )
+        #
+        # v#152 socket-timeout hardening: build() is now called with
+        # ``http=AuthorizedHttp(credentials, http=httplib2.Http(timeout))``
+        # rather than ``credentials=``. The credentials are still uniquely
+        # bound to the call — they live on the AuthorizedHttp's
+        # ``.credentials`` attribute — so identity is derived from there.
+        # This keeps the per-credential distinctness guarantee intact under
+        # the new transport plumbing.
+        def _distinct_per_creds(*args, **kwargs):
+            creds = kwargs["http"].credentials
+            return MagicMock(name=f"resource-for-{creds._mock_name}")
+
+        mk_build.side_effect = _distinct_per_creds
 
         alice_creds = _fake_credentials("alice")
         bob_creds = _fake_credentials("bob")
@@ -139,7 +155,7 @@ def test_credentials_parameter_is_keyword_only():
     visual scan."""
     import inspect
 
-    from google_docs_mcp.google_clients import get_service
+    from appscriptly.google_clients import get_service
 
     sig = inspect.signature(get_service)
     param = sig.parameters["credentials"]
@@ -157,7 +173,7 @@ def test_get_service_signature_does_not_silently_swallow_kwargs():
     a misspelled option that the wrapper ignores."""
     import inspect
 
-    from google_docs_mcp.google_clients import get_service
+    from appscriptly.google_clients import get_service
 
     sig = inspect.signature(get_service)
     kinds = {p.kind for p in sig.parameters.values()}

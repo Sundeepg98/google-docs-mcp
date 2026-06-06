@@ -103,7 +103,7 @@ def base_url():
 
 @pytest.fixture
 def nonce_store():
-    from google_docs_mcp.crypto import NonceStore
+    from appscriptly.crypto import NonceStore
     return NonceStore()
 
 
@@ -149,7 +149,7 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
     """Fresh user with no row in user_store: the credentials resolver must
     raise ``NeedsReauthError`` carrying a clickable auth_url, not a
     generic KeyError or 500."""
-    from google_docs_mcp.credentials import (
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
 
@@ -190,11 +190,11 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
     oauthlib machinery uses the synchronous requests transport, so
     we patch one layer up).
     """
-    from google_docs_mcp import user_store
-    from google_docs_mcp.credentials import (
+    from appscriptly import user_store
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, exchange_code_for_credentials,
     )
 
@@ -219,7 +219,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
 
     # --- Step 3: callback runs exchange (Flow.fetch_token mocked). ---
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_returning(
             refresh_token="REFRESH_FROM_GOOGLE",
@@ -270,8 +270,8 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
     impersonate the entire OAuth app to Google — way worse than a
     single user's refresh_token leaking.
     """
-    from google_docs_mcp import user_store
-    from google_docs_mcp.oauth_google import (
+    from appscriptly import user_store
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, build_authorization_url,
         exchange_code_for_credentials,
     )
@@ -284,7 +284,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_returning(
             refresh_token="R", access_token="A", scopes=GOOGLE_API_SCOPES,
@@ -343,12 +343,12 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
     from starlette.routing import Route
     from starlette.testclient import TestClient
 
-    from google_docs_mcp import user_store
-    from google_docs_mcp.http_server import (
+    from appscriptly import user_store
+    from appscriptly.http_server import (
         _NONCE_STORE, oauth_google_api_callback,
     )
-    from google_docs_mcp.oauth_google import CALLBACK_PATH, GOOGLE_API_SCOPES
-    from google_docs_mcp.oauth_state import sign_state
+    from appscriptly.oauth_google import CALLBACK_PATH, GOOGLE_API_SCOPES
+    from appscriptly.oauth_state import sign_state
 
     user_id = "callback-e2e-user"
 
@@ -393,7 +393,7 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
     )
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         # The mock returns creds whose to_json() carries the operator's
         # client_id / client_secret -- exactly what Google's real
@@ -458,7 +458,7 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
     this test makes sure the property is enforced END-TO-END (not just
     in oauth_state.consume()).
     """
-    from google_docs_mcp.oauth_google import (
+    from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, OAuthCallbackError, build_authorization_url,
         exchange_code_for_credentials,
     )
@@ -470,7 +470,7 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
     with patch(
-        "google_docs_mcp.oauth_google.Flow.from_client_config"
+        "appscriptly.oauth_google.Flow.from_client_config"
     ) as mk_flow:
         mk_flow.return_value = _mock_flow_returning(
             refresh_token="VICTIM_R", access_token="VICTIM_A",

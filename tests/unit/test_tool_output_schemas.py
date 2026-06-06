@@ -29,7 +29,7 @@ import pytest
 
 def _list_tools():
     """Run mcp.list_tools() in a fresh event loop."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     return asyncio.run(mcp.list_tools())
 
 
@@ -97,7 +97,7 @@ def test_tool_schemas_registry_matches_registered_tools():
     tool_schemas.py and the actual ``mcp.list_tools()`` set must match.
     Catches: registry has stale entry for a deleted tool, or new tool
     added to server.py without a registry entry."""
-    from google_docs_mcp.tool_schemas import TOOL_OUTPUT_SCHEMAS
+    from appscriptly.tool_schemas import TOOL_OUTPUT_SCHEMAS
 
     registered = {t.name for t in _list_tools()}
     in_registry = set(TOOL_OUTPUT_SCHEMAS.keys())
@@ -119,7 +119,7 @@ def test_each_decorator_schema_matches_registry_entry():
     """The ``output_schema=`` on each @mcp.tool decorator must be the
     SAME OBJECT as the registry entry. Prevents a copy-paste regression
     where a decorator imports the wrong schema constant."""
-    from google_docs_mcp.tool_schemas import TOOL_OUTPUT_SCHEMAS
+    from appscriptly.tool_schemas import TOOL_OUTPUT_SCHEMAS
 
     tools = _list_tools()
     mismatched = []
@@ -148,8 +148,8 @@ def test_gdocs_get_tab_url_response_matches_schema():
     Drive it, validate response against its declared schema."""
     # v2.1.3 (M3 POC): gdocs_get_tab_url moved from server.py to
     # services/docs/tools.py. Import path updated accordingly.
-    from google_docs_mcp.services.docs.tools import gdocs_get_tab_url
-    from google_docs_mcp.tool_schemas import GDOCS_GET_TAB_URL_OUTPUT_SCHEMA
+    from appscriptly.services.docs.tools import gdocs_get_tab_url
+    from appscriptly.tool_schemas import GDOCS_GET_TAB_URL_OUTPUT_SCHEMA
 
     result = gdocs_get_tab_url("DOC123", "TAB456")
     jsonschema.validate(result, GDOCS_GET_TAB_URL_OUTPUT_SCHEMA)
@@ -158,8 +158,8 @@ def test_gdocs_get_tab_url_response_matches_schema():
 def test_gdocs_help_matched_response_matches_schema():
     """gdocs_help with a known pattern — exercises the ``matched: True``
     branch of the oneOf schema."""
-    from google_docs_mcp.services.admin.tools import gdocs_help
-    from google_docs_mcp.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
+    from appscriptly.services.admin.tools import gdocs_help
+    from appscriptly.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
 
     # Use an error string that's likely to match — the table includes
     # "Apps Script Web App URL not configured" per gdocs_setup_apps_script
@@ -173,8 +173,8 @@ def test_gdocs_help_matched_response_matches_schema():
 
 def test_gdocs_help_unmatched_response_matches_schema():
     """gdocs_help with garbage input — exercises ``matched: False``."""
-    from google_docs_mcp.services.admin.tools import gdocs_help
-    from google_docs_mcp.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
+    from appscriptly.services.admin.tools import gdocs_help
+    from appscriptly.tool_schemas import GDOCS_HELP_OUTPUT_SCHEMA
 
     result = gdocs_help("zzzz_nonexistent_pattern_xyzqwerty_9876543210")
     jsonschema.validate(result, GDOCS_HELP_OUTPUT_SCHEMA)
@@ -185,8 +185,8 @@ def test_gdocs_help_unmatched_response_matches_schema():
 
 def test_gdocs_guide_response_matches_schema():
     """gdocs_guide is pure-local. Drive it + validate."""
-    from google_docs_mcp.services.admin.tools import gdocs_guide
-    from google_docs_mcp.tool_schemas import GDOCS_GUIDE_OUTPUT_SCHEMA
+    from appscriptly.services.admin.tools import gdocs_guide
+    from appscriptly.tool_schemas import GDOCS_GUIDE_OUTPUT_SCHEMA
 
     result = gdocs_guide()
     jsonschema.validate(result, GDOCS_GUIDE_OUTPUT_SCHEMA)
@@ -195,8 +195,8 @@ def test_gdocs_guide_response_matches_schema():
 def test_gdocs_server_info_response_matches_schema():
     """gdocs_server_info reads from local registry — no API call. The
     function is async, so wrap in asyncio.run."""
-    from google_docs_mcp.services.admin.tools import gdocs_server_info
-    from google_docs_mcp.tool_schemas import GDOCS_SERVER_INFO_OUTPUT_SCHEMA
+    from appscriptly.services.admin.tools import gdocs_server_info
+    from appscriptly.tool_schemas import GDOCS_SERVER_INFO_OUTPUT_SCHEMA
 
     result = asyncio.run(gdocs_server_info())
     jsonschema.validate(result, GDOCS_SERVER_INFO_OUTPUT_SCHEMA)
@@ -213,13 +213,13 @@ def test_gdocs_get_signed_upload_url_response_matches_schema(monkeypatch):
     key for ``signed_url`` directly — no env coupling, no incidental
     dependency on HKDF input length.
     """
-    from google_docs_mcp.services.admin import tools as admin_tools
-    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
-    from google_docs_mcp.key_provider import (
+    from appscriptly.services.admin import tools as admin_tools
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
+    from appscriptly.key_provider import (
         InMemoryKeyProvider,
         with_key_provider,
     )
-    from google_docs_mcp.tool_schemas import (
+    from appscriptly.tool_schemas import (
         GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
     )
 

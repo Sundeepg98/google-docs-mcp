@@ -52,4 +52,4 @@ jobs:
           if-no-files-found: ignore
 
       - name: syntax check all src
-        run: python -m py_compile src/google_docs_mcp/*.py
+        run: python -m py_compile src/appscriptly/*.py

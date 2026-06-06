@@ -15,7 +15,7 @@
 # Sigstore, which release-drafter has no business holding).
 #
 # Verification side: downstream consumers can verify with:
-#   gh attestation verify google_docs_mcp-X.Y.Z-py3-none-any.whl \
+#   gh attestation verify appscriptly-X.Y.Z-py3-none-any.whl \
 #     --repo Sundeepg98/google-docs-mcp
 # That command checks the Sigstore signature was issued by GitHub
 # Actions for THIS repo at the commit that tagged the release.
@@ -61,7 +61,7 @@ jobs:
         run: python -m build
 
       - name: Attest build provenance for every artifact
-        # actions/attest-build-provenance@v2 → emits an in-toto
+        # actions/attest-build-provenance@v4 → emits an in-toto
         # Statement signed via Sigstore's Fulcio (short-lived cert
         # issued to this workflow run's GitHub Actions OIDC identity)
         # and submits to the Rekor transparency log. The resulting
@@ -70,7 +70,7 @@ jobs:
         #
         # `subject-path` globs cover wheel + sdist; the action handles
         # multi-subject statements correctly.
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/*'
 

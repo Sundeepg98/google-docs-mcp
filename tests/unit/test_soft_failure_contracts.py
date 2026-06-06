@@ -33,13 +33,13 @@ def mock_drive():
     """Yield a fake drive service via the M2 GoogleAPIClient port.
 
     **v2.1.2 (M2)**: pre-v2.1.2 this fixture used
-    ``patch("google_docs_mcp.drive_api.get_service")``, which required
+    ``patch("appscriptly.drive_api.get_service")``, which required
     knowing exactly which module imported ``get_service``. The
     ``with_google_api_client`` + ``InMemoryGoogleAPIClient`` pattern
     (introduced in this PR's M2 port) routes through the same single
     facade that production uses — no import-binding awareness needed.
     """
-    from google_docs_mcp.google_api_client import (
+    from appscriptly.google_api_client import (
         InMemoryGoogleAPIClient,
         with_google_api_client,
     )
@@ -58,7 +58,7 @@ def mock_drive():
 
 def test_trash_returns_soft_failure_on_404(mock_drive):
     """Bug-class guard: 404 must come back as data, not as a raised exception."""
-    from google_docs_mcp.services.drive.api import trash_drive_file
+    from appscriptly.services.drive.api import trash_drive_file
 
     mock_drive.files().get().execute.side_effect = _mock_http_error(404)
     result = trash_drive_file(MagicMock(), "BOGUS_ID")
@@ -70,7 +70,7 @@ def test_trash_returns_soft_failure_on_404(mock_drive):
 
 def test_trash_returns_soft_failure_on_app_not_authorized(mock_drive):
     """0.19.0 regression class: 403 appNotAuthorizedToFile must NOT abort."""
-    from google_docs_mcp.services.drive.api import trash_drive_file
+    from appscriptly.services.drive.api import trash_drive_file
 
     mock_drive.files().get().execute.return_value = {
         "id": "F", "name": "external.docx",
@@ -89,7 +89,7 @@ def test_trash_returns_soft_failure_on_app_not_authorized(mock_drive):
 
 def test_trash_idempotent_on_already_trashed(mock_drive):
     """Re-trashing must succeed and flag was_already_trashed=True."""
-    from google_docs_mcp.services.drive.api import trash_drive_file
+    from appscriptly.services.drive.api import trash_drive_file
 
     mock_drive.files().get().execute.return_value = {
         "id": "F", "name": "n", "mimeType": "x", "trashed": True,
@@ -105,7 +105,7 @@ def test_trash_idempotent_on_already_trashed(mock_drive):
 
 def test_trash_unknown_error_still_raises(mock_drive):
     """A genuine bug (500, network) MUST surface — not be swallowed silently."""
-    from google_docs_mcp.services.drive.api import trash_drive_file
+    from appscriptly.services.drive.api import trash_drive_file
 
     mock_drive.files().get().execute.side_effect = _mock_http_error(500)
     with pytest.raises(HttpError):
@@ -118,7 +118,7 @@ def test_trash_unknown_error_still_raises(mock_drive):
 
 
 def test_untrash_returns_soft_failure_on_404(mock_drive):
-    from google_docs_mcp.services.drive.api import untrash_drive_file
+    from appscriptly.services.drive.api import untrash_drive_file
 
     mock_drive.files().get().execute.side_effect = _mock_http_error(404)
     result = untrash_drive_file(MagicMock(), "BOGUS")
@@ -128,7 +128,7 @@ def test_untrash_returns_soft_failure_on_404(mock_drive):
 
 def test_untrash_idempotent_on_active_file(mock_drive):
     """Untrashing a non-trashed file: was_already_active=True, no error."""
-    from google_docs_mcp.services.drive.api import untrash_drive_file
+    from appscriptly.services.drive.api import untrash_drive_file
 
     mock_drive.files().get().execute.return_value = {
         "id": "F", "name": "n", "mimeType": "x", "trashed": False,
@@ -160,7 +160,7 @@ def test_owned_by_app_agrees_with_trash_outcome(mock_drive):
 
     Live equivalent: ``tests/integration/test_consistency_owned_by_app.py``.
     """
-    from google_docs_mcp.services.drive.api import find_doc_by_title, trash_drive_file
+    from appscriptly.services.drive.api import find_doc_by_title, trash_drive_file
 
     file_meta = {
         "id": "F", "name": "test.docx",
@@ -246,7 +246,7 @@ def test_owned_by_app_agrees_with_trash_outcome(mock_drive):
 
 
 def test_move_returns_soft_failure_on_folder_not_found(mock_drive):
-    from google_docs_mcp.services.drive.api import move_to_folder
+    from appscriptly.services.drive.api import move_to_folder
 
     # file exists, folder doesn't
     mock_drive.files().get().execute.side_effect = [
@@ -272,3 +272,45 @@ def test_move_returns_soft_failure_on_folder_not_found(mock_drive):
 
     result = move_to_folder(MagicMock(), "F", "BOGUS_FOLDER")
     assert result["reason"] == "folder_not_found"
+
+
+def test_move_app_not_authorized_message_names_file_and_destination(mock_drive):
+    """A move (addParents) needs write access to BOTH the file AND the
+    destination folder; a 403 appNotAuthorizedToFile can be caused by
+    EITHER. The soft-failure message must therefore name both the file
+    and the folder rather than wrongly attributing it to the file alone
+    (the audit's clarity gap). Also re-confirms the 403 is returned as
+    DATA, not raised."""
+    from appscriptly.services.drive.api import move_to_folder
+
+    folder_mime = "application/vnd.google-apps.folder"
+
+    # get() #1 = file exists; get() #2 = folder exists + is a folder.
+    call_count = {"n": 0}
+
+    def get_side_effect(**kw):
+        call_count["n"] += 1
+        ret = MagicMock()
+        if call_count["n"] == 1:
+            ret.execute.return_value = {
+                "id": "FILE-X", "name": "report", "mimeType": "x",
+                "parents": ["root"],
+            }
+        else:
+            ret.execute.return_value = {"id": "DEST-Y", "mimeType": folder_mime}
+        return ret
+
+    mock_drive.files().get.side_effect = get_side_effect
+
+    # The move update() 403s with appNotAuthorizedToFile.
+    update_ret = MagicMock()
+    update_ret.execute.side_effect = _mock_http_error(403, "appNotAuthorizedToFile")
+    mock_drive.files().update.return_value = update_ret
+
+    result = move_to_folder(MagicMock(), "FILE-X", "DEST-Y")
+
+    # Returned as data, not raised.
+    assert result["reason"] == "app_not_authorized"
+    # Message names BOTH the file and the destination folder.
+    assert "FILE-X" in result["message"]
+    assert "DEST-Y" in result["message"]
