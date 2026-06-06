@@ -385,13 +385,20 @@ def as_generate_video_deck(
     #    as_encode_video; the token authorizes the POSTs. The public
     #    server URL comes from the same env-derived OAuth config the rest
     #    of the runtime uses (GOOGLE_OAUTH_BASE_URL).
+    from appscriptly.credentials import current_user_id_or_none
     from appscriptly.oauth_google import resolve_runtime_oauth_config
 
     from ._frames_staging import new_batch_id, sign_frames_batch
 
     server_base_url = resolve_runtime_oauth_config()["base_url"]
     batch_id = new_batch_id()
-    upload_token = sign_frames_batch(batch_id)
+    # Bind the frame-upload token to the calling tenant (OAuth sub in HTTP
+    # mode; the operator sentinel in stdio mode), mirroring the convert
+    # path's v2.1 uid binding. The token is also single-use (nonce) — see
+    # _frames_staging.sign_frames_batch.
+    upload_token = sign_frames_batch(
+        batch_id, user_id=current_user_id_or_none()
+    )
     upload_base_url = f"{server_base_url}/upload/frames/{batch_id}"
 
     # 4. Generate the .gs renderer body (onOpen menu + renderFrames loop

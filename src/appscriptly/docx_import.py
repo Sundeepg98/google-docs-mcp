@@ -468,7 +468,24 @@ def _splits_to_json(splits: list[_SplitPoint]) -> list[dict]:
 
 
 def _call_webapp(url: str, payload: dict) -> dict:
-    """POST JSON to the Apps Script Web App and parse the JSON reply."""
+    """POST JSON to the Apps Script Web App and parse the JSON reply.
+
+    SSRF posture (reviewed): ``url`` is NOT attacker-influenceable to an
+    arbitrary/internal host. It comes from ``_resolve_webapp_url`` which is
+    either (a) per-user ``apps_script_url`` from ``user_store`` — gated by
+    ``user_store._valid_gas_url`` on BOTH write (save_state raises) and read
+    (get_state drops tampered values), which pins ``scheme=https`` +
+    ``host=script.google.com`` + the ``/macros/s/<id>/(exec|dev)`` path — or
+    (b) the operator's local ``config.get_webapp_url`` (single-tenant). A
+    user therefore cannot steer this POST at ``169.254.169.254``,
+    ``localhost``, a private range, or a foreign host: the only reachable
+    target is ``script.google.com``. So no private-IP / redirect / scheme
+    guard is added here — it would be redundant against a host-pinned value
+    (adding one would also not be reachable by any test without first
+    defeating the storage-layer validator). If a future change ever lets a
+    raw, unvalidated URL reach this function, add an SSRF guard at that new
+    entry point.
+    """
     data = json.dumps(payload).encode("utf-8")
     req = urlrequest.Request(
         url,
