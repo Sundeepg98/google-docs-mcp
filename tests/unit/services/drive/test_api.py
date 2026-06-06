@@ -55,8 +55,10 @@ from appscriptly.services.drive.api import (
     GSLIDES_MIME,
     MAX_UPLOAD_BYTES,
     _escape_q_literal,
+    copy_google_doc,
     create_folder,
     export_doc,
+    fetch_and_convert_drive_docx,
     find_doc_by_title,
     find_file,
     upload_and_convert_docx,
@@ -1065,3 +1067,91 @@ def test_find_file_returns_empty_on_no_results(stubbed_drive_with_empty_list):
     """Contract holds with zero matches — {matches: [], count: 0}."""
     result = find_file(MagicMock(), "nothing-here", verify_writable=False)
     assert result == {"matches": [], "count": 0}
+
+
+# ---------------------------------------------------------------------
+# Drive-RESIDENT conversion guards (R2 audit Gap #4)
+#
+# fetch_and_convert_drive_docx + copy_google_doc are the claude.ai
+# cloud-chat entry: the user uploads a file to Drive via the Anthropic
+# connector and hands the file id over. Their validation guards
+# (mimeType rejection + oversize rejection) are the Drive-resident
+# TWINS of upload_and_convert_docx's local-path guards — which ARE
+# tested above (non-docx extension, oversize). The Drive twins were not
+# tested at all. A regression dropping the mimeType guard would feed the
+# wrong file type into the conversion pipeline (or try to copy a
+# non-doc), producing a confusing Google API error instead of a clear
+# ValueError the agent can act on.
+#
+# All three guards raise BEFORE any download/copy round-trip — only the
+# initial files().get() metadata read is reached — so a one-method
+# Drive stub (.get().execute() -> controlled meta) fully exercises them.
+# ---------------------------------------------------------------------
+
+
+def _drive_returning_meta(meta: dict) -> MagicMock:
+    """A Drive Resource stub whose files().get().execute() yields ``meta``."""
+    drive = MagicMock()
+    drive.files().get().execute.return_value = meta
+    return drive
+
+
+def test_fetch_and_convert_drive_docx_rejects_non_docx_mimetype():
+    """A Drive file whose mimeType is not the .docx OpenXML type must be
+    rejected with a ValueError naming the offending mimeType — BEFORE we
+    stream any bytes. (Drive-resident twin of
+    test_upload_and_convert_docx_rejects_non_docx_extension.)"""
+    drive = _drive_returning_meta(
+        {"id": "F1", "name": "notes.txt", "mimeType": "text/plain", "size": "10"}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a \.docx"):
+            fetch_and_convert_drive_docx(MagicMock(), "F1")
+    # Guard fired on metadata alone — never attempted a media download.
+    drive.files().get_media.assert_not_called()
+
+
+def test_fetch_and_convert_drive_docx_rejects_a_google_doc_mimetype():
+    """A native Google Doc (already converted) is NOT a .docx and must be
+    rejected here — the caller should use copy_google_doc instead. Guards
+    against feeding a GDoc id into the .docx re-import path."""
+    drive = _drive_returning_meta(
+        {"id": "F2", "name": "Plan", "mimeType": GDOC_MIME, "size": "10"}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a \.docx"):
+            fetch_and_convert_drive_docx(MagicMock(), "F2")
+
+
+def test_fetch_and_convert_drive_docx_rejects_oversize_file():
+    """A .docx whose reported size exceeds MAX_UPLOAD_BYTES must be
+    refused with a size error BEFORE download. ``size`` arrives from
+    Drive as a STRING; the guard parses it via int(). (Drive-resident
+    twin of test_upload_and_convert_docx_rejects_oversize_file.)"""
+    drive = _drive_returning_meta(
+        {
+            "id": "F3",
+            "name": "huge.docx",
+            "mimeType": DOCX_MIME,
+            "size": str(MAX_UPLOAD_BYTES + 1),
+        }
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"MB"):
+            fetch_and_convert_drive_docx(MagicMock(), "F3")
+    drive.files().get_media.assert_not_called()
+
+
+def test_copy_google_doc_rejects_non_google_doc_mimetype():
+    """copy_google_doc only copies a NATIVE Google Doc — a raw .docx (or
+    anything else) must be rejected with a ValueError that points the
+    caller at fetch_and_convert_drive_docx, BEFORE any files().copy().
+    A regression here would attempt to copy/restructure a non-doc."""
+    drive = _drive_returning_meta(
+        {"id": "F4", "name": "raw.docx", "mimeType": DOCX_MIME}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a Google Doc"):
+            copy_google_doc(MagicMock(), "F4")
+    # Guard fired before any copy was attempted.
+    drive.files().copy.assert_not_called()

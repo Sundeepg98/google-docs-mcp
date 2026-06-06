@@ -255,6 +255,80 @@ def test_all_required_scopes_present_returns_creds(runtime_oauth):
 
 
 # ---------------------------------------------------------------
+# Scope check AFTER a successful refresh — the untested combination
+# (R2 audit Gap #2). credentials.py runs _check_scopes_or_raise in
+# THREE places: valid-creds (tested above), inside-lock-after-reread,
+# and AFTER a successful refresh OUTSIDE the lock (lines 320-322).
+# The existing suite covers "valid + missing scope -> NeedsReauth"
+# and "expired -> refresh -> success" in ISOLATION, never the
+# combination: expired creds whose refresh SUCCEEDS but whose granted
+# scopes still don't cover required_scopes. The refresh must persist,
+# THEN the post-refresh scope check must raise. A regression returning
+# the freshly-refreshed-but-under-scoped creds would silently dispatch
+# creds lacking a required scope (e.g. gmail.send) -> a confusing
+# downstream 403 instead of a clean re-auth prompt. Scope-confusion is
+# security-adjacent.
+# ---------------------------------------------------------------
+
+
+def test_refresh_succeeds_but_still_under_scoped_raises_after_persist(runtime_oauth):
+    """Expired creds → refresh succeeds (new token) BUT the granted
+    scope set still lacks a required scope → must persist the refreshed
+    token, THEN raise NeedsReauthError(Missing required scopes) carrying
+    the expanded-scope auth_url. Exercises the post-refresh,
+    outside-lock _check_scopes_or_raise call (credentials.py:320-322).
+    """
+    from appscriptly import user_store
+    from appscriptly.credentials import (
+        NeedsReauthError, get_credentials_for_user,
+    )
+
+    # Expired creds with a NARROW granted scope set (no script.projects).
+    _seed_creds(
+        "user-refresh-narrow",
+        expired=True,
+        scopes=["openid", "https://www.googleapis.com/auth/documents"],
+    )
+
+    def fake_refresh(self, _request):
+        # Refresh updates the access token + expiry but does NOT widen
+        # scopes — Google returns the same grant set on a token refresh.
+        self.token = "REFRESHED_BUT_STILL_NARROW"
+        self.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+        # self.scopes intentionally unchanged (still narrow).
+
+    with patch.object(
+        __import__("google.oauth2.credentials", fromlist=["Credentials"]).Credentials,
+        "refresh", fake_refresh,
+    ), pytest.raises(NeedsReauthError) as exc:
+        get_credentials_for_user(
+            "user-refresh-narrow",
+            required_scopes=["https://www.googleapis.com/auth/script.projects"],
+            **runtime_oauth,
+        )
+
+    # (1) The error is the scope-missing variety, not the no-creds /
+    #     revoked variety, and names the missing scope.
+    assert "Missing required scopes" in exc.value.reason
+    assert "script.projects" in exc.value.reason
+    # (2) The auth_url is the EXPANDED-scope re-auth URL (the
+    #     _check_scopes_or_raise path builds it with the union of
+    #     baseline + required scopes via include_granted_scopes).
+    assert exc.value.auth_url.startswith("https://accounts.google.com/")
+
+    # (3) The refresh DID happen and WAS persisted before the raise —
+    #     we don't throw away a successful refresh just because the
+    #     scope check then fails. Next call re-reads the new token.
+    stored = json.loads(
+        user_store.get_state("user-refresh-narrow")["google_creds_json"]
+    )
+    assert stored["token"] == "REFRESHED_BUT_STILL_NARROW", (
+        "post-refresh scope failure must still persist the refreshed "
+        "token (the refresh succeeded; only the scope check failed)."
+    )
+
+
+# ---------------------------------------------------------------
 # Concurrent refresh — the headline race
 # ---------------------------------------------------------------
 
