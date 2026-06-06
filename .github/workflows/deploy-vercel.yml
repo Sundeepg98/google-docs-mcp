@@ -1,0 +1,171 @@
+name: deploy-vercel
+
+# PR-Δ6 (Vercel pilot) — parallel deploy to Vercel alongside the
+# existing Fly deploy in `.github/workflows/deploy.yml`. Fly stays
+# primary; this workflow is purely additive.
+#
+# Triggers:
+#   - push to main → automatic deploy to Vercel production
+#     (alongside the Fly production deploy that the sister workflow
+#     handles independently)
+#   - pull_request → deploy to Vercel preview (a per-PR URL that
+#     Vercel surfaces in the PR check status, useful for testing a
+#     branch before merge without disturbing Fly)
+#   - workflow_dispatch → manual trigger from the Actions tab
+#
+# Required repository secret:
+#   VERCEL_TOKEN — operator generates via:
+#     1. Vercel dashboard → Account Settings → Tokens → Create
+#     2. Set scope to the appscriptly project only (least privilege)
+#     3. `gh secret set VERCEL_TOKEN < <(echo "$TOKEN")`
+#   The token rotation runbook is in docs/runbooks/vercel-activation.md.
+#
+# What the workflow does NOT do (intentional):
+#   - Does NOT gate on the unit-test job from deploy.yml. Vercel
+#     preview deploys are valuable even for branches with WIP test
+#     failures — operators can manually click the Vercel preview URL
+#     to verify a UI / health-endpoint change without waiting for
+#     pytest. Production deploys (push: main) still depend on the
+#     PR's required checks via the branch protection rule, so an
+#     unmerged failing-test branch never reaches main → never
+#     triggers the production-deploy path here.
+#   - Does NOT push a built artifact. Vercel builds Python source
+#     on its own infrastructure (no Docker, no wheel, no pre-build).
+#     The deploy step uploads the working tree + vercel.json; Vercel's
+#     Python runtime installs dependencies from pyproject.toml +
+#     uv.lock during the build phase.
+#   - Does NOT remove the Fly workflow. Both workflows run on the
+#     same triggers; they don't share secrets; failures are
+#     independent. The operator can roll back either deploy without
+#     affecting the other.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel an in-flight Vercel deploy if a newer commit lands while
+# it's running — the newer one would just supersede this one anyway.
+# Mirrors the Fly workflow's concurrency policy.
+concurrency:
+  group: deploy-vercel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: deploy to Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: validate VERCEL_TOKEN secret
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "${VERCEL_TOKEN}" ]; then
+            echo "::warning::VERCEL_TOKEN secret not set; skipping Vercel deploy."
+            echo "   The Vercel deploy is OPT-IN. To enable it:"
+            echo "   1. Generate a token: https://vercel.com/account/tokens"
+            echo "      Scope it to the appscriptly project only."
+            echo "   2. gh secret set VERCEL_TOKEN < <(echo \"\$TOKEN\")"
+            echo "   3. Re-run this workflow."
+            echo "   See docs/runbooks/vercel-activation.md for the full procedure."
+            # NOTE: we exit 0 (not 1) so the absence of the secret
+            # doesn't fail the workflow run during the pilot phase.
+            # When the operator decides Vercel is the primary deploy
+            # (post-cutover), flip this to `exit 1` so missing token
+            # blocks the deploy explicitly.
+            exit 0
+          fi
+          echo "VERCEL_TOKEN is set ($(echo "$VERCEL_TOKEN" | wc -c) bytes)"
+
+      - name: install Vercel CLI
+        # The official Vercel CLI is the canonical deploy path.
+        # Pinning to a major version (latest 41.x as of 2026-05-27)
+        # for reproducibility; Dependabot npm ecosystem will bump
+        # when a new major lands. We don't pin patch because the
+        # CLI is operator tooling — patch-level regressions are
+        # caught here, not in production.
+        run: npm install --global vercel@^41
+        if: ${{ env.VERCEL_TOKEN != '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: vercel pull (sync project config + env vars)
+        if: ${{ env.VERCEL_TOKEN != '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          # `vercel pull` downloads the project's runtime env vars
+          # into .vercel/.env.<environment>.local so the subsequent
+          # `vercel build` can resolve them. The --environment flag
+          # picks the right tier:
+          #   - push: main → production env vars
+          #   - pull_request → preview env vars
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ENV_TIER=preview
+          else
+            ENV_TIER=production
+          fi
+          echo "pulling Vercel project config for environment: $ENV_TIER"
+          vercel pull --yes --environment="$ENV_TIER" --token="$VERCEL_TOKEN"
+
+      - name: vercel build
+        if: ${{ env.VERCEL_TOKEN != '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          # `vercel build` runs the Python build pipeline locally
+          # (the CI runner) so we can inspect/log it. Without this
+          # step `vercel deploy --prebuilt` would have nothing to
+          # upload. The CLI honors vercel.json (Python runtime,
+          # memory, regions, etc.).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            vercel build --token="$VERCEL_TOKEN"
+          else
+            vercel build --prod --token="$VERCEL_TOKEN"
+          fi
+
+      - name: vercel deploy
+        id: deploy
+        if: ${{ env.VERCEL_TOKEN != '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          # Capture the deploy URL so the smoke check below can hit
+          # the right endpoint. `vercel deploy --prebuilt` reuses the
+          # output of `vercel build` from the previous step; without
+          # --prebuilt the CLI would re-build from scratch, doubling
+          # the deploy time.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            DEPLOY_URL=$(vercel deploy --prebuilt --token="$VERCEL_TOKEN")
+          else
+            DEPLOY_URL=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          fi
+          echo "deploy_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+          echo "deployed to: $DEPLOY_URL"
+
+      - name: smoke check /health
+        if: ${{ env.VERCEL_TOKEN != '' && steps.deploy.outputs.deploy_url != '' }}
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.deploy_url }}
+        run: |
+          # Vercel deploys are nearly instant but the function may
+          # need a cold start; retry a few times before declaring
+          # the deploy failed. /health is intentionally unauthenticated
+          # (BearerTokenMiddleware excludes it) so we can hit it
+          # without any token.
+          for i in 1 2 3 4 5; do
+            if curl -fsS "${DEPLOY_URL}/health"; then
+              echo ""
+              echo "✓ Vercel health check passed at ${DEPLOY_URL}"
+              exit 0
+            fi
+            echo "health check attempt $i failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Vercel /health check failed after 5 retries at ${DEPLOY_URL}"
+          exit 1

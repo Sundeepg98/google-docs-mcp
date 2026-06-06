@@ -63,7 +63,7 @@ MUTATIONS: list[Mutation] = [
         description="revert `file_id: str | list[str]` -> `file_id: str` on gdocs_trash_file",
         # M3 moved this from server.py to services/drive/tools.py and
         # added a `creds` first parameter (PR #103/#104).
-        file="src/google_docs_mcp/services/drive/tools.py",
+        file="src/appscriptly/services/drive/tools.py",
         find="def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:",
         replace="def gdocs_trash_file(creds, file_id: str) -> dict:",
     ),
@@ -74,7 +74,7 @@ MUTATIONS: list[Mutation] = [
         test_path="tests/unit/services/gas_deploy/test_api.py::test_deploy_webapp_body_does_not_include_entryPoints",
         description="re-add entryPoints to deployments.create body (v1.1.1 bug)",
         # M3 moved gas_deploy/client.py -> services/gas_deploy/api.py.
-        file="src/google_docs_mcp/services/gas_deploy/api.py",
+        file="src/appscriptly/services/gas_deploy/api.py",
         find='                    "description": description,\n                },\n            )',
         replace='                    "description": description,\n                    "entryPoints": [{"entryPointType": "WEB_APP"}],\n                },\n            )',
     ),
@@ -84,7 +84,7 @@ MUTATIONS: list[Mutation] = [
         description="inject 'works without setup' into a tool description (no OAuth clarifier nearby)",
         # M3 moved gdocs_make_tabbed_doc from server.py to
         # services/docs/tools.py.
-        file="src/google_docs_mcp/services/docs/tools.py",
+        file="src/appscriptly/services/docs/tools.py",
         find='"""DEFAULT tool for building a tabbed Google Doc from text content.',
         replace='"""DEFAULT tabbed Google Doc builder. Works without setup.',
     ),
@@ -92,7 +92,7 @@ MUTATIONS: list[Mutation] = [
         guard="test_preview_flags_what_convert_truncates",
         test_path="tests/unit/test_preview_threshold_consistency.py::test_preview_flags_what_convert_truncates",
         description="drift preview's title-truncation threshold 50 -> 60",
-        file="src/google_docs_mcp/preview.py",
+        file="src/appscriptly/preview.py",
         find="TITLE_MAX_CHARS = 50  # Google Docs API hard limit (returns 400 above this)",
         replace="TITLE_MAX_CHARS = 60  # Google Docs API hard limit (returns 400 above this)",
     ),
@@ -100,7 +100,7 @@ MUTATIONS: list[Mutation] = [
         guard="test_inject_matches_fragmented_runs",
         test_path="tests/unit/test_retrofit_text_normalization.py::test_inject_matches_fragmented_runs",
         description="add break after first <w:t> read -> only first run extracted",
-        file="src/google_docs_mcp/retrofit.py",
+        file="src/appscriptly/retrofit.py",
         find='        if tag == qn("w:t"):\n            parts.append(node.text or "")',
         replace='        if tag == qn("w:t"):\n            parts.append(node.text or "")\n            break',
         # _extract_visible_text is shared by both fragmented_runs and
@@ -114,7 +114,7 @@ MUTATIONS: list[Mutation] = [
         guard="test_auth_pkce_consistency_every_url",
         test_path="tests/unit/test_oauth_google.py::test_auth_pkce_consistency_every_url",
         description="override both PKCE paths after explicit assignment -> URLs lose code_challenge",
-        file="src/google_docs_mcp/oauth_google.py",
+        file="src/appscriptly/oauth_google.py",
         find='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier\n\n    state = sign_state(\n        user_id, signing_key, ttl_seconds=ttl_seconds,\n        code_verifier=code_verifier,\n    )',
         replace='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier\n    flow.code_verifier = None\n    flow.autogenerate_code_verifier = False\n\n    state = sign_state(\n        user_id, signing_key, ttl_seconds=ttl_seconds,\n        code_verifier=code_verifier,\n    )',
     ),
@@ -123,7 +123,7 @@ MUTATIONS: list[Mutation] = [
         test_path="tests/unit/test_soft_failure_contracts.py::test_owned_by_app_agrees_with_trash_outcome",
         description="flip 403-probe branch from False to True -> probe lies about writability",
         # M3 moved drive_api.py -> services/drive/api.py.
-        file="src/google_docs_mcp/services/drive/api.py",
+        file="src/appscriptly/services/drive/api.py",
         find='                elif isinstance(exception, HttpError) and exception.status_code == 403:\n                    # Any 403 means we can\'t write. The specific\n                    # reason we care about is appNotAuthorizedToFile,\n                    # but any 403 is "not writable for our purposes."\n                    write_results[fid] = False',
         replace='                elif isinstance(exception, HttpError) and exception.status_code == 403:\n                    # Any 403 means we can\'t write. The specific\n                    # reason we care about is appNotAuthorizedToFile,\n                    # but any 403 is "not writable for our purposes."\n                    write_results[fid] = True',
     ),
@@ -131,7 +131,9 @@ MUTATIONS: list[Mutation] = [
         guard="test_tool_discoverability_via_server_info",
         test_path="tests/unit/test_tool_schemas.py::test_tool_discoverability_via_server_info",
         description="drop alphabetically-first tool from server_info.tools via slice",
-        file="src/google_docs_mcp/server.py",
+        # v2.2.2/PR #114 moved gdocs_server_info from server.py to the
+        # new services/admin/ folder along with the other 6 admin tools.
+        file="src/appscriptly/services/admin/tools.py",
         find="        tool_names = sorted(t.name for t in tools)",
         replace="        tool_names = sorted(t.name for t in tools)[1:]",
         # server_info.tool_count derives from the same list; dropping
@@ -182,6 +184,14 @@ def run_full_unit_suite() -> tuple[int, list[str]]:
     We need the whole suite, not just the targeted test, so we can
     distinguish "the targeted guard caught it" (clean catch) from
     "the patch broke unrelated tests too" (imprecise_patch).
+
+    Hypothesis seed is pinned (--hypothesis-seed=0) so property-based
+    tests in tests/unit/test_docx_import.py and similar generate the
+    SAME inputs every run. Without this, hypothesis picks a fresh
+    random seed per invocation, which means a mutation that's truly
+    unrelated to a property test can still trip it via input drift
+    and surface as a spurious `imprecise_patch` (this is what was
+    keeping deploy red after v2.2.2/PR #114).
     """
     import os
     fd, json_path = tempfile.mkstemp(suffix=".json", prefix="mutation_pytest_")
@@ -193,6 +203,7 @@ def run_full_unit_suite() -> tuple[int, list[str]]:
             [
                 "python", "-m", "pytest", "tests/unit",
                 "-q", "--tb=no", "--no-header",
+                "--hypothesis-seed=0",
                 "--json-report", f"--json-report-file={json_path}",
             ],
             capture_output=True, text=True,

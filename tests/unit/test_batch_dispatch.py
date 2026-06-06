@@ -22,14 +22,14 @@ def mock_creds_loader():
     # _get_credentials at module load via the _get_server_helpers shim.
     # Patching server.py's binding wouldn't affect drive/tools.py's
     # already-bound reference.
-    with patch("google_docs_mcp.services.drive.tools._get_credentials") as m:
+    with patch("appscriptly.services.drive.tools._get_credentials") as m:
         m.return_value = MagicMock()
         yield m
 
 
 def test_batch_summary_partitions_results(mock_creds_loader):
     """succeeded + skipped + failed must equal len(results)."""
-    from google_docs_mcp.services.drive.tools import _run_batch
+    from appscriptly.services.drive.tools import _run_batch
 
     def fake_fn(_creds, fid):
         if fid == "OK":
@@ -49,7 +49,7 @@ def test_batch_summary_partitions_results(mock_creds_loader):
 
 def test_batch_one_failure_does_not_abort_rest(mock_creds_loader):
     """A bad item in the middle does not stop subsequent items."""
-    from google_docs_mcp.services.drive.tools import _run_batch
+    from appscriptly.services.drive.tools import _run_batch
 
     seen: list[str] = []
 
@@ -67,7 +67,7 @@ def test_batch_one_failure_does_not_abort_rest(mock_creds_loader):
 
 def test_batch_empty_list(mock_creds_loader):
     """Edge case: empty input → empty results and zero counts."""
-    from google_docs_mcp.services.drive.tools import _run_batch
+    from appscriptly.services.drive.tools import _run_batch
 
     result = _run_batch([], lambda c, x: {}, "trashed")
     assert result["results"] == []

@@ -34,7 +34,7 @@ What we CAN test directly here:
 Tests for the larger consumer paths (trash/untrash/move_to_folder
 soft-failure contracts) already live in
 ``tests/unit/test_soft_failure_contracts.py``, which ship-d1 updated
-in M3 Phase B to import from ``google_docs_mcp.services.drive.api``.
+in M3 Phase B to import from ``appscriptly.services.drive.api``.
 Not duplicated here.
 """
 from __future__ import annotations
@@ -44,15 +44,23 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.drive.api import (
+from appscriptly.services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
+    GSHEET_MIME,
+    GSLIDES_MIME,
     MAX_UPLOAD_BYTES,
+    _escape_q_literal,
+    copy_google_doc,
+    create_folder,
+    export_doc,
+    fetch_and_convert_drive_docx,
     find_doc_by_title,
+    find_file,
     upload_and_convert_docx,
 )
 
@@ -438,3 +446,791 @@ def test_find_doc_by_title_no_matches_skips_probe_regardless_of_verify_writable(
                 f"and zero matches — probe should be guarded by "
                 f"``and matches`` clause."
             )
+
+
+# ---------------------------------------------------------------------
+# create_folder — files.create with folder mimeType
+#
+# A folder is a Drive file whose mimeType is the folder type. The
+# function is NOT idempotent (no execute_with_retry), so it's called
+# exactly once — stub files().create() and assert on the body it built
+# plus the flat response envelope. Mirrors the q= DSL capture pattern.
+# ---------------------------------------------------------------------
+
+
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+@pytest.fixture
+def stub_drive_for_create_folder():
+    """A Drive Resource stub whose files().create().execute() returns a
+    plausible folder response. Enough to let create_folder complete and
+    let us inspect the body / fields it passed."""
+    drive = MagicMock(name="drive-v3-stub-create-folder")
+    drive.files().create().execute.return_value = {
+        "id": "FOLDER-NEW",
+        "name": "Q3 Onboarding",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def _last_create_kwargs(drive: MagicMock) -> dict:
+    """The kwargs of the most recent files().create(...) call that
+    actually carried a ``body`` (filters out the bare ``()`` chain-build
+    lookups MagicMock records). Mirrors ``_last_q_passed_to_list``."""
+    for call in reversed(drive.files().create.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no files().create() call captured a body= kwarg")
+
+
+def test_create_folder_rejects_blank_name():
+    """Empty / whitespace name is a caller bug (Drive would name it
+    'Untitled folder'). Rejected client-side BEFORE the Drive round-trip
+    — no get_service call needed, so MagicMock creds suffice."""
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        create_folder(MagicMock(), "   ")
+    with pytest.raises(ValueError, match="name cannot be empty"):
+        create_folder(MagicMock(), "")
+
+
+def test_create_folder_builds_folder_mimetype_body(stub_drive_for_create_folder):
+    """The request body must carry the documented folder mimeType — a
+    Drive folder IS a file with this exact mimeType. A stray edit would
+    create a regular (empty) file instead of a folder."""
+    create_folder(MagicMock(), "Q3 Onboarding")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["mimeType"] == _FOLDER_MIME
+    assert kw["body"]["name"] == "Q3 Onboarding"
+
+
+def test_create_folder_strips_whitespace_from_name(stub_drive_for_create_folder):
+    """Leading / trailing whitespace on the name is stripped before the
+    Drive call (consistent with grant_permission's email handling)."""
+    create_folder(MagicMock(), "  Padded Name  ")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["name"] == "Padded Name"
+
+
+def test_create_folder_omits_parents_when_no_parent_given(
+    stub_drive_for_create_folder,
+):
+    """No parent_folder_id → the body MUST NOT carry a ``parents`` key
+    (Drive lands the folder in root). Passing ``parents: [None]`` or an
+    empty list would be a 400."""
+    create_folder(MagicMock(), "Root Folder")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert "parents" not in kw["body"]
+
+
+def test_create_folder_nests_under_parent_when_given(
+    stub_drive_for_create_folder,
+):
+    """A parent_folder_id → ``parents: [parent_id]`` so the folder is
+    created INSIDE the parent."""
+    create_folder(MagicMock(), "Child", parent_folder_id="PARENT-123")
+    kw = _last_create_kwargs(stub_drive_for_create_folder)
+    assert kw["body"]["parents"] == ["PARENT-123"]
+
+
+def test_create_folder_returns_flat_envelope_with_url(
+    stub_drive_for_create_folder,
+):
+    """The returned dict is the flat ``{folder_id, name, url,
+    parent_folder_id}`` envelope. ``folder_id`` maps Drive's ``id``
+    (so the agent can pipe it into move_to_folder); ``url`` deep-links
+    to the Drive folder UI; ``parent_folder_id`` echoes the parent back
+    (None when created in root)."""
+    stub_drive_for_create_folder.files().create().execute.return_value = {
+        "id": "FOLDER-ABC",
+        "name": "Reports",
+    }
+    result = create_folder(MagicMock(), "Reports")
+    assert result == {
+        "folder_id": "FOLDER-ABC",
+        "name": "Reports",
+        "url": "https://drive.google.com/drive/folders/FOLDER-ABC",
+        "parent_folder_id": None,
+    }
+
+
+def test_create_folder_echoes_parent_folder_id_in_envelope(
+    stub_drive_for_create_folder,
+):
+    """When created under a parent, the envelope echoes that parent back
+    so the caller can confirm the nesting landed."""
+    stub_drive_for_create_folder.files().create().execute.return_value = {
+        "id": "F-CHILD",
+        "name": "Sub",
+    }
+    result = create_folder(MagicMock(), "Sub", parent_folder_id="P-1")
+    assert result["parent_folder_id"] == "P-1"
+    assert result["folder_id"] == "F-CHILD"
+
+
+# ---------------------------------------------------------------------
+# export_doc — files.export (Google-native → portable format)
+#
+# Pattern: stub files().get (source metadata), files().export_media
+# (the export request), and files().create (the re-upload of exported
+# bytes). MediaIoBaseDownload / MediaIoBaseUpload are patched to no-op
+# fakes so no real streaming runs — we only assert on the call shapes
+# (export_media mimeType, create body) and the response envelope, plus
+# the pre-API validation + soft-failure branches.
+# ---------------------------------------------------------------------
+
+
+def _mock_http_error(status_code: int, reason_code: str = ""):
+    """Build a fake HttpError with the structure googleapiclient produces.
+
+    Mirror of the helper in test_sharing.py / test_soft_failure_contracts.py.
+    error_details is populated directly — that's what export_doc inspects
+    to classify appNotAuthorizedToFile.
+    """
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status_code
+    resp.reason = "Forbidden" if status_code == 403 else "Not Found"
+    content = (
+        f'{{"error":{{"code":{status_code},"errors":'
+        f'[{{"reason":"{reason_code}","message":"mocked"}}]}}}}'
+    ).encode("utf-8")
+    err = HttpError(resp, content)
+    err.error_details = [{"reason": reason_code, "message": "mocked"}]
+    return err
+
+
+@pytest.fixture
+def _patch_media(monkeypatch):
+    """Patch MediaIoBaseDownload + MediaIoBaseUpload in the api module so
+    export_doc's stream-download loop + re-upload don't touch real HTTP.
+
+    The fake downloader's next_chunk() returns (None, True) immediately
+    (done, zero chunks) — export_doc only needs the loop to terminate;
+    the actual bytes are irrelevant since the upload media is also faked.
+    """
+    import appscriptly.services.drive.api as api_mod
+
+    class _FakeDownloader:
+        def __init__(self, _buf, _request):
+            pass
+
+        def next_chunk(self):
+            return (None, True)
+
+    monkeypatch.setattr(api_mod, "MediaIoBaseDownload", _FakeDownloader)
+    monkeypatch.setattr(
+        api_mod, "MediaIoBaseUpload", lambda *a, **k: MagicMock(name="media-upload")
+    )
+
+
+@pytest.fixture
+def stub_drive_for_export(_patch_media):
+    """A Drive stub wired for the export happy path: source is a Google
+    Doc; export_media returns a request handle; create returns the new
+    exported file with links."""
+    drive = MagicMock(name="drive-v3-stub-export")
+    drive.files().get().execute.return_value = {
+        "id": "SRC-1", "name": "Quarterly Plan", "mimeType": GDOC_MIME,
+    }
+    drive.files().export_media.return_value = MagicMock(name="export-request")
+    drive.files().create().execute.return_value = {
+        "id": "EXP-1",
+        "name": "Quarterly Plan.pdf",
+        "size": "20480",
+        "webViewLink": "https://drive.google.com/file/d/EXP-1/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-1&export=download",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        yield drive
+
+
+def test_export_doc_rejects_unknown_format():
+    """An unrecognized format token is rejected client-side BEFORE any
+    Drive call — no get_service needed, so MagicMock creds suffice."""
+    with pytest.raises(ValueError, match="is not recognized"):
+        export_doc(MagicMock(), "SRC-1", "garblesnort")
+
+
+def test_export_doc_rejects_format_invalid_for_source(stub_drive_for_export):
+    """A recognized token that's wrong for the source TYPE (xlsx on a
+    Doc) is rejected after the metadata read, with a message naming the
+    valid formats for that type."""
+    # Source is a Google Doc (from the fixture); xlsx is a Sheet format.
+    with pytest.raises(ValueError, match="Cannot export a Google Doc as 'xlsx'"):
+        export_doc(MagicMock(), "SRC-1", "xlsx")
+
+
+def test_export_doc_passes_target_mime_to_export_media(stub_drive_for_export):
+    """The export_media call must carry the export MIME type mapped from
+    the friendly token (pdf → application/pdf) and the source file id."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    kw = stub_drive_for_export.files().export_media.call_args.kwargs
+    assert kw["fileId"] == "SRC-1"
+    assert kw["mimeType"] == "application/pdf"
+
+
+def test_export_doc_uploads_result_with_target_mime(stub_drive_for_export):
+    """The exported bytes are re-uploaded via files.create as a NEW file
+    whose mimeType is the portable target (NOT a Google-native doc), and
+    whose name carries the format extension."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    # Find the create() call carrying a body (filter chain-build lookups).
+    create_kw = None
+    for call in reversed(stub_drive_for_export.files().create.call_args_list):
+        if "body" in call.kwargs:
+            create_kw = call.kwargs
+            break
+    assert create_kw is not None, "no files().create() captured a body="
+    assert create_kw["body"]["mimeType"] == "application/pdf"
+    assert create_kw["body"]["name"] == "Quarterly Plan.pdf"
+
+
+def test_export_doc_case_insensitive_format_token(stub_drive_for_export):
+    """Format tokens are normalized to lowercase — 'PDF' works like 'pdf'."""
+    result = export_doc(MagicMock(), "SRC-1", "PDF")
+    assert result["export_format"] == "pdf"
+    assert result["export_mime_type"] == "application/pdf"
+
+
+def test_export_doc_returns_flat_envelope_with_links(stub_drive_for_export):
+    """The success envelope surfaces the source + export identity plus
+    the new file's id / view url / direct-download url / size."""
+    result = export_doc(MagicMock(), "SRC-1", "pdf")
+    assert result == {
+        "source_file_id": "SRC-1",
+        "source_mime_type": GDOC_MIME,
+        "export_format": "pdf",
+        "export_mime_type": "application/pdf",
+        "exported_file_id": "EXP-1",
+        "name": "Quarterly Plan.pdf",
+        "url": "https://drive.google.com/file/d/EXP-1/view",
+        "download_url": "https://drive.google.com/uc?id=EXP-1&export=download",
+        "size_bytes": 20480,
+    }
+
+
+def test_export_doc_default_name_appends_extension(stub_drive_for_export):
+    """With no output_name, the exported file is named from the source's
+    name + the format extension (Quarterly Plan → Quarterly Plan.pdf)."""
+    export_doc(MagicMock(), "SRC-1", "pdf")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Quarterly Plan.pdf"
+
+
+def test_export_doc_explicit_output_name_gets_extension_if_missing(
+    stub_drive_for_export,
+):
+    """A caller output_name without the extension gets it appended."""
+    export_doc(MagicMock(), "SRC-1", "pdf", output_name="Final Report")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Final Report.pdf"
+
+
+def test_export_doc_explicit_output_name_keeps_existing_extension(
+    stub_drive_for_export,
+):
+    """A caller output_name that ALREADY ends in the extension isn't
+    doubled (Final.pdf stays Final.pdf, not Final.pdf.pdf)."""
+    export_doc(MagicMock(), "SRC-1", "pdf", output_name="Final.pdf")
+    create_kw = next(
+        c.kwargs for c in reversed(stub_drive_for_export.files().create.call_args_list)
+        if "body" in c.kwargs
+    )
+    assert create_kw["body"]["name"] == "Final.pdf"
+
+
+def test_export_doc_sheet_to_xlsx_happy_path(stub_drive_for_export):
+    """A Google Sheet exports to xlsx (a valid Sheet format) — verifies
+    the per-source-type allowlist admits the right pairings, not just
+    Docs."""
+    stub_drive_for_export.files().get().execute.return_value = {
+        "id": "SHEET-1", "name": "Budget", "mimeType": GSHEET_MIME,
+    }
+    stub_drive_for_export.files().create().execute.return_value = {
+        "id": "EXP-XLSX", "name": "Budget.xlsx",
+        "webViewLink": "https://drive.google.com/file/d/EXP-XLSX/view",
+        "webContentLink": "https://drive.google.com/uc?id=EXP-XLSX",
+    }
+    result = export_doc(MagicMock(), "SHEET-1", "xlsx")
+    assert result["export_format"] == "xlsx"
+    kw = stub_drive_for_export.files().export_media.call_args.kwargs
+    assert kw["mimeType"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def test_export_doc_size_bytes_none_when_drive_omits_size(stub_drive_for_export):
+    """size_bytes is None (not a crash) when Drive's create response
+    omits the size field."""
+    stub_drive_for_export.files().create().execute.return_value = {
+        "id": "EXP-NOSIZE", "name": "Quarterly Plan.pdf",
+        "webViewLink": "https://drive.google.com/file/d/EXP-NOSIZE/view",
+    }
+    result = export_doc(MagicMock(), "SRC-1", "pdf")
+    assert result["size_bytes"] is None
+    # download_url also None when webContentLink is absent.
+    assert result["download_url"] is None
+
+
+# --- export_doc soft-failure branches (returned as data, not raised) ---
+
+
+def test_export_doc_not_found_returns_soft_failure(_patch_media):
+    """404 on the source metadata read → reason: not_found (data, not raised)."""
+    drive = MagicMock(name="drive-export-404")
+    drive.files().get().execute.side_effect = _mock_http_error(404)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "GONE", "pdf")
+    assert result["reason"] == "not_found"
+    assert result["source_file_id"] == "GONE"
+
+
+def test_export_doc_app_not_authorized_returns_soft_failure(_patch_media):
+    """403 appNotAuthorizedToFile on the source (file not app-accessible
+    under drive.file) → reason: app_not_authorized (data, not raised)."""
+    drive = MagicMock(name="drive-export-403")
+    drive.files().get().execute.side_effect = _mock_http_error(
+        403, "appNotAuthorizedToFile",
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "FOREIGN", "pdf")
+    assert result["reason"] == "app_not_authorized"
+    assert result["source_file_id"] == "FOREIGN"
+
+
+def test_export_doc_not_exportable_for_binary_source(_patch_media):
+    """A binary blob (e.g. an existing PDF) is NOT a Google-native editor
+    file → reason: not_exportable, returned as data (no export attempted)."""
+    drive = MagicMock(name="drive-export-binary")
+    drive.files().get().execute.return_value = {
+        "id": "BLOB-1", "name": "scan.pdf", "mimeType": "application/pdf",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = export_doc(MagicMock(), "BLOB-1", "pdf")
+    assert result["reason"] == "not_exportable"
+    # export_media must NOT have been called — we bailed before the export.
+    drive.files().export_media.assert_not_called()
+
+
+def test_export_doc_reraises_unclassified_http_error(_patch_media):
+    """A 500 on the source read is not classified above → propagates as
+    HttpError so genuine bugs surface."""
+    from googleapiclient.errors import HttpError
+
+    drive = MagicMock(name="drive-export-500")
+    drive.files().get().execute.side_effect = _mock_http_error(500)
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(HttpError):
+            export_doc(MagicMock(), "SRC-1", "pdf")
+
+
+# ---------------------------------------------------------------------
+# _escape_q_literal — the shared q= string-literal escaper
+# ---------------------------------------------------------------------
+
+
+def test_escape_q_literal_escapes_single_quote():
+    """A single quote is backslash-escaped (Drive's documented form)."""
+    assert _escape_q_literal("Bob's Doc") == "Bob\\'s Doc"
+
+
+def test_escape_q_literal_escapes_backslash_first():
+    """Backslash is escaped BEFORE the quote so we don't double-escape
+    the backslashes we add for quotes. A literal ``\\`` becomes ``\\\\``."""
+    # Input: one backslash. Output: two backslashes.
+    assert _escape_q_literal("a\\b") == "a\\\\b"
+    # Combined: backslash + quote → escaped backslash + escaped quote.
+    assert _escape_q_literal("a\\'b") == "a\\\\\\'b"
+
+
+def test_escape_q_literal_leaves_plain_text_untouched():
+    assert _escape_q_literal("plain text 123") == "plain text 123"
+
+
+def test_escape_q_literal_backslash_boundary_cases():
+    """SECURITY (escape ORDER): the only correct order is backslash-FIRST
+    then quote — escaping the quote first would let an attacker-supplied
+    backslash re-escape our quote-escape and break out of the literal.
+    Pin the exact boundary inputs the audit called out:
+
+      ``test'name``   -> ``test\\'name``       (quote only)
+      ``test\\name``  -> ``test\\\\name``      (backslash only, doubled)
+      ``test\\'name`` -> ``test\\\\\\'name``   (backslash + quote, combined)
+
+    The combined case is the discriminator: with the WRONG order
+    (quote-first) ``test\\'name`` would become ``test\\\\'name`` — the
+    user's backslash escapes OUR added backslash, leaving the quote
+    UNescaped and the literal broken/injectable. Backslash-first yields
+    ``\\\\`` (the user backslash, doubled) + ``\\'`` (our quote-escape),
+    which is correct.
+    """
+    # quote only
+    assert _escape_q_literal("test'name") == "test\\'name"
+    # backslash only — one backslash becomes two
+    assert _escape_q_literal("test\\name") == "test\\\\name"
+    # combined backslash + quote — user backslash doubled, then quote escaped
+    assert _escape_q_literal("test\\'name") == "test\\\\\\'name"
+
+
+def _q_literal_is_balanced(q: str) -> bool:
+    """True if every ``q=`` string literal is properly closed — i.e. the
+    count of UNESCAPED single quotes is even. Strips escaped quotes
+    (``\\'``) first so only literal-delimiting quotes are counted. A
+    crafted operand that broke out would leave an odd count."""
+    return q.replace("\\'", "").count("'") % 2 == 0
+
+
+def test_find_doc_by_title_backslash_in_name_produces_balanced_literal(
+    stubbed_drive_with_empty_list,
+):
+    """END-TO-END (call site): a name carrying BOTH a backslash and a
+    quote must flow through ``_escape_q_literal`` and land in a balanced,
+    correctly-escaped ``name =`` clause — not just the helper in
+    isolation. This is the injection-boundary the audit flagged, proven
+    at the real q-builder."""
+    find_doc_by_title(
+        MagicMock(), "test\\'name", exact=True, verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    # The fully-escaped operand appears verbatim inside the name clause.
+    assert "name = 'test\\\\\\'name'" in q
+    # And no literal is left hanging open.
+    assert _q_literal_is_balanced(q), (
+        f"q= literal is unbalanced — backslash escape order is broken: q={q!r}"
+    )
+
+
+def test_find_file_backslash_quote_in_filters_stay_balanced(
+    stubbed_drive_with_empty_list,
+):
+    """END-TO-END across MULTIPLE filters: name + full_text + folder each
+    carry a backslash+quote payload simultaneously. Every operand must be
+    escaped via the shared helper so the COMBINED q= remains balanced —
+    proving the escape rule holds uniformly across all string filters,
+    not just the name clause."""
+    find_file(
+        MagicMock(),
+        query="a\\'b",
+        full_text="c\\'d",
+        parent_folder_id="e\\'f",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    # Each operand is backslash-first escaped in its respective clause.
+    assert "name contains 'a\\\\\\'b'" in q
+    assert "fullText contains 'c\\\\\\'d'" in q
+    assert "'e\\\\\\'f' in parents" in q
+    # The whole composed query has no unbalanced (broken-out) literal.
+    assert _q_literal_is_balanced(q), (
+        f"composed q= literal is unbalanced across filters: q={q!r}"
+    )
+
+
+# ---------------------------------------------------------------------
+# find_file — generalized q= DSL construction (any mimeType, filters)
+#
+# Reuses the find_doc_by_title test scaffolding (stubbed_drive_with_empty_list
+# + _last_q_passed_to_list) since find_file lands on the same
+# drive.files().list() call. We assert on the q-string each filter
+# combination builds.
+# ---------------------------------------------------------------------
+
+
+def test_find_file_name_substring_uses_contains(stubbed_drive_with_empty_list):
+    """A query (default exact=False) builds a ``name contains`` clause."""
+    find_file(MagicMock(), "budget", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name contains 'budget'" in q
+
+
+def test_find_file_name_exact_uses_equals(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "Budget 2026", exact=True, verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name = 'Budget 2026'" in q
+
+
+def test_find_file_does_NOT_hardcode_docs_mimetype(stubbed_drive_with_empty_list):
+    """THE GENERALIZATION: unlike find_doc_by_title, find_file must NOT
+    inject the Google-Doc / .docx mimeType filter. Without a mime_type
+    arg, the q has no mimeType clause at all — so Sheets/Slides/PDF are
+    in scope."""
+    find_file(MagicMock(), "report", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "mimeType" not in q
+
+
+def test_find_file_mime_type_filter_added_when_given(
+    stubbed_drive_with_empty_list,
+):
+    """An explicit mime_type adds an exact ``mimeType =`` clause — e.g.
+    constraining to Sheets."""
+    find_file(
+        MagicMock(), mime_type=GSHEET_MIME, verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert f"mimeType = '{GSHEET_MIME}'" in q
+
+
+def test_find_file_full_text_filter_added_when_given(
+    stubbed_drive_with_empty_list,
+):
+    """full_text builds a ``fullText contains`` clause (content search)."""
+    find_file(MagicMock(), full_text="Q3 revenue", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "fullText contains 'Q3 revenue'" in q
+
+
+def test_find_file_parent_folder_filter_uses_in_parents(
+    stubbed_drive_with_empty_list,
+):
+    """parent_folder_id builds the documented ``'<id>' in parents`` form."""
+    find_file(
+        MagicMock(), parent_folder_id="FOLDER-99", verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "'FOLDER-99' in parents" in q
+
+
+def test_find_file_combines_all_filters_with_and(stubbed_drive_with_empty_list):
+    """All filters together are AND-joined into one q."""
+    find_file(
+        MagicMock(),
+        "plan",
+        mime_type=GSLIDES_MIME,
+        full_text="roadmap",
+        parent_folder_id="F1",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "name contains 'plan'" in q
+    assert f"mimeType = '{GSLIDES_MIME}'" in q
+    assert "fullText contains 'roadmap'" in q
+    assert "'F1' in parents" in q
+    assert " and " in q
+
+
+def test_find_file_escapes_single_quotes_in_all_string_filters(
+    stubbed_drive_with_empty_list,
+):
+    """SECURITY: a single quote in ANY string filter must be escaped so
+    it can't break out of — or inject into — the q DSL. Checks query,
+    mime_type, full_text, parent_folder_id all run through the escaper."""
+    find_file(
+        MagicMock(),
+        "O'Brien",
+        mime_type="x'y",
+        full_text="it's here",
+        parent_folder_id="fold'er",
+        verify_writable=False,
+    )
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "O\\'Brien" in q
+    assert "x\\'y" in q
+    assert "it\\'s here" in q
+    assert "fold\\'er" in q
+    # And the literals stay balanced (even count of unescaped quotes).
+    unescaped = q.replace("\\'", "")
+    assert unescaped.count("'") % 2 == 0, f"q literals unbalanced: {q!r}"
+
+
+def test_find_file_excludes_trashed_by_default(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "x", verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert "trashed = false" in q
+
+
+def test_find_file_empty_call_browses_recent_with_only_trashed_filter(
+    stubbed_drive_with_empty_list,
+):
+    """No filters at all (no query/mime/fullText/parent) is a valid
+    "recent app-accessible files" browse — q is just the trashed filter,
+    NOT a crash or a forced name match."""
+    find_file(MagicMock(), verify_writable=False)
+    q = _last_q_passed_to_list(stubbed_drive_with_empty_list)
+    assert q == "trashed = false"
+
+
+def test_find_file_empty_call_with_include_trashed_sends_q_none(
+    stubbed_drive_with_empty_list,
+):
+    """No filters AND include_trashed=True → no clauses at all → q is
+    None (Drive treats that as "all files"), the intended browse-all."""
+    find_file(MagicMock(), include_trashed=True, verify_writable=False)
+    last_call = stubbed_drive_with_empty_list.files().list.call_args_list[-1]
+    assert last_call.kwargs["q"] is None
+
+
+def test_find_file_clamps_page_size_to_100(stubbed_drive_with_empty_list):
+    find_file(MagicMock(), "x", page_size=500, verify_writable=False)
+    last_call = stubbed_drive_with_empty_list.files().list.call_args_list[-1]
+    assert last_call.kwargs["pageSize"] == 100
+
+
+def test_find_file_returns_matches_with_mimetype_surfaced(
+    stubbed_drive_with_empty_list,
+):
+    """The return shape mirrors find_doc_by_title: matches[] with
+    file_id/name/mimeType/modified_time/trashed/owned_by_app + count.
+    Here a Sheet comes back — proving non-Doc types flow through."""
+    stubbed_drive_with_empty_list.files().list().execute.return_value = {
+        "files": [{
+            "id": "SHEET-1", "name": "Budget",
+            "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z",
+            "trashed": False,
+        }],
+    }
+    result = find_file(MagicMock(), mime_type=GSHEET_MIME, verify_writable=False)
+    assert result["count"] == 1
+    assert result["matches"][0]["file_id"] == "SHEET-1"
+    assert result["matches"][0]["mimeType"] == GSHEET_MIME
+    assert result["matches"][0]["owned_by_app"] is None
+
+
+def test_find_file_default_does_not_probe_writability():
+    """CQRS: default (verify_writable=False) must NOT run the no-op write
+    probe — the tool is readonly=True. Mirror of the find_doc_by_title
+    CQRS guard."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {
+        "files": [{
+            "id": "F1", "name": "n", "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = find_file(MagicMock(), mime_type=GSHEET_MIME)
+    assert not drive.new_batch_http_request.called, (
+        "find_file ran the writability probe under default args — it is "
+        "readonly=True, so the default must be a pure read (CQRS)."
+    )
+    assert result["matches"][0]["owned_by_app"] is None
+
+
+def test_find_file_explicit_verify_writable_runs_probe():
+    """Opt-in verify_writable=True runs the batched no-op probe and
+    populates owned_by_app (same mechanism as find_doc_by_title)."""
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {
+        "files": [{
+            "id": "F1", "name": "n", "mimeType": GSHEET_MIME,
+            "modifiedTime": "2026-05-30T00:00:00.000Z", "trashed": False,
+        }],
+    }
+    batch = MagicMock()
+    drive.new_batch_http_request.return_value = batch
+
+    def fake_add(request, callback):
+        callback("req-1", MagicMock(), None)  # simulate success
+    batch.add.side_effect = fake_add
+
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = find_file(
+            MagicMock(), mime_type=GSHEET_MIME, verify_writable=True,
+        )
+    assert drive.new_batch_http_request.called
+    assert batch.execute.called
+    assert result["matches"][0]["owned_by_app"] is True
+
+
+def test_find_file_returns_empty_on_no_results(stubbed_drive_with_empty_list):
+    """Contract holds with zero matches — {matches: [], count: 0}."""
+    result = find_file(MagicMock(), "nothing-here", verify_writable=False)
+    assert result == {"matches": [], "count": 0}
+
+
+# ---------------------------------------------------------------------
+# Drive-RESIDENT conversion guards (R2 audit Gap #4)
+#
+# fetch_and_convert_drive_docx + copy_google_doc are the claude.ai
+# cloud-chat entry: the user uploads a file to Drive via the Anthropic
+# connector and hands the file id over. Their validation guards
+# (mimeType rejection + oversize rejection) are the Drive-resident
+# TWINS of upload_and_convert_docx's local-path guards — which ARE
+# tested above (non-docx extension, oversize). The Drive twins were not
+# tested at all. A regression dropping the mimeType guard would feed the
+# wrong file type into the conversion pipeline (or try to copy a
+# non-doc), producing a confusing Google API error instead of a clear
+# ValueError the agent can act on.
+#
+# All three guards raise BEFORE any download/copy round-trip — only the
+# initial files().get() metadata read is reached — so a one-method
+# Drive stub (.get().execute() -> controlled meta) fully exercises them.
+# ---------------------------------------------------------------------
+
+
+def _drive_returning_meta(meta: dict) -> MagicMock:
+    """A Drive Resource stub whose files().get().execute() yields ``meta``."""
+    drive = MagicMock()
+    drive.files().get().execute.return_value = meta
+    return drive
+
+
+def test_fetch_and_convert_drive_docx_rejects_non_docx_mimetype():
+    """A Drive file whose mimeType is not the .docx OpenXML type must be
+    rejected with a ValueError naming the offending mimeType — BEFORE we
+    stream any bytes. (Drive-resident twin of
+    test_upload_and_convert_docx_rejects_non_docx_extension.)"""
+    drive = _drive_returning_meta(
+        {"id": "F1", "name": "notes.txt", "mimeType": "text/plain", "size": "10"}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a \.docx"):
+            fetch_and_convert_drive_docx(MagicMock(), "F1")
+    # Guard fired on metadata alone — never attempted a media download.
+    drive.files().get_media.assert_not_called()
+
+
+def test_fetch_and_convert_drive_docx_rejects_a_google_doc_mimetype():
+    """A native Google Doc (already converted) is NOT a .docx and must be
+    rejected here — the caller should use copy_google_doc instead. Guards
+    against feeding a GDoc id into the .docx re-import path."""
+    drive = _drive_returning_meta(
+        {"id": "F2", "name": "Plan", "mimeType": GDOC_MIME, "size": "10"}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a \.docx"):
+            fetch_and_convert_drive_docx(MagicMock(), "F2")
+
+
+def test_fetch_and_convert_drive_docx_rejects_oversize_file():
+    """A .docx whose reported size exceeds MAX_UPLOAD_BYTES must be
+    refused with a size error BEFORE download. ``size`` arrives from
+    Drive as a STRING; the guard parses it via int(). (Drive-resident
+    twin of test_upload_and_convert_docx_rejects_oversize_file.)"""
+    drive = _drive_returning_meta(
+        {
+            "id": "F3",
+            "name": "huge.docx",
+            "mimeType": DOCX_MIME,
+            "size": str(MAX_UPLOAD_BYTES + 1),
+        }
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"MB"):
+            fetch_and_convert_drive_docx(MagicMock(), "F3")
+    drive.files().get_media.assert_not_called()
+
+
+def test_copy_google_doc_rejects_non_google_doc_mimetype():
+    """copy_google_doc only copies a NATIVE Google Doc — a raw .docx (or
+    anything else) must be rejected with a ValueError that points the
+    caller at fetch_and_convert_drive_docx, BEFORE any files().copy().
+    A regression here would attempt to copy/restructure a non-doc."""
+    drive = _drive_returning_meta(
+        {"id": "F4", "name": "raw.docx", "mimeType": DOCX_MIME}
+    )
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        with pytest.raises(ValueError, match=r"not a Google Doc"):
+            copy_google_doc(MagicMock(), "F4")
+    # Guard fired before any copy was attempted.
+    drive.files().copy.assert_not_called()

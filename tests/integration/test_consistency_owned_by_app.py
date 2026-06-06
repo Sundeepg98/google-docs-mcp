@@ -14,8 +14,8 @@ pytestmark = pytest.mark.live
 
 
 def test_owned_by_app_agrees_with_trash_outcome(live_creds):
-    from google_docs_mcp.services.docs.api import make_doc_with_tabs
-    from google_docs_mcp.services.drive.api import find_doc_by_title, trash_drive_file
+    from appscriptly.services.docs.api import make_doc_with_tabs
+    from appscriptly.services.drive.api import find_doc_by_title, trash_drive_file
 
     # Create an app-owned file with a distinctive title we can search for.
     unique_title = "consistency_test_app_owned_doc"

@@ -45,7 +45,7 @@ def reset_keys_counters(monkeypatch):
     Uses the keys module's documented test-only reset helpers — keeps
     us in the same boat as the unit tests in test_keys.py."""
     monkeypatch.setenv("MCP_BEARER_TOKEN", _TEST_MASTER)
-    from google_docs_mcp import keys
+    from appscriptly import keys
     keys._reset_shim_hit_counters_for_tests()
     keys._reset_total_call_counters_for_tests()
     keys._reset_first_call_timestamps_for_tests()
@@ -65,7 +65,7 @@ def test_site_1_oauth_callback_routes_through_get_key_oauth_state(monkeypatch):
     the ``oauth_state`` counter incremented. Pre-v2.6 the callback
     read ``MCP_BEARER_TOKEN`` directly and never touched the counter
     — that's the regression this guards."""
-    from google_docs_mcp import keys
+    from appscriptly import keys
 
     # Reach into the dispatch logic by calling the callback's resolve
     # path directly. The callback function reads keys.get_key("oauth_state")
@@ -75,8 +75,8 @@ def test_site_1_oauth_callback_routes_through_get_key_oauth_state(monkeypatch):
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
-    from google_docs_mcp.http_server import oauth_google_api_callback
-    from google_docs_mcp.oauth_google import CALLBACK_PATH
+    from appscriptly.http_server import oauth_google_api_callback
+    from appscriptly.oauth_google import CALLBACK_PATH
 
     app = Starlette(routes=[
         Route(CALLBACK_PATH, oauth_google_api_callback, methods=["GET"])
@@ -122,8 +122,8 @@ def test_site_2_build_app_routes_through_get_key_api_bearer_AND_signed_url():
     both resolve to the same raw master, but they MUST come from
     separate get_key() calls — otherwise a future flip would re-edit
     this site."""
-    from google_docs_mcp import keys
-    from google_docs_mcp.http_server import build_app
+    from appscriptly import keys
+    from appscriptly.http_server import build_app
 
     # The mcp arg is consumed only for mcp.http_app() inside build_app;
     # a MagicMock with the right shape is enough.
@@ -159,7 +159,7 @@ def test_site_3_resolve_runtime_oauth_config_routes_through_get_key_oauth_state(
     """Drive resolve_runtime_oauth_config() — it's the tool-side
     counterpart to the callback's state-signing key resolution.
     Pre-v2.6 read MCP_BEARER_TOKEN directly via os.environ.get."""
-    from google_docs_mcp import keys
+    from appscriptly import keys
 
     # Provide the rest of the env the resolver needs so the call doesn't
     # raise for unrelated reasons.
@@ -176,7 +176,7 @@ def test_site_3_resolve_runtime_oauth_config_routes_through_get_key_oauth_state(
         }),
     )
 
-    from google_docs_mcp.oauth_google import resolve_runtime_oauth_config
+    from appscriptly.oauth_google import resolve_runtime_oauth_config
     cfg = resolve_runtime_oauth_config()
 
     # v2.0b: resolve_runtime_oauth_config() returns signing_key as
@@ -221,9 +221,9 @@ def test_site_4_signed_upload_url_routes_through_get_key_signed_url(monkeypatch)
     keys.get_key('signed_url') counter increments), we mock the
     current-user lookup so the tool reaches the get_key call.
     """
-    from google_docs_mcp import keys
-    from google_docs_mcp.services.admin import tools as admin_tools
-    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
+    from appscriptly import keys
+    from appscriptly.services.admin import tools as admin_tools
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     # Mock the MCP auth-context lookup so the v2.1 user_id check
     # doesn't short-circuit before get_key('signed_url') runs.
@@ -254,8 +254,8 @@ _ALLOWED_FILES_FOR_RAW_MCP_BEARER_TOKEN_READ = {
     # MCP_BEARER_TOKEN at call time. The facade in keys.py no longer
     # reads it directly; provenance() falls back to os.environ ONLY
     # when the active provider doesn't supply a value (defensive).
-    "src/google_docs_mcp/keys.py",
-    "src/google_docs_mcp/key_provider.py",
+    "src/appscriptly/keys.py",
+    "src/appscriptly/key_provider.py",
 }
 
 
@@ -374,7 +374,7 @@ def test_architectural_guard_mutation_check_detects_new_bypass(tmp_path):
 def test_first_call_timestamp_recorded_on_first_get_key(monkeypatch):
     """v2.6 (#48) instrumentation: first_call_age_seconds[purpose] must
     be non-None after the first get_key(purpose) call in a process."""
-    from google_docs_mcp import keys
+    from appscriptly import keys
     keys._reset_first_call_timestamps_for_tests()
     assert keys.get_first_call_timestamps()["api_bearer"] is None
 
@@ -391,7 +391,7 @@ def test_first_call_timestamp_does_not_overwrite_on_later_calls(monkeypatch):
     calls must NOT overwrite it (operators rely on the age increasing
     monotonically to decide soak has elapsed)."""
     import time as _time
-    from google_docs_mcp import keys
+    from appscriptly import keys
     keys._reset_first_call_timestamps_for_tests()
 
     monkeypatch.setenv("MCP_BEARER_TOKEN", _TEST_MASTER)
@@ -441,7 +441,7 @@ def test_first_call_timestamp_concurrent_writes_pick_exactly_one(monkeypatch):
     racy. The double-race makes that bug surface deterministically.
     """
     import threading
-    from google_docs_mcp import keys
+    from appscriptly import keys
     keys._reset_first_call_timestamps_for_tests()
     assert keys.get_first_call_timestamps()["api_bearer"] is None
 

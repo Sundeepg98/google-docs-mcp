@@ -1,0 +1,16 @@
+# Force LF line endings for files that run inside the Linux container.
+#
+# Shell scripts with CRLF line endings fail at container startup with
+# `/bin/sh^M: bad interpreter: No such file or directory` — a silent,
+# total boot failure. The runtime image (python:3.13-slim) uses busybox
+# sh. Pinning these to `eol=lf` guarantees the committed blob AND every
+# checkout stays LF regardless of a contributor's git `core.autocrlf`
+# setting (a Windows checkout would otherwise rewrite them to CRLF).
+#
+# Scoped intentionally narrow: only the files COPYed into and executed
+# by the image. (The entrypoint is called out explicitly in addition to
+# the *.sh glob as belt-and-suspenders / documentation of intent.)
+*.sh text eol=lf
+scripts/entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+litestream.yml text eol=lf

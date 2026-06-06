@@ -221,7 +221,7 @@ def _migrate_all(
     """
     # Defer the import — keeps argparse --help / dry-run with empty DB
     # fast and lets the script stay runnable in stripped-down envs.
-    from google_docs_mcp.credentials import _user_lock
+    from appscriptly.credentials import _user_lock
 
     outcomes: dict[str, list[str]] = {
         "migrated": [],
@@ -380,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         if not dry_run:
             # Defer the import — keeps argparse --help fast and lets
             # the script stay runnable in stripped-down envs.
-            from google_docs_mcp import user_store
+            from appscriptly import user_store
             user_store._ensure_initialized(db_path)
 
         rows = _select_target_rows(conn, args.user_id)

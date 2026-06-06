@@ -11,7 +11,7 @@ import pytest
 
 
 def test_load_sa_raises_clear_error_when_key_missing(tmp_path):
-    from google_docs_mcp.auth import load_service_account_credentials
+    from appscriptly.auth import load_service_account_credentials
 
     missing = tmp_path / "no_such_key.json"
     with pytest.raises(FileNotFoundError, match="Service account key file"):
@@ -20,7 +20,7 @@ def test_load_sa_raises_clear_error_when_key_missing(tmp_path):
 
 def test_load_sa_invokes_with_subject_for_impersonation(tmp_path):
     """The whole point of DWD: SA impersonates a specific user via with_subject()."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     fake_key = tmp_path / "key.json"
     fake_key.write_text('{"type":"service_account"}')
@@ -46,7 +46,7 @@ def test_load_sa_invokes_with_subject_for_impersonation(tmp_path):
 
 def test_setup_auto_requires_impersonate_user_in_sa_mode(tmp_path):
     """sa_key without impersonate_user is a misuse — must fail loudly."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     fake_key = tmp_path / "key.json"
     fake_key.write_text("{}")

@@ -17,7 +17,7 @@ import pytest
 
 
 def test_content_hash_stable_across_calls():
-    from google_docs_mcp.setup_state import compute_content_hash
+    from appscriptly.setup_state import compute_content_hash
 
     manifest = {"timeZone": "Etc/GMT", "webapp": {"executeAs": "USER_DEPLOYING"}}
     files = {"Code": "function doPost(e) { return e; }"}
@@ -28,7 +28,7 @@ def test_content_hash_stable_across_calls():
 
 
 def test_content_hash_changes_when_script_edited():
-    from google_docs_mcp.setup_state import compute_content_hash
+    from appscriptly.setup_state import compute_content_hash
 
     manifest = {"timeZone": "Etc/GMT"}
     a = compute_content_hash(manifest, {"Code": "v1"})
@@ -37,7 +37,7 @@ def test_content_hash_changes_when_script_edited():
 
 
 def test_state_matches_target_requires_both_hash_and_impersonate():
-    from google_docs_mcp.setup_state import state_matches_target
+    from appscriptly.setup_state import state_matches_target
 
     state = {"content_hash": "H", "impersonate": "user@example.com"}
     assert state_matches_target(state, "H", "user@example.com")
@@ -48,7 +48,7 @@ def test_state_matches_target_requires_both_hash_and_impersonate():
 
 
 def test_state_persistence_roundtrip(tmp_path):
-    from google_docs_mcp.setup_state import load_state, save_state, state_path
+    from appscriptly.setup_state import load_state, save_state, state_path
 
     assert load_state(tmp_path) == {}
     save_state(tmp_path, {"content_hash": "abc", "script_id": "S"})
@@ -66,9 +66,9 @@ def test_state_persistence_roundtrip(tmp_path):
 def mock_setup(tmp_path):
     """Mock AppsScriptClient + creds, isolate state in tmp_path."""
     with (
-        patch("google_docs_mcp.setup_apps_script.load_credentials") as load_oauth,
-        patch("google_docs_mcp.setup_apps_script.AppsScriptClient") as client_class,
-        patch("google_docs_mcp.setup_apps_script.config") as cfg_mod,
+        patch("appscriptly.setup_apps_script.load_credentials") as load_oauth,
+        patch("appscriptly.setup_apps_script.AppsScriptClient") as client_class,
+        patch("appscriptly.setup_apps_script.config") as cfg_mod,
     ):
         load_oauth.return_value = MagicMock()
         client = MagicMock()
@@ -77,7 +77,7 @@ def mock_setup(tmp_path):
         cfg_mod.save.return_value = None
 
         # Sensible default returns for a cold-start happy path.
-        from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
+        from appscriptly.services.gas_deploy.api import WebAppDeployment
         client.script_exists.return_value = True
         client.create_project.return_value = "SCRIPT_ID_NEW"
         client.create_version.return_value = 1
@@ -95,7 +95,7 @@ def mock_setup(tmp_path):
 
 
 def test_cold_start_creates_project_once(mock_setup):
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
     assert mock_setup["client"].create_project.call_count == 1
@@ -107,7 +107,7 @@ def test_second_run_with_same_content_does_NOT_create_a_second_project(mock_setu
     Without the ledger, the second run would call create_project again
     and orphan the first project in the user's Drive.
     """
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
@@ -128,7 +128,7 @@ def test_resume_after_failure_at_push_files_step(mock_setup):
     Retry must skip create_project (use cached script_id) and continue
     from push_files. NO orphan project created.
     """
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     # First attempt: push_files fails after create_project succeeds.
     mock_setup["client"].push_files.side_effect = RuntimeError("network blip")
@@ -149,13 +149,13 @@ def test_resume_after_failure_at_deploy_webapp_step(mock_setup):
     """deploy_webapp fails after version is cut. Retry must not re-create
     project OR re-cut version — both are cached. Just retry the deploy.
     """
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     mock_setup["client"].deploy_webapp.side_effect = RuntimeError("deploy timeout")
     with pytest.raises(RuntimeError, match="deploy timeout"):
         setup_apps_script_auto(data_dir=mock_setup["data_dir"])
 
-    from google_docs_mcp.services.gas_deploy.api import WebAppDeployment
+    from appscriptly.services.gas_deploy.api import WebAppDeployment
     mock_setup["client"].deploy_webapp.side_effect = None
     mock_setup["client"].deploy_webapp.return_value = WebAppDeployment(
         script_id="SCRIPT_ID_NEW", deployment_id="DEPLOY2", version=1,
@@ -172,7 +172,7 @@ def test_content_change_starts_fresh(mock_setup):
     """If restructure.gs is edited between runs (different content hash),
     the cached state must be discarded — we deploy a NEW project for
     the new content."""
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     # First run completes happily.
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
@@ -182,7 +182,7 @@ def test_content_change_starts_fresh(mock_setup):
     fake_path = mock_setup["data_dir"] / "edited.gs"
     fake_path.write_text("// totally different content")
     with patch(
-        "google_docs_mcp.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path
+        "appscriptly.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path
     ):
         mock_setup["client"].create_project.return_value = "SCRIPT_ID_FRESH"
         setup_apps_script_auto(data_dir=mock_setup["data_dir"])
@@ -198,7 +198,7 @@ def test_manual_deletion_recovery(mock_setup):
     (via script_exists check) and start fresh — NOT push files to a
     project that no longer exists.
     """
-    from google_docs_mcp.setup_apps_script import setup_apps_script_auto
+    from appscriptly.setup_apps_script import setup_apps_script_auto
 
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
     assert mock_setup["client"].create_project.call_count == 1

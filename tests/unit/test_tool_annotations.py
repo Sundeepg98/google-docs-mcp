@@ -16,7 +16,7 @@ import asyncio
 
 def _list_tools():
     """Run mcp.list_tools() in a fresh event loop (no pytest-asyncio dep)."""
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
     return asyncio.run(mcp.list_tools())
 
 
@@ -43,12 +43,31 @@ READONLY_TOOLS = {
     "gdocs_read_doc",
     "gdocs_get_tab_url",
     "gdocs_find_doc_by_title",
+    # Generalized find — files.list over app-accessible files of any
+    # type. Pure read by default (the verify_writable probe is opt-in,
+    # default False), same CQRS posture as gdocs_find_doc_by_title.
+    "gdocs_find_file",
     "gdocs_server_info",
     "gdocs_test_manifest",
     "gdocs_guide",
     "gdocs_help",
     "gdocs_preview_tab_split",
     "gdocs_admin_audit",
+    # v2.3.0: Drive permissions.list — pure read, no writes, no probe
+    # side-effects. Sister tool ``gdocs_share_file`` is NOT here
+    # (it mutates the ACL via permissions.create).
+    "gdocs_list_permissions",
+    # v2.3.1: Sheets values.get — pure read of cell values. Sister
+    # tools ``gsheets_write_range`` (overwrites cells) and
+    # ``gsheets_create_spreadsheet`` (creates a new resource) are
+    # NOT readonly.
+    "gsheets_read_range",
+    # v2.3.2: Slides presentations.get — pure read of the deck's
+    # structure + per-slide text. Sister tools
+    # ``gslides_replace_all_text`` (mutates text across slides) and
+    # ``gslides_create_presentation`` (creates a new deck) are NOT
+    # readonly.
+    "gslides_get_outline",
 }
 
 
@@ -56,6 +75,12 @@ DESTRUCTIVE_TOOLS = {
     "gdocs_delete_tab",
     "gdocs_trash_file",
     "gdocs_reset_authorization",
+    "gsheets_delete_sheet",  # removes a tab + all its cell data
+    # Revokes a share (permissions.delete) — removes someone's access,
+    # the inverse of gdocs_share_file. Destructive so MCP clients can
+    # prompt for confirmation. (gdocs_create_folder is NOT here — it
+    # only adds state.)
+    "gdocs_revoke_permission",
 }
 
 

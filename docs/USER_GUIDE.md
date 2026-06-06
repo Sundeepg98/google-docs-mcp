@@ -1,6 +1,8 @@
-# User Guide — google-docs-fly
+# User Guide — appscriptly
 
 **Audience:** you got a connector URL (or installed Claude Desktop with this server wired up) and want to actually *do* something with it. No engineering background assumed.
+
+> **Project was renamed (2026-05-27).** What used to be `google-docs-mcp` is now `appscriptly` — same software, broader scope (Apps Script-backed Workspace Automation is now the headline). If you set up Claude Desktop before the rename with the `google-docs` server label or the `google-docs-mcp` CLI binary, **nothing changes for you** — both names continue to work as backward-compat aliases through v3.0.
 
 This is the human-facing guide. The LLM also has its own orientation (`gdocs_guide()` and `gdocs://error-recovery`) — but you don't need either; you just talk to Claude in plain English and Claude calls the right tool.
 
@@ -126,7 +128,7 @@ You say yes. Then:
 ### Limitations
 
 - The server can only convert `.docx` (or `.gdoc`) files it can read. Password-protected files fail. Files larger than ~100MB are likely to hit either the upload size limit or Google's own conversion timeout.
-- The "Apps Script Web App" the server uses for retrofit is a **per-user, one-time setup**. The first time you ask Claude to use Workflow B or C, it will tell you to run `gdocs_setup_apps_script` first (you'll see a message asking Claude to call that tool — say "yes, set it up" and Claude will run it, then re-do your original ask). Setup takes 10-30 seconds; every Workflow B or C after that runs without further setup.
+- The **Workspace automation runtime** that retrofit (and future workflow tools) need is a **per-user, one-time install**. The first time you ask Claude to use Workflow B or C, it will tell you to run `gdocs_install_automation` first (you'll see a message asking Claude to call that tool — say "yes, install it" and Claude will run it, then re-do your original ask). Install takes 10-30 seconds. After install, the runtime lives in your Google account and runs on Google's infrastructure; every Workflow B or C call after that runs without further setup, and Claude can also build persistent automations (scheduled jobs, custom menus, reactive workflows) on top of it. The older name `gdocs_setup_apps_script` is still accepted but deprecated and will be removed in v3.0.
 
 ---
 
@@ -238,7 +240,7 @@ Symptom: you ran a workflow, Claude said "done," and the doc isn't in your Drive
 
 - The server stores credentials **per user identity** (your `sub` claim from Google's ID token), not per browser session. Two people can use the same connector URL safely — their workflows are isolated by Google account, not by URL.
 - If you genuinely want to use multiple Google accounts (one for work docs, one for personal), you need **two separate connector setups** OR you need to `gdocs_reset_authorization` between sessions. There's no "switch active account" command — Claude can only hold one authorization at a time.
-- **First-time setup will ask for permissions.** Google's consent screen will say something like "google-docs-fly wants to access your Google Drive and Google Docs." That's expected. If it also asks about "manage your Apps Script projects" — that's the per-user Apps Script Web App setup; it's required for the retrofit workflows (B and C), not for Workflow A.
+- **First-time setup will ask for permissions.** Google's consent screen will name whatever OAuth Client the operator registered in Google Cloud Console (often the pre-rename name `google-docs-fly` or the post-rename `appscriptly` — the Google Cloud Console display name is operator-controlled and updates on its own schedule). The screen will list permissions like "access your Google Drive and Google Docs" plus "manage your Apps Script projects" — the latter is for the per-user Apps Script Web App setup, required for the retrofit workflows (B and C) and for the persistent-automation runtime the rename brings to the forefront.
 
 ---
 
