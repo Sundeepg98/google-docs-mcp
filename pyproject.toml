@@ -103,7 +103,7 @@ test = [
 # avoid surprise lint-rule churn between local + CI; bump on a separate
 # PR when ready to absorb new findings.
 lint = [
-    "pyright>=1.1.400",
+    "pyright>=1.1.410",
     "ruff>=0.7",
 ]
 # === PR-Δ6: Vercel pilot extras ===
