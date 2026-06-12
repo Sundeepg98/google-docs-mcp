@@ -93,7 +93,7 @@ test = [
     # ordering, path uniqueness, insertText-index monotonicity, etc.).
     # The R6 UTF-16 bug class is the headline unblock — once the source
     # is fixed, the hypothesis tests pin the fix permanently.
-    "hypothesis>=6.115",
+    "hypothesis>=6.155.2",
 ]
 # === v2.0.6: lint extras (closes pyright/ruff CI gap) ===
 # e2e.yml's `lint` job invokes `uv run pyright src/` and
