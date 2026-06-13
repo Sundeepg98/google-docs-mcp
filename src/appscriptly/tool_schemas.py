@@ -540,6 +540,95 @@ GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA = _object(
 
 
 # ---------------------------------------------------------------------
+# Calendar (services/calendar/) — v2.4.0 (4th new service)
+#
+# Scope: https://www.googleapis.com/auth/calendar (SENSITIVE, not
+# restricted → no CASA). Event + availability surface over Calendar v3.
+# ---------------------------------------------------------------------
+
+
+# ``gcal_list_events`` returns the raw v3 Event list + the page token.
+# ``next_page_token`` is null on the last page (hence not required).
+GCAL_LIST_EVENTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "events": {"type": "array"},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["calendar_id", "events"],
+)
+
+
+# ``gcal_get_event`` returns the single raw v3 Event resource.
+GCAL_GET_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event": {"type": "object"},
+    },
+    required=["calendar_id", "event"],
+)
+
+
+# ``gcal_create_event`` echoes the new event's id + web link + summary.
+# ``html_link`` may be absent in a degenerate API reply (hence not
+# required); ``event_id`` is the load-bearing handle for follow-ups.
+GCAL_CREATE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event_id": {"type": "string"},
+        "html_link": {"type": ["string", "null"], "format": "uri"},
+        "summary": {"type": "string"},
+    },
+    required=["calendar_id", "event_id", "summary"],
+)
+
+
+# ``gcal_update_event`` echoes the patched event's id + link + summary.
+# ``html_link`` / ``summary`` may be null if the reply omits them.
+GCAL_UPDATE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event_id": {"type": "string"},
+        "html_link": {"type": ["string", "null"], "format": "uri"},
+        "summary": {"type": ["string", "null"]},
+    },
+    required=["calendar_id", "event_id"],
+)
+
+
+# ``gcal_delete_event`` echoes the removed event's id (delete returns an
+# empty body on success).
+GCAL_DELETE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "deleted_event_id": {"type": "string"},
+    },
+    required=["calendar_id", "deleted_event_id"],
+)
+
+
+# ``gcal_list_calendars`` returns the flattened calendar list + page token.
+GCAL_LIST_CALENDARS_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendars": {"type": "array"},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["calendars"],
+)
+
+
+# ``gcal_freebusy`` echoes the window + Calendar's per-calendar busy map.
+GCAL_FREEBUSY_OUTPUT_SCHEMA = _object(
+    properties={
+        "time_min": {"type": "string"},
+        "time_max": {"type": "string"},
+        "calendars": {"type": "object"},
+    },
+    required=["time_min", "time_max", "calendars"],
+)
+
+
+# ---------------------------------------------------------------------
 # Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
 # ---------------------------------------------------------------------
 
@@ -1246,6 +1335,15 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_duplicate_sheet": GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
     "gsheets_freeze": GSHEETS_FREEZE_OUTPUT_SCHEMA,
     "gsheets_protect_range": GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
+    # v2.4.0 — Calendar (4th new service): event + availability surface.
+    # Scope https://www.googleapis.com/auth/calendar (SENSITIVE, no CASA).
+    "gcal_list_events": GCAL_LIST_EVENTS_OUTPUT_SCHEMA,
+    "gcal_get_event": GCAL_GET_EVENT_OUTPUT_SCHEMA,
+    "gcal_create_event": GCAL_CREATE_EVENT_OUTPUT_SCHEMA,
+    "gcal_update_event": GCAL_UPDATE_EVENT_OUTPUT_SCHEMA,
+    "gcal_delete_event": GCAL_DELETE_EVENT_OUTPUT_SCHEMA,
+    "gcal_list_calendars": GCAL_LIST_CALENDARS_OUTPUT_SCHEMA,
+    "gcal_freebusy": GCAL_FREEBUSY_OUTPUT_SCHEMA,
     # v2.3.2 — Slides (3rd new service, minimal start)
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,

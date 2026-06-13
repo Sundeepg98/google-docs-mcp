@@ -209,3 +209,26 @@ select = ["TID"]
 include = ["src"]
 # googleapiclient.discovery.Resource is dynamic; see rationale above.
 reportAttributeAccessIssue = false
+
+# ---------------------------------------------------------------------
+# Coverage config (ROADMAP P3 / SPECS #10)
+#
+# Workflow-INDEPENDENT coverage floor. Until now the only enforcement
+# was the `--cov-fail-under=55` CLI arg on the unit-test step in
+# .github/workflows/test.yml, so any run OUTSIDE that exact CI job
+# (a local `pytest tests/unit`, an ad-hoc invocation, a different
+# workflow) had no floor at all. This `fail_under` is the backstop:
+# coverage.py reads it on every `--cov` run, so the gate now travels
+# with the repo instead of living in one CI string.
+#
+# Value = 55, deliberately MATCHED to the existing CLI floor (NOT a new
+# number). 55 sits one integer below the worst-case measured version
+# (Linux Py 3.11 at 55.21%; every other version is 56.5%+), i.e. it
+# enforces with ~0.2pp headroom and does not break the current green
+# build. The +1pp ratchet toward 80% is a SEPARATE change — see
+# docs/COVERAGE.md "Ratchet policy". When that ratchet runs, bump THIS
+# value and the test.yml CLI together so the two floors stay in lockstep.
+# ---------------------------------------------------------------------
+
+[tool.coverage.report]
+fail_under = 55
