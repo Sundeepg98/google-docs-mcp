@@ -34,16 +34,16 @@ from __future__ import annotations
 # The exact, current consent scope sets — the SOURCE OF TRUTH for this
 # test. These mirror what Google's consent screen requests today.
 #
-#   * 8 Workspace scopes  → auth.SCOPES (stdio / baseline)
-#   * +2 OIDC identity     → oauth_google.GOOGLE_API_SCOPES (HTTP) = 10
+#   * 9 Workspace scopes  → auth.SCOPES (stdio / baseline)
+#   * +2 OIDC identity     → oauth_google.GOOGLE_API_SCOPES (HTTP) = 11
 #
-# The 7th Workspace scope is ``calendar`` (read/write), added for the
-# calendar service (services/calendar/); the 8th is ``contacts``
-# (read/write), added for the contacts People API service
-# (services/contacts/). Both are Google **SENSITIVE** scopes (NOT
-# restricted) → no CASA. Each was a DELIBERATE, operator-directed
-# consent-set change, so these literals are updated in the SAME commit as
-# the scope addition (the conscious verify-LAST gate this test enforces).
+# Beyond the original 6, three SENSITIVE (NOT restricted → no CASA)
+# Workspace scopes have been added by deliberate, operator-directed
+# consent-set changes: ``calendar`` (read/write, services/calendar/),
+# ``contacts`` (read/write, People API, services/contacts/), and
+# ``tasks`` (read/write, Google Tasks, services/tasks/). Each literal
+# below is updated in the SAME commit as its scope addition — the
+# conscious verify-LAST gate this test enforces.
 #
 # Frozensets: scope SET identity is what matters for consent (Google
 # ignores order on the screen). Order is checked separately below via the
@@ -55,6 +55,7 @@ _EXPECTED_WORKSPACE_SCOPES = frozenset({
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
     "https://www.googleapis.com/auth/calendar",
@@ -75,6 +76,7 @@ _EXPECTED_SCOPES_ORDERED = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
     "https://www.googleapis.com/auth/calendar",
@@ -87,6 +89,7 @@ _EXPECTED_GOOGLE_API_SCOPES_ORDERED = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
     "https://www.googleapis.com/auth/calendar",
@@ -100,13 +103,14 @@ _EXPECTED_GOOGLE_API_SCOPES_ORDERED = [
 
 
 def test_stdio_consent_set_is_exactly_the_six_workspace_scopes():
-    """``auth.SCOPES`` (stdio/baseline) == the exact 8 Workspace scopes.
+    """``auth.SCOPES`` (stdio/baseline) == the exact Workspace scope set
+    (9 after the calendar + contacts + tasks sensitive-scope additions).
 
     A mismatch means the stdio consent screen would request a different
     scope set. Under verify-LAST that is operator-gated — update the
     ``_EXPECTED_WORKSPACE_SCOPES`` literal here (same commit) only when a
-    scope change is deliberate. (v2.4.0 raised the count 6 → 7 with the
-    deliberate ``calendar`` sensitive-scope addition.)
+    scope change is deliberate. (Count history: 6 → 7 calendar → 8
+    contacts → 9 tasks, each a deliberate sensitive-scope addition.)
     """
     from appscriptly.auth import SCOPES
 
@@ -118,12 +122,12 @@ def test_stdio_consent_set_is_exactly_the_six_workspace_scopes():
 
 
 def test_connector_consent_set_is_exactly_oidc_plus_workspace():
-    """``oauth_google.GOOGLE_API_SCOPES`` (HTTP/connector) == the exact 10
-    scopes (2 OIDC + 8 Workspace).
+    """``oauth_google.GOOGLE_API_SCOPES`` (HTTP/connector) == the exact 11
+    scopes (2 OIDC + 9 Workspace).
 
     Same verify-LAST gate as the stdio set: this is the consent screen
-    claude.ai's connector flow renders. (v2.4.0 raised the count 8 → 9
-    with the deliberate ``calendar`` sensitive-scope addition.)
+    claude.ai's connector flow renders. (Count history: 8 → 9 calendar →
+    10 contacts → 11 tasks, each a deliberate sensitive-scope addition.)
     """
     from appscriptly.oauth_google import GOOGLE_API_SCOPES
 

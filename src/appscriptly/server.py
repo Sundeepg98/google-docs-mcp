@@ -338,8 +338,9 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # stopped importing). The CI golden test enforces exact-match; this
 # floor is the runtime backstop. Bump deliberately + rarely.
 # v2.4.0: 66 → 73 with the 7-tool Calendar service (services/calendar/);
-# then 73 → 79 with the 6-tool Contacts service (services/contacts/).
-_MIN_EXPECTED_TOOL_COUNT = 79
+# then 73 → 79 with the 6-tool Contacts service (services/contacts/);
+# then 79 → 86 with the 7-tool Tasks service (services/tasks/).
+_MIN_EXPECTED_TOOL_COUNT = 86
 
 _discovery_failures: list[tuple[str, str]] = []
 

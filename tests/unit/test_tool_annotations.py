@@ -85,6 +85,12 @@ READONLY_TOOLS = {
     "gcontacts_list",
     "gcontacts_search",
     "gcontacts_get",
+    # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
+    # Sister tools gtasks_create_* / gtasks_update_task /
+    # gtasks_complete_task (mutations) and gtasks_delete_task
+    # (destructive) are NOT readonly.
+    "gtasks_list_tasklists",
+    "gtasks_list_tasks",
 }
 
 
@@ -113,6 +119,11 @@ DESTRUCTIVE_TOOLS = {
     # can prompt for confirmation. Sister tools ``gcontacts_create`` /
     # ``gcontacts_update`` only add / modify state, so they are NOT here.
     "gcontacts_delete",
+    # Tasks (services/tasks/): tasks.delete — removes a task (and its
+    # sub-tasks). Destructive so MCP clients can prompt for confirmation.
+    # (gtasks_complete_task is NOT here — it only flips status, the task
+    # persists.)
+    "gtasks_delete_task",
 }
 
 
