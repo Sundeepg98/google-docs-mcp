@@ -52,7 +52,9 @@
   "gsheets_write_range",
   "gslides_add_slide",
   "gslides_create_image",
+  "gslides_create_line",
   "gslides_create_presentation",
+  "gslides_create_shape",
   "gslides_create_table",
   "gslides_get_outline",
   "gslides_replace_all_text"

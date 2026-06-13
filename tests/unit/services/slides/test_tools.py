@@ -345,6 +345,104 @@ def test_gslides_create_table_rejects_subunit_dims(with_slides_stub):
 
 
 # ---------------------------------------------------------------------
+# 7. gslides_create_shape — happy path + validation (#155)
+# ---------------------------------------------------------------------
+
+
+def test_gslides_create_shape_happy_path(with_slides_stub):
+    """Insert shape → flat envelope echoing shape_type + shape id."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"createShape": {"objectId": "appscriptly_shape"}}],
+    }
+    result = tools.gslides_create_shape(
+        presentation_id="DECK1",
+        slide_object_id="SLIDE1",
+        shape_type="ELLIPSE",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "SLIDE1",
+        "shape_object_id": "appscriptly_shape",
+        "shape_type": "ELLIPSE",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK1"
+            "/edit#slide=id.SLIDE1"
+        ),
+    }
+
+
+def test_gslides_create_shape_forwards_shape_type(with_slides_stub):
+    tools.gslides_create_shape(
+        presentation_id="DECK1", slide_object_id="SLIDE1",
+        shape_type="ROUND_RECTANGLE",
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    cs = last.kwargs["body"]["requests"][0]["createShape"]
+    assert cs["shapeType"] == "ROUND_RECTANGLE"
+
+
+def test_gslides_create_shape_rejects_unsupported_type(with_slides_stub):
+    with pytest.raises(ValueError, match="shape_type must be one of"):
+        tools.gslides_create_shape(
+            presentation_id="DECK1", slide_object_id="SLIDE1",
+            shape_type="WRONG",
+        )
+
+
+# ---------------------------------------------------------------------
+# 8. gslides_create_line — happy path + validation (#155)
+# ---------------------------------------------------------------------
+
+
+def test_gslides_create_line_happy_path(with_slides_stub):
+    """Draw line → flat envelope echoing line_category + line id."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"createLine": {"objectId": "appscriptly_line"}}],
+    }
+    result = tools.gslides_create_line(
+        presentation_id="DECK1",
+        slide_object_id="SLIDE1",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "SLIDE1",
+        "line_object_id": "appscriptly_line",
+        "line_category": "STRAIGHT",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK1"
+            "/edit#slide=id.SLIDE1"
+        ),
+    }
+
+
+def test_gslides_create_line_forwards_points_as_bbox(with_slides_stub):
+    """start/end points reach the api layer, which emits a createLine
+    with a bounding box derived from the point delta."""
+    tools.gslides_create_line(
+        presentation_id="DECK1", slide_object_id="SLIDE1",
+        start_x_inches=2, start_y_inches=2,
+        end_x_inches=4, end_y_inches=5,
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    ep = last.kwargs["body"]["requests"][0]["createLine"]["elementProperties"]
+    _emu = 914400
+    assert ep["transform"]["translateX"] == 2 * _emu
+    assert ep["size"]["width"] == {"magnitude": 2 * _emu, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 3 * _emu, "unit": "EMU"}
+
+
+def test_gslides_create_line_rejects_zero_length(with_slides_stub):
+    with pytest.raises(ValueError, match="start and end points are identical"):
+        tools.gslides_create_line(
+            presentation_id="DECK1", slide_object_id="SLIDE1",
+            start_x_inches=1, start_y_inches=1,
+            end_x_inches=1, end_y_inches=1,
+        )
+
+
+# ---------------------------------------------------------------------
 # Decorator-envelope cross-check: _get_credentials_fn is invoked
 # ---------------------------------------------------------------------
 
