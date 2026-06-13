@@ -560,6 +560,48 @@ GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gslides_create_shape`` inserts a shape (rectangle / ellipse / text
+# box / …) onto a slide; echoes the resolved shape_type + the shape
+# element's stable objectId. Completes the #155 geometry trio alongside
+# create_table + create_line.
+GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "shape_object_id": {"type": "string"},
+        "shape_type": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "presentation_id",
+        "slide_object_id",
+        "shape_object_id",
+        "shape_type",
+        "url",
+    ],
+)
+
+
+# ``gslides_create_line`` draws a line (start → end) on a slide; echoes
+# the resolved line_category + the line element's stable objectId.
+GSLIDES_CREATE_LINE_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "line_object_id": {"type": "string"},
+        "line_category": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "presentation_id",
+        "slide_object_id",
+        "line_object_id",
+        "line_category",
+        "url",
+    ],
+)
+
+
 # ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
 # project carrying a doGet/doPost handler as a Web App, returning the
 # live /exec endpoint + the IDs/version. ``exec_url`` is the load-bearing
@@ -993,6 +1035,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_add_slide": GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
     "gslides_create_image": GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
     "gslides_create_table": GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
+    # #155 geometry trio — createShape + createLine complete the set
+    "gslides_create_shape": GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
+    "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
     # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)

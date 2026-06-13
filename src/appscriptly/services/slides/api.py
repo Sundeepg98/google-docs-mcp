@@ -607,6 +607,267 @@ def create_table(
     }
 
 
+# Slides ``createShape`` ``shapeType`` enum values exposed here. The full
+# enum is ~140 values (every autoshape); this curated subset covers the
+# shapes a deck-authoring agent actually reaches for (rectangles, ellipse,
+# text box, the common callout/flow shapes). Restricting it keeps the
+# surface deterministic + gives a helpful client-side error instead of a
+# Slides 400 on a typo'd enum; widen if a real consumer needs more.
+_SHAPE_TYPES = frozenset({
+    "TEXT_BOX",
+    "RECTANGLE",
+    "ROUND_RECTANGLE",
+    "ELLIPSE",
+    "DIAMOND",
+    "TRIANGLE",
+    "RIGHT_TRIANGLE",
+    "PARALLELOGRAM",
+    "TRAPEZOID",
+    "PENTAGON",
+    "HEXAGON",
+    "OCTAGON",
+    "STAR_5",
+    "RIGHT_ARROW",
+    "LEFT_ARROW",
+    "UP_ARROW",
+    "DOWN_ARROW",
+    "CLOUD",
+    "SMILEY_FACE",
+    "HEART",
+    "WEDGE_RECTANGLE_CALLOUT",
+    "WEDGE_ELLIPSE_CALLOUT",
+})
+
+# Slides ``createLine`` ``lineCategory`` enum. Only three connector
+# categories exist (plus the legacy ``STRAIGHT`` alias is the simplest);
+# ``STRAIGHT`` draws a plain segment, ``BENT`` / ``CURVED`` route around
+# elements. Default STRAIGHT — the common "draw a line between A and B".
+_LINE_CATEGORIES = frozenset({"STRAIGHT", "BENT", "CURVED"})
+
+
+def create_shape(
+    creds: Credentials,
+    presentation_id: str,
+    slide_object_id: str,
+    shape_type: str = "RECTANGLE",
+    width_inches: float = 2.0,
+    height_inches: float = 2.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert a shape (rectangle / ellipse / text box / …) onto a slide.
+
+    Uses ``presentations.batchUpdate`` with a single ``createShape``
+    request — the geometry sibling of ``createImage`` / ``createTable``:
+    same ``elementProperties`` (size + transform) positioning envelope,
+    discriminated by ``shapeType`` instead of carrying a URL / row-col
+    count. The shape is created empty (no text); add copy afterward with
+    ``gslides_replace_all_text`` (seed a token) or a future cell/shape
+    text tool.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline — no extra grant).
+        presentation_id: The Slides file ID.
+        slide_object_id: The slide to place the shape on (an
+            ``object_id`` from ``gslides_add_slide`` /
+            ``gslides_get_outline``).
+        shape_type: A Slides ``shapeType`` enum value. Supported subset
+            in ``_SHAPE_TYPES`` (``RECTANGLE`` default, ``ELLIPSE``,
+            ``TEXT_BOX``, common callout/flow shapes). Other values
+            rejected client-side.
+        width_inches: Shape width in inches (default 2.0).
+        height_inches: Shape height in inches (default 2.0).
+        x_inches: Left inset in inches (default 1.0).
+        y_inches: Top inset in inches (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, shape_object_id,
+        shape_type, url}``. ``shape_object_id`` is the created shape's
+        stable ID (a valid target for later transform / text / delete
+        batchUpdates); ``url`` deep-links to the slide.
+
+    Raises:
+        ValueError: empty ``slide_object_id``, unsupported ``shape_type``,
+            or a non-positive dimension.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if not slide_object_id or not slide_object_id.strip():
+        raise ValueError("slide_object_id cannot be empty.")
+    if shape_type not in _SHAPE_TYPES:
+        raise ValueError(
+            f"shape_type must be one of {sorted(_SHAPE_TYPES)} — got "
+            f"{shape_type!r}."
+        )
+    if width_inches <= 0 or height_inches <= 0:
+        raise ValueError("width_inches and height_inches must be positive.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    # Unique per call — a constant objectId 400s on the second create_shape
+    # against the same deck ('object ID already in use').
+    shape_id = _unique_object_id("appscriptly_shape")
+    requests = [
+        {
+            "createShape": {
+                "objectId": shape_id,
+                "shapeType": shape_type,
+                "elementProperties": _element_properties(
+                    slide_object_id,
+                    int(width_inches * _EMU_PER_INCH),
+                    int(height_inches * _EMU_PER_INCH),
+                    int(x_inches * _EMU_PER_INCH),
+                    int(y_inches * _EMU_PER_INCH),
+                ),
+            },
+        },
+    ]
+    # NOT idempotent: each call adds ANOTHER shape.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.createShape",
+    )
+    created_id = shape_id
+    for reply in resp.get("replies", []) or []:
+        cs = reply.get("createShape")
+        if cs and cs.get("objectId"):
+            created_id = cs["objectId"]
+            break
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": slide_object_id,
+        "shape_object_id": created_id,
+        "shape_type": shape_type,
+        "url": (
+            f"https://docs.google.com/presentation/d/{presentation_id}"
+            f"/edit#slide=id.{slide_object_id}"
+        ),
+    }
+
+
+def create_line(
+    creds: Credentials,
+    presentation_id: str,
+    slide_object_id: str,
+    start_x_inches: float = 1.0,
+    start_y_inches: float = 1.0,
+    end_x_inches: float = 4.0,
+    end_y_inches: float = 3.0,
+    line_category: str = "STRAIGHT",
+) -> dict:
+    """Draw a line on a slide from a start point to an end point.
+
+    Uses ``presentations.batchUpdate`` with a single ``createLine``
+    request. Slides positions a line via the SAME ``elementProperties``
+    (size + transform) envelope as every other page element: the line
+    runs along the diagonal of its bounding box, so a start → end point
+    pair maps to a top-left translate + a width/height equal to the
+    point delta. This wrapper does that math so callers pass intuitive
+    start/end coordinates rather than constructing a transform by hand.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline — no extra grant).
+        presentation_id: The Slides file ID.
+        slide_object_id: The slide to draw the line on (an ``object_id``
+            from ``gslides_add_slide`` / ``gslides_get_outline``).
+        start_x_inches: Start point X (inches from the slide's left edge).
+        start_y_inches: Start point Y (inches from the slide's top edge).
+        end_x_inches: End point X (inches from the slide's left edge).
+        end_y_inches: End point Y (inches from the slide's top edge).
+        line_category: A Slides ``lineCategory`` enum — ``"STRAIGHT"``
+            (default), ``"BENT"``, or ``"CURVED"``. Other values
+            rejected client-side.
+
+    Returns:
+        ``{presentation_id, slide_object_id, line_object_id,
+        line_category, url}``. ``line_object_id`` is the created line's
+        stable ID (a valid target for later style / delete
+        batchUpdates); ``url`` deep-links to the slide.
+
+    Raises:
+        ValueError: empty ``slide_object_id``, unsupported
+            ``line_category``, or a zero-length line (start == end —
+            Slides would 400 on a degenerate transform).
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if not slide_object_id or not slide_object_id.strip():
+        raise ValueError("slide_object_id cannot be empty.")
+    if line_category not in _LINE_CATEGORIES:
+        raise ValueError(
+            f"line_category must be one of {sorted(_LINE_CATEGORIES)} — "
+            f"got {line_category!r}."
+        )
+    if start_x_inches == end_x_inches and start_y_inches == end_y_inches:
+        raise ValueError(
+            "start and end points are identical — a zero-length line has "
+            "no direction and Slides rejects the degenerate transform. "
+            "Pass distinct start/end coordinates."
+        )
+
+    # A line's bounding box: top-left at min(start, end), size = |delta|.
+    # The transform's scaleX/scaleY sign encodes direction so the line
+    # runs the right way along the diagonal (Slides draws from the box's
+    # top-left toward bottom-right scaled by the signed transform).
+    left_emu = int(min(start_x_inches, end_x_inches) * _EMU_PER_INCH)
+    top_emu = int(min(start_y_inches, end_y_inches) * _EMU_PER_INCH)
+    width_emu = int(abs(end_x_inches - start_x_inches) * _EMU_PER_INCH)
+    height_emu = int(abs(end_y_inches - start_y_inches) * _EMU_PER_INCH)
+    # Slides requires a positive size magnitude; a perfectly horizontal or
+    # vertical line has a zero delta on one axis. Floor that axis to 1 EMU
+    # so the size stays valid while the line still reads as straight.
+    width_emu = max(width_emu, 1)
+    height_emu = max(height_emu, 1)
+
+    slides = get_service("slides", "v1", credentials=creds)
+    # Unique per call — a constant objectId 400s on the second create_line
+    # against the same deck ('object ID already in use').
+    line_id = _unique_object_id("appscriptly_line")
+    requests = [
+        {
+            "createLine": {
+                "objectId": line_id,
+                "lineCategory": line_category,
+                "elementProperties": _element_properties(
+                    slide_object_id,
+                    width_emu,
+                    height_emu,
+                    left_emu,
+                    top_emu,
+                ),
+            },
+        },
+    ]
+    # NOT idempotent: each call adds ANOTHER line.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.createLine",
+    )
+    created_id = line_id
+    for reply in resp.get("replies", []) or []:
+        cl = reply.get("createLine")
+        if cl and cl.get("objectId"):
+            created_id = cl["objectId"]
+            break
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": slide_object_id,
+        "line_object_id": created_id,
+        "line_category": line_category,
+        "url": (
+            f"https://docs.google.com/presentation/d/{presentation_id}"
+            f"/edit#slide=id.{slide_object_id}"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------
