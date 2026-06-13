@@ -820,3 +820,92 @@ def test_gdocs_insert_markdown_table_rejects_bad_markdown(with_docs_stub):
         tools.gdocs_insert_markdown_table(
             doc_id="DOC1", markdown="| a | b |\n| c | d |",
         )
+
+
+# ---------------------------------------------------------------------
+# gdocs_edit_range — batchUpdate (deleteContentRange [+ insertText])
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_edit_range_pure_delete_happy_path(with_docs_stub):
+    """No ``text`` → pure delete: one deleteContentRange request, and the
+    envelope reports deleted=True / inserted=False."""
+    result = tools.gdocs_edit_range(
+        doc_id="DOC1", start_index=5, end_index=12,
+    )
+    assert result == {
+        "doc_id": "DOC1",
+        "start_index": 5,
+        "end_index": 12,
+        "tab_id": None,
+        "deleted": True,
+        "inserted": False,
+        "inserted_units": 0,
+    }
+    reqs = _last_batchupdate_body(with_docs_stub)["requests"]
+    assert reqs == [
+        {"deleteContentRange": {"range": {"startIndex": 5, "endIndex": 12}}}
+    ]
+
+
+def test_gdocs_edit_range_replace_emits_delete_then_insert(with_docs_stub):
+    """With ``text`` → deleteContentRange THEN insertText at start_index,
+    in that order (delete first so the insert lands in the gap)."""
+    result = tools.gdocs_edit_range(
+        doc_id="DOC1", start_index=4, end_index=9, text="new",
+    )
+    assert result["deleted"] is True
+    assert result["inserted"] is True
+    assert result["inserted_units"] == 3  # "new" = 3 UTF-16 units
+    reqs = _last_batchupdate_body(with_docs_stub)["requests"]
+    assert reqs == [
+        {"deleteContentRange": {"range": {"startIndex": 4, "endIndex": 9}}},
+        {"insertText": {"location": {"index": 4}, "text": "new"}},
+    ]
+
+
+def test_gdocs_edit_range_empty_text_is_pure_delete(with_docs_stub):
+    """Empty-string ``text`` is treated as a pure delete — Docs rejects an
+    empty insertText, so none is emitted and inserted=False."""
+    result = tools.gdocs_edit_range(
+        doc_id="DOC1", start_index=2, end_index=6, text="",
+    )
+    assert result["inserted"] is False
+    assert result["inserted_units"] == 0
+    reqs = _last_batchupdate_body(with_docs_stub)["requests"]
+    assert all("insertText" not in r for r in reqs)
+    assert len(reqs) == 1 and "deleteContentRange" in reqs[0]
+
+
+def test_gdocs_edit_range_scopes_to_tab_when_given(with_docs_stub):
+    """A tab_id is threaded onto BOTH the delete range and the insert
+    location."""
+    tools.gdocs_edit_range(
+        doc_id="DOC1", start_index=3, end_index=7, text="x", tab_id="t.abc",
+    )
+    reqs = _last_batchupdate_body(with_docs_stub)["requests"]
+    assert reqs[0]["deleteContentRange"]["range"] == {
+        "startIndex": 3, "endIndex": 7, "tabId": "t.abc",
+    }
+    assert reqs[1]["insertText"]["location"] == {"index": 3, "tabId": "t.abc"}
+
+
+def test_gdocs_edit_range_counts_above_bmp_text_in_utf16_units(with_docs_stub):
+    """``inserted_units`` reports the UTF-16 code-unit length of the
+    inserted text — an above-BMP emoji counts as 2, not 1. ``"a😀"`` is
+    3 UTF-16 units (1 + 2) but only 2 Python characters; the result must
+    say 3, matching the renderer's UTF-16 unit basis (R6 / PR #184)."""
+    result = tools.gdocs_edit_range(
+        doc_id="DOC1", start_index=1, end_index=3, text="a\U0001f600",
+    )
+    assert result["inserted_units"] == 3  # NOT len("a😀") == 2
+    inserted = _last_batchupdate_body(with_docs_stub)["requests"][1]
+    assert inserted["insertText"]["text"] == "a\U0001f600"
+
+
+def test_gdocs_edit_range_rejects_bad_range(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="end_index must be greater"):
+        tools.gdocs_edit_range(doc_id="DOC1", start_index=5, end_index=5)
+    with pytest.raises(ToolError, match="start_index must be >= 1"):
+        tools.gdocs_edit_range(doc_id="DOC1", start_index=0, end_index=5)

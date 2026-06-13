@@ -13,6 +13,7 @@
   "gdocs_append_to_tab",
   "gdocs_create_folder",
   "gdocs_delete_tab",
+  "gdocs_edit_range",
   "gdocs_export_doc",
   "gdocs_find_doc_by_title",
   "gdocs_find_file",

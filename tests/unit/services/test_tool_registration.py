@@ -303,7 +303,7 @@ def _assert_tools_live_in_module(tool_names, expected_module: str) -> None:
 
 
 def test_docs_service_tools_register_from_services_docs_tools_module():
-    """The 16 docs-service tools must be defined in
+    """The docs-service tools must be defined in
     ``services/docs/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["docs"],
