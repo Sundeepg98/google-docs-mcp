@@ -167,10 +167,15 @@ Add the same `mcpServers` entry to `~/.claude.json` (user-scope) or to a project
 
 ### First-run OAuth
 
-First tool call opens the browser. Sign in → grant scopes. Tokens cached after that; no more browser dance. Required scopes:
+First tool call opens the browser. Sign in → grant scopes. Tokens cached after that; no more browser dance. Required scopes (mirror of `auth.py:SCOPES`):
 - `https://www.googleapis.com/auth/documents`
 - `https://www.googleapis.com/auth/drive.file`
-- `https://www.googleapis.com/auth/drive.readonly`
+- `https://www.googleapis.com/auth/spreadsheets`
+- `https://www.googleapis.com/auth/presentations`
+- `https://www.googleapis.com/auth/script.projects`
+- `https://www.googleapis.com/auth/script.deployments`
+
+(`drive.readonly` was dropped from the base tier — it is Google's only RESTRICTED scope here, and dropping it keeps consent to sensitive-scopes-only. The HTTP/cloud connector flow additionally requests `openid` + `userinfo.email` for identity; see `oauth_google.py:GOOGLE_API_SCOPES`.)
 
 ## Apps Script setup (required for converting existing docs)
 

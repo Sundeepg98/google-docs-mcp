@@ -11,7 +11,7 @@ PR #135 (merged 2026-05-27) shipped the user-facing rename — PyPI dist name, `
 |---|------|------------------|-----------|--------|------|
 | 1 | **Local folder** | `mcp-servers\google-docs` → `appscriptly` | **No — fully reversible** (git identity is in `.git/config`, not the dir name) | ✅ | **Now**, via fresh clone (§1) |
 | 2 | Claude memory scope (derived from folder path) | new bucket `D--Sundeep-projects-appscriptly` | sticky-ish, **non-destructive** (old bucket preserved; this repo has none yet) | ✅ | falls out of #1 |
-| 3 | Python module `appscriptly` → `appscriptly` | unchanged (ADR-deferred) | No — internal refactor | ✅ ready | dedicated PR, **NEXT** on a fresh tree (#148/#149/#150 merged) |
+| 3 | Python module `google_docs_mcp` → `appscriptly` | **DONE ✅ (#151)** — module path renamed; `src/appscriptly/` is the package | No — internal refactor | ✅ shipped | merged as PR #151 |
 | 4 | **PyPI `appscriptly`** | stub v0.0.1 **already published, yours** | YES — **DONE ✅** | ✅ | name locked |
 | 4b | old PyPI `google-docs-mcp` | **squatter's** ("Jag_k") — never ours | lost, irrelevant | n/a | confirms rename was right |
 | 5 | **GitHub org `appscriptly`** | **reserved 2026-05-27 ✅** | DONE | ✅ | — |
