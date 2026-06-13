@@ -37,8 +37,8 @@ context (HTML, SQL, command, log) to prevent injection.
 | Control | Status | Notes |
 |---|---|---|
 | V1.2.1 — output encoding for the active interpreter | **PASS** | OAuth error HTML escapes via `html.escape()` (regression-pinned by `test_error_page_escapes_html_metachars` in [`tests/unit/test_http_server_middleware.py`](../tests/unit/test_http_server_middleware.py)). JSON responses via `JSONResponse` use Starlette's safe encoder. |
-| V1.2.5 — parameterized queries / prepared statements | **PASS** | All `user_store` SQLite calls use `?` parameter binding ([`src/google_docs_mcp/user_store.py`](../src/google_docs_mcp/user_store.py)). No `f"SELECT ... {var}"` patterns. |
-| V1.3.x — XSS-safe templating | **PASS** | OAuth callback HTML is the ONLY server-generated HTML; defense-in-depth via CSP `default-src 'none'` ([`src/google_docs_mcp/http_server/_pages.py`](../src/google_docs_mcp/http_server/_pages.py)); pinned by `test_oauth_error_page_includes_csp_header`. |
+| V1.2.5 — parameterized queries / prepared statements | **PASS** | All `user_store` SQLite calls use `?` parameter binding ([`src/appscriptly/user_store.py`](../src/appscriptly/user_store.py)). No `f"SELECT ... {var}"` patterns. |
+| V1.3.x — XSS-safe templating | **PASS** | OAuth callback HTML is the ONLY server-generated HTML; defense-in-depth via CSP `default-src 'none'` ([`src/appscriptly/http_server/_pages.py`](../src/appscriptly/http_server/_pages.py)); pinned by `test_oauth_error_page_includes_csp_header`. |
 
 ---
 
@@ -48,7 +48,7 @@ context (HTML, SQL, command, log) to prevent injection.
 
 | Control | Status | Notes |
 |---|---|---|
-| V2.1.1 — password / token length floor | **PASS** | `MCP_BEARER_TOKEN` 32-char minimum enforced at startup; `keys.get_key()` raises on shorter master ([`src/google_docs_mcp/keys.py`](../src/google_docs_mcp/keys.py)). |
+| V2.1.1 — password / token length floor | **PASS** | `MCP_BEARER_TOKEN` 32-char minimum enforced at startup; `keys.get_key()` raises on shorter master ([`src/appscriptly/keys.py`](../src/appscriptly/keys.py)). |
 | V2.1.7 — credentials over TLS | **PASS** | Fly's edge proxy terminates TLS; all traffic to the app over HTTPS. `OAUTHLIB_INSECURE_TRANSPORT=1` rejected by `oauth_google.py` startup. |
 | V2.4.x — secure credential storage | **PASS** | Tokens stored via `save_credentials_json` which strips operator `client_id`/`client_secret` before persistence; regression-pinned. |
 | V2.7.x — out-of-band verification (MFA) | **N/A** | App delegates authentication to Google OAuth; MFA enforcement is Google's responsibility (user-configurable in their Google account). |

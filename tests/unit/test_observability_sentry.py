@@ -25,7 +25,7 @@ import os
 
 import pytest
 
-from google_docs_mcp.observability import (
+from appscriptly.observability import (
     _before_send,
     _matches_redact_pattern,
     _redact_mapping,
@@ -253,7 +253,7 @@ def test_before_send_drops_event_when_scrubber_raises(monkeypatch):
     # Force _redact_mapping to raise by passing a malformed event the
     # walker doesn't expect. The most reliable way: monkeypatch the
     # helper itself.
-    from google_docs_mcp import observability
+    from appscriptly import observability
 
     def raises(_d):
         raise RuntimeError("simulated scrubber failure")

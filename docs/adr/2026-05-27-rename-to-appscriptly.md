@@ -40,9 +40,9 @@ Five things happened over the next ~30 PRs that made the name a liability rather
 
 | Surface | Why it stays |
 |---|---|
-| Python module path `src/google_docs_mcp/` | Renaming would break ~hundreds of internal imports across src/ + tests/ + every consumer that pinned an import path. The cost is not justified by the user-facing benefit — PyPI distribution name and module name are conventionally allowed to differ (e.g. `PyYAML` distribution → `yaml` module). |
+| Python module path `src/appscriptly/` | Renaming would break ~hundreds of internal imports across src/ + tests/ + every consumer that pinned an import path. The cost is not justified by the user-facing benefit — PyPI distribution name and module name are conventionally allowed to differ (e.g. `PyYAML` distribution → `yaml` module). |
 | All `gdocs_*` tool names | Renaming would break every existing claude.ai connector user's tool calls + every saved prompt that references the tool by name. The PR-α reframe (`gdocs_setup_apps_script` → `gdocs_install_automation`) used a deprecation-alias pattern; doing that for 30+ tools is a massive PR with high regression risk and minimal user-facing value. **New tools added in PR-Δ7+ will use the `as_*` prefix** (appscriptly-native); existing tools keep `gdocs_*` indefinitely. |
-| Logger names `google_docs_mcp.*` | Operators have monitoring + log-aggregation rules that grep these strings. Renaming would silently break log routing across every Sentry / Datadog / Splunk / GCP Cloud Logging integration any operator has built. Logger names are observability infrastructure, not branding. |
+| Logger names `appscriptly.*` | Operators have monitoring + log-aggregation rules that grep these strings. Renaming would silently break log routing across every Sentry / Datadog / Splunk / GCP Cloud Logging integration any operator has built. Logger names are observability infrastructure, not branding. |
 | `_TENANT_ATTR = "_google_docs_mcp_user_id"` (PR-Δ5) | Just shipped in PR-Δ5. Process-local key with no external surface; renaming creates churn for zero benefit. |
 | HKDF info bytes `b"google-docs-mcp v1 api_bearer"` etc. | **Cryptographic primitive.** Renaming would invalidate every derived key for every operator — every signed URL in flight, every bearer token cache, every OAuth state HMAC. Operators would need to flush every active session. The cost-benefit math is "infinite breakage for zero brand benefit." |
 | `~/.google-docs-mcp/` user data directory paths | User data. Renaming would orphan every existing user's OAuth tokens — Claude Desktop / Code users would silently lose their session and re-consent. Catastrophic UX hit. |
@@ -86,7 +86,7 @@ None of those are blocking for the rename benefits (PyPI discoverability + MCP c
 - Existing Claude Desktop installs: `google-docs-mcp` CLI binary still launches the server.
 - Existing OAuth tokens at `~/.google-docs-mcp/`: still read correctly; no re-consent.
 - Existing Fly deploy: `sundeepg98-docs-mcp.fly.dev` keeps serving traffic until the operator schedules the cutover.
-- Every existing import in operator-side wrappers / forks / integrations: still resolves (`from google_docs_mcp import ...`).
+- Every existing import in operator-side wrappers / forks / integrations: still resolves (`from appscriptly import ...`).
 - Every signed URL in flight + every bearer token cached: still validates against the unchanged HKDF info bytes.
 
 ### What gets worse (the honest debt)
@@ -103,7 +103,7 @@ None of those are blocking for the rename benefits (PyPI discoverability + MCP c
 [ ] Update Google OAuth Console: rename the OAuth Client display name to "appscriptly" (~30s manual, optional but recommended)
 [ ] Decide cutover timing: when to migrate sundeepg98-docs-mcp.fly.dev → appscriptly.fly.dev (see fly.toml top comment for the 7-step procedure)
 [ ] Decide repo-transfer timing: when to move github.com/Sundeepg98/google-docs-mcp → github.com/appscriptly/appscriptly (post-transfer: sweep docs for GitHub URL strings)
-[ ] (Eventually) module-path rename PR: src/google_docs_mcp/ → src/appscriptly/ + import sweep across src/ + tests/ + scripts/
+[ ] (Eventually) module-path rename PR: src/appscriptly/ → src/appscriptly/ + import sweep across src/ + tests/ + scripts/
 ```
 
 None of these blocks PR-Δ7+ feature work.

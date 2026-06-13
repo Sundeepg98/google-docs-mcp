@@ -35,7 +35,7 @@ commercial-ready engineering investment for this window:
 
 ### (1) License-key middleware
 
-New module `src/google_docs_mcp/license.py` with `check_license(token)
+New module `src/appscriptly/license.py` with `check_license(token)
 → LicenseStatus`. Three states: `DISABLED` (env var off — personal
 default), `VALID` (env var on + token accepted), `INVALID` (env var
 on + token missing or rejected).
@@ -66,7 +66,7 @@ personal users.
 ### (2) GCP project linking for Apps Script
 
 New `_build_manifest(gcp_project_number)` in
-`src/google_docs_mcp/setup_apps_script.py`. When the project number
+`src/appscriptly/setup_apps_script.py`. When the project number
 is supplied (via the `GCP_PROJECT_NUMBER` env var), the appsscript.json
 manifest gets an additional `cloudPlatform.projectId` block per
 Google's documented schema. When unset (the default), the manifest is
@@ -118,7 +118,7 @@ it, they surface as a hard loud failure before any user data is
 touched.
 
 **3c. Per-call audit log.** New logger
-`google_docs_mcp.audit.tenant` emits a structured record on every
+`appscriptly.audit.tenant` emits a structured record on every
 credential dispatch outcome (`dispatched`, `needs_reauth`,
 `revoked`). Carries `audit_user_id`, `audit_required_scopes`,
 `audit_granted_scopes`, `audit_event`, `audit_outcome` as extra
@@ -127,7 +127,7 @@ existing `RequestIdLogFilter` on the root logger — no explicit
 threading.
 
 A separate logger
-`google_docs_mcp.audit.tenant_isolation` carries the assertion-fire
+`appscriptly.audit.tenant_isolation` carries the assertion-fire
 records (WARNING for stamp-absent, ERROR for actual mismatch). The
 split lets operators route normal dispatch audit trail (high volume,
 compliance retention) separately from isolation-violation alerts
@@ -158,7 +158,7 @@ full untruncated value for downstream correlation.
   credential-dispatch consumer. A future bug at the storage layer
   fails LOUDLY instead of silently leaking.
 - **Audit trail anchor for compliance.** The
-  `google_docs_mcp.audit.tenant` logger gives SOC 2 / GDPR / HIPAA
+  `appscriptly.audit.tenant` logger gives SOC 2 / GDPR / HIPAA
   reviewers a single grep target for "who got which credentials
   when" — paired with the PR-Δ4 request-ID correlation, complete
   request lifecycle reconstruction is one `flyctl logs | grep` away.

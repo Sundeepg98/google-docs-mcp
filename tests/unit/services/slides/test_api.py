@@ -36,13 +36,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.slides.api import (
+from appscriptly.services.slides.api import (
     _extract_slide_text,
+    add_slide,
+    create_image,
     create_presentation,
+    create_table,
     get_outline,
     replace_all_text,
 )
@@ -462,3 +465,416 @@ def test_create_presentation_falls_back_to_input_title_when_omitted(
     }
     result = create_presentation(MagicMock(), "  Fallback Title  ")
     assert result["title"] == "Fallback Title"
+
+
+# ---------------------------------------------------------------------
+# add_slide — pre-API validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_add():
+    slides = MagicMock(name="slides-v1-stub-add")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [
+            {"createSlide": {"objectId": "appscriptly_slide"}},
+            {},  # insertText replies carry no objectId
+            {},
+        ],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_add_slide_rejects_unsupported_layout():
+    """An unsupported ``layout`` enum is a caller bug — reject
+    client-side with the supported set, rather than a Slides 400."""
+    with pytest.raises(ValueError, match="layout must be one of"):
+        add_slide(MagicMock(), "DECK1", layout="NONSENSE")
+
+
+def test_add_slide_rejects_body_for_layout_without_body_placeholder():
+    """``body`` text needs a BODY placeholder — only TITLE_AND_BODY has
+    one. Passing body with TITLE_ONLY / BLANK is rejected up front."""
+    with pytest.raises(ValueError, match="body text requires a layout"):
+        add_slide(MagicMock(), "DECK1", body="Some body", layout="TITLE_ONLY")
+    with pytest.raises(ValueError, match="body text requires a layout"):
+        add_slide(MagicMock(), "DECK1", body="Some body", layout="BLANK")
+
+
+def test_add_slide_passes_presentationId_to_slides(stub_slides_for_add):
+    add_slide(MagicMock(), "DECK-XYZ", title="Hi")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_add)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_add_slide_builds_createSlide_with_placeholder_mappings(
+    stub_slides_for_add,
+):
+    """TITLE_AND_BODY + title + body → one createSlide carrying BOTH
+    placeholderIdMappings, then two insertText requests targeting the
+    deterministic placeholder IDs."""
+    add_slide(
+        MagicMock(), "DECK1",
+        title="My Title", body="My Body", layout="TITLE_AND_BODY",
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    # createSlide first
+    cs = reqs[0]["createSlide"]
+    assert cs["slideLayoutReference"] == {"predefinedLayout": "TITLE_AND_BODY"}
+    mappings = cs["placeholderIdMappings"]
+    types = {m["layoutPlaceholder"]["type"] for m in mappings}
+    assert types == {"TITLE", "BODY"}
+    # two insertText requests, targeting the mapped object IDs
+    insert_targets = {
+        r["insertText"]["objectId"]: r["insertText"]["text"]
+        for r in reqs if "insertText" in r
+    }
+    title_id = next(
+        m["objectId"] for m in mappings
+        if m["layoutPlaceholder"]["type"] == "TITLE"
+    )
+    body_id = next(
+        m["objectId"] for m in mappings
+        if m["layoutPlaceholder"]["type"] == "BODY"
+    )
+    assert insert_targets[title_id] == "My Title"
+    assert insert_targets[body_id] == "My Body"
+
+
+def test_add_slide_title_only_omits_body_placeholder_and_insert(
+    stub_slides_for_add,
+):
+    """layout=TITLE_ONLY with a title → exactly one placeholder
+    mapping (TITLE) and one insertText; no BODY anywhere."""
+    add_slide(MagicMock(), "DECK1", title="Just a title", layout="TITLE_ONLY")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    cs = reqs[0]["createSlide"]
+    mappings = cs.get("placeholderIdMappings", [])
+    assert [m["layoutPlaceholder"]["type"] for m in mappings] == ["TITLE"]
+    inserts = [r for r in reqs if "insertText" in r]
+    assert len(inserts) == 1
+    assert inserts[0]["insertText"]["text"] == "Just a title"
+
+
+def test_add_slide_blank_layout_has_no_placeholders_or_inserts(
+    stub_slides_for_add,
+):
+    """layout=BLANK with no title/body → a bare createSlide, no
+    placeholderIdMappings, no insertText requests."""
+    add_slide(MagicMock(), "DECK1", layout="BLANK")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    assert len(reqs) == 1
+    assert "placeholderIdMappings" not in reqs[0]["createSlide"]
+
+
+def test_add_slide_empty_title_skips_title_insert(stub_slides_for_add):
+    """A falsy title (None / "") does not produce a TITLE placeholder
+    or insertText — even on a TITLE_AND_BODY layout."""
+    add_slide(MagicMock(), "DECK1", title="", body="Body only")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_add)["body"]["requests"]
+    cs = reqs[0]["createSlide"]
+    types = [m["layoutPlaceholder"]["type"] for m in cs.get("placeholderIdMappings", [])]
+    assert types == ["BODY"]
+    inserts = [r for r in reqs if "insertText" in r]
+    assert len(inserts) == 1
+    assert inserts[0]["insertText"]["text"] == "Body only"
+
+
+def test_add_slide_returns_flat_envelope(stub_slides_for_add):
+    """Flat ``{presentation_id, slide_object_id, url}`` envelope; the
+    slide_object_id comes from the createSlide reply and the url
+    deep-links to that slide."""
+    result = add_slide(MagicMock(), "DECK-1", title="X")
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "appscriptly_slide",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.appscriptly_slide"
+        ),
+    }
+
+
+def test_add_slide_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_add,
+):
+    """Defensive: if Slides' reply omits the createSlide objectId, the
+    envelope falls back to the deterministic ID we requested."""
+    stub_slides_for_add.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],  # no createSlide objectId echoed
+    }
+    result = add_slide(MagicMock(), "DECK-1", title="X")
+    # The requested id is now unique-per-call (appscriptly_slide_<hex>);
+    # the fallback must echo that requested id, not a constant.
+    assert result["slide_object_id"].startswith("appscriptly_slide_")
+
+
+def _created_object_ids(slides: MagicMock, request_key: str) -> list[str]:
+    """All requested objectIds for ``request_key`` (e.g. 'createSlide')
+    across EVERY batchUpdate call captured on the stub — so a 2nd call's
+    id can be compared against the 1st's."""
+    ids: list[str] = []
+    for call in slides.presentations().batchUpdate.call_args_list:
+        if "presentationId" not in call.kwargs:
+            continue
+        for req in call.kwargs["body"]["requests"]:
+            if request_key in req:
+                ids.append(req[request_key]["objectId"])
+    return ids
+
+
+def test_add_slide_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_add,
+):
+    """REGRESSION (HIGH): a constant slide objectId 400s 'object ID already
+    in use' on the 2nd add_slide against the same deck. Two calls must
+    request DISTINCT createSlide objectIds (and distinct placeholder ids),
+    so repeated calls succeed."""
+    add_slide(MagicMock(), "DECK-SAME", title="First", body="B1",
+              layout="TITLE_AND_BODY")
+    add_slide(MagicMock(), "DECK-SAME", title="Second", body="B2",
+              layout="TITLE_AND_BODY")
+
+    slide_ids = _created_object_ids(stub_slides_for_add, "createSlide")
+    assert len(slide_ids) == 2
+    assert slide_ids[0] != slide_ids[1], (
+        f"both add_slide calls requested the SAME slide objectId "
+        f"({slide_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(sid.startswith("appscriptly_slide_") for sid in slide_ids)
+
+    # Placeholder ids must also differ across the two calls (they live in
+    # the same presentation namespace and would collide too).
+    call_lists = [
+        c.kwargs["body"]["requests"]
+        for c in stub_slides_for_add.presentations().batchUpdate.call_args_list
+        if "presentationId" in c.kwargs
+    ]
+    ph_ids_call1 = {
+        m["objectId"]
+        for m in call_lists[0][0]["createSlide"].get("placeholderIdMappings", [])
+    }
+    ph_ids_call2 = {
+        m["objectId"]
+        for m in call_lists[1][0]["createSlide"].get("placeholderIdMappings", [])
+    }
+    assert ph_ids_call1.isdisjoint(ph_ids_call2), (
+        f"placeholder ids collide across calls: {ph_ids_call1 & ph_ids_call2}"
+    )
+
+
+# ---------------------------------------------------------------------
+# create_image — validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+_EMU = 914400  # EMU per inch — mirrors api._EMU_PER_INCH
+
+
+@pytest.fixture
+def stub_slides_for_image():
+    slides = MagicMock(name="slides-v1-stub-image")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createImage": {"objectId": "appscriptly_image"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_image_rejects_empty_url():
+    with pytest.raises(ValueError, match="image_url cannot be empty"):
+        create_image(MagicMock(), "DECK1", "SLIDE1", "")
+
+
+def test_create_image_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_image(MagicMock(), "DECK1", "", "https://x/y.png")
+
+
+def test_create_image_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="must be positive"):
+        create_image(
+            MagicMock(), "DECK1", "SLIDE1", "https://x/y.png", width_inches=0,
+        )
+    with pytest.raises(ValueError, match="must be positive"):
+        create_image(
+            MagicMock(), "DECK1", "SLIDE1", "https://x/y.png", height_inches=-1,
+        )
+
+
+def test_create_image_passes_presentationId(stub_slides_for_image):
+    create_image(MagicMock(), "DECK-XYZ", "SLIDE1", "https://x/y.png")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_image)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_create_image_builds_createImage_request_with_url_and_placement(
+    stub_slides_for_image,
+):
+    """The createImage request carries the url + an elementProperties
+    block pinning the image to the slide with EMU size + transform."""
+    create_image(
+        MagicMock(), "DECK1", "SLIDE_7", "https://example.com/logo.png",
+        width_inches=2, height_inches=1, x_inches=3, y_inches=4,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_image)["body"]["requests"]
+    assert len(reqs) == 1
+    ci = reqs[0]["createImage"]
+    assert ci["url"] == "https://example.com/logo.png"
+    ep = ci["elementProperties"]
+    assert ep["pageObjectId"] == "SLIDE_7"
+    assert ep["size"]["width"] == {"magnitude": 2 * _EMU, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 1 * _EMU, "unit": "EMU"}
+    assert ep["transform"]["translateX"] == 3 * _EMU
+    assert ep["transform"]["translateY"] == 4 * _EMU
+    assert ep["transform"]["unit"] == "EMU"
+
+
+def test_create_image_returns_flat_envelope(stub_slides_for_image):
+    result = create_image(
+        MagicMock(), "DECK-1", "SLIDE_1", "https://x/y.png",
+    )
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "image_object_id": "appscriptly_image",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_image_strips_whitespace_from_url(stub_slides_for_image):
+    create_image(MagicMock(), "DECK1", "S1", "  https://x/y.png  ")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_image)["body"]["requests"]
+    assert reqs[0]["createImage"]["url"] == "https://x/y.png"
+
+
+def test_create_image_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_image,
+):
+    stub_slides_for_image.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_image(MagicMock(), "DECK-1", "S1", "https://x/y.png")
+    # Unique-per-call requested id (appscriptly_image_<hex>).
+    assert result["image_object_id"].startswith("appscriptly_image_")
+
+
+def test_create_image_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_image,
+):
+    """REGRESSION (HIGH): a constant image objectId 400s on the 2nd
+    create_image against the same deck. Two calls must request DISTINCT
+    createImage objectIds."""
+    create_image(MagicMock(), "DECK-SAME", "S1", "https://x/a.png")
+    create_image(MagicMock(), "DECK-SAME", "S1", "https://x/b.png")
+    image_ids = _created_object_ids(stub_slides_for_image, "createImage")
+    assert len(image_ids) == 2
+    assert image_ids[0] != image_ids[1], (
+        f"both create_image calls requested the SAME objectId "
+        f"({image_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(iid.startswith("appscriptly_image_") for iid in image_ids)
+
+
+# ---------------------------------------------------------------------
+# create_table — validation + Slides call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_table():
+    slides = MagicMock(name="slides-v1-stub-table")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createTable": {"objectId": "appscriptly_table"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_table_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_table(MagicMock(), "DECK1", "", rows=2, columns=2)
+
+
+def test_create_table_rejects_subunit_rows_or_columns():
+    with pytest.raises(ValueError, match="rows and columns must each be >= 1"):
+        create_table(MagicMock(), "DECK1", "S1", rows=0, columns=3)
+    with pytest.raises(ValueError, match="rows and columns must each be >= 1"):
+        create_table(MagicMock(), "DECK1", "S1", rows=3, columns=0)
+
+
+def test_create_table_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="must be positive"):
+        create_table(
+            MagicMock(), "DECK1", "S1", rows=2, columns=2, width_inches=0,
+        )
+
+
+def test_create_table_builds_createTable_request(stub_slides_for_table):
+    """The createTable request carries rows + columns + an
+    elementProperties block pinning it to the slide."""
+    create_table(
+        MagicMock(), "DECK1", "SLIDE_9", rows=3, columns=4,
+        width_inches=5, height_inches=2, x_inches=1, y_inches=1,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_table)["body"]["requests"]
+    assert len(reqs) == 1
+    ct = reqs[0]["createTable"]
+    assert ct["rows"] == 3
+    assert ct["columns"] == 4
+    assert ct["elementProperties"]["pageObjectId"] == "SLIDE_9"
+    assert ct["elementProperties"]["size"]["width"] == {
+        "magnitude": 5 * _EMU, "unit": "EMU",
+    }
+
+
+def test_create_table_returns_flat_envelope(stub_slides_for_table):
+    result = create_table(MagicMock(), "DECK-1", "SLIDE_1", rows=2, columns=2)
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "table_object_id": "appscriptly_table",
+        "rows": 2,
+        "columns": 2,
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_table_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_table,
+):
+    stub_slides_for_table.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_table(MagicMock(), "DECK-1", "S1", rows=1, columns=1)
+    # Unique-per-call requested id (appscriptly_table_<hex>).
+    assert result["table_object_id"].startswith("appscriptly_table_")
+
+
+def test_create_table_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_table,
+):
+    """REGRESSION (HIGH): a constant table objectId 400s on the 2nd
+    create_table against the same deck. Two calls must request DISTINCT
+    createTable objectIds."""
+    create_table(MagicMock(), "DECK-SAME", "S1", rows=2, columns=2)
+    create_table(MagicMock(), "DECK-SAME", "S1", rows=3, columns=3)
+    table_ids = _created_object_ids(stub_slides_for_table, "createTable")
+    assert len(table_ids) == 2
+    assert table_ids[0] != table_ids[1], (
+        f"both create_table calls requested the SAME objectId "
+        f"({table_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(tid.startswith("appscriptly_table_") for tid in table_ids)

@@ -102,7 +102,7 @@ If no entries appear after 5 min + a triggering invocation:
 1. Confirm `GCP_PROJECT_NUMBER` matches the project number (not project ID).
 2. Confirm Apps Script API is enabled in that project (`gcloud services list --enabled --project=...`).
 3. Confirm the user re-ran `gdocs_install_automation` after the env var was set.
-4. Check `flyctl logs` for any structured-log line tagged `google_docs_mcp.setup_apps_script` — manifest pushes are visible there.
+4. Check `flyctl logs` for any structured-log line tagged `appscriptly.setup_apps_script` — manifest pushes are visible there.
 
 ## Disabling
 
@@ -158,6 +158,6 @@ The only change is the new `cloudPlatform` block. `exceptionLogging: "STACKDRIVE
 ## Related
 
 - ADR: `docs/adr/2026-05-27-commercial-ready-engineering.md`
-- Code seam: `src/google_docs_mcp/setup_apps_script.py::_build_manifest`
+- Code seam: `src/appscriptly/setup_apps_script.py::_build_manifest`
 - Tests: `tests/unit/test_gcp_project_linking.py`
 - Companion runbooks: `docs/runbooks/backup-restore.md`, `docs/runbooks/key-rotation.md`, `docs/runbooks/sentry-setup.md`

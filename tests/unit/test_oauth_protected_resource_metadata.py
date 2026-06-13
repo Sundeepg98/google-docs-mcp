@@ -32,7 +32,7 @@ def _build_well_known_app() -> Starlette:
     BearerTokenMiddleware tests; here we just exercise the handler
     in isolation.
     """
-    from google_docs_mcp.http_server.routes.observability import (
+    from appscriptly.http_server.routes.observability import (
         oauth_protected_resource_metadata,
     )
 
@@ -163,7 +163,7 @@ def test_oauth_protected_resource_scopes_supported_mirrors_GOOGLE_API_SCOPES(
     second edit. This test pins the no-duplicate-registry contract."""
     monkeypatch.setenv("GOOGLE_OAUTH_BASE_URL", "https://example.fly.dev")
 
-    from google_docs_mcp.oauth_google import GOOGLE_API_SCOPES
+    from appscriptly.oauth_google import GOOGLE_API_SCOPES
 
     client = TestClient(_build_well_known_app())
     body = client.get("/.well-known/oauth-protected-resource").json()

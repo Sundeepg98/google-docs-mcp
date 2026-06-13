@@ -12,7 +12,7 @@
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (STRIDE + bounded blast radius) ·
 [docs/asvs-level-1-checklist.md](docs/asvs-level-1-checklist.md) (OWASP ASVS L1 self-attestation).
 
-> **Note on the rename (2026-05-27):** this project was previously published as `google-docs-mcp`. The original name reflected the Docs-first v1.0 scope; subsequent releases grew to cover six Google services + Apps Script-backed automation, so the rename to `appscriptly` matches the positioning. The **Python module path stays at `google_docs_mcp`** (renaming would break every existing import); the **CLI binary** is now `appscriptly` with `google-docs-mcp` preserved as a backward-compat alias; **`gdocs_*` tool names are unchanged** (renaming would break existing claude.ai connector users); the Fly deployment is mid-migration with the legacy URL still live. See [docs/adr/2026-05-27-rename-to-appscriptly.md](docs/adr/2026-05-27-rename-to-appscriptly.md) for the staged plan.
+> **Note on the rename (2026-05-27):** this project was previously published as `google-docs-mcp`. The original name reflected the Docs-first v1.0 scope; subsequent releases grew to cover six Google services + Apps Script-backed automation, so the rename to `appscriptly` matches the positioning. The **Python module path stays at `appscriptly`** (renaming would break every existing import); the **CLI binary** is now `appscriptly` with `google-docs-mcp` preserved as a backward-compat alias; **`gdocs_*` tool names are unchanged** (renaming would break existing claude.ai connector users); the Fly deployment is mid-migration with the legacy URL still live. See [docs/adr/2026-05-27-rename-to-appscriptly.md](docs/adr/2026-05-27-rename-to-appscriptly.md) for the staged plan.
 
 **appscriptly is the [MCP](https://modelcontextprotocol.io/) server that puts the Apps Script automation moat behind a Claude-friendly interface.** It creates and edits Google Docs with native sidebar Tabs (Google's October 2024 feature), losslessly retrofits existing `.docx` documents into tabbed format (preserving tables, drawings, and equations that text-only round-trips would destroy), and — the headline capability post-PR-α — installs a per-user **Workspace Automation runtime** so Claude can build persistent workflows that fire on a schedule, when data changes, or from a custom menu inside any of your docs / sheets / slides.
 
@@ -41,10 +41,12 @@ Google Docs Tabs are a Google-Docs-native concept. They do **not** exist
 in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
-wraps that flow + the supporting Drive operations into 23 tools
-(`gdocs_*`-prefixed) covering the full lifecycle: create, edit, read,
-find, retrofit, trash/untrash, convert existing docs, one-shot
-per-user Apps Script Web App setup, plus introspection tools that
+wraps that flow + the supporting Drive / Sheets / Slides / Apps Script
+operations into 57 tools (primarily `gdocs_*`, plus `gsheets_*` /
+`gslides_*` / `as_*` for the newer services) covering the full
+lifecycle: create, edit, read, find, retrofit, trash/untrash, convert
+existing docs, one-shot per-user Apps Script Web App setup, plus
+Sheets / Slides editing and introspection tools that
 surface the server's CI test status over the MCP interface (so an
 agent can verify the running build was actually tested, not just
 trust a green badge). v1.3.0+: the server is **self-documenting** —
@@ -54,8 +56,10 @@ No external reference file required.
 
 ## Tool index
 
-All tools prefixed `gdocs_` for namespacing. Call `gdocs_server_info`
-on a live server to get the authoritative list with descriptions.
+Most tools are prefixed `gdocs_`; the Sheets / Slides verticals use
+`gsheets_` / `gslides_` and the appscriptly-native automation tools use
+`as_`. Call `gdocs_server_info` on a live server to get the
+authoritative list (all 57 tools) with descriptions.
 
 | Purpose | Tool |
 |---|---|
@@ -180,7 +184,7 @@ google-docs-mcp setup-apps-script-auto
 
 Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs`, deploys as a Web App with `executeAs: USER_DEPLOYING / access: ANYONE_ANONYMOUS` (URL secrecy = the access control; see `docs/THREAT_MODEL.md` §4 row 5), and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
 
-The plumbing lives in `src/google_docs_mcp/gas_deploy/` as a clean sub-package boundary — if a second project ever needs Apps Script project management, that folder can be `git mv`'d out and published as a standalone package.
+The plumbing lives in `src/appscriptly/gas_deploy/` as a clean sub-package boundary — if a second project ever needs Apps Script project management, that folder can be `git mv`'d out and published as a standalone package.
 
 ### Manual (fallback)
 
@@ -265,7 +269,7 @@ Verify: `curl https://<your-app>.fly.dev/health` returns `{"ok":true,...}`.
 1. Settings → Connectors → **Add custom connector**
 2. URL: `https://<your-app>.fly.dev/mcp`
 3. (No OAuth fields needed — the `/mcp` endpoint is open by convention; auth lives at `/api/*` and is bypassed by signed URLs)
-4. Save → start a new chat. The 23 `gdocs_*` tools appear.
+4. Save → start a new chat. All 57 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
 
 **Also add `<your-app>.fly.dev` to Settings → Capabilities → Additional allowed domains** so cloud chat's Python sandbox can POST to `/api/convert`.
 
@@ -313,26 +317,26 @@ Claude shapes the request into `gdocs_make_tabbed_doc(title, tabs)` and returns 
 
 ```bash
 pip install -e ".[test]"
-pytest tests/unit -v              # 340 unit tests, no network
-pytest tests/integration --live   # 13 live tests, real Drive + OAuth
+pytest tests/unit -v              # ~1,550 unit tests, no network
+pytest tests/integration --live   # 21 live tests, real Drive + OAuth
 ```
 
-Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). `deploy.sh` runs them locally before any Fly deploy; override with `SKIP_TESTS=1` for emergency hotfixes only.
+The counts above are approximate; `gdocs_test_manifest()` / `gdocs_server_info()` report the authoritative live numbers (computed at runtime). Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). `deploy.sh` runs them locally before any Fly deploy; override with `SKIP_TESTS=1` for emergency hotfixes only.
 
 ## Architecture / source map
 
 | File | What it does |
 |---|---|
-| `src/google_docs_mcp/server.py` | FastMCP tool wrappers; routing + validation |
-| `src/google_docs_mcp/docs_api.py` | Google Docs API: tab/content operations |
-| `src/google_docs_mcp/drive_api.py` | Google Drive API: upload, trash, search, move |
-| `src/google_docs_mcp/docx_import.py` | `.docx` → tabbed Google Doc pipeline |
-| `src/google_docs_mcp/retrofit.py` | Inject Heading 1 markers into styled `.docx` |
-| `src/google_docs_mcp/preview.py` | Dry-run tab-split detection |
-| `src/google_docs_mcp/restructure.gs` | Apps Script Web App for lossless content moves |
-| `src/google_docs_mcp/http_server.py` | Starlette REST + signed-URL middleware |
-| `src/google_docs_mcp/crypto.py` | HMAC signing for upload URLs |
-| `src/google_docs_mcp/errors.py` | Friendly error mapping for known Google API failures |
+| `src/appscriptly/server.py` | FastMCP tool wrappers; routing + validation |
+| `src/appscriptly/services/docs/api.py` | Google Docs API: tab/content operations |
+| `src/appscriptly/services/drive/api.py` | Google Drive API: upload, trash, search, move |
+| `src/appscriptly/docx_import.py` | `.docx` → tabbed Google Doc pipeline |
+| `src/appscriptly/retrofit.py` | Inject Heading 1 markers into styled `.docx` |
+| `src/appscriptly/preview.py` | Dry-run tab-split detection |
+| `src/appscriptly/restructure.gs` | Apps Script Web App for lossless content moves |
+| `src/appscriptly/http_server/` | Starlette REST + signed-URL middleware (package: `app.py` + `middleware.py` + `routes/`) |
+| `src/appscriptly/crypto.py` | HMAC signing for upload URLs |
+| `src/appscriptly/errors.py` | Friendly error mapping for known Google API failures |
 
 ## Known limitations
 
@@ -343,7 +347,7 @@ Unit tests run on every push/PR via GitHub Actions (Python 3.10–3.13 matrix). 
 ## Caveats
 
 - Tokens are stored unencrypted at `~/.google-docs-mcp/token.json`. Don't sync that path to a shared drive.
-- **Stdio mode is single-user** (one OAuth identity per machine). HTTP mode (Fly deploy + claude.ai connector) is multi-tenant — each user's state is keyed by their Google `sub` claim in `user_state.db` (see `src/google_docs_mcp/user_store.py`).
+- **Stdio mode is single-user** (one OAuth identity per machine). HTTP mode (Fly deploy + claude.ai connector) is multi-tenant — each user's state is keyed by their Google `sub` claim in `user_state.db` (see `src/appscriptly/user_store.py`).
 - Drive's `drive.file` scope restricts writes to files this app created. Trash/untrash/move on externally-uploaded files returns `reason: "app_not_authorized"` (soft-failure, not raised — see `gdocs_find_doc_by_title`'s `owned_by_app` flag).
 - Apps Script Web App is a hard prerequisite for `gdocs_tab_existing_doc` and retrofit — the script does what REST can't (preserve drawings/equations/cell shading during content moves).
 

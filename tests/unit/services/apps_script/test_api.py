@@ -25,11 +25,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from google_docs_mcp.google_api_client import (
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script.api import (
+from appscriptly.services.apps_script.api import (
     auto_detect_container_kind,
     create_bound_project,
     create_deployment,

@@ -9,7 +9,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 def test_readme_access_level_matches_manifest():
     """README's stated Apps Script access level must equal _MANIFEST."""
-    from google_docs_mcp.setup_apps_script import _MANIFEST
+    from appscriptly.setup_apps_script import _MANIFEST
     actual = _MANIFEST["webapp"]["access"]
 
     readme = (_REPO / "README.md").read_text(encoding="utf-8")

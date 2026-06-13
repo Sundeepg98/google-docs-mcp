@@ -36,12 +36,12 @@ import pytest
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 
-from google_docs_mcp import decorators
-from google_docs_mcp.google_api_client import (
+from appscriptly import decorators
+from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
     with_google_api_client,
 )
-from google_docs_mcp.services.apps_script import custom_function as cf
+from appscriptly.services.apps_script import custom_function as cf
 
 _UI_SCOPE = "https://www.googleapis.com/auth/script.container.ui"
 _TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
@@ -85,6 +85,57 @@ def test_build_script_weaves_description_into_jsdoc():
     )
     assert "Score text against the brand guide." in out
     assert "@customfunction" in out
+
+
+def test_build_script_description_cannot_break_out_of_jsdoc_comment():
+    """SECURITY (code injection): a description containing ``*/`` must NOT
+    close the generated JSDoc comment early — otherwise the text after it
+    would deploy as LIVE Apps Script in the bound script. The ``*/`` is
+    neutralized to ``* /`` and the injected `function` is rendered inert
+    inside the comment block."""
+    body = "function SCORE(t) { return t.length; }"
+    malicious = "harmless */ function onOpen(){ stealData(); } /*"
+    out = cf.build_custom_function_script("SCORE", body, description=malicious)
+
+    # The generated JSDoc region is everything before the caller's body.
+    jsdoc_region = out[: out.index(body)]
+    # It must contain EXACTLY ONE `*/` — the JSDoc's own intended
+    # terminator. The description's `*/` (which would have added a SECOND,
+    # early terminator and escaped the comment) must be defanged.
+    assert jsdoc_region.count("*/") == 1, (
+        f"description broke out of the JSDoc comment — expected exactly one "
+        f"(the terminator) `*/` in the comment region, got "
+        f"{jsdoc_region.count('*/')}: {jsdoc_region!r}"
+    )
+    # …and that single `*/` is the LAST thing in the comment region (the
+    # terminator), not an early break-out mid-description.
+    assert jsdoc_region.rstrip().endswith("*/")
+    # The injected payload text is still present (as inert comment text),
+    # but defanged: the `*/` that would have escaped is now `* /`.
+    assert "* /" in out
+    # And the @customfunction tag + body remain intact.
+    assert "@customfunction" in out
+    assert body in out
+
+
+def test_build_script_multiline_description_stays_inside_comment():
+    """A multi-line description must stay inside the JSDoc block — every
+    line is prefixed with `` * `` so a newline can't position text outside
+    the comment. (Defense-in-depth alongside the ``*/`` escape.)"""
+    body = "function F(x){ return x; }"
+    out = cf.build_custom_function_script(
+        "F", body, description="line one\nline two\nline three",
+    )
+    jsdoc_region = out[: out.index(body)]
+    for fragment in ("line one", "line two", "line three"):
+        assert f" * {fragment}" in jsdoc_region, (
+            f"multi-line description line {fragment!r} not properly "
+            f"prefixed inside the JSDoc: {jsdoc_region!r}"
+        )
+    # Only the JSDoc's own terminator `*/` — the benign multi-line text
+    # introduced none of its own.
+    assert jsdoc_region.count("*/") == 1
+    assert jsdoc_region.rstrip().endswith("*/")
 
 
 def test_build_script_rejects_invalid_identifier():
@@ -165,7 +216,7 @@ def inject_stub_creds(stub_creds, monkeypatch):
     scope-aware path (auth.load_credentials in stdio test mode) — patch
     THAT, per #138's test_tools.py note. The other two patches keep the
     no-scope path covered (belt-and-suspenders)."""
-    from google_docs_mcp import auth
+    from appscriptly import auth
 
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: stub_creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: stub_creds)
@@ -370,8 +421,8 @@ def test_install_custom_function_resolves_creds_via_scope_aware_path(
     decorator resolves credentials through the scope-aware path
     (auth.load_credentials in stdio test mode) with the tool's declared
     scopes threaded as extra_scopes — exactly once."""
-    from google_docs_mcp import auth
-    from google_docs_mcp.services.apps_script.scopes import GAS_BOUND_SCOPES
+    from appscriptly import auth
+    from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 
     calls: list[dict] = []
 

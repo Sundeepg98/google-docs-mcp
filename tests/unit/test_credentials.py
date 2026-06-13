@@ -58,7 +58,7 @@ def runtime_oauth(client_config):
 def _seed_creds(user_id: str, *, scopes=None, expired=False, with_refresh=True) -> None:
     """Drop a synthetic creds row into user_store. Tests use this to
     simulate 'user previously authorized'."""
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
 
     if expired:
         expiry = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -84,7 +84,7 @@ def _seed_creds(user_id: str, *, scopes=None, expired=False, with_refresh=True) 
 
 
 def test_no_creds_raises_NeedsReauthError_with_auth_url(runtime_oauth):
-    from google_docs_mcp.credentials import (
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
 
@@ -103,12 +103,12 @@ def test_no_creds_raises_NeedsReauthError_with_auth_url(runtime_oauth):
 
 def test_valid_creds_returned_without_refresh(runtime_oauth):
     """Don't waste a refresh call when the cached token is still good."""
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds("user-valid", expired=False)
 
     with patch(
-        "google_docs_mcp.credentials.Credentials.refresh"
+        "appscriptly.credentials.Credentials.refresh"
     ) as refresh_mock:
         creds = get_credentials_for_user("user-valid", **runtime_oauth)
 
@@ -123,8 +123,8 @@ def test_valid_creds_returned_without_refresh(runtime_oauth):
 
 def test_expired_creds_refreshed_and_persisted(runtime_oauth):
     """Refresh updates user_store with the new token + expiry."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly import user_store
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds("user-exp", expired=True)
 
@@ -145,7 +145,7 @@ def test_expired_creds_refreshed_and_persisted(runtime_oauth):
 
 
 def test_expired_with_no_refresh_token_raises_NeedsReauthError(runtime_oauth):
-    from google_docs_mcp.credentials import (
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
 
@@ -165,8 +165,8 @@ def test_invalid_grant_clears_state_and_raises_NeedsReauth(runtime_oauth):
     drop the bad creds and tell the tool to re-elicit auth."""
     from google.auth.exceptions import RefreshError
 
-    from google_docs_mcp import user_store
-    from google_docs_mcp.credentials import (
+    from appscriptly import user_store
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
 
@@ -192,8 +192,8 @@ def test_unknown_refresh_error_propagates(runtime_oauth):
     that'd retrain users to spam the re-auth flow."""
     from google.auth.exceptions import RefreshError
 
-    from google_docs_mcp import user_store
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly import user_store
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds("user-blip", expired=True)
 
@@ -214,7 +214,7 @@ def test_unknown_refresh_error_propagates(runtime_oauth):
 
 
 def test_missing_required_scope_raises_NeedsReauth(runtime_oauth):
-    from google_docs_mcp.credentials import (
+    from appscriptly.credentials import (
         NeedsReauthError, get_credentials_for_user,
     )
 
@@ -233,7 +233,7 @@ def test_missing_required_scope_raises_NeedsReauth(runtime_oauth):
 
 
 def test_all_required_scopes_present_returns_creds(runtime_oauth):
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds(
         "user-broad",
@@ -255,6 +255,80 @@ def test_all_required_scopes_present_returns_creds(runtime_oauth):
 
 
 # ---------------------------------------------------------------
+# Scope check AFTER a successful refresh — the untested combination
+# (R2 audit Gap #2). credentials.py runs _check_scopes_or_raise in
+# THREE places: valid-creds (tested above), inside-lock-after-reread,
+# and AFTER a successful refresh OUTSIDE the lock (lines 320-322).
+# The existing suite covers "valid + missing scope -> NeedsReauth"
+# and "expired -> refresh -> success" in ISOLATION, never the
+# combination: expired creds whose refresh SUCCEEDS but whose granted
+# scopes still don't cover required_scopes. The refresh must persist,
+# THEN the post-refresh scope check must raise. A regression returning
+# the freshly-refreshed-but-under-scoped creds would silently dispatch
+# creds lacking a required scope (e.g. gmail.send) -> a confusing
+# downstream 403 instead of a clean re-auth prompt. Scope-confusion is
+# security-adjacent.
+# ---------------------------------------------------------------
+
+
+def test_refresh_succeeds_but_still_under_scoped_raises_after_persist(runtime_oauth):
+    """Expired creds → refresh succeeds (new token) BUT the granted
+    scope set still lacks a required scope → must persist the refreshed
+    token, THEN raise NeedsReauthError(Missing required scopes) carrying
+    the expanded-scope auth_url. Exercises the post-refresh,
+    outside-lock _check_scopes_or_raise call (credentials.py:320-322).
+    """
+    from appscriptly import user_store
+    from appscriptly.credentials import (
+        NeedsReauthError, get_credentials_for_user,
+    )
+
+    # Expired creds with a NARROW granted scope set (no script.projects).
+    _seed_creds(
+        "user-refresh-narrow",
+        expired=True,
+        scopes=["openid", "https://www.googleapis.com/auth/documents"],
+    )
+
+    def fake_refresh(self, _request):
+        # Refresh updates the access token + expiry but does NOT widen
+        # scopes — Google returns the same grant set on a token refresh.
+        self.token = "REFRESHED_BUT_STILL_NARROW"
+        self.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+        # self.scopes intentionally unchanged (still narrow).
+
+    with patch.object(
+        __import__("google.oauth2.credentials", fromlist=["Credentials"]).Credentials,
+        "refresh", fake_refresh,
+    ), pytest.raises(NeedsReauthError) as exc:
+        get_credentials_for_user(
+            "user-refresh-narrow",
+            required_scopes=["https://www.googleapis.com/auth/script.projects"],
+            **runtime_oauth,
+        )
+
+    # (1) The error is the scope-missing variety, not the no-creds /
+    #     revoked variety, and names the missing scope.
+    assert "Missing required scopes" in exc.value.reason
+    assert "script.projects" in exc.value.reason
+    # (2) The auth_url is the EXPANDED-scope re-auth URL (the
+    #     _check_scopes_or_raise path builds it with the union of
+    #     baseline + required scopes via include_granted_scopes).
+    assert exc.value.auth_url.startswith("https://accounts.google.com/")
+
+    # (3) The refresh DID happen and WAS persisted before the raise —
+    #     we don't throw away a successful refresh just because the
+    #     scope check then fails. Next call re-reads the new token.
+    stored = json.loads(
+        user_store.get_state("user-refresh-narrow")["google_creds_json"]
+    )
+    assert stored["token"] == "REFRESHED_BUT_STILL_NARROW", (
+        "post-refresh scope failure must still persist the refreshed "
+        "token (the refresh succeeded; only the scope check failed)."
+    )
+
+
+# ---------------------------------------------------------------
 # Concurrent refresh — the headline race
 # ---------------------------------------------------------------
 
@@ -264,7 +338,7 @@ def test_concurrent_refresh_same_user_serialized(runtime_oauth):
     exactly ONE Google refresh, not N. Without the per-user lock,
     Google rotates refresh_tokens between calls and one parallel
     branch ends up with an invalidated refresh_token."""
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds("user-concurrent", expired=True)
 
@@ -304,7 +378,7 @@ def test_concurrent_refresh_same_user_serialized(runtime_oauth):
 
 def test_concurrent_refresh_different_users_parallel(runtime_oauth):
     """Lock per user, not global — A's refresh must not block B."""
-    from google_docs_mcp.credentials import get_credentials_for_user
+    from appscriptly.credentials import get_credentials_for_user
 
     _seed_creds("user-A", expired=True)
     _seed_creds("user-B", expired=True)
@@ -358,7 +432,7 @@ def test_operator_client_secret_not_persisted_via_save_credentials_json(client_c
     """save_credentials_json must strip client_id + client_secret before
     save, so a user_state.db leak doesn't hand the operator OAuth secret
     to an attacker."""
-    from google_docs_mcp import user_store
+    from appscriptly import user_store
     from google.oauth2.credentials import Credentials
 
     creds = Credentials(

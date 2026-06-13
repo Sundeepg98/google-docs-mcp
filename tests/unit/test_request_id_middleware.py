@@ -32,12 +32,12 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from google_docs_mcp.http_server import (
+from appscriptly.http_server import (
     RequestIdLogFilter,
     RequestIdMiddleware,
     get_request_id,
 )
-from google_docs_mcp.http_server.middleware import (
+from appscriptly.http_server.middleware import (
     REQUEST_ID_HEADER,
     _sanitize_inbound_request_id,
 )

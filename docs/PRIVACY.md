@@ -9,7 +9,7 @@ This document is a factual self-attestation grounded in the actual code. It is n
 
 When you authorize the server via the Google OAuth flow, the following are persisted to a SQLite file (`/data/google-docs-mcp/user_state.db` on the Fly volume, or `~/.google-docs-mcp/user_state.db` for the stdio deployment). Every row is keyed by your Google account's `sub` claim (an opaque per-account identifier — see § 4).
 
-The schema (per `src/google_docs_mcp/user_store.py`):
+The schema (per `src/appscriptly/user_store.py`):
 
 | Column | Type | Sensitivity | What it is |
 |---|---|---|---|
@@ -27,7 +27,7 @@ The schema (per `src/google_docs_mcp/user_store.py`):
 
 ### 1.1 Operator-secret stripping (known gap — see issue tracker)
 
-`src/google_docs_mcp/user_store.py::save_credentials_json` exists specifically to strip the operator's OAuth `client_id` and `client_secret` from the persisted JSON before writing. **Closed in v2.0.3** (PR #47, commit `dadb699`) — the production OAuth callback in `src/google_docs_mcp/http_server.py` now correctly invokes `save_credentials_json(...)` rather than the un-stripping `save_state(...)`. Operators on v2.0.3 or later: a `user_state.db` leak no longer reveals the deployment's OAuth `client_secret`. Operators still running v2.0.2 or earlier: a leak today does include the operator OAuth secrets; upgrade.
+`src/appscriptly/user_store.py::save_credentials_json` exists specifically to strip the operator's OAuth `client_id` and `client_secret` from the persisted JSON before writing. **Closed in v2.0.3** (PR #47, commit `dadb699`) — the production OAuth callback in `src/appscriptly/http_server.py` now correctly invokes `save_credentials_json(...)` rather than the un-stripping `save_state(...)`. Operators on v2.0.3 or later: a `user_state.db` leak no longer reveals the deployment's OAuth `client_secret`. Operators still running v2.0.2 or earlier: a leak today does include the operator OAuth secrets; upgrade.
 
 ## 2. What we do NOT store
 
@@ -104,4 +104,4 @@ If you operate in the EU and your user base is EU-resident, consult a lawyer abo
 - **`docs/THREAT_MODEL.md` § 5** — cryptographic key inventory: which keys exist, what they protect, how they rotate.
 - **`docs/RUNBOOK.md` § 3.4** — operator key-rotation procedures.
 - **`SECURITY.md`** — how to report vulnerabilities (GitHub Security Advisories).
-- **`src/google_docs_mcp/user_store.py`** — authoritative schema definition (the table in § 1 is generated from this).
+- **`src/appscriptly/user_store.py`** — authoritative schema definition (the table in § 1 is generated from this).

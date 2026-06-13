@@ -132,6 +132,21 @@ COPY mutation-check.jso[n] /app/mutation-check.json
 RUN mkdir -p /data/google-docs-mcp
 ENV GOOGLE_DOCS_DATA_DIR=/data/google-docs-mcp
 
+# Persist FastMCP's OAuth-proxy state (the connector DCR client
+# registration + the upstream Google refresh token) onto the SAME Fly
+# Volume. FastMCP's GoogleProvider/OAuthProxy defaults its encrypted
+# token store to ``platformdirs.user_data_dir("fastmcp")`` ==
+# ``$HOME/.local/share/fastmcp`` == ``/home/app/.local/share/fastmcp``,
+# which is on the EPHEMERAL overlay fs and gets wiped on every deploy —
+# forcing claude.ai through the full browser consent flow again instead
+# of a silent token refresh. FASTMCP_HOME relocates that whole tree to
+# the volume; the storage encryption key is derived deterministically
+# from the OAuth client_secret, so the persisted files still decrypt
+# after a restart. ``configure_auth_for_http`` asserts this at boot
+# (FLY_APP_NAME-gated) so the regression can never silently reship.
+RUN mkdir -p /data/fastmcp
+ENV FASTMCP_HOME=/data/fastmcp
+
 # HTTP transport mode
 ENV MCP_TRANSPORT=http
 ENV PORT=8080
@@ -153,10 +168,20 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # Debian's reserved 0–999 range, and matches the ``app``-user
 # convention used by the Distroless and Chainguard images.
 #
-# ``chown`` /app + /data so the venv and the persistent OAuth/Apps
-# Script state are owned by the runtime user — Fly Volumes mounted
-# at /data will already be owned by uid 10001 on subsequent boots
-# (Fly preserves volume ownership across deploys).
+# ``chown`` /app + /data so the venv and a FRESH /data baseline are
+# owned by the runtime user.
+#
+# CAVEAT (the SQLITE_READONLY incident — PR-Δ-volfix): this BUILD-time
+# chown only affects the IMAGE's /data. At runtime the Fly Volume is
+# mounted OVER /data, shadowing the image dir, so this chown does NOT
+# touch the volume's existing contents. A volume created while the
+# server ran as root (pre-#127) keeps its ROOT-owned files across
+# deploys — and the non-root ``app`` user then can't write them
+# (readonly-DB failure). The RUNTIME fix lives in entrypoint.sh, which
+# starts as root, ``chown -R``s the live volume, verifies writability,
+# and drops to ``app`` via setpriv. That is why this image no longer
+# sets ``USER app`` (see below) — the entrypoint owns the privilege
+# drop so it can reconcile volume ownership first.
 #
 # ``--create-home`` + ``--shell /sbin/nologin``: this user is strictly
 # a runtime UID, never an interactive shell account, BUT it still
@@ -194,6 +219,14 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 RUN useradd --uid 10001 --user-group --create-home --shell /sbin/nologin app \
     && chown -R app:app /app /data
-USER app
 
+# NB: intentionally NO ``USER app`` here. The container starts as ROOT so
+# entrypoint.sh can reconcile the persistent volume's ownership (chown -R
+# /data) and verify writability BEFORE dropping to uid 10001 via setpriv.
+# The server therefore still runs unprivileged — the privilege drop just
+# moved from Docker (build-time, can't see the runtime volume) into the
+# entrypoint (runtime, after the volume is mounted). See entrypoint.sh +
+# the chown CAVEAT comment above for the SQLITE_READONLY incident this
+# fixes. ``setpriv --reuid/--regid/--clear-groups`` gives the exact same
+# uid=10001 gid=10001 groups=10001 the old ``USER app`` produced.
 CMD ["/usr/local/bin/entrypoint.sh"]

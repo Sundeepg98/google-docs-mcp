@@ -48,7 +48,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(tmp_path / "user_state.db"))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TRUSTED_HOSTS", "testserver,localhost")
-    from google_docs_mcp.key_provider import (
+    from appscriptly.key_provider import (
         InMemoryKeyProvider,
         with_key_provider,
     )
@@ -70,9 +70,9 @@ def reset_nonce_store():
     that module, so reassigning the package-level ``_NONCE_STORE``
     re-export (in ``http_server.__init__``) would NOT propagate.
     """
-    from google_docs_mcp import http_server
-    from google_docs_mcp.crypto import NonceStore
-    from google_docs_mcp.http_server import _state
+    from appscriptly import http_server
+    from appscriptly.crypto import NonceStore
+    from appscriptly.http_server import _state
     fresh = NonceStore()
     _state._NONCE_STORE = fresh
     http_server._NONCE_STORE = fresh  # keep the re-export in sync for any test that reads it
@@ -83,12 +83,12 @@ def _build_app_under_test():
     """Build the production Starlette app with a stub FastMCP — we
     never actually call /mcp so we don't need a real MCP wired."""
     from fastmcp import FastMCP
-    from google_docs_mcp.http_server import build_app
+    from appscriptly.http_server import build_app
     return build_app(FastMCP("stub-for-test"))
 
 
 def _mint_signed_url_for(user_id: str, *, base="http://testserver/api/convert") -> str:
-    from google_docs_mcp.crypto import sign_upload_url
+    from appscriptly.crypto import sign_upload_url
     # v2.1.1: signed-URL HMAC uses the same _TEST_KEY_BYTES that the
     # fixture injected via InMemoryKeyProvider, so the middleware's
     # keys.get_key("signed_url") and this helper agree on the key
@@ -114,7 +114,7 @@ def test_middleware_stashes_user_id_on_request_state_for_signed_url():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def echo_uid(request):
         return JSONResponse(
@@ -150,7 +150,7 @@ def test_middleware_rejects_pre_v21_signed_url_without_uid():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def ok(_request):
         return JSONResponse({"reached_handler": True})
@@ -190,7 +190,7 @@ def test_middleware_rejects_swapped_uid_cross_tenant_attack():
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from google_docs_mcp.http_server import BearerTokenMiddleware
+    from appscriptly.http_server import BearerTokenMiddleware
 
     async def ok(_request):
         return JSONResponse({"reached_handler": True})
@@ -258,16 +258,16 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=fake_get_creds_for_user,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert.load_credentials",
+        "appscriptly.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._convert_docx",
+        "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -284,7 +284,7 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
 def test_convert_endpoint_returns_401_with_auth_url_on_needs_reauth():
     """A signed-URL caller whose stored Google creds are absent / revoked
     must get a clean 401 with an auth_url, not a 500."""
-    from google_docs_mcp.credentials import NeedsReauthError
+    from appscriptly.credentials import NeedsReauthError
 
     app = _build_app_under_test()
     client = TestClient(app)
@@ -300,10 +300,10 @@ def test_convert_endpoint_returns_401_with_auth_url_on_needs_reauth():
         )
 
     with patch(
-        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=raise_needs_reauth,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._resolve_client_config",
+        "appscriptly.http_server.routes.convert._resolve_client_config",
         return_value={"web": {"client_id": "X", "client_secret": "Y"}},
     ):
         resp = client.post(f"/api/convert?{qs}", files=_docx_form())
@@ -336,13 +336,13 @@ def test_convert_endpoint_bearer_header_still_uses_operator_creds():
         return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
 
     with patch(
-        "google_docs_mcp.http_server.routes.convert.load_credentials",
+        "appscriptly.http_server.routes.convert.load_credentials",
         side_effect=fake_load_credentials,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert.get_credentials_for_user",
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
         side_effect=fail_get_per_user,
     ), patch(
-        "google_docs_mcp.http_server.routes.convert._convert_docx",
+        "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=fake_convert,
     ):
         resp = client.post(
@@ -368,8 +368,8 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
     """When called with explicit user_id (REST path), pick that user's
     apps_script_url from user_store — NOT current_user_id_or_none()'s
     answer and NOT the operator's local config."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly import user_store
+    from appscriptly.docx_import import _resolve_webapp_url
 
     user_store.save_state(
         "user-A",
@@ -382,7 +382,7 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
 
     # Explicit user_id wins over current_user_id_or_none.
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value="user-B",
     ):
         resolved = _resolve_webapp_url(user_id="user-A")
@@ -392,8 +392,8 @@ def test_resolve_webapp_url_routes_to_explicit_user_id():
 def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
     """Without explicit user_id, use current_user_id_or_none — the MCP
     tool path (HTTP mode)."""
-    from google_docs_mcp import user_store
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly import user_store
+    from appscriptly.docx_import import _resolve_webapp_url
 
     user_store.save_state(
         "user-B",
@@ -401,7 +401,7 @@ def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
     )
 
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value="user-B",
     ):
         resolved = _resolve_webapp_url(user_id=None)
@@ -411,13 +411,13 @@ def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
 def test_resolve_webapp_url_falls_back_to_operator_config_outside_auth():
     """No explicit user_id AND no MCP auth context — fall through to
     operator's local config (stdio mode)."""
-    from google_docs_mcp.docx_import import _resolve_webapp_url
+    from appscriptly.docx_import import _resolve_webapp_url
 
     with patch(
-        "google_docs_mcp.docx_import.current_user_id_or_none",
+        "appscriptly.docx_import.current_user_id_or_none",
         return_value=None,
     ), patch(
-        "google_docs_mcp.docx_import.get_webapp_url",
+        "appscriptly.docx_import.get_webapp_url",
         return_value="https://script.google.com/macros/s/OPERATOR_DEPLOY/exec",
     ):
         resolved = _resolve_webapp_url()
@@ -435,10 +435,10 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
     write into the operator's Drive."""
     from fastmcp.exceptions import ToolError
 
-    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
+        "appscriptly.services.admin.tools.current_user_id_or_none",
         return_value=None,
     ):
         with pytest.raises(ToolError, match="authenticated MCP session"):
@@ -448,13 +448,260 @@ def test_gdocs_get_signed_upload_url_refuses_outside_auth_context():
 def test_gdocs_get_signed_upload_url_binds_to_caller_user_id():
     """When called inside an MCP auth context, the minted URL embeds the
     caller's Google sub as ``uid``."""
-    from google_docs_mcp.services.admin.tools import gdocs_get_signed_upload_url
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
 
     with patch(
-        "google_docs_mcp.services.admin.tools.current_user_id_or_none",
+        "appscriptly.services.admin.tools.current_user_id_or_none",
         return_value="user-A",
     ):
         result = gdocs_get_signed_upload_url()
     assert result["user_id"] == "user-A"
     qs = parse_qs(urlparse(result["url"]).query)
     assert qs["uid"] == ["user-A"]
+
+
+# ---------------------------------------------------------------------
+# /api/convert — signed-URL max_bytes ENFORCEMENT (dd-apps-maxbytes-enforce)
+#
+# Previously the signed ``max`` was returned to the caller but never
+# enforced (dead contract). These guards prove the convert endpoint now
+# rejects an over-cap upload with 413 — both the honestly-declared case
+# AND a chunked / Content-Length-omitting POST that bypasses every
+# Content-Length check.
+# ---------------------------------------------------------------------
+
+
+def _mint_small_cap_url(user_id="user-A", *, max_bytes, base="http://testserver/api/convert"):
+    from appscriptly.crypto import sign_upload_url
+    minted = sign_upload_url(
+        base_url=base,
+        signing_key=_TEST_KEY_BYTES,
+        user_id=user_id,
+        max_bytes=max_bytes,
+    )
+    return minted["url"]
+
+
+def test_convert_rejects_over_cap_upload_413():
+    """End-to-end: a signed URL with a small cap rejects a larger .docx
+    body with 413 and echoes the cap. (The over-cap multipart body's
+    Content-Length trips the cap; whichever layer catches it, the
+    contract — 413 + max_bytes — must hold.)"""
+    app = _build_app_under_test()
+    client = TestClient(app)
+
+    cap = 100
+    url = _mint_small_cap_url(max_bytes=cap)
+    qs = urlparse(url).query
+    big = b"PK\x03\x04" + b"A" * 500  # 504 bytes > cap
+
+    # No creds/convert patching needed: the request is rejected on size
+    # before any credential resolution or conversion happens.
+    resp = client.post(f"/api/convert?{qs}", files=_docx_form(content=big))
+    assert resp.status_code == 413, resp.text
+    assert resp.json()["max_bytes"] == cap
+
+
+def test_convert_allows_under_cap_upload():
+    """Regression: enforcement must NOT break the happy path — an
+    under-cap upload still converts (200)."""
+    app = _build_app_under_test()
+    client = TestClient(app)
+
+    cap = 10 * 1024  # 10 KiB
+    url = _mint_small_cap_url(max_bytes=cap)
+    qs = urlparse(url).query
+    small = b"PK\x03\x04minimaldocx"  # well under cap
+
+    captured = {}
+
+    def fake_convert(creds, **kwargs):
+        captured["called"] = True
+        return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
+
+    with patch(
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
+        return_value="per-user-creds",
+    ), patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), patch(
+        "appscriptly.http_server.routes.convert._resolve_client_config",
+        return_value={"web": {"client_id": "X", "client_secret": "Y"}},
+    ):
+        resp = client.post(f"/api/convert?{qs}", files=_docx_form(content=small))
+
+    assert resp.status_code == 200, resp.text
+    assert captured.get("called") is True
+
+
+def test_convert_bearer_header_path_has_no_signed_cap():
+    """Bearer-header callers don't carry a per-URL cap; a large body that
+    would exceed a signed cap must still convert (bounded only by
+    BodySizeLimitMiddleware / Drive's ceiling, unchanged from before)."""
+    app = _build_app_under_test()
+    client = TestClient(app)
+
+    captured = {}
+
+    def fake_convert(creds, **kwargs):
+        captured["called"] = True
+        captured["user_id"] = kwargs.get("user_id")
+        return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
+
+    with patch(
+        "appscriptly.http_server.routes.convert.load_credentials",
+        return_value="operator-creds",
+    ), patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ):
+        resp = client.post(
+            "/api/convert",
+            files=_docx_form(content=b"PK\x03\x04" + b"B" * 4000),
+            headers={"authorization": f"Bearer {_TEST_KEY_BYTES.decode('utf-8')}"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert captured.get("called") is True
+    # No signed cap → user_id is None (operator path).
+    assert captured.get("user_id") is None
+
+
+def _call_handler_chunked(handler, *, scope_extra, body_chunks, headers):
+    """Call a Starlette route ``handler(request)`` with a CHUNKED request
+    body (multiple http.request events, ``more_body`` true until the last)
+    and NO ``content-length`` header. Returns ``(status, json_body)``.
+
+    We build the ``Request`` from a hand-rolled scope + ``receive`` and
+    await the handler directly, rather than going through Starlette's sync
+    ``TestClient`` — TestClient's sync transport deadlocks when streaming a
+    generator request body, which is exactly the chunked case under test.
+    Awaiting the handler with a chunked ``receive`` faithfully exercises
+    ``request.form()`` reading a Transfer-Encoding: chunked upload, then
+    the endpoint's post-read size guard, with no deadlock.
+    """
+    import asyncio
+    import json as _json
+
+    from starlette.requests import Request
+
+    raw_headers = [
+        (k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in headers
+    ]
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/api/convert",
+        "raw_path": b"/api/convert",
+        "query_string": b"",
+        "headers": raw_headers,  # deliberately no content-length
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+    }
+    scope.update(scope_extra)
+
+    # receive() hands out one body chunk per call, all but the last with
+    # more_body=True — the ASGI shape of a chunked upload.
+    events = [
+        {"type": "http.request", "body": c, "more_body": i < len(body_chunks) - 1}
+        for i, c in enumerate(body_chunks)
+    ]
+    events_iter = iter(events)
+
+    async def receive():
+        try:
+            return next(events_iter)
+        except StopIteration:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _run():
+        request = Request(scope, receive)
+        response = await handler(request)
+        return response.status_code, _json.loads(bytes(response.body).decode("utf-8"))
+
+    return asyncio.run(_run())
+
+
+def test_convert_endpoint_post_read_guard_catches_chunked_bypass():
+    """The endpoint's AUTHORITATIVE guard: a chunked / Content-Length-
+    omitting POST bypasses every Content-Length check, so the only place
+    the true size is known is AFTER the bytes are read. We stash a small
+    cap on the ASGI scope's ``state`` (exactly what BearerTokenMiddleware
+    does post-verify) and drive a chunked body that exceeds it."""
+    from appscriptly.http_server.routes.convert import convert_endpoint
+
+    CAP = 100
+    boundary = "----maxbytesboundary"
+    headers = [
+        ("content-type", f"multipart/form-data; boundary={boundary}"),
+        ("host", "testserver"),
+    ]
+
+    def _multipart(file_bytes: bytes, filename: str) -> bytes:
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document\r\n\r\n"
+        ).encode("utf-8") + file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    # Over-cap: the decoded .docx part is 504 bytes > CAP=100. Split the
+    # multipart body across TWO http.request events (more_body=True on the
+    # first) to exercise the streaming read path with NO Content-Length —
+    # the exact bypass the post-read guard exists to close. The request is
+    # rejected on size BEFORE any credential resolution or conversion, so
+    # no mocking is needed.
+    over = _multipart(b"PK\x03\x04" + b"C" * 500, "big.docx")
+    mid = len(over) // 2
+    status, body = _call_handler_chunked(
+        convert_endpoint,
+        scope_extra={"state": {"signed_url_max_bytes": CAP}},
+        body_chunks=[over[:mid], over[mid:]],
+        headers=headers,
+    )
+    assert status == 413, body
+    assert body["max_bytes"] == CAP
+    # (The size-conditional happy path — an UNDER-cap upload still
+    # converting — is covered by ``test_convert_allows_under_cap_upload``
+    # via the full app + TestClient; we don't re-drive the conversion
+    # pipeline through the direct-call harness here.)
+
+
+# ---------------------------------------------------------------------
+# gdocs_get_signed_upload_url — max_bytes input validation
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_max", [0, -1, 100 * 1024 * 1024 + 1, True])
+def test_gdocs_get_signed_upload_url_rejects_out_of_range_max_bytes(bad_max):
+    """The tool rejects an out-of-range cap with a ToolError (not a raw
+    ValueError) so the connector UI renders it cleanly."""
+    from fastmcp.exceptions import ToolError
+
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
+
+    with patch(
+        "appscriptly.services.admin.tools.current_user_id_or_none",
+        return_value="user-A",
+    ):
+        with pytest.raises(ToolError, match="max_bytes"):
+            gdocs_get_signed_upload_url(max_bytes=bad_max)
+
+
+def test_gdocs_get_signed_upload_url_default_max_bytes_unchanged():
+    """VERIFY-LAST guard: the default cap stays 50 MiB — no tool-surface
+    change. (The default flows into the input schema; a drift here would
+    silently change the tool contract.)"""
+    from appscriptly.crypto import DEFAULT_MAX_BYTES
+    from appscriptly.services.admin.tools import gdocs_get_signed_upload_url
+
+    assert DEFAULT_MAX_BYTES == 50 * 1024 * 1024
+    with patch(
+        "appscriptly.services.admin.tools.current_user_id_or_none",
+        return_value="user-A",
+    ):
+        result = gdocs_get_signed_upload_url()
+    assert result["max_bytes"] == 50 * 1024 * 1024

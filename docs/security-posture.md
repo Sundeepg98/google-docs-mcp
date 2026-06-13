@@ -77,7 +77,7 @@ NOT enable forging tokens for another. Operators who want stronger
 isolation can override any single purpose's key via the matching
 `MCP_API_BEARER_KEY` / `OAUTH_STATE_SIGNING_KEY` /
 `SIGNED_URL_SIGNING_KEY` env var (the `KeyProvider` rotation pattern;
-see [`src/google_docs_mcp/key_provider.py`](../src/google_docs_mcp/key_provider.py)).
+see [`src/appscriptly/key_provider.py`](../src/appscriptly/key_provider.py)).
 
 Rotation procedures live in [`docs/RUNBOOK.md`](RUNBOOK.md) § 3.4.
 

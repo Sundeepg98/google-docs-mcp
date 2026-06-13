@@ -85,6 +85,21 @@ primary_region = "bom"
   source = "gdmcp_data"
   destination = "/data"
 
+[env]
+  # Pin FastMCP's data home onto the /data volume so the OAuth-proxy
+  # state survives deploys/restarts. Without this, FastMCP's
+  # GoogleProvider/OAuthProxy writes the connector DCR client
+  # registration AND the upstream Google refresh token to its
+  # platformdirs default (~/.local/share/fastmcp on the EPHEMERAL
+  # container fs), which is wiped on every deploy — forcing claude.ai
+  # through the full browser consent flow again instead of a silent
+  # refresh. This mirrors the ENV set in the Dockerfile (belt and
+  # suspenders: fly.toml [env] is where operators look; the Dockerfile
+  # ENV makes a plain `docker run` of the image correct too). The boot
+  # guard in oauth_google.configure_auth_for_http refuses to start if
+  # this ever resolves off-volume on a Fly machine.
+  FASTMCP_HOME = "/data/fastmcp"
+
 [http_service]
   internal_port = 8080
   force_https = true

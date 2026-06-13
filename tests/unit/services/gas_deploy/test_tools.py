@@ -58,7 +58,7 @@ def test_gdocs_setup_apps_script_preserves_creds_false_opt_out():
     the decorator strips ``creds`` from the visible signature), so we
     cross-check via the registered tool's input schema instead.
     """
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
 
     tools = asyncio.run(mcp.list_tools())
     by_name = {t.name: t for t in tools}
@@ -102,8 +102,8 @@ def test_gdocs_setup_apps_script_body_returns_structured_needs_authorization_on_
     return a value, then make ``get_credentials_for_user`` raise
     ``NeedsReauthError``. The body should catch it and return a dict.
     """
-    from google_docs_mcp.credentials import NeedsReauthError
-    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+    from appscriptly.credentials import NeedsReauthError
+    from appscriptly.services.gas_deploy import tools as gas_deploy_tools
 
     # Cloud-mode branch: current_user_id_or_none returns "cloud-user".
     monkeypatch.setattr(
@@ -150,14 +150,14 @@ def test_gdocs_setup_apps_script_module_is_services_gas_deploy_tools():
     deploy guard asserts; duplicated here so a developer working in
     ``tests/unit/services/gas_deploy/`` sees the assertion locally
     without needing to know about the multi-service file."""
-    from google_docs_mcp.services.gas_deploy.tools import gdocs_setup_apps_script
+    from appscriptly.services.gas_deploy.tools import gdocs_setup_apps_script
 
     assert gdocs_setup_apps_script.__module__ == (
-        "google_docs_mcp.services.gas_deploy.tools"
+        "appscriptly.services.gas_deploy.tools"
     ), (
         f"gdocs_setup_apps_script.__module__ is "
         f"{gdocs_setup_apps_script.__module__!r}; expected "
-        f"'google_docs_mcp.services.gas_deploy.tools'. M3 Phase C "
+        f"'appscriptly.services.gas_deploy.tools'. M3 Phase C "
         f"moved this tool out of server.py — confirm the extraction."
     )
     # Also confirm it's a plain function (no decorator wrapping changed
@@ -187,7 +187,7 @@ def test_gdocs_install_automation_is_registered_and_zero_arg():
     the standard creds envelope via ``creds=False`` so the registered
     signature is the function's own (zero params)."""
     import asyncio
-    from google_docs_mcp.server import mcp
+    from appscriptly.server import mcp
 
     tools = asyncio.run(mcp.list_tools())
     by_name = {t.name: t for t in tools}
@@ -215,14 +215,14 @@ def test_gdocs_install_automation_module_is_services_gas_deploy_tools():
     canonical tool also lives in the per-service folder, not in
     server.py. Symmetric with
     ``test_gdocs_setup_apps_script_module_is_services_gas_deploy_tools``."""
-    from google_docs_mcp.services.gas_deploy.tools import gdocs_install_automation
+    from appscriptly.services.gas_deploy.tools import gdocs_install_automation
 
     assert gdocs_install_automation.__module__ == (
-        "google_docs_mcp.services.gas_deploy.tools"
+        "appscriptly.services.gas_deploy.tools"
     ), (
         f"gdocs_install_automation.__module__ is "
         f"{gdocs_install_automation.__module__!r}; expected "
-        f"'google_docs_mcp.services.gas_deploy.tools'."
+        f"'appscriptly.services.gas_deploy.tools'."
     )
     assert inspect.isfunction(gdocs_install_automation), (
         f"gdocs_install_automation is {type(gdocs_install_automation)}, "
@@ -242,8 +242,8 @@ def test_gdocs_install_automation_body_returns_structured_needs_authorization_on
     copy (mentions "Install ... Workspace automation runtime" rather
     than "set up your Apps Script Web App"). Catches a regression
     where someone restores the old copy under the new tool name."""
-    from google_docs_mcp.credentials import NeedsReauthError
-    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+    from appscriptly.credentials import NeedsReauthError
+    from appscriptly.services.gas_deploy import tools as gas_deploy_tools
 
     monkeypatch.setattr(
         gas_deploy_tools, "current_user_id_or_none", lambda: "cloud-user"
@@ -307,8 +307,8 @@ def test_gdocs_setup_apps_script_alias_emits_deprecation_warning_and_returns_sam
     window closes; or one that swallows the warning silently."""
     import warnings
 
-    from google_docs_mcp.credentials import NeedsReauthError
-    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+    from appscriptly.credentials import NeedsReauthError
+    from appscriptly.services.gas_deploy import tools as gas_deploy_tools
 
     # Same NeedsReauthError monkeypatch shape as the canonical test
     # above so we can compare structured response equivalence.
@@ -374,7 +374,7 @@ def test_alias_and_canonical_share_underlying_implementation():
     future refactor inlines the helper into each tool body, the
     test fires and forces the author to either restore the shared
     helper or update this guard with an explicit rationale."""
-    from google_docs_mcp.services.gas_deploy import tools as gas_deploy_tools
+    from appscriptly.services.gas_deploy import tools as gas_deploy_tools
 
     canonical_src = inspect.getsource(gas_deploy_tools.gdocs_install_automation)
     alias_src = inspect.getsource(gas_deploy_tools.gdocs_setup_apps_script)
@@ -391,3 +391,117 @@ def test_alias_and_canonical_share_underlying_implementation():
         "to delegate; an independent implementation would let the "
         "two responses drift over time."
     )
+
+
+# ---------------------------------------------------------------------
+# ROADMAP 59 — as_deploy_web_app (deploy a doGet/doPost project as a
+# Web App). Unlike the install tools above, this one uses creds=True
+# (standard envelope; no NeedsReauthError structured path).
+# ---------------------------------------------------------------------
+
+
+def test_as_deploy_web_app_is_registered():
+    """as_deploy_web_app must appear in the live registry — confirms the
+    services/gas_deploy/tools.py side-effect import wired it."""
+    from appscriptly.server import mcp
+
+    tools = asyncio.run(mcp.list_tools())
+    by_name = {t.name: t for t in tools}
+    assert "as_deploy_web_app" in by_name, (
+        "as_deploy_web_app not registered — check services/gas_deploy/"
+        "tools.py (ROADMAP 59)."
+    )
+
+
+def test_as_deploy_web_app_module_is_services_gas_deploy_tools():
+    """Lives in the gas_deploy service folder (the task extended
+    gas_deploy), not server.py or apps_script."""
+    from appscriptly.services.gas_deploy.tools import as_deploy_web_app
+
+    assert as_deploy_web_app.__module__ == (
+        "appscriptly.services.gas_deploy.tools"
+    )
+    assert inspect.isfunction(as_deploy_web_app)
+
+
+def _stub_creds_and_script_svc(monkeypatch):
+    """Inject stub creds at the decorator boundary + a stubbed script v1
+    service via the GoogleAPIClient port, wired for the full deploy
+    chain. Returns the script-svc MagicMock for call inspection.
+
+    IMPORTANT — as_deploy_web_app declares ``scopes=_WEB_APP_DEPLOY_SCOPES``,
+    so its ``@workspace_tool(creds=True)`` decorator takes the SCOPE-AWARE
+    resolution path, which (in stdio test context) calls
+    ``auth.load_credentials(...)`` — NOT the plain ``_get_credentials_fn``
+    path the no-scope sheets/slides tools use. Patching only
+    ``_get_credentials_fn`` lets the real loader run and raises
+    ``FileNotFoundError: No OAuth client config found``. So patch
+    ``auth.load_credentials`` (the real target) plus the other two creds
+    entry points belt-and-suspenders. Mirrors
+    ``services/apps_script/test_tools.py::inject_stub_creds``."""
+    from unittest.mock import MagicMock
+
+    from appscriptly import auth, decorators
+    from appscriptly.google_api_client import (
+        InMemoryGoogleAPIClient,
+        with_google_api_client,
+    )
+
+    _creds = MagicMock(name="creds")
+    # The scope-aware creds path for this tool resolves through
+    # auth.load_credentials (stdio context) — that's the real target to
+    # stub. _get_credentials_fn is patched too in case a future refactor
+    # flips the branch. (Unlike apps_script/sheets tools, gas_deploy/tools
+    # does NOT import a module-level _get_credentials, so there's nothing
+    # to patch there.)
+    monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: _creds)
+    monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: _creds)
+    svc = MagicMock(name="script-v1")
+    svc.projects().create().execute.return_value = {"scriptId": "SID-9"}
+    svc.projects().updateContent().execute.return_value = {}
+    svc.projects().versions().create().execute.return_value = {"versionNumber": 1}
+    svc.projects().deployments().create().execute.return_value = {
+        "deploymentId": "DEP-9",
+        "entryPoints": [
+            {"webApp": {"url": "https://script.google.com/macros/s/z/exec"}}
+        ],
+    }
+    return svc, with_google_api_client, InMemoryGoogleAPIClient
+
+
+def test_as_deploy_web_app_happy_path(monkeypatch):
+    """End-to-end through the decorator envelope: returns the flat
+    envelope with the live /exec URL as ``exec_url``."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    with with_client(InMem({("script", "v1"): svc})):
+        result = tools.as_deploy_web_app(
+            script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+            title="Stripe hook",
+            access="ANYONE_ANONYMOUS",
+        )
+    assert result == {
+        "script_id": "SID-9",
+        "deployment_id": "DEP-9",
+        "version": 1,
+        "exec_url": "https://script.google.com/macros/s/z/exec",
+        "execute_as": "USER_DEPLOYING",
+        "access": "ANYONE_ANONYMOUS",
+        "project_url": "https://script.google.com/d/SID-9/edit",
+    }
+
+
+def test_as_deploy_web_app_validation_propagates(monkeypatch):
+    """A body without doGet/doPost is rejected (bubbles from the api
+    layer through the decorator envelope as ValueError)."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    with with_client(InMem({("script", "v1"): svc})):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="doGet.*doPost|doGet\\(e\\) or doPost"):
+            tools.as_deploy_web_app(
+                script_body="function helper(){ return 1; }",
+                title="No handler",
+            )

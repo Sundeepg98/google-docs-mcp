@@ -91,7 +91,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
@@ -134,7 +134,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
@@ -170,7 +170,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
@@ -193,7 +193,7 @@ jobs:
         # client-side OAuth providers. We do NOT instantiate either —
         #   grep -rn "PrivateKeyJWTOAuthProvider|RFC7523OAuthClientProvider" src/
         # returns zero matches. Our OAuth path is Google's Authorization
-        # Code flow via google-auth-oauthlib (src/google_docs_mcp/
+        # Code flow via google-auth-oauthlib (src/appscriptly/
         # oauth_google.py), which does not touch pyjwt. The vulnerable
         # jwt.encode call is never reached at runtime in our deployment.
         # Upstream pyjwt disputes the CVE (key-length policy belongs to
@@ -227,7 +227,7 @@ jobs:
           python-version: "3.12"
 
       - name: setup uv (with cache)
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
