@@ -14,13 +14,14 @@ Extracted from ``services/docs/api.py`` as part of the R14 #8 split
 that closes audit Gap #1. See ``tab_tree.py`` module docstring for
 the full split rationale + the R6 UTF-16 unblock context.
 
-**R6 UTF-16 bug** (still un-fixed at the time of this split): the
-``_insert`` helper here uses ``len(text)`` to advance the index, but
-Google Docs measures positions in UTF-16 code units, not Python's
-code points. A character above the BMP (e.g. ``"𝐀"`` U+1D400) counts
-as 1 in Python and 2 in UTF-16; the wrong count leaves subsequent
-indices off-by-one. The isolation of this module makes the fix
-independently testable; the fix itself is a separate PR.
+**R6 UTF-16 bug** (FIXED): the ``_insert`` helper advances the index
+by UTF-16 code-unit count, not Python code points, because Google Docs
+measures positions in UTF-16 code units. A character above the BMP
+(e.g. ``"𝐀"`` U+1D400) counts as 1 in Python but 2 in UTF-16; using
+``len(text)`` left every subsequent index off-by-one. The fix
+(``len(text.encode("utf-16-le")) // 2``) lives in ``_insert`` below;
+its regression test lives in ``test_markdown_render.py``. The
+isolation of this module is what made that fix independently testable.
 
 **Request-payload helpers** also live here: ``_tab_properties``,
 ``_rename_tab_request``, ``_add_tab_request``, ``_plain_text_requests``.
@@ -162,11 +163,12 @@ def _insert(ctx: _Ctx, text: str) -> None:
     ctx.inserts.append(
         {"insertText": {"location": _loc(ctx, ctx.current_index), "text": text}}
     )
-    # NOTE (R6 — see module docstring): len(text) is Python code points,
-    # not UTF-16 code units. Above-BMP characters drift the index. Fix
-    # is a separate PR; this split exists to make that fix unit-testable
-    # in isolation.
-    ctx.current_index += len(text)
+    # R6 (FIXED — see module docstring): Google Docs addresses positions
+    # in UTF-16 code units, not Python code points. Above-BMP characters
+    # (emoji, math-alphanumerics) are surrogate pairs = 1 code point but 2
+    # UTF-16 units, so len(text) would drift every later index. Counting
+    # utf-16-le bytes // 2 gives the exact UTF-16 unit count.
+    ctx.current_index += len(text.encode("utf-16-le")) // 2
 
 
 def _merge_style(stack: list[dict]) -> dict:
@@ -242,7 +244,10 @@ def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token di
             _insert(ctx, "\n")
         s = ctx.current_index
         _insert(ctx, body + "\n")
-        ctx.text_ranges.append((s, s + len(body), {"code": True}))
+        # End is current_index - 1 (excludes the trailing "\n" just
+        # inserted) rather than s + len(body): _insert advances by UTF-16
+        # units, so above-BMP body content needs the same unit basis here.
+        ctx.text_ranges.append((s, ctx.current_index - 1, {"code": True}))
     elif t == "bullet_list_open":
         ctx.list_stack.append("bullet")
     elif t == "ordered_list_open":

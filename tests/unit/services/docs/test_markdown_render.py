@@ -14,8 +14,9 @@ Helpers tested here (all live in ``services/docs/markdown_render.py``):
 
 The renderer functions touch NO Google API surface — pure
 markdown-it state machine + dict construction. The isolation that
-this module-level split provides unblocks the R6 UTF-16 bug fix in
-a future PR: the fix lands HERE, and the regression test lives HERE,
+this module-level split provided is what unblocked the R6 UTF-16 bug
+fix: the fix landed in ``markdown_render._insert`` (UTF-16 code-unit
+index advance), and its regression tests live HERE (``test_emoji_*``),
 without needing Google API mocks.
 """
 from __future__ import annotations
@@ -194,13 +195,13 @@ def test_render_content_to_requests_respects_starting_index():
 #      updating the consumer code in api.py.
 #
 # Strategy: ``st.text()`` generates arbitrary unicode (including
-# above-BMP characters, control chars, emoji). The R6 UTF-16 bug is
-# specifically the case where an above-BMP character drifts the
-# index off-by-one; once the source is fixed, the monotonicity
-# property pins the fix permanently. For now, this test passes
-# because monotonicity holds even with the wrong unit — the bug
-# manifests as misaligned styling, not as monotonicity violation.
-# Test architect noted this same nuance in Round 1.
+# above-BMP characters, control chars, emoji). The R6 UTF-16 bug was
+# the case where an above-BMP character drifted the index off-by-one;
+# it is now FIXED (``_insert`` advances by UTF-16 code units). The
+# monotonicity property below held even under the bug (the bug
+# miscounted magnitudes, it didn't go backward) and stays green after
+# the fix; the bug manifested as misaligned STYLING, which the
+# ``test_emoji_*`` example tests pin directly.
 # ---------------------------------------------------------------------
 from hypothesis import HealthCheck, given, settings  # noqa: E402
 from hypothesis import strategies as st  # noqa: E402
@@ -237,11 +238,12 @@ def test_property_render_insert_indices_are_non_decreasing(content):
 
     The renderer's index math threads through ``ctx.current_index``;
     a future refactor that re-orders inserts, or a bug that decrements
-    the counter mid-walk, would violate this. Note: this property
-    currently HOLDS even under the R6 UTF-16 bug because the bug
-    miscounts magnitudes — it doesn't go backward. The R6 fix will
-    keep this property green; only the ALIGNMENT of style ranges to
-    inserted text was wrong.
+    the counter mid-walk, would violate this. Note: this property held
+    even under the (now-fixed) R6 UTF-16 bug because that bug miscounted
+    magnitudes — it never went backward. The R6 fix (UTF-16 code-unit
+    advance) keeps this property green; what the bug broke was the
+    ALIGNMENT of style ranges to inserted text, pinned separately by
+    ``test_emoji_*`` below.
     """
     requests = render_content_to_requests(content, "tab-1")
     insert_indices = [
@@ -308,11 +310,13 @@ def test_property_render_starting_index_offset_is_linear(content, offset):
     """Property: increasing ``starting_index`` by N shifts every
     insertText location by exactly N.
 
-    The math inside ``_insert`` adds ``len(text)`` to ``current_index``
-    per insert; the per-call linearity in ``starting_index`` follows
-    from that. Catches: a future refactor that introduces non-linear
-    behaviour (e.g. an absolute reset at first newline) without
-    updating consumers that rely on the offset semantics.
+    The math inside ``_insert`` adds the text's UTF-16 code-unit count
+    to ``current_index`` per insert; the per-call linearity in
+    ``starting_index`` is independent of that per-token magnitude, so it
+    holds regardless of the unit (and held before the R6 fix too).
+    Catches: a future refactor that introduces non-linear behaviour
+    (e.g. an absolute reset at first newline) without updating consumers
+    that rely on the offset semantics.
     """
     baseline = render_content_to_requests(content, "tab-1", starting_index=1)
     shifted = render_content_to_requests(content, "tab-1", starting_index=1 + offset)
@@ -517,6 +521,112 @@ def test_bold_emits_updateTextStyle_bold_true_with_bold_fields_mask():
     end = ts["range"]["endIndex"]
     # current_index starts at 1; the inserted body begins at index 1.
     assert body[start - 1:end - 1] == "bold"
+
+
+# ---------------------------------------------------------------------
+# R6 UTF-16 regression tests — above-BMP (emoji / math-alphanumeric)
+# index advance. Google Docs addresses positions in UTF-16 code units;
+# an above-BMP char is a surrogate pair = 1 Python code point but 2
+# UTF-16 units. ``_insert`` advances by UTF-16 units; these pin that.
+#
+# Each test is constructed so it FAILS under the old ``len(text)``
+# (Python code-point) math and PASSES under the
+# ``len(text.encode("utf-16-le")) // 2`` fix.
+# ---------------------------------------------------------------------
+
+
+def _utf16_doc_slice(body: str, start: int, end: int) -> str:
+    """Slice ``body`` by 1-based Docs indices treating it as UTF-16.
+
+    Docs ranges are [start, end) in UTF-16 code units, 1-based (the body
+    begins at index 1). We mirror that exactly: encode to UTF-16-LE
+    (2 bytes per unit) and slice on unit boundaries. This is the inverse
+    of the renderer's index math — if a style range is positioned
+    correctly in UTF-16 space, this returns the styled run verbatim.
+    """
+    enc = body.encode("utf-16-le")
+    return enc[(start - 1) * 2:(end - 1) * 2].decode("utf-16-le")
+
+
+def test_emoji_before_bold_run_positions_style_range_in_utf16_units():
+    """``a😀**b**`` — the emoji (U+1F600, a surrogate pair) precedes a
+    bold run. The bold ``updateTextStyle`` range must be positioned in
+    UTF-16 code units: the prefix ``"a😀"`` is 3 UTF-16 units (1 + 2),
+    so ``b`` sits at Docs index 4, and the range is [4, 5).
+
+    Under the pre-fix ``len(text)`` math the prefix counted as 2 code
+    points, mispositioning the range at [3, 4) — this test fails there.
+    """
+    requests = render_content_to_requests("a😀**b**", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    assert ts["textStyle"] == {"bold": True}
+    start = ts["range"]["startIndex"]
+    end = ts["range"]["endIndex"]
+    # Exact UTF-16 indices: "a"=1 unit, "😀"=2 units → "b" starts at 4.
+    assert (start, end) == (4, 5), (
+        f"bold range must be [4, 5) in UTF-16 units after an emoji prefix; "
+        f"got [{start}, {end}) — the R6 len(text) bug would give [3, 4)"
+    )
+    # And the range must actually point at "b" when the body is read as
+    # UTF-16 (the inverse check — robust even if the magnitudes change).
+    body = _inserted_text(requests)
+    assert _utf16_doc_slice(body, start, end) == "b"
+
+
+def test_emoji_style_range_differs_from_codepoint_count():
+    """Discriminating assertion: with an above-BMP char in the prefix,
+    the correct UTF-16 start index is STRICTLY GREATER than the Python
+    code-point index the buggy ``len(text)`` would have produced. This
+    is the precise behavioural difference the R6 fix introduces."""
+    requests = render_content_to_requests("a😀**b**", "tab-1")
+    ts = _one_op(requests, "updateTextStyle")
+    start = ts["range"]["startIndex"]
+
+    # What the buggy code-point math would have yielded for the prefix
+    # "a😀": current_index starts at 1, += len("a😀") == 2 → start 3.
+    buggy_codepoint_start = 1 + len("a😀")
+    assert start > buggy_codepoint_start, (
+        f"UTF-16 start ({start}) must exceed the code-point start "
+        f"({buggy_codepoint_start}); equal means the surrogate pair was "
+        f"counted as one unit (the R6 bug)"
+    )
+    # Concretely: UTF-16 = code points + (number of above-BMP chars).
+    assert start == buggy_codepoint_start + 1
+
+
+def test_emoji_in_first_paragraph_shifts_second_paragraphs_insert_index():
+    """The drift isn't only in style ranges — every DOWNSTREAM insert
+    location shifts too. With an emoji in the first paragraph, the
+    second paragraph's insertText must start one unit later than a plain
+    ASCII first paragraph of the same code-point length would imply.
+
+    First paragraph ``"a😀b"`` = 4 UTF-16 units, + the paragraph's
+    ``"\\n"`` = 5, so the second paragraph's insert begins at index 6.
+    The ASCII control ``"axb"`` (3 units + newline = 4) puts it at 5.
+    The difference (exactly 1, the extra surrogate unit) is what the
+    pre-fix ``len(text)`` math dropped.
+    """
+    emoji_reqs = render_content_to_requests("a😀b\n\nsecond", "tab-1")
+    ascii_reqs = render_content_to_requests("axb\n\nsecond", "tab-1")
+
+    def _second_para_insert_index(requests: list[dict]) -> int:
+        # The insert whose text is the second paragraph's content.
+        for r in requests:
+            if "insertText" in r and r["insertText"]["text"].startswith("second"):
+                return r["insertText"]["location"]["index"]
+        raise AssertionError("no 'second' paragraph insert found")
+
+    emoji_idx = _second_para_insert_index(emoji_reqs)
+    ascii_idx = _second_para_insert_index(ascii_reqs)
+    # Emoji body is one UTF-16 unit longer than the ASCII control → the
+    # downstream insert is shifted by exactly 1.
+    assert emoji_idx == ascii_idx + 1, (
+        f"second-paragraph insert index did not absorb the surrogate "
+        f"pair's extra UTF-16 unit: emoji={emoji_idx}, ascii={ascii_idx} "
+        f"(expected emoji == ascii + 1)"
+    )
+    # Pin the absolute value too: "a😀b"(4) + "\n"(1) → 6.
+    assert emoji_idx == 6
 
 
 def test_italic_emits_updateTextStyle_italic_true():
