@@ -8,7 +8,7 @@
 #
 # Pin to v0.3.13 (current stable as of 2026-05-22) for reproducible
 # builds. Dependabot's `docker` ecosystem tracks bumps.
-FROM litestream/litestream:0.3.13 AS litestream-binary
+FROM litestream/litestream:0.5.12 AS litestream-binary
 
 # PR-Δ3 (2026-05-27): SHA-pin the base image digest.
 # Rationale: an unpinned ``python:3.13-slim`` lets the registry serve a
