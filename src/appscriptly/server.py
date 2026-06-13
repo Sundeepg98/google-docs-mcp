@@ -340,8 +340,11 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # v2.4.0: 66 → 73 with the 7-tool Calendar service (services/calendar/);
 # then 73 → 79 with the 6-tool Contacts service (services/contacts/);
 # then 79 → 86 with the 7-tool Tasks service (services/tasks/);
-# then 86 → 93 with the 7-tool Forms service (services/forms/).
-_MIN_EXPECTED_TOOL_COUNT = 93
+# then 86 → 93 with the 7-tool Forms service (services/forms/);
+# then 93 → 97 with the 4 apps_script service-parity tools
+# (as_install_sheet_menu, as_install_slides_menu, as_refresh_linked_slides,
+# as_grade_form_responses — per-service GAS analogues of the Docs menu).
+_MIN_EXPECTED_TOOL_COUNT = 97
 
 _discovery_failures: list[tuple[str, str]] = []
 

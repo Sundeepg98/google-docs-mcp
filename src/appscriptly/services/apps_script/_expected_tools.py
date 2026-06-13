@@ -26,6 +26,19 @@ EXPECTED: frozenset[str] = frozenset({
     # ROADMAP_SPECS #8 — reactive onFormSubmit handler (form_handler.py);
     # lifts the Forms hard-rejection for this one reactive surface.
     "as_install_form_handler",
+    # GAS service-parity — Sheets custom menu (sheet_menu.py); the Sheets
+    # analogue of as_install_doc_menu (SpreadsheetApp.getUi()).
+    "as_install_sheet_menu",
+    # GAS service-parity — Slides custom menu (slides_menu.py); the Slides
+    # analogue of as_install_doc_menu (SlidesApp.getUi()).
+    "as_install_slides_menu",
+    # GAS service-parity — refresh linked slides (refresh_linked_slides.py);
+    # getSlides()→refreshSlide() master-deck→client-deck sync REST can't do.
+    "as_refresh_linked_slides",
+    # GAS service-parity — push computed grades onto quiz responses
+    # (grade_form_responses.py); FormApp.submitGrades(), full forms scope in
+    # the GENERATED manifest only (not appscriptly's own consent).
+    "as_grade_form_responses",
     # PR-Δ11 — slides-to-video RENDER half (video_deck.py).
     "as_generate_video_deck",
     # PR-Δ12 — slides-to-video ENCODE half, server-side ffmpeg
