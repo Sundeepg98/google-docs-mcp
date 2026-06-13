@@ -28,9 +28,12 @@ Three call sites today:
      is operator-controlled, so the operator's bearer token IS the
      authorization story today.
 
-**Stub verification.** The current ``_verify_token`` always returns
-True (logs the check). When commercial activation happens, swap the
-stub for a real verifier:
+**Stub verification.** The current ``_verify_token`` fails CLOSED —
+it always returns ``False`` (and logs no token material) until a real
+verifier lands. A not-yet-implemented verifier must DENY, never grant,
+so that flipping enforcement on can't accidentally wave every token
+through. When commercial activation happens, swap the stub for a real
+verifier:
 
   - Stripe license keys: ``stripe.licenses.retrieve(token).active``
   - Self-hosted JWT: ``jwt.decode(token, public_key, algorithms=...)``
@@ -117,12 +120,27 @@ def _is_enforcement_enabled() -> bool:
 
 
 def _verify_token(token: str) -> bool:
-    """STUB — always returns True (commercial activation swap point).
+    """STUB — fails CLOSED (always returns ``False``) until a real
+    verifier lands. This is the commercial-activation swap point.
+
+    **Fail-closed by design.** A not-yet-implemented verifier MUST
+    deny, never grant: returning ``True`` here would mean that the
+    instant an operator flips ``LICENSE_KEY_ENFORCEMENT=true`` the
+    "gate" would wave every token through — a latent fail-open. Until
+    real verification exists, the safe answer to "is this token
+    valid?" is "no". Enforcement is off by default, so this ``False``
+    only takes effect once an operator explicitly enables the gate,
+    at which point fail-closed is exactly the behavior you want (no
+    key is accepted until the real verifier is wired in).
 
     When commercial activation happens, replace this body with the
     real verifier. The function signature is the contract; everything
     else in this module + the middleware speaks to this function only,
-    so the swap is localized.
+    so the swap is localized. Replacement candidates:
+
+      - Stripe license keys: ``stripe.licenses.retrieve(token).active``
+      - Self-hosted JWT: ``jwt.decode(token, public_key, ...)`` + expiry
+      - Internal license server: ``httpx.get(server, params={...})``
 
     Future implementations should be deterministic (same token →
     same result within a reasonable cache window) and fast (sub-
@@ -131,17 +149,15 @@ def _verify_token(token: str) -> bool:
     trip (Stripe API), add an in-process LRU cache keyed by token-
     hash with a short TTL (~60s) so a single misbehaving downstream
     can't trip a thundering-herd against Stripe's rate limiter.
+
+    Note: deliberately logs NO token material (not even a prefix) — a
+    license key is a secret. ``check_license`` already emits a
+    redacted, ``len``-only warning on the rejection path for
+    observability when enforcement is on.
     """
-    # The stub logs the check so operators flipping enforcement on
-    # for the first time can verify the middleware actually runs.
-    # In production with real verification, this log is the
-    # observability spine for license-key telemetry.
-    log.info(
-        "license: stub verifier accepting token (len=%d, first8=%r)",
-        len(token),
-        token[:8] if token else "",
-    )
-    return True
+    # TODO: real verifier (Stripe / JWT / internal license server).
+    # Until then, deny: a stub MUST fail closed, never fail open.
+    return False
 
 
 def check_license(token: str | None) -> LicenseCheckResult:
