@@ -77,6 +77,29 @@ READONLY_TOOLS = {
     "gforms_get_form",
     "gforms_list_responses",
     "gforms_get_response",
+    # v2.4.0: Calendar reads — events.list / events.get / calendarList.list
+    # / freebusy.query are all pure reads (no writes, no probe side-effects).
+    # Sister tools ``gcal_create_event`` / ``gcal_update_event`` (mutate
+    # events) and ``gcal_delete_event`` (destructive) are NOT readonly.
+    "gcal_list_events",
+    "gcal_get_event",
+    "gcal_list_calendars",
+    "gcal_freebusy",
+    # contacts: People API reads. ``gcontacts_list`` (connections.list),
+    # ``gcontacts_search`` (searchContacts — the warmup write is an
+    # advisory cache prime, not a user-data mutation, so the tool is still
+    # a read), and ``gcontacts_get`` (people.get) are pure reads. Sister
+    # tools ``gcontacts_create`` / ``gcontacts_update`` (mutate the address
+    # book) and ``gcontacts_delete`` (removes a contact) are NOT readonly.
+    "gcontacts_list",
+    "gcontacts_search",
+    "gcontacts_get",
+    # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
+    # Sister tools gtasks_create_* / gtasks_update_task /
+    # gtasks_complete_task (mutations) and gtasks_delete_task
+    # (destructive) are NOT readonly.
+    "gtasks_list_tasklists",
+    "gtasks_list_tasks",
 }
 
 
@@ -100,6 +123,21 @@ DESTRUCTIVE_TOOLS = {
     # NOT here — it only edits an item's title/description, never removes
     # content.)
     "gforms_delete_item",
+    # v2.4.0: Calendar events.delete — removes an event (and its data).
+    # Sister tool ``gcal_update_event`` only patches (NOT destructive);
+    # ``gcal_create_event`` only adds. Destructive so MCP clients can
+    # prompt for confirmation.
+    "gcal_delete_event",
+    # contacts: People API deleteContact — removes a contact from the
+    # address book (no API-restorable trash). Destructive so MCP clients
+    # can prompt for confirmation. Sister tools ``gcontacts_create`` /
+    # ``gcontacts_update`` only add / modify state, so they are NOT here.
+    "gcontacts_delete",
+    # Tasks (services/tasks/): tasks.delete — removes a task (and its
+    # sub-tasks). Destructive so MCP clients can prompt for confirmation.
+    # (gtasks_complete_task is NOT here — it only flips status, the task
+    # persists.)
+    "gtasks_delete_task",
 }
 
 

@@ -540,6 +540,95 @@ GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA = _object(
 
 
 # ---------------------------------------------------------------------
+# Calendar (services/calendar/) — v2.4.0 (4th new service)
+#
+# Scope: https://www.googleapis.com/auth/calendar (SENSITIVE, not
+# restricted → no CASA). Event + availability surface over Calendar v3.
+# ---------------------------------------------------------------------
+
+
+# ``gcal_list_events`` returns the raw v3 Event list + the page token.
+# ``next_page_token`` is null on the last page (hence not required).
+GCAL_LIST_EVENTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "events": {"type": "array"},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["calendar_id", "events"],
+)
+
+
+# ``gcal_get_event`` returns the single raw v3 Event resource.
+GCAL_GET_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event": {"type": "object"},
+    },
+    required=["calendar_id", "event"],
+)
+
+
+# ``gcal_create_event`` echoes the new event's id + web link + summary.
+# ``html_link`` may be absent in a degenerate API reply (hence not
+# required); ``event_id`` is the load-bearing handle for follow-ups.
+GCAL_CREATE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event_id": {"type": "string"},
+        "html_link": {"type": ["string", "null"], "format": "uri"},
+        "summary": {"type": "string"},
+    },
+    required=["calendar_id", "event_id", "summary"],
+)
+
+
+# ``gcal_update_event`` echoes the patched event's id + link + summary.
+# ``html_link`` / ``summary`` may be null if the reply omits them.
+GCAL_UPDATE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "event_id": {"type": "string"},
+        "html_link": {"type": ["string", "null"], "format": "uri"},
+        "summary": {"type": ["string", "null"]},
+    },
+    required=["calendar_id", "event_id"],
+)
+
+
+# ``gcal_delete_event`` echoes the removed event's id (delete returns an
+# empty body on success).
+GCAL_DELETE_EVENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendar_id": {"type": "string"},
+        "deleted_event_id": {"type": "string"},
+    },
+    required=["calendar_id", "deleted_event_id"],
+)
+
+
+# ``gcal_list_calendars`` returns the flattened calendar list + page token.
+GCAL_LIST_CALENDARS_OUTPUT_SCHEMA = _object(
+    properties={
+        "calendars": {"type": "array"},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["calendars"],
+)
+
+
+# ``gcal_freebusy`` echoes the window + Calendar's per-calendar busy map.
+GCAL_FREEBUSY_OUTPUT_SCHEMA = _object(
+    properties={
+        "time_min": {"type": "string"},
+        "time_max": {"type": "string"},
+        "calendars": {"type": "object"},
+    },
+    required=["time_min", "time_max", "calendars"],
+)
+
+
+# ---------------------------------------------------------------------
 # Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
 # ---------------------------------------------------------------------
 
@@ -783,6 +872,178 @@ GFORMS_GET_RESPONSE_OUTPUT_SCHEMA = _object(
     },
     required=["form_id", "response_id", "answers"],
 )
+
+
+# ---------------------------------------------------------------------
+# Tasks (services/tasks/) — Google Tasks API v1 (sensitive scope, no CASA)
+# ---------------------------------------------------------------------
+
+
+# Shared sub-schema: one entry in the ``tasklists`` array. Pins the
+# load-bearing id + title; ``updated`` (RFC 3339) may be absent.
+_TASKLIST_ENTRY_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# Shared sub-schema: one entry in the ``tasks`` array. ``id`` / ``title``
+# / ``status`` are the load-bearing fields; notes / due / completed /
+# parent / position are present only on some tasks (sub-tasks, dated /
+# completed tasks), hence nullable + not required.
+_TASK_ENTRY_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "status": {"type": ["string", "null"]},
+        "notes": {"type": ["string", "null"]},
+        "due": {"type": ["string", "null"]},
+        "completed": {"type": ["string", "null"]},
+        "parent": {"type": ["string", "null"]},
+        "position": {"type": ["string", "null"]},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# ``gtasks_list_tasklists`` returns a flat list of the user's task lists.
+GTASKS_LIST_TASKLISTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklists": {"type": "array", "items": _TASKLIST_ENTRY_SCHEMA},
+    },
+    required=["tasklists"],
+)
+
+
+# ``gtasks_create_tasklist`` echoes the created list (server-assigned id).
+GTASKS_CREATE_TASKLIST_OUTPUT_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# ``gtasks_list_tasks`` returns the tasks in a list + echoes the queried
+# tasklist id so the caller can correlate.
+GTASKS_LIST_TASKS_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklist": {"type": "string"},
+        "tasks": {"type": "array", "items": _TASK_ENTRY_SCHEMA},
+    },
+    required=["tasklist", "tasks"],
+)
+
+
+# ``gtasks_create_task`` / ``gtasks_update_task`` / ``gtasks_complete_task``
+# all return a single task as the flat envelope (same shape as a
+# ``gtasks_list_tasks`` entry).
+GTASKS_CREATE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+GTASKS_UPDATE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+GTASKS_COMPLETE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+
+
+# ``gtasks_delete_task`` echoes what was removed (tasks.delete returns an
+# empty 204 body, so there's nothing else to surface).
+GTASKS_DELETE_TASK_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklist": {"type": "string"},
+        "deleted_task_id": {"type": "string"},
+    },
+    required=["tasklist", "deleted_task_id"],
+)
+
+
+# ---------------------------------------------------------------------
+# Contacts (services/contacts/) — People API v1 (new service)
+# ---------------------------------------------------------------------
+#
+# Every read tool returns the flat ``_simplify_person`` projection. The
+# load-bearing key across all contact shapes is ``resource_name`` (the
+# handle the get/update/delete tools consume); ``etag`` drives the update
+# read-modify-write. ``emails`` / ``phones`` are arrays (a contact can
+# have several); ``display_name`` / ``organization`` / ``etag`` are
+# nullable (a contact may have no name / org, and a freshly-parsed
+# response may omit the etag if the mask was narrowed). ``raw`` is the
+# untouched People API Person. additionalProperties stays True (the
+# _object default) so a future projected field is additive.
+
+
+# Shared single-contact projection (gcontacts_get + the per-item shape in
+# gcontacts_list / gcontacts_search). resource_name is the only field
+# guaranteed across every contact (a contact always has a resourceName).
+_CONTACT_ENTRY_SCHEMA = _object(
+    properties={
+        "resource_name": {"type": "string"},
+        "etag": {"type": ["string", "null"]},
+        "display_name": {"type": ["string", "null"]},
+        "emails": {"type": "array", "items": {"type": "string"}},
+        "phones": {"type": "array", "items": {"type": "string"}},
+        "organization": {"type": ["string", "null"]},
+        "raw": {"type": "object"},
+    },
+    required=["resource_name"],
+)
+
+
+# ``gcontacts_list`` — one page of contacts + the next-page token.
+# next_page_token / total_people are nullable (null on the last page /
+# when the People API omits the count).
+GCONTACTS_LIST_OUTPUT_SCHEMA = _object(
+    properties={
+        "contacts": {"type": "array", "items": _CONTACT_ENTRY_SCHEMA},
+        "next_page_token": {"type": ["string", "null"]},
+        "total_people": {"type": ["integer", "null"], "minimum": 0},
+    },
+    required=["contacts"],
+)
+
+
+# ``gcontacts_search`` — prefix-match hits (searchContacts does not
+# paginate, so there is no next-page token — just the count).
+GCONTACTS_SEARCH_OUTPUT_SCHEMA = _object(
+    properties={
+        "contacts": {"type": "array", "items": _CONTACT_ENTRY_SCHEMA},
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["contacts", "count"],
+)
+
+
+# ``gcontacts_get`` — a single contact (the flat projection).
+GCONTACTS_GET_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_create`` — the newly created contact (same projection;
+# carries its new resource_name + etag).
+GCONTACTS_CREATE_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_update`` — the updated contact (same projection; etag is
+# the NEW post-update value).
+GCONTACTS_UPDATE_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_delete`` — echoes the removed contact's resourceName.
+GCONTACTS_DELETE_OUTPUT_SCHEMA = _object(
+    properties={
+        "resource_name": {"type": "string"},
+        "deleted": {"type": "boolean"},
+    },
+    required=["resource_name", "deleted"],
+)
+
+
+# ---------------------------------------------------------------------
+# Apps Script — web-app deploy (ROADMAP 59)
+# ---------------------------------------------------------------------
 
 
 # ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
@@ -1283,6 +1544,15 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_duplicate_sheet": GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
     "gsheets_freeze": GSHEETS_FREEZE_OUTPUT_SCHEMA,
     "gsheets_protect_range": GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
+    # v2.4.0 — Calendar (4th new service): event + availability surface.
+    # Scope https://www.googleapis.com/auth/calendar (SENSITIVE, no CASA).
+    "gcal_list_events": GCAL_LIST_EVENTS_OUTPUT_SCHEMA,
+    "gcal_get_event": GCAL_GET_EVENT_OUTPUT_SCHEMA,
+    "gcal_create_event": GCAL_CREATE_EVENT_OUTPUT_SCHEMA,
+    "gcal_update_event": GCAL_UPDATE_EVENT_OUTPUT_SCHEMA,
+    "gcal_delete_event": GCAL_DELETE_EVENT_OUTPUT_SCHEMA,
+    "gcal_list_calendars": GCAL_LIST_CALENDARS_OUTPUT_SCHEMA,
+    "gcal_freebusy": GCAL_FREEBUSY_OUTPUT_SCHEMA,
     # v2.3.2 — Slides (3rd new service, minimal start)
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
@@ -1302,6 +1572,21 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gforms_delete_item": GFORMS_DELETE_ITEM_OUTPUT_SCHEMA,
     "gforms_list_responses": GFORMS_LIST_RESPONSES_OUTPUT_SCHEMA,
     "gforms_get_response": GFORMS_GET_RESPONSE_OUTPUT_SCHEMA,
+    # Contacts (services/contacts/) — People API v1 (new service)
+    "gcontacts_list": GCONTACTS_LIST_OUTPUT_SCHEMA,
+    "gcontacts_search": GCONTACTS_SEARCH_OUTPUT_SCHEMA,
+    "gcontacts_get": GCONTACTS_GET_OUTPUT_SCHEMA,
+    "gcontacts_create": GCONTACTS_CREATE_OUTPUT_SCHEMA,
+    "gcontacts_update": GCONTACTS_UPDATE_OUTPUT_SCHEMA,
+    "gcontacts_delete": GCONTACTS_DELETE_OUTPUT_SCHEMA,
+    # Tasks (services/tasks/) — Google Tasks API v1 (sensitive scope, no CASA)
+    "gtasks_list_tasklists": GTASKS_LIST_TASKLISTS_OUTPUT_SCHEMA,
+    "gtasks_create_tasklist": GTASKS_CREATE_TASKLIST_OUTPUT_SCHEMA,
+    "gtasks_list_tasks": GTASKS_LIST_TASKS_OUTPUT_SCHEMA,
+    "gtasks_create_task": GTASKS_CREATE_TASK_OUTPUT_SCHEMA,
+    "gtasks_update_task": GTASKS_UPDATE_TASK_OUTPUT_SCHEMA,
+    "gtasks_complete_task": GTASKS_COMPLETE_TASK_OUTPUT_SCHEMA,
+    "gtasks_delete_task": GTASKS_DELETE_TASK_OUTPUT_SCHEMA,
     # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)

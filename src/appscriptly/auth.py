@@ -29,9 +29,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 # other, and stdio vs HTTP consent silently diverge).
 #
 # They are now derived from THIS one list:
-#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                  (8)
+#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                 (11)
 #   * ``oauth_google.GOOGLE_API_SCOPES`` = OIDC identity scopes
-#                                          + WORKSPACE_SCOPES           (10)
+#                                          + WORKSPACE_SCOPES           (13)
 # (``oauth_google`` imports ``WORKSPACE_SCOPES`` from here — ``auth`` is a
 # leaf module so there's no import cycle.)
 #
@@ -102,6 +102,20 @@ WORKSPACE_SCOPES = [
     # No forced re-consent.
     "https://www.googleapis.com/auth/forms.body",
     "https://www.googleapis.com/auth/forms.responses.readonly",
+    # Tasks read/write/create/delete for the 4th new service (tasklists +
+    # tasks CRUD). The full ``tasks`` scope (not the narrower
+    # ``tasks.readonly``) is needed because gtasks_create_task /
+    # gtasks_update_task / gtasks_delete_task mutate. This scope is
+    # SENSITIVE, NOT RESTRICTED — it is absent from Google's closed
+    # restricted-scope list (Gmail / Drive / Fit / Chat / Data
+    # Portability / Photos / Health), so it adds NO CASA requirement and
+    # keeps the free base tier eligible for the sensitive-only
+    # verification. Existing users pick it up automatically on next token
+    # refresh via the ``include_granted_scopes=true`` incremental-consent
+    # flow (same pattern as the Sheets / Slides / Apps Script additions);
+    # no forced re-consent. DEPLOY NOTE: the Google Tasks API must be
+    # enabled in the GCP project before the gtasks_* tools work live.
+    "https://www.googleapis.com/auth/tasks",
     # PR-Δ1 (v2.3.4) — Apps Script management scopes promoted from
     # the per-tool GAS_DEPLOY_SCOPES list into the baseline union.
     # Reasoning: the Workspace automation runtime install
@@ -115,6 +129,33 @@ WORKSPACE_SCOPES = [
     # pass on first call because the scopes are baseline-granted.
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
+    # v2.4.0 — Google Calendar read/write (events + calendar metadata) for
+    # the 4th new service (services/calendar/). The full ``calendar`` scope
+    # (not the narrower ``calendar.readonly`` / ``calendar.events``) is
+    # requested because the service creates / patches / deletes events AND
+    # reads the calendar list. ``calendar`` is a Google **SENSITIVE** scope,
+    # NOT restricted — it does NOT trigger the CASA security assessment that
+    # restricted scopes (gmail.*, drive[full]/.readonly) require, so it
+    # stays on this MCP's free "sensitive scopes only" verification track.
+    # Existing users pick it up automatically on next token refresh via the
+    # ``include_granted_scopes=true`` incremental-consent flow (same pattern
+    # that handled the Sheets / Slides scope additions); no forced
+    # re-consent.
+    "https://www.googleapis.com/auth/calendar",
+    # Contacts service (services/contacts/) — People API v1 read/write.
+    # The FULL ``contacts`` scope (not the narrower ``contacts.readonly``)
+    # is required because gcontacts_create / gcontacts_update /
+    # gcontacts_delete MUTATE the user's contacts. Google classifies
+    # ``contacts`` as a SENSITIVE scope, NOT restricted — so it needs
+    # sensitive-scope OAuth verification but NOT a CASA security
+    # assessment (CASA targets the RESTRICTED scopes — full Gmail/Drive,
+    # etc.). This keeps the "sensitive scopes only, no CASA" verification
+    # posture intact (same rationale that kept drive.readonly OUT — that
+    # one IS restricted). Existing user grants pick this up automatically
+    # on next token refresh via Google's ``include_granted_scopes=true``
+    # incremental-consent flow (same pattern as the Sheets/Slides/Apps
+    # Script scope additions in earlier PRs); no forced re-consent.
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 # ``SCOPES`` is the stdio/baseline Workspace consent set. It IS the
