@@ -4,7 +4,7 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (6 slides-service tools):
+**Tools registered here** (8 slides-service tools):
 
 1. ``gslides_get_outline``         — read structure + per-slide text
 2. ``gslides_replace_all_text``    — find/replace across all slides
@@ -12,18 +12,23 @@ live ``mcp`` instance via ``server.py``'s side-effect import.
 4. ``gslides_add_slide``           — append a slide (+ title/body text)
 5. ``gslides_create_image``        — insert an image (by URL) on a slide
 6. ``gslides_create_table``        — insert an empty table on a slide
+7. ``gslides_create_shape``        — insert a shape (rect/ellipse/…) on a slide
+8. ``gslides_create_line``         — draw a line (start→end) on a slide
 
 The first three were the minimal trio; ``gslides_add_slide`` closed
-the slide-population gap, and ``gslides_create_image`` /
-``gslides_create_table`` add visual + tabular content so a deck can
-be authored end-to-end: ``create_presentation`` → ``add_slide`` (×N)
-→ ``create_image`` / ``create_table`` → ``get_outline`` to verify.
+the slide-population gap; ``gslides_create_image`` /
+``gslides_create_table`` add visual + tabular content; and
+``gslides_create_shape`` / ``gslides_create_line`` complete the #155
+slide-geometry trio (table + shape + line) so a deck can be authored
+end-to-end — including diagrams: ``create_presentation`` →
+``add_slide`` (×N) → ``create_image`` / ``create_table`` /
+``create_shape`` / ``create_line`` → ``get_outline`` to verify.
 
 **Still deferred to a follow-up PR**: the rest of the Slides
-``batchUpdate`` tagged-union (createShape, createLine,
-updateTextStyle, updateShapeProperties, element transform/delete,
-speaker notes, etc.). The four write tools here are
-``createSlide``/``insertText``/``createImage``/``createTable``
+``batchUpdate`` tagged-union (updateTextStyle, updateShapeProperties,
+element transform/delete, speaker notes, etc.). The six write tools
+here are
+``createSlide``/``insertText``/``createImage``/``createTable``/``createShape``/``createLine``
 carve-outs from that surface; the broader tagged-union abstraction
 can be designed when more request types have real consumers.
 
@@ -41,7 +46,9 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.slides.api import (
     add_slide as _add_slide,
     create_image as _create_image,
+    create_line as _create_line,
     create_presentation as _create_presentation,
+    create_shape as _create_shape,
     create_table as _create_table,
     get_outline as _get_outline,
     replace_all_text as _replace_all_text,
@@ -49,7 +56,9 @@ from appscriptly.services.slides.api import (
 from appscriptly.tool_schemas import (
     GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_IMAGE_OUTPUT_SCHEMA,
+    GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
+    GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
@@ -459,4 +468,154 @@ def gslides_create_table(
         height_inches=height_inches,
         x_inches=x_inches,
         y_inches=y_inches,
+    )
+
+
+# ---------------------------------------------------------------------
+# 7. gslides_create_shape — batchUpdate (createShape)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Insert a shape (rectangle / ellipse / text box / …) onto a slide",
+    # Adds a shape element to a slide — a write, but not destructive
+    # (existing content untouched; the shape can be deleted later).
+    readonly=False,
+    destructive=False,
+    # Re-running adds ANOTHER shape — NOT idempotent. Matches
+    # gslides_create_table / gslides_create_image.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
+)
+def gslides_create_shape(
+    creds,
+    presentation_id: str,
+    slide_object_id: str,
+    shape_type: str = "RECTANGLE",
+    width_inches: float = 2.0,
+    height_inches: float = 2.0,
+    x_inches: float = 1.0,
+    y_inches: float = 1.0,
+) -> dict:
+    """Insert a shape onto a slide (rectangle, ellipse, text box, …).
+
+    USE WHEN: drawing a box, ellipse, callout, arrow, or empty text box
+    on a slide — diagram primitives, highlight boxes, flow-chart nodes.
+    Pairs with ``gslides_create_line`` (shapes + connectors = a diagram)
+    and completes the slide-geometry trio alongside
+    ``gslides_create_table``.
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``createShape`` request — the same positioning envelope (EMU size +
+    transform) as ``gslides_create_image`` / ``gslides_create_table``,
+    discriminated by ``shape_type``. The shape is created EMPTY (no
+    text); seed a token + ``gslides_replace_all_text`` to add copy.
+
+    Args:
+        presentation_id: The presentation to add the shape to.
+        slide_object_id: The slide to place it on (an ``object_id``
+            from ``gslides_add_slide`` / ``gslides_get_outline``).
+        shape_type: Slides ``shapeType`` enum — e.g. ``"RECTANGLE"``
+            (default), ``"ELLIPSE"``, ``"TEXT_BOX"``, ``"ROUND_RECTANGLE"``,
+            ``"DIAMOND"``, ``"RIGHT_ARROW"``, ``"CLOUD"``,
+            ``"WEDGE_RECTANGLE_CALLOUT"``. Unsupported values rejected.
+        width_inches: Shape width in inches (default 2.0).
+        height_inches: Shape height in inches (default 2.0).
+        x_inches: Left inset from the slide's top-left (default 1.0).
+        y_inches: Top inset from the slide's top-left (default 1.0).
+
+    Returns:
+        ``{presentation_id, slide_object_id, shape_object_id,
+        shape_type, url}``. ``shape_object_id`` is the created shape's
+        stable ID (a valid target for a future transform / text / delete
+        tool); ``url`` deep-links to the slide.
+
+    Choreography: ``gslides_add_slide`` → ``gslides_create_shape`` /
+    ``gslides_create_line`` → ``gslides_get_outline`` to verify.
+    """
+    return _create_shape(
+        creds,
+        presentation_id=presentation_id,
+        slide_object_id=slide_object_id,
+        shape_type=shape_type,
+        width_inches=width_inches,
+        height_inches=height_inches,
+        x_inches=x_inches,
+        y_inches=y_inches,
+    )
+
+
+# ---------------------------------------------------------------------
+# 8. gslides_create_line — batchUpdate (createLine)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Draw a line (start → end) on a slide",
+    # Adds a line element to a slide — a write, but not destructive.
+    readonly=False,
+    destructive=False,
+    # Re-running adds ANOTHER line — NOT idempotent.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
+)
+def gslides_create_line(
+    creds,
+    presentation_id: str,
+    slide_object_id: str,
+    start_x_inches: float = 1.0,
+    start_y_inches: float = 1.0,
+    end_x_inches: float = 4.0,
+    end_y_inches: float = 3.0,
+    line_category: str = "STRAIGHT",
+) -> dict:
+    """Draw a line on a slide from a start point to an end point.
+
+    USE WHEN: connecting two shapes, drawing a divider / underline, or
+    adding any straight/bent/curved line to a slide. Pairs with
+    ``gslides_create_shape`` to build diagrams (shapes = nodes, lines =
+    connectors) and completes the #155 slide-geometry trio.
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``createLine`` request. Slides positions a line via its bounding box
+    (the line runs along the box's diagonal); this tool converts the
+    intuitive start/end inch coordinates into that size + transform for
+    you, so you don't construct an affine transform by hand.
+
+    Args:
+        presentation_id: The presentation to draw the line on.
+        slide_object_id: The slide to draw it on (an ``object_id`` from
+            ``gslides_add_slide`` / ``gslides_get_outline``).
+        start_x_inches: Start X (inches from the slide's left edge).
+        start_y_inches: Start Y (inches from the slide's top edge).
+        end_x_inches: End X (inches from the slide's left edge).
+        end_y_inches: End Y (inches from the slide's top edge).
+        line_category: Slides ``lineCategory`` — ``"STRAIGHT"``
+            (default), ``"BENT"``, or ``"CURVED"``. Other values rejected.
+
+    Returns:
+        ``{presentation_id, slide_object_id, line_object_id,
+        line_category, url}``. ``line_object_id`` is the created line's
+        stable ID (a valid target for a future style / delete tool);
+        ``url`` deep-links to the slide.
+
+    Choreography: ``gslides_add_slide`` → ``gslides_create_shape``
+    (×N nodes) → ``gslides_create_line`` (×N connectors) →
+    ``gslides_get_outline`` to verify.
+    """
+    return _create_line(
+        creds,
+        presentation_id=presentation_id,
+        slide_object_id=slide_object_id,
+        start_x_inches=start_x_inches,
+        start_y_inches=start_y_inches,
+        end_x_inches=end_x_inches,
+        end_y_inches=end_y_inches,
+        line_category=line_category,
     )

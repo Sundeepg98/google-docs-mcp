@@ -18,7 +18,40 @@ from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCOPES = [
+# ---------------------------------------------------------------------
+# SINGLE SOURCE OF TRUTH for the Workspace OAuth consent scope set.
+#
+# Hardening-P1 (ROADMAP_SPECS #7): historically ``auth.SCOPES`` (the
+# stdio/baseline Workspace scopes) and ``oauth_google.GOOGLE_API_SCOPES``
+# (the HTTP/connector set = these scopes + the OIDC identity scopes) were
+# TWO independently hand-edited lists carrying "keep in sync BY HAND"
+# comments — a textbook drift trap (add a service scope to one, forget the
+# other, and stdio vs HTTP consent silently diverge).
+#
+# They are now derived from THIS one list:
+#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                  (6)
+#   * ``oauth_google.GOOGLE_API_SCOPES`` = OIDC identity scopes
+#                                          + WORKSPACE_SCOPES            (8)
+# (``oauth_google`` imports ``WORKSPACE_SCOPES`` from here — ``auth`` is a
+# leaf module so there's no import cycle.)
+#
+# Adding a new Workspace service scope is now a ONE-LINE edit here; both
+# consent sets pick it up automatically. ``tests/unit/test_scope_union_
+# single_source.py`` asserts the derived sets equal the exact prior
+# literal scopes (frozenset equality) so any accidental drift fails CI.
+#
+# ⚠️ This MCP is mid-OAuth-verification (verify-LAST): the consent scope
+# SET is operator-gated. Do NOT add/remove/restrict a scope here as a
+# drive-by — a change to this list IS a change to the consent screen.
+#
+# Ordering: this list's order is preserved verbatim into ``auth.SCOPES``,
+# and prefixed (not interleaved) with the OIDC scopes for
+# ``GOOGLE_API_SCOPES``, so both derived lists are byte-identical to the
+# prior hand-maintained literals. Google ignores scope order on the
+# consent screen, but preserving it keeps diffs (and any log/metadata
+# snapshots) stable.
+# ---------------------------------------------------------------------
+WORKSPACE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     # NOTE: drive.readonly was REMOVED here for the free base tier
@@ -37,8 +70,7 @@ SCOPES = [
     # Existing tokens that still carry drive.readonly keep working
     # (OAUTHLIB_RELAX_TOKEN_SCOPE); new consents won't request it. A
     # FUTURE "read ANY Drive file" feature will reintroduce drive.readonly
-    # on a SEPARATE restricted tier (out of scope here). Keep this list in
-    # sync with oauth_google.GOOGLE_API_SCOPES.
+    # on a SEPARATE restricted tier (out of scope here).
     # v2.3.1 — Sheets read/write/create for the 2nd new service. The
     # full ``spreadsheets`` scope (not the narrower
     # ``spreadsheets.readonly``) is needed because gsheets_write_range
@@ -68,6 +100,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 ]
+
+# ``SCOPES`` is the stdio/baseline Workspace consent set. It IS the
+# single-source ``WORKSPACE_SCOPES`` — kept as a distinct public name
+# because callers across the codebase (and external forks) import
+# ``auth.SCOPES``. Same list object identity is fine; nothing mutates it.
+SCOPES = WORKSPACE_SCOPES
 
 
 def default_data_dir() -> Path:

@@ -44,7 +44,9 @@ from appscriptly.services.slides.api import (
     _extract_slide_text,
     add_slide,
     create_image,
+    create_line,
     create_presentation,
+    create_shape,
     create_table,
     get_outline,
     replace_all_text,
@@ -878,3 +880,263 @@ def test_create_table_twice_on_same_deck_uses_unique_object_ids(
         f"({table_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
     )
     assert all(tid.startswith("appscriptly_table_") for tid in table_ids)
+
+
+# ---------------------------------------------------------------------
+# create_shape — validation + Slides call shape + envelope (#155)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_shape():
+    slides = MagicMock(name="slides-v1-stub-shape")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createShape": {"objectId": "appscriptly_shape"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_shape_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_shape(MagicMock(), "DECK1", "", shape_type="RECTANGLE")
+
+
+def test_create_shape_rejects_unsupported_shape_type():
+    """An unsupported ``shape_type`` enum is a caller bug — reject
+    client-side with the supported set, rather than a Slides 400."""
+    with pytest.raises(ValueError, match="shape_type must be one of"):
+        create_shape(MagicMock(), "DECK1", "S1", shape_type="NONSENSE")
+
+
+def test_create_shape_rejects_nonpositive_dimensions():
+    with pytest.raises(ValueError, match="must be positive"):
+        create_shape(
+            MagicMock(), "DECK1", "S1", shape_type="ELLIPSE", width_inches=0,
+        )
+    with pytest.raises(ValueError, match="must be positive"):
+        create_shape(
+            MagicMock(), "DECK1", "S1", shape_type="ELLIPSE", height_inches=-2,
+        )
+
+
+def test_create_shape_passes_presentationId(stub_slides_for_shape):
+    create_shape(MagicMock(), "DECK-XYZ", "S1", shape_type="RECTANGLE")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_shape)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_create_shape_builds_createShape_request(stub_slides_for_shape):
+    """The createShape request carries shapeType + an elementProperties
+    block pinning the shape to the slide with EMU size + transform."""
+    create_shape(
+        MagicMock(), "DECK1", "SLIDE_9", shape_type="ELLIPSE",
+        width_inches=3, height_inches=2, x_inches=1, y_inches=4,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_shape)["body"]["requests"]
+    assert len(reqs) == 1
+    cs = reqs[0]["createShape"]
+    assert cs["shapeType"] == "ELLIPSE"
+    ep = cs["elementProperties"]
+    assert ep["pageObjectId"] == "SLIDE_9"
+    assert ep["size"]["width"] == {"magnitude": 3 * _EMU, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 2 * _EMU, "unit": "EMU"}
+    assert ep["transform"]["translateX"] == 1 * _EMU
+    assert ep["transform"]["translateY"] == 4 * _EMU
+    assert ep["transform"]["unit"] == "EMU"
+
+
+def test_create_shape_defaults_to_rectangle(stub_slides_for_shape):
+    """The default shape_type is RECTANGLE — the most common box."""
+    create_shape(MagicMock(), "DECK1", "S1")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_shape)["body"]["requests"]
+    assert reqs[0]["createShape"]["shapeType"] == "RECTANGLE"
+
+
+def test_create_shape_returns_flat_envelope(stub_slides_for_shape):
+    result = create_shape(
+        MagicMock(), "DECK-1", "SLIDE_1", shape_type="TEXT_BOX",
+    )
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "shape_object_id": "appscriptly_shape",
+        "shape_type": "TEXT_BOX",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_shape_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_shape,
+):
+    stub_slides_for_shape.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_shape(MagicMock(), "DECK-1", "S1", shape_type="DIAMOND")
+    # Unique-per-call requested id (appscriptly_shape_<hex>).
+    assert result["shape_object_id"].startswith("appscriptly_shape_")
+
+
+def test_create_shape_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_shape,
+):
+    """REGRESSION (HIGH): a constant shape objectId 400s on the 2nd
+    create_shape against the same deck. Two calls must request DISTINCT
+    createShape objectIds."""
+    create_shape(MagicMock(), "DECK-SAME", "S1", shape_type="RECTANGLE")
+    create_shape(MagicMock(), "DECK-SAME", "S1", shape_type="ELLIPSE")
+    shape_ids = _created_object_ids(stub_slides_for_shape, "createShape")
+    assert len(shape_ids) == 2
+    assert shape_ids[0] != shape_ids[1], (
+        f"both create_shape calls requested the SAME objectId "
+        f"({shape_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(sid.startswith("appscriptly_shape_") for sid in shape_ids)
+
+
+# ---------------------------------------------------------------------
+# create_line — validation + Slides call shape + envelope (#155)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_line():
+    slides = MagicMock(name="slides-v1-stub-line")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"createLine": {"objectId": "appscriptly_line"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_create_line_rejects_empty_slide_object_id():
+    with pytest.raises(ValueError, match="slide_object_id cannot be empty"):
+        create_line(MagicMock(), "DECK1", "")
+
+
+def test_create_line_rejects_unsupported_line_category():
+    with pytest.raises(ValueError, match="line_category must be one of"):
+        create_line(MagicMock(), "DECK1", "S1", line_category="ZIGZAG")
+
+
+def test_create_line_rejects_zero_length_line():
+    """Identical start + end is a degenerate (zero-length) line — Slides
+    would 400 on the zero-area transform. Reject client-side."""
+    with pytest.raises(ValueError, match="start and end points are identical"):
+        create_line(
+            MagicMock(), "DECK1", "S1",
+            start_x_inches=2, start_y_inches=2,
+            end_x_inches=2, end_y_inches=2,
+        )
+
+
+def test_create_line_passes_presentationId(stub_slides_for_line):
+    create_line(MagicMock(), "DECK-XYZ", "S1")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_line)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_create_line_builds_createLine_request_with_bbox_from_points(
+    stub_slides_for_line,
+):
+    """start (1,1) → end (5,3) ⇒ bounding box top-left at (1,1), size
+    4in × 2in (the point delta). lineCategory rides on the request."""
+    create_line(
+        MagicMock(), "DECK1", "SLIDE_3",
+        start_x_inches=1, start_y_inches=1,
+        end_x_inches=5, end_y_inches=3,
+        line_category="STRAIGHT",
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_line)["body"]["requests"]
+    assert len(reqs) == 1
+    cl = reqs[0]["createLine"]
+    assert cl["lineCategory"] == "STRAIGHT"
+    ep = cl["elementProperties"]
+    assert ep["pageObjectId"] == "SLIDE_3"
+    assert ep["size"]["width"] == {"magnitude": 4 * _EMU, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 2 * _EMU, "unit": "EMU"}
+    assert ep["transform"]["translateX"] == 1 * _EMU
+    assert ep["transform"]["translateY"] == 1 * _EMU
+
+
+def test_create_line_bbox_topleft_is_min_of_endpoints(stub_slides_for_line):
+    """A line drawn 'backwards' (end above-left of start) still produces
+    a positive-size box whose top-left is min(start, end) on each axis."""
+    create_line(
+        MagicMock(), "DECK1", "S1",
+        start_x_inches=5, start_y_inches=4,
+        end_x_inches=2, end_y_inches=1,
+    )
+    ep = _last_batchUpdate_kwargs(
+        stub_slides_for_line
+    )["body"]["requests"][0]["createLine"]["elementProperties"]
+    assert ep["transform"]["translateX"] == 2 * _EMU
+    assert ep["transform"]["translateY"] == 1 * _EMU
+    assert ep["size"]["width"] == {"magnitude": 3 * _EMU, "unit": "EMU"}
+    assert ep["size"]["height"] == {"magnitude": 3 * _EMU, "unit": "EMU"}
+
+
+def test_create_line_horizontal_floors_height_to_one_emu(stub_slides_for_line):
+    """A perfectly horizontal line has zero Y-delta; the height axis is
+    floored to 1 EMU so Slides accepts the (otherwise zero-area) size."""
+    create_line(
+        MagicMock(), "DECK1", "S1",
+        start_x_inches=1, start_y_inches=2,
+        end_x_inches=5, end_y_inches=2,
+    )
+    ep = _last_batchUpdate_kwargs(
+        stub_slides_for_line
+    )["body"]["requests"][0]["createLine"]["elementProperties"]
+    assert ep["size"]["height"] == {"magnitude": 1, "unit": "EMU"}
+    assert ep["size"]["width"] == {"magnitude": 4 * _EMU, "unit": "EMU"}
+
+
+def test_create_line_returns_flat_envelope(stub_slides_for_line):
+    result = create_line(
+        MagicMock(), "DECK-1", "SLIDE_1", line_category="BENT",
+    )
+    assert result == {
+        "presentation_id": "DECK-1",
+        "slide_object_id": "SLIDE_1",
+        "line_object_id": "appscriptly_line",
+        "line_category": "BENT",
+        "url": (
+            "https://docs.google.com/presentation/d/DECK-1"
+            "/edit#slide=id.SLIDE_1"
+        ),
+    }
+
+
+def test_create_line_falls_back_to_requested_id_when_reply_omits_it(
+    stub_slides_for_line,
+):
+    stub_slides_for_line.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = create_line(MagicMock(), "DECK-1", "S1")
+    # Unique-per-call requested id (appscriptly_line_<hex>).
+    assert result["line_object_id"].startswith("appscriptly_line_")
+
+
+def test_create_line_twice_on_same_deck_uses_unique_object_ids(
+    stub_slides_for_line,
+):
+    """REGRESSION (HIGH): a constant line objectId 400s on the 2nd
+    create_line against the same deck. Two calls must request DISTINCT
+    createLine objectIds."""
+    create_line(MagicMock(), "DECK-SAME", "S1")
+    create_line(MagicMock(), "DECK-SAME", "S1", end_x_inches=6)
+    line_ids = _created_object_ids(stub_slides_for_line, "createLine")
+    assert len(line_ids) == 2
+    assert line_ids[0] != line_ids[1], (
+        f"both create_line calls requested the SAME objectId "
+        f"({line_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
+    )
+    assert all(lid.startswith("appscriptly_line_") for lid in line_ids)

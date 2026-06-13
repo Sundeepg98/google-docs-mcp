@@ -349,7 +349,7 @@ def test_sheets_service_tools_register_from_services_sheets_tools_module():
 
 
 def test_slides_service_tools_register_from_services_slides_tools_module():
-    """The 6 slides-service tools must be defined in
+    """The 8 slides-service tools must be defined in
     ``services/slides/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["slides"],
