@@ -77,17 +77,35 @@ def test_check_license_returns_INVALID_when_enforcement_on_no_token(
     assert "MCP_LICENSE_KEY" in result.reason
 
 
-def test_check_license_returns_VALID_when_stub_verifier_accepts(monkeypatch):
-    """Enforcement on + token present → VALID under the stub verifier
-    (which always returns True). This is the commercial-activation
-    architectural seam: when the stub gets swapped for real Stripe
-    verification, this test's monkeypatch needs to mock the verifier
-    explicitly, but today the stub itself IS the verifier."""
+def test_check_license_returns_INVALID_when_stub_verifier_fails_closed(
+    monkeypatch,
+):
+    """Enforcement on + token present, with the UNPATCHED stub verifier
+    → INVALID. The stub fails CLOSED (returns False) until a real
+    verifier lands, so a bare token is rejected, not accepted. This is
+    the security contract: a not-yet-implemented verifier must DENY,
+    never grant. When the stub gets swapped for real Stripe
+    verification, the VALID path is exercised by monkeypatching the
+    verifier (see ``test_check_license_returns_VALID_when_verifier_accepts``)."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
     from appscriptly.license import LicenseStatus, check_license
 
     result = check_license("any-non-empty-token")
-    assert result.status == LicenseStatus.VALID
+    assert result.status == LicenseStatus.INVALID
+    assert "rejected" in result.reason.lower()
+
+
+def test_check_license_returns_VALID_when_verifier_accepts(monkeypatch):
+    """When commercial activation swaps the stub for a real verifier
+    that ACCEPTS, the VALID path must be reachable. Monkeypatch
+    ``_verify_token`` to simulate the post-swap accept behavior — this
+    is the seam the stub establishes."""
+    monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
+    from appscriptly import license as lic
+
+    monkeypatch.setattr(lic, "_verify_token", lambda _token: True)
+    result = lic.check_license("any-non-empty-token")
+    assert result.status == lic.LicenseStatus.VALID
     assert "verified" in result.reason.lower()
 
 
@@ -104,6 +122,61 @@ def test_check_license_returns_INVALID_when_real_verifier_rejects(
     result = lic.check_license("revoked-key")
     assert result.status == lic.LicenseStatus.INVALID
     assert "rejected" in result.reason.lower()
+
+
+# ---------------------------------------------------------------------
+# _verify_token — the stub must fail closed and leak no secret material
+# ---------------------------------------------------------------------
+
+
+def test_verify_token_stub_fails_closed():
+    """The stub verifier MUST return False for any token. A
+    not-yet-implemented verifier denies, never grants — returning True
+    would be a latent fail-open the instant enforcement is enabled."""
+    from appscriptly.license import _verify_token
+
+    assert _verify_token("any-token") is False
+    assert _verify_token("") is False
+    # Even a long, structured-looking token is denied (no token is
+    # accepted until a real verifier replaces this stub).
+    assert _verify_token("license-" + "a" * 40) is False
+
+
+def test_verify_token_stub_logs_no_token_material(caplog):
+    """The stub must not log token contents — not even a prefix. A
+    license key is a secret; logging ``token[:8]`` leaked it into log
+    sinks. Assert the secret never appears in any captured log record."""
+    import logging
+
+    from appscriptly.license import _verify_token
+
+    secret = "fake-license-key-SUPERSECRETVALUE0123456789"
+    with caplog.at_level(logging.DEBUG, logger="appscriptly.license"):
+        _verify_token(secret)
+
+    combined = "\n".join(rec.getMessage() for rec in caplog.records)
+    # Neither the full secret nor its first 8 chars may appear.
+    assert secret not in combined
+    assert secret[:8] not in combined
+
+
+def test_check_license_logs_no_token_material_on_rejection(caplog, monkeypatch):
+    """End-to-end: enforcement on + a supplied token that fails the
+    (fail-closed) verifier must not leak the token into logs anywhere
+    along the rejection path."""
+    import logging
+
+    monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
+    from appscriptly.license import LicenseStatus, check_license
+
+    secret = "fake-license-key-ANOTHERVALUE9876543210ABCDEF"
+    with caplog.at_level(logging.DEBUG, logger="appscriptly.license"):
+        result = check_license(secret)
+
+    assert result.status == LicenseStatus.INVALID
+    combined = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert secret not in combined
+    assert secret[:8] not in combined
 
 
 # ---------------------------------------------------------------------
@@ -202,22 +275,47 @@ def test_middleware_returns_402_when_enforcement_on_no_key(monkeypatch):
 def test_middleware_passes_through_when_header_supplies_valid_key(
     monkeypatch,
 ):
-    """Enforcement on + header supplied + stub verifier accepts =
-    request passes through. The header path is the commercial-customer
-    hit path."""
+    """Enforcement on + header supplied + verifier accepts = request
+    passes through. The header path is the commercial-customer hit
+    path. The stub fails closed, so this pins the post-swap behavior by
+    monkeypatching the verifier to accept (simulating a real verifier)."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
+    from appscriptly import license as lic
+
+    monkeypatch.setattr(lic, "_verify_token", lambda _token: True)
     client = TestClient(_build_license_app())
 
     resp = client.get("/api/convert", headers={"x-license-key": "valid-token"})
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text!r}"
 
 
+def test_middleware_returns_402_for_header_key_under_failclosed_stub(
+    monkeypatch,
+):
+    """Security regression guard: with the UNPATCHED fail-closed stub,
+    enforcement on + a supplied header key must yield 402 (not 200).
+    Before the fix the stub returned True, so any token waved a request
+    through the instant enforcement was enabled — this pins that the
+    gate now denies until a real verifier is wired in."""
+    monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
+    monkeypatch.delenv("MCP_LICENSE_KEY", raising=False)
+    client = TestClient(_build_license_app())
+
+    resp = client.get("/api/convert", headers={"x-license-key": "any-token"})
+    assert resp.status_code == 402, f"got {resp.status_code}: {resp.text!r}"
+    assert resp.json()["error"] == "license_required"
+
+
 def test_middleware_passes_through_when_env_supplies_valid_key(monkeypatch):
-    """Enforcement on + env var supplies the key + no header =
-    request passes through. The env-var path is the self-hosted
-    customer setup."""
+    """Enforcement on + env var supplies the key + no header = request
+    passes through. The env-var path is the self-hosted customer setup.
+    The stub fails closed, so monkeypatch the verifier to accept
+    (simulating a real verifier) to exercise the pass-through path."""
     monkeypatch.setenv("LICENSE_KEY_ENFORCEMENT", "true")
     monkeypatch.setenv("MCP_LICENSE_KEY", "env-token")
+    from appscriptly import license as lic
+
+    monkeypatch.setattr(lic, "_verify_token", lambda _token: True)
     client = TestClient(_build_license_app())
 
     resp = client.get("/api/convert")
