@@ -757,6 +757,86 @@ GSLIDES_CREATE_LINE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ---------------------------------------------------------------------
+# Contacts (services/contacts/) — People API v1 (new service)
+# ---------------------------------------------------------------------
+#
+# Every read tool returns the flat ``_simplify_person`` projection. The
+# load-bearing key across all contact shapes is ``resource_name`` (the
+# handle the get/update/delete tools consume); ``etag`` drives the update
+# read-modify-write. ``emails`` / ``phones`` are arrays (a contact can
+# have several); ``display_name`` / ``organization`` / ``etag`` are
+# nullable (a contact may have no name / org, and a freshly-parsed
+# response may omit the etag if the mask was narrowed). ``raw`` is the
+# untouched People API Person. additionalProperties stays True (the
+# _object default) so a future projected field is additive.
+
+
+# Shared single-contact projection (gcontacts_get + the per-item shape in
+# gcontacts_list / gcontacts_search). resource_name is the only field
+# guaranteed across every contact (a contact always has a resourceName).
+_CONTACT_ENTRY_SCHEMA = _object(
+    properties={
+        "resource_name": {"type": "string"},
+        "etag": {"type": ["string", "null"]},
+        "display_name": {"type": ["string", "null"]},
+        "emails": {"type": "array", "items": {"type": "string"}},
+        "phones": {"type": "array", "items": {"type": "string"}},
+        "organization": {"type": ["string", "null"]},
+        "raw": {"type": "object"},
+    },
+    required=["resource_name"],
+)
+
+
+# ``gcontacts_list`` — one page of contacts + the next-page token.
+# next_page_token / total_people are nullable (null on the last page /
+# when the People API omits the count).
+GCONTACTS_LIST_OUTPUT_SCHEMA = _object(
+    properties={
+        "contacts": {"type": "array", "items": _CONTACT_ENTRY_SCHEMA},
+        "next_page_token": {"type": ["string", "null"]},
+        "total_people": {"type": ["integer", "null"], "minimum": 0},
+    },
+    required=["contacts"],
+)
+
+
+# ``gcontacts_search`` — prefix-match hits (searchContacts does not
+# paginate, so there is no next-page token — just the count).
+GCONTACTS_SEARCH_OUTPUT_SCHEMA = _object(
+    properties={
+        "contacts": {"type": "array", "items": _CONTACT_ENTRY_SCHEMA},
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["contacts", "count"],
+)
+
+
+# ``gcontacts_get`` — a single contact (the flat projection).
+GCONTACTS_GET_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_create`` — the newly created contact (same projection;
+# carries its new resource_name + etag).
+GCONTACTS_CREATE_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_update`` — the updated contact (same projection; etag is
+# the NEW post-update value).
+GCONTACTS_UPDATE_OUTPUT_SCHEMA = _CONTACT_ENTRY_SCHEMA
+
+
+# ``gcontacts_delete`` — echoes the removed contact's resourceName.
+GCONTACTS_DELETE_OUTPUT_SCHEMA = _object(
+    properties={
+        "resource_name": {"type": "string"},
+        "deleted": {"type": "boolean"},
+    },
+    required=["resource_name", "deleted"],
+)
+
+
 # ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
 # project carrying a doGet/doPost handler as a Web App, returning the
 # live /exec endpoint + the IDs/version. ``exec_url`` is the load-bearing
@@ -1274,6 +1354,13 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # #155 geometry trio — createShape + createLine complete the set
     "gslides_create_shape": GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
+    # Contacts (services/contacts/) — People API v1 (new service)
+    "gcontacts_list": GCONTACTS_LIST_OUTPUT_SCHEMA,
+    "gcontacts_search": GCONTACTS_SEARCH_OUTPUT_SCHEMA,
+    "gcontacts_get": GCONTACTS_GET_OUTPUT_SCHEMA,
+    "gcontacts_create": GCONTACTS_CREATE_OUTPUT_SCHEMA,
+    "gcontacts_update": GCONTACTS_UPDATE_OUTPUT_SCHEMA,
+    "gcontacts_delete": GCONTACTS_DELETE_OUTPUT_SCHEMA,
     # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)

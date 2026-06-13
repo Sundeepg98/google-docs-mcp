@@ -112,6 +112,20 @@ WORKSPACE_SCOPES = [
     # that handled the Sheets / Slides scope additions); no forced
     # re-consent.
     "https://www.googleapis.com/auth/calendar",
+    # Contacts service (services/contacts/) — People API v1 read/write.
+    # The FULL ``contacts`` scope (not the narrower ``contacts.readonly``)
+    # is required because gcontacts_create / gcontacts_update /
+    # gcontacts_delete MUTATE the user's contacts. Google classifies
+    # ``contacts`` as a SENSITIVE scope, NOT restricted — so it needs
+    # sensitive-scope OAuth verification but NOT a CASA security
+    # assessment (CASA targets the RESTRICTED scopes — full Gmail/Drive,
+    # etc.). This keeps the "sensitive scopes only, no CASA" verification
+    # posture intact (same rationale that kept drive.readonly OUT — that
+    # one IS restricted). Existing user grants pick this up automatically
+    # on next token refresh via Google's ``include_granted_scopes=true``
+    # incremental-consent flow (same pattern as the Sheets/Slides/Apps
+    # Script scope additions in earlier PRs); no forced re-consent.
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 # ``SCOPES`` is the stdio/baseline Workspace consent set. It IS the
