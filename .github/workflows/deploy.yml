@@ -5,8 +5,12 @@ name: deploy
 # the deploy step depends on `unit` passing.
 #
 # Triggers:
-#   - push to main → automatic deploy (CI-gated)
-#   - workflow_dispatch → manual trigger from the Actions tab
+#   - push to main → automatic deploy (CI-gated) UNLESS repo var DEPLOY_ENABLED == 'false'
+#   - workflow_dispatch → manual trigger from the Actions tab (ALWAYS deploys, ignores DEPLOY_ENABLED)
+#
+#   To pause auto-deploy (e.g. during the OAuth verification window):
+#     gh variable set DEPLOY_ENABLED --body false -R Sundeepg98/google-docs-mcp
+#   To resume:  gh variable set DEPLOY_ENABLED --body true   (or: gh variable delete DEPLOY_ENABLED)
 #
 # Required repository secret:
 #   FLY_API_TOKEN — generated via:
@@ -112,8 +116,12 @@ jobs:
     name: deploy to Fly
     needs: [unit, mutation]  # gate: BOTH unit and mutation must be green
     runs-on: ubuntu-latest
-    # Don't deploy on PR-triggered runs, only on push to main.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Auto-deploy on push to main UNLESS the repo variable DEPLOY_ENABLED is
+    # set to 'false' (the verify-LAST "merge≠deploy" switch). A manual
+    # workflow_dispatch ALWAYS deploys (operator override), ignoring the toggle.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && vars.DEPLOY_ENABLED != 'false')
     steps:
       - uses: actions/checkout@v6
 
