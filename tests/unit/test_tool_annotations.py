@@ -68,6 +68,14 @@ READONLY_TOOLS = {
     # ``gslides_create_presentation`` (creates a new deck) are NOT
     # readonly.
     "gslides_get_outline",
+    # v2.4.0: Calendar reads — events.list / events.get / calendarList.list
+    # / freebusy.query are all pure reads (no writes, no probe side-effects).
+    # Sister tools ``gcal_create_event`` / ``gcal_update_event`` (mutate
+    # events) and ``gcal_delete_event`` (destructive) are NOT readonly.
+    "gcal_list_events",
+    "gcal_get_event",
+    "gcal_list_calendars",
+    "gcal_freebusy",
 }
 
 
@@ -86,6 +94,11 @@ DESTRUCTIVE_TOOLS = {
     # prompt for confirmation. (gdocs_create_folder is NOT here — it
     # only adds state.)
     "gdocs_revoke_permission",
+    # v2.4.0: Calendar events.delete — removes an event (and its data).
+    # Sister tool ``gcal_update_event`` only patches (NOT destructive);
+    # ``gcal_create_event`` only adds. Destructive so MCP clients can
+    # prompt for confirmation.
+    "gcal_delete_event",
 }
 
 

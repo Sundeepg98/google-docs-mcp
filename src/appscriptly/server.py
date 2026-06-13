@@ -337,7 +337,8 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # DROPPED below known-good (e.g. a discovery miss, a folder that
 # stopped importing). The CI golden test enforces exact-match; this
 # floor is the runtime backstop. Bump deliberately + rarely.
-_MIN_EXPECTED_TOOL_COUNT = 66
+# v2.4.0: 66 → 73 with the 7-tool Calendar service (services/calendar/).
+_MIN_EXPECTED_TOOL_COUNT = 73
 
 _discovery_failures: list[tuple[str, str]] = []
 
