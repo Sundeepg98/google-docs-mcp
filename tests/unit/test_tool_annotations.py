@@ -68,6 +68,15 @@ READONLY_TOOLS = {
     # ``gslides_create_presentation`` (creates a new deck) are NOT
     # readonly.
     "gslides_get_outline",
+    # contacts: People API reads. ``gcontacts_list`` (connections.list),
+    # ``gcontacts_search`` (searchContacts — the warmup write is an
+    # advisory cache prime, not a user-data mutation, so the tool is still
+    # a read), and ``gcontacts_get`` (people.get) are pure reads. Sister
+    # tools ``gcontacts_create`` / ``gcontacts_update`` (mutate the address
+    # book) and ``gcontacts_delete`` (removes a contact) are NOT readonly.
+    "gcontacts_list",
+    "gcontacts_search",
+    "gcontacts_get",
 }
 
 
@@ -86,6 +95,11 @@ DESTRUCTIVE_TOOLS = {
     # prompt for confirmation. (gdocs_create_folder is NOT here — it
     # only adds state.)
     "gdocs_revoke_permission",
+    # contacts: People API deleteContact — removes a contact from the
+    # address book (no API-restorable trash). Destructive so MCP clients
+    # can prompt for confirmation. Sister tools ``gcontacts_create`` /
+    # ``gcontacts_update`` only add / modify state, so they are NOT here.
+    "gcontacts_delete",
 }
 
 

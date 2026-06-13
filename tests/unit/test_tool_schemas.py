@@ -75,6 +75,12 @@ EXPECTED_TOOLS = {
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
     "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
     "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
+    "gcontacts_list",  # contacts: People API connections.list — list contacts (paged)
+    "gcontacts_search",  # contacts: People API searchContacts — prefix search
+    "gcontacts_get",  # contacts: People API people.get — single contact (etag)
+    "gcontacts_create",  # contacts: People API createContact — name/email/phone/org
+    "gcontacts_update",  # contacts: People API updateContact — etag read-modify-write
+    "gcontacts_delete",  # contacts: People API deleteContact — remove a contact
     "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet

@@ -29,6 +29,11 @@ _RESTRICTED = {
 }
 
 # The exact intended connector (HTTP) scope set after the base-tier redesign.
+# ``contacts`` (People API read/write) was added with the
+# services/contacts service. It is a Google-SENSITIVE scope, NOT one of
+# the RESTRICTED scopes in ``_RESTRICTED`` above — so it adds NO CASA
+# obligation and the free "sensitive scopes only" verification eligibility
+# is preserved (the no-restricted-scope guard below still holds).
 _TARGET_CONNECTOR = {
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -38,6 +43,7 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/presentations",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
+    "https://www.googleapis.com/auth/contacts",
 }
 # The stdio set is the connector set minus the identity-only scopes.
 _TARGET_STDIO = _TARGET_CONNECTOR - {
