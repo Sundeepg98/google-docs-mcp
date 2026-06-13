@@ -29,9 +29,13 @@ _RESTRICTED = {
 }
 
 # The exact intended connector (HTTP) scope set after the base-tier
-# redesign. Includes ``.../auth/tasks`` (Google Tasks service) — a
-# SENSITIVE scope, NOT one of Google's RESTRICTED scopes, so it adds no
-# CASA requirement and keeps the free base tier eligible.
+# redesign, plus the sensitive-scope additions for the newer services:
+# ``calendar`` (read/write, services/calendar/), ``contacts`` (People API
+# read/write, services/contacts/), and ``tasks`` (Google Tasks read/write,
+# services/tasks/). ALL THREE are Google-SENSITIVE scopes, NOT in
+# ``_RESTRICTED`` below — so none adds a CASA obligation and the free
+# "sensitive scopes only" verification eligibility is preserved (the
+# no-restricted-scope guard below still holds for all of them).
 _TARGET_CONNECTOR = {
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -42,6 +46,8 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts",
 }
 # The stdio set is the connector set minus the identity-only scopes.
 _TARGET_STDIO = _TARGET_CONNECTOR - {

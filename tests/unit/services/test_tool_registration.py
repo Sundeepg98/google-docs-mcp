@@ -357,6 +357,24 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
     )
 
 
+def test_calendar_service_tools_register_from_services_calendar_tools_module():
+    """The 7 calendar-service tools must be defined in
+    ``services/calendar/tools.py``, NOT server.py."""
+    _assert_tools_live_in_module(
+        _declared_by_service()["calendar"],
+        "appscriptly.services.calendar.tools",
+    )
+
+
+def test_contacts_service_tools_register_from_services_contacts_tools_module():
+    """The 6 contacts-service tools (People API v1) must be defined in
+    ``services/contacts/tools.py``, NOT server.py."""
+    _assert_tools_live_in_module(
+        _declared_by_service()["contacts"],
+        "appscriptly.services.contacts.tools",
+    )
+
+
 def test_tasks_service_tools_register_from_services_tasks_tools_module():
     """The 7 tasks-service tools must be defined in
     ``services/tasks/tools.py``, NOT server.py."""

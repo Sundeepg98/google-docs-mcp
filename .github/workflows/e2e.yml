@@ -99,8 +99,17 @@ jobs:
         run: uv sync --frozen --all-extras
 
       - name: run integration tests
+        # --cov-fail-under=0 OVERRIDES the repo-wide `[tool.coverage.report]
+        # fail_under = 55` backstop in pyproject.toml for this layer ONLY.
+        # Integration tests exercise high-level flows and measure ~37% line
+        # coverage by design (not exhaustive unit paths); the 55% floor is
+        # calibrated for and enforced on the unit layer in test.yml. A CLI
+        # --cov-fail-under always wins over the config value, so this keeps
+        # measurement on while neutralizing the gate exactly where 55% is
+        # wrong — the per-layer pattern documented in docs/COVERAGE.md
+        # ("the two layers are independent").
         run: |
-          uv run pytest tests/integration/ -v --tb=short \
+          uv run pytest tests/integration/ -v --tb=short --cov-fail-under=0 \
             --json-report --json-report-file=test-results.json \
             || (echo "::error::integration tests failed — see test-results.json artifact" && exit 1)
 

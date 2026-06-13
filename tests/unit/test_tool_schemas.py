@@ -67,6 +67,15 @@ EXPECTED_TOOLS = {
     "gsheets_duplicate_sheet",  # Sheets batchUpdate (duplicateSheet) — tab lifecycle
     "gsheets_freeze",  # Sheets batchUpdate (updateSheetProperties / gridProperties)
     "gsheets_protect_range",  # Sheets batchUpdate (addProtectedRange) — range protection
+    # v2.4.0: Calendar (4th new service). Scope /auth/calendar (SENSITIVE,
+    # not restricted → no CASA). Event + availability surface.
+    "gcal_list_events",  # Calendar events.list — time-range read
+    "gcal_get_event",  # Calendar events.get — one event by id
+    "gcal_create_event",  # Calendar events.insert — create event
+    "gcal_update_event",  # Calendar events.patch — partial update
+    "gcal_delete_event",  # Calendar events.delete — remove event
+    "gcal_list_calendars",  # Calendar calendarList.list — discover calendar ids
+    "gcal_freebusy",  # Calendar freebusy.query — availability
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create
@@ -75,7 +84,13 @@ EXPECTED_TOOLS = {
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
     "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
     "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
-    "gtasks_list_tasklists",  # Tasks (4th service): tasklists.list
+    "gcontacts_list",  # contacts: People API connections.list — list contacts (paged)
+    "gcontacts_search",  # contacts: People API searchContacts — prefix search
+    "gcontacts_get",  # contacts: People API people.get — single contact (etag)
+    "gcontacts_create",  # contacts: People API createContact — name/email/phone/org
+    "gcontacts_update",  # contacts: People API updateContact — etag read-modify-write
+    "gcontacts_delete",  # contacts: People API deleteContact — remove a contact
+    "gtasks_list_tasklists",  # Tasks (services/tasks/): tasklists.list
     "gtasks_create_tasklist",  # Tasks: tasklists.insert
     "gtasks_list_tasks",  # Tasks: tasks.list (show completed/hidden)
     "gtasks_create_task",  # Tasks: tasks.insert (title/notes/due/parent)

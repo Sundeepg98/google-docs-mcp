@@ -113,6 +113,33 @@ WORKSPACE_SCOPES = [
     # pass on first call because the scopes are baseline-granted.
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
+    # v2.4.0 — Google Calendar read/write (events + calendar metadata) for
+    # the 4th new service (services/calendar/). The full ``calendar`` scope
+    # (not the narrower ``calendar.readonly`` / ``calendar.events``) is
+    # requested because the service creates / patches / deletes events AND
+    # reads the calendar list. ``calendar`` is a Google **SENSITIVE** scope,
+    # NOT restricted — it does NOT trigger the CASA security assessment that
+    # restricted scopes (gmail.*, drive[full]/.readonly) require, so it
+    # stays on this MCP's free "sensitive scopes only" verification track.
+    # Existing users pick it up automatically on next token refresh via the
+    # ``include_granted_scopes=true`` incremental-consent flow (same pattern
+    # that handled the Sheets / Slides scope additions); no forced
+    # re-consent.
+    "https://www.googleapis.com/auth/calendar",
+    # Contacts service (services/contacts/) — People API v1 read/write.
+    # The FULL ``contacts`` scope (not the narrower ``contacts.readonly``)
+    # is required because gcontacts_create / gcontacts_update /
+    # gcontacts_delete MUTATE the user's contacts. Google classifies
+    # ``contacts`` as a SENSITIVE scope, NOT restricted — so it needs
+    # sensitive-scope OAuth verification but NOT a CASA security
+    # assessment (CASA targets the RESTRICTED scopes — full Gmail/Drive,
+    # etc.). This keeps the "sensitive scopes only, no CASA" verification
+    # posture intact (same rationale that kept drive.readonly OUT — that
+    # one IS restricted). Existing user grants pick this up automatically
+    # on next token refresh via Google's ``include_granted_scopes=true``
+    # incremental-consent flow (same pattern as the Sheets/Slides/Apps
+    # Script scope additions in earlier PRs); no forced re-consent.
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 # ``SCOPES`` is the stdio/baseline Workspace consent set. It IS the
