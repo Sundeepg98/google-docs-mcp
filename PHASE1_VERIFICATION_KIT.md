@@ -1,9 +1,12 @@
 # appscriptly — Google OAuth Free Verification + Dedicated OAuth Client (Phase-1 Action Kit)
 
-> Generated 2026-05-30. Verified against `origin/main` @ `e7222e5` (post-#148/#149/#150). Free sensitive-scope verification path (zero restricted scopes → no CASA).
+> Generated 2026-05-30. **Refreshed 2026-06-13** for the **66-tool surface** (per-scope→tool map + demo shotlist below updated; the 8 scopes are UNCHANGED). Free sensitive-scope verification path (zero restricted scopes → no CASA).
+>
+> **⚠️ STATUS: verification was already SUBMITTED (~2026-06-01) and is UNDER REVIEW** (per `START_HERE.md`). This kit is now the *strategy/why* reference; the **exact field values** to enter/confirm in the Console live in the companion **`VERIFICATION_SUBMISSION.md`**. The operator punch-list (§1) below was executed; treat it as the record of what was done + a re-do checklist if Google bounces the submission.
 
 **Target repo:** `Sundeepg98/google-docs-mcp` (module `appscriptly`).
 **Deployed:** Fly app `sundeepg98-docs-mcp` → `https://sundeepg98-docs-mcp.fly.dev` (new app `appscriptly` reserved, not yet cut over).
+**Tool surface:** **66 tools** (`origin/main` golden = 62 + the 4 sheets tools in open PR #191). All 66 stay within the 8 scopes below — zero verification impact.
 
 ## 0. Confirmed final scope set (8 scopes — `drive.readonly` removed in #148, MERGED + deployed + live-verified)
 
@@ -53,15 +56,17 @@
 
 > Steps 1–6 are independent of the code. The `drive.readonly`-removal PR (#148) is now **live in prod** — the base already requests the final 8-scope set with no `drive.readonly`, so submission (10) is unblocked. The demo must show that final 8-scope consent (no `drive.readonly`).
 
-## 2. PER-SCOPE JUSTIFICATIONS
+## 2. PER-SCOPE JUSTIFICATIONS (refreshed for the 66-tool surface)
 
-- **openid / userinfo.email** — obtain a stable user id (`sub`) + email solely to key per-user OAuth token storage and show the connected account; no profile data, no marketing, not shared.
-- **documents** — create/edit Docs at user instruction (`gdocs_make_tabbed_doc`, `gdocs_tab_existing_doc`, `gdocs_add_tabs`, `gdocs_append_to_tab`, `gdocs_replace_all_text`, `gdocs_rename_tab`). Read-only insufficient: core feature creates/restructures docs via `documents.batchUpdate`.
-- **spreadsheets** — `gsheets_create_spreadsheet`, `gsheets_write_range`, `gsheets_read_range`. Read-only insufficient: two of three mutate.
-- **presentations** — `gslides_create_presentation`, `gslides_replace_all_text` (batchUpdate), `gslides_get_outline`. Read-only insufficient: creates + batch-edits.
-- **drive.file** — per-file scope: only app-created/opened files. Backs `gdocs_move_to_folder`/`trash`/`untrash`/`share`/`list_permissions`/`find_doc_by_title` + video-pipeline staging. Chosen over broad Drive to minimize access.
-- **script.projects** — headline feature: create/update Apps Script projects bound to user's doc/sheet (`gdocs_install_automation`, `as_generate_bound_script`, `as_install_doc_menu`/`custom_function`/`sheet_dashboard`). No narrower scope exists.
-- **script.deployments** — deploy the created script (web app / installable triggers) so the automation runs. Projects scope alone can't deploy.
+> Full per-scope → tool map (all 66 tools, with service counts) is in **`VERIFICATION_SUBMISSION.md` §6**. Summary counts: documents 17, spreadsheets 13, presentations 8, drive.file 10, script.projects+script.deployments 11, admin/meta 7 (no Google scope).
+
+- **openid / userinfo.email** — obtain a stable user id (`sub`) + email solely to key per-user OAuth token storage and show the connected account; no profile data, no marketing, not shared. Used by every authenticated tool call.
+- **documents** (17 docs tools) — create/read/edit Docs at user instruction via `documents.batchUpdate`: `gdocs_make_tabbed_doc`, `gdocs_tab_existing_doc`, `gdocs_add_tabs`/`delete_tab`/`rename_tab`/`set_tab_icons`, `gdocs_append_to_tab`, `gdocs_replace_all_text`, **`gdocs_edit_range`** (UTF-16-correct ranged edit), `gdocs_insert_table`/`insert_markdown_table`, `gdocs_format_range`/`format_paragraph`. Read-only insufficient: core feature creates/restructures docs.
+- **spreadsheets** (13 sheets tools) — create/mutate Sheets via `spreadsheets.batchUpdate` / `values.*`: `gsheets_create_spreadsheet`, `gsheets_write_range`, `gsheets_append_rows`, **`gsheets_clear_range`**, `gsheets_add_sheet`/`delete_sheet`/`rename_sheet`/**`duplicate_sheet`**, `gsheets_format_range`/`apply_conditional_format`/**`freeze`**/**`protect_range`**, plus `gsheets_read_range`. Read-only insufficient: the majority write/format/protect.
+- **presentations** (8 slides tools) — create + batch-edit Slides via `presentations.batchUpdate`: `gslides_create_presentation`, `gslides_add_slide`, `gslides_replace_all_text`, `gslides_create_image`/`create_table`/**`create_shape`**/**`create_line`**, `gslides_get_outline`. Read-only insufficient: creates + inserts shapes/lines/tables.
+- **drive.file** (10 drive tools) — per-file scope (only app-created/opened files): `gdocs_move_to_folder`, `gdocs_create_folder`, `gdocs_trash_file`/`untrash_file`, `gdocs_share_file`/`list_permissions`/`revoke_permission`, `gdocs_find_doc_by_title`/`find_file`, `gdocs_export_doc` + video-pipeline frame staging. Chosen over broad Drive to minimize access.
+- **script.projects** (headline) — create/update Apps Script projects bound to user's doc/sheet: `gdocs_install_automation`, `gdocs_setup_apps_script`, `as_generate_bound_script`, `as_install_doc_menu`/`custom_function`/`sheet_dashboard`, **`as_install_edit_trigger`** (onEdit), **`as_install_form_handler`** (onFormSubmit). No narrower scope exists.
+- **script.deployments** — deploy the created script (web app / installable triggers) so the automation runs: `as_deploy_web_app`, the deploy step of `gdocs_install_automation`, and the installable triggers `as_install_edit_trigger`/`as_install_form_handler`. Projects scope alone can't deploy.
 
 ## 3. PRIVACY POLICY — host at https://appscriptly.com/privacy
 
@@ -85,16 +90,18 @@ appscriptly is a Google Workspace automation tool that creates, edits, and manag
 
 **Contact:** support@appscriptly.com *(replace)*.
 
-## 4. DEMO VIDEO SHOTLIST (unlisted YouTube, English, record against prod — already serving the final 8-scope set post-#148; 3–5 min)
+## 4. DEMO VIDEO SHOTLIST (unlisted YouTube, English, record against prod — already serving the final 8-scope set; 3–5 min)
+
+> **A demo was already recorded + submitted: `https://youtu.be/hBuuDemD8Js`** (unlisted, on `sundeepg8@`), against the earlier ~41-tool surface. The **8 scopes are unchanged** since, so it almost certainly still satisfies Google (reviewers check scope-usage, not tool count). **Re-record only if Google asks.** Shotlist below is canonical for any re-record and now references the newer 66-tool surface.
 
 0. Title card + say "appscriptly" (5s).
 1. Trigger connect → Google consent screen, pause (15s) — **OAuth grant flow**.
 2. Zoom: show "appscriptly wants access" + scope list; show address bar with `client_id=…apps.googleusercontent.com` (15s) — **app name + client id (required)**.
 3. Click Allow → callback success (5s).
-4. `gdocs_make_tabbed_doc` (3 tabs) → open doc, show native Tabs (35s) — **documents**.
-5. `gsheets_create_spreadsheet` + `gsheets_write_range` → show values (30s) — **spreadsheets**.
-6. `gslides_create_presentation` / `gslides_replace_all_text` → open deck (30s) — **presentations**.
-7. `as_install_doc_menu` on the doc → show new custom menu after refresh + created script/deployment (50s) — **script.projects + script.deployments**.
+4. `gdocs_make_tabbed_doc` (3 tabs) → open doc, show native Tabs; optionally `gdocs_edit_range` for a ranged edit (35s) — **documents**.
+5. `gsheets_create_spreadsheet` + `gsheets_write_range`; optionally `gsheets_freeze`/`gsheets_protect_range` → show values + frozen/protected result (30s) — **spreadsheets**.
+6. `gslides_create_presentation` / `gslides_replace_all_text`; optionally `gslides_create_shape`/`create_line` → open deck (30s) — **presentations**.
+7. `as_install_doc_menu` (or `as_install_edit_trigger` for an onEdit automation) on the doc → show new custom menu after refresh + created script/deployment (50s) — **script.projects + script.deployments**.
 8. `gdocs_move_to_folder`/`share_file` or `as_generate_video_deck` staging (20s) — **drive.file**.
 9. Show revoke (Google Account third-party apps, or `gdocs_reset_authorization`) (10s).
 
