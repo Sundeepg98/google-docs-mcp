@@ -413,6 +413,18 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_install_form_handler": (
         "appscriptly.services.apps_script.form_handler"
     ),
+    "as_install_sheet_menu": (
+        "appscriptly.services.apps_script.sheet_menu"
+    ),
+    "as_install_slides_menu": (
+        "appscriptly.services.apps_script.slides_menu"
+    ),
+    "as_refresh_linked_slides": (
+        "appscriptly.services.apps_script.refresh_linked_slides"
+    ),
+    "as_grade_form_responses": (
+        "appscriptly.services.apps_script.grade_form_responses"
+    ),
     "as_generate_video_deck": (
         "appscriptly.services.apps_script.video_deck"
     ),

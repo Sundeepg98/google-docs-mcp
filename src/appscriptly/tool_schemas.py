@@ -1249,6 +1249,141 @@ AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_sheet_menu`` (service-parity) is the Sheets analogue of
+# ``as_install_doc_menu`` — it composes the bound-script generator into a
+# "install a custom menu into a Sheet" feature via an onOpen builder that
+# calls ``SpreadsheetApp.getUi()``. Returns the bound project's IDs + the
+# Sheet it bound to + the installed menu's title and item count (echoed so
+# the caller can confirm what was wired), plus the script-editor deep link.
+# additionalProperties stays True (the _object default) so a future field
+# is additive. Same shape as AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA with
+# ``sheet_id`` in place of ``doc_id``.
+AS_INSTALL_SHEET_MENU_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "menu_title": {"type": "string"},
+        "item_count": {"type": "integer", "minimum": 1},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "menu_title",
+        "item_count",
+        "project_url",
+    ],
+)
+
+
+# ``as_install_slides_menu`` (service-parity) is the Slides analogue of
+# ``as_install_doc_menu`` — it composes the bound-script generator into a
+# "install a custom menu into a presentation" feature via an onOpen builder
+# that calls ``SlidesApp.getUi()``. Returns the bound project's IDs + the
+# presentation it bound to + the installed menu's title and item count
+# (echoed so the caller can confirm what was wired), plus the script-editor
+# deep link. additionalProperties stays True (the _object default) so a
+# future field is additive. Same shape as AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA
+# with ``presentation_id`` in place of ``doc_id``.
+AS_INSTALL_SLIDES_MENU_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "presentation_id": {"type": "string"},
+        "menu_title": {"type": "string"},
+        "item_count": {"type": "integer", "minimum": 1},
+        "project_url": {"type": "string", "format": "uri"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "presentation_id",
+        "menu_title",
+        "item_count",
+        "project_url",
+    ],
+)
+
+
+# ``as_refresh_linked_slides`` (service-parity) composes the bound-script
+# generator into a "refresh linked slides" feature for Slides: a bound
+# script whose ``refreshLinkedSlides()`` walks ``getSlides()`` and calls
+# ``slide.refreshSlide()`` on each slide that is LINKED to a source deck
+# (master-deck → client-deck sync the REST API cannot do). A custom menu
+# item makes it one-click. Like the video-deck render half this is an
+# ON-DEMAND action, not a persistent trigger: the deploy WIRES the function
+# but the refresh only happens when the function runs, so ``run_required``
+# is True with ``run_instructions`` spelling out the one step.
+# ``refreshed_count`` is nullable — the linked-slide count is only known
+# once the function runs (the tool doesn't read the deck), so a successful
+# deploy returns null here. additionalProperties stays True (the _object
+# default) so a future field is additive.
+AS_REFRESH_LINKED_SLIDES_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "presentation_id": {"type": "string"},
+        "refresh_function": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "refreshed_count": {"type": ["integer", "null"], "minimum": 0},
+        "run_required": {"type": "boolean"},
+        "run_instructions": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "presentation_id",
+        "refresh_function",
+        "project_url",
+        "run_required",
+        "run_instructions",
+    ],
+)
+
+
+# ``as_grade_form_responses`` (service-parity) composes the bound-script
+# generator into a "push computed grades onto submitted quiz responses"
+# feature for Forms: a bound script whose ``gradeResponses()`` builds
+# per-question grades (via ``FormResponse.withItemGrade`` /
+# ``ItemResponse.setScore``) and calls ``FormApp.getActiveForm()
+# .submitGrades(responses)``. This is the WRITE counterpart to the
+# read-only response tools and is an ON-DEMAND action, not a trigger — the
+# deploy WIRES the grader but grading only happens when ``gradeResponses``
+# runs (its own one-time authorization for the full ``forms`` scope, which
+# lives in the GENERATED manifest, NOT appscriptly's own consent). So
+# ``run_required`` is True with ``run_instructions``. ``graded_count`` is
+# nullable — the count is only known once the grader runs. The full
+# ``forms`` scope is reported under ``manifest_scope`` for transparency (it
+# is the bound script's scope, declared in the generated appsscript.json).
+# additionalProperties stays True (the _object default) so a future field
+# is additive.
+AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "form_id": {"type": "string"},
+        "grade_function": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "graded_count": {"type": ["integer", "null"], "minimum": 0},
+        "run_required": {"type": "boolean"},
+        "run_instructions": {"type": "string"},
+        "manifest_scope": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "form_id",
+        "grade_function",
+        "project_url",
+        "run_required",
+        "run_instructions",
+        "manifest_scope",
+    ],
+)
+
+
 # ``as_generate_video_deck`` (PR-Δ11) composes the bound-script generator
 # into the RENDER half of a slides-to-video pipeline. Returns the bound
 # project's IDs + the deck it bound to + the output folder + the render
@@ -1602,6 +1737,19 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # ROADMAP_SPECS #8 — reactive onFormSubmit handler for Forms (composes
     # PR-Δ7; lifts the Forms hard-rejection for this one reactive surface)
     "as_install_form_handler": AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA,
+    # GAS service-parity — Sheets custom menu (Sheets analogue of
+    # as_install_doc_menu; SpreadsheetApp.getUi(); composes PR-Δ7)
+    "as_install_sheet_menu": AS_INSTALL_SHEET_MENU_OUTPUT_SCHEMA,
+    # GAS service-parity — Slides custom menu (Slides analogue of
+    # as_install_doc_menu; SlidesApp.getUi(); composes PR-Δ7)
+    "as_install_slides_menu": AS_INSTALL_SLIDES_MENU_OUTPUT_SCHEMA,
+    # GAS service-parity — refresh linked slides (getSlides()→refreshSlide();
+    # master-deck→client-deck sync REST cannot do; composes PR-Δ7)
+    "as_refresh_linked_slides": AS_REFRESH_LINKED_SLIDES_OUTPUT_SCHEMA,
+    # GAS service-parity — push computed grades onto quiz responses
+    # (FormApp.submitGrades(); full forms scope in GENERATED manifest only;
+    # composes PR-Δ7)
+    "as_grade_form_responses": AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA,
     # PR-Δ11 — render a Slides deck to video frames (composes PR-Δ7;
     # the render half of the slides-to-video pipeline)
     "as_generate_video_deck": AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA,

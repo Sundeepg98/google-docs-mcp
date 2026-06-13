@@ -104,6 +104,10 @@ EXPECTED_TOOLS = {
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
     "as_install_edit_trigger",  # ROADMAP_SPECS #8: reactive onEdit trigger for Sheets
     "as_install_form_handler",  # ROADMAP_SPECS #8: reactive onFormSubmit handler for Forms (lifts Forms reject)
+    "as_install_sheet_menu",  # GAS service-parity: Sheets custom menu (SpreadsheetApp.getUi())
+    "as_install_slides_menu",  # GAS service-parity: Slides custom menu (SlidesApp.getUi())
+    "as_refresh_linked_slides",  # GAS service-parity: getSlides()→refreshSlide() linked-deck sync
+    "as_grade_form_responses",  # GAS service-parity: FormApp.submitGrades() (full forms scope in generated manifest)
     "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
     "as_encode_video",  # PR-Δ12: encode rendered frames into an MP4 (ffmpeg, server-side)
     # Forms (new service) — SENSITIVE scopes forms.body + forms.responses.readonly
