@@ -33,12 +33,19 @@ import sys
 from pathlib import Path
 
 # tests/golden/tool_surface.json — repo-root-relative.
-_GOLDEN_PATH = (
+#
+# Public, importable so sibling tooling (``refreeze_onto_main.py``) and
+# tests can reuse the SAME path + read/write/derive helpers rather than
+# re-deriving them — there must be exactly one definition of "where the
+# golden lives" and "how the surface is derived". ``_GOLDEN_PATH`` is
+# kept as a backward-compat alias for any existing importer.
+GOLDEN_PATH = (
     Path(__file__).resolve().parent.parent
     / "tests"
     / "golden"
     / "tool_surface.json"
 )
+_GOLDEN_PATH = GOLDEN_PATH  # backward-compat alias
 
 
 def current_tool_surface() -> list[str]:
@@ -49,6 +56,14 @@ def current_tool_surface() -> list[str]:
     explicit bottom-of-file side-effect imports). Either way, by the
     time this returns, the full surface is registered on the live
     ``mcp`` instance.
+
+    This is the SINGLE source of the true registered tool surface — it
+    drives the golden, the boot-floor count, and (via
+    ``refreeze_onto_main.py``) the documented counts. It goes through
+    the real ``appscriptly.server`` import (the same path prod's
+    console-script + CI + this script use under FILE execution), NOT an
+    ad-hoc ``python -c`` import — the latter under-registers under an
+    editable/src-layout install (see this module's header docstring).
     """
     from appscriptly.server import mcp
 
@@ -56,15 +71,22 @@ def current_tool_surface() -> list[str]:
     return sorted(t.name for t in tools)
 
 
-def _write_golden(names: list[str]) -> None:
-    _GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Trailing newline + 2-space indent so the file diffs cleanly and
-    # matches the project's JSON-artifact convention.
-    _GOLDEN_PATH.write_text(json.dumps(names, indent=2) + "\n", encoding="utf-8")
+def write_golden(names: list[str]) -> None:
+    """Write ``names`` to the golden file (2-space indent + trailing
+    newline) so it diffs cleanly and matches the repo's JSON convention."""
+    GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GOLDEN_PATH.write_text(json.dumps(names, indent=2) + "\n", encoding="utf-8")
 
 
-def _read_golden() -> list[str]:
-    return json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
+def read_golden() -> list[str]:
+    """Return the frozen tool-name list from the golden file."""
+    return json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+
+
+# Backward-compat aliases (the original private names). Kept so any
+# existing caller / test that imported the underscore names keeps working.
+_write_golden = write_golden
+_read_golden = read_golden
 
 
 def main(argv: list[str]) -> int:
@@ -72,14 +94,14 @@ def main(argv: list[str]) -> int:
     current = current_tool_surface()
 
     if check_only:
-        if not _GOLDEN_PATH.exists():
+        if not GOLDEN_PATH.exists():
             print(
-                f"golden surface file missing: {_GOLDEN_PATH}\n"
+                f"golden surface file missing: {GOLDEN_PATH}\n"
                 f"run `python scripts/freeze_tool_surface.py` to create it.",
                 file=sys.stderr,
             )
             return 1
-        frozen = _read_golden()
+        frozen = read_golden()
         if frozen == current:
             print(f"tool surface up to date ({len(current)} tools)")
             return 0
@@ -96,8 +118,8 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
-    _write_golden(current)
-    print(f"wrote {_GOLDEN_PATH} ({len(current)} tools)")
+    write_golden(current)
+    print(f"wrote {GOLDEN_PATH} ({len(current)} tools)")
     return 0
 
 
