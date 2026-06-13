@@ -570,6 +570,193 @@ def update_sheet_title_request(
     }
 
 
+def duplicate_sheet_request(
+    source_sheet_id: int,
+    *,
+    new_sheet_name: str | None = None,
+    insert_index: int | None = None,
+) -> dict[str, Any]:
+    """Build a ``duplicateSheet`` request that copies an existing tab.
+
+    ``duplicateSheet`` makes a full copy of a sheet (values, formats,
+    conditional rules, charts — everything) as a NEW tab. Sheets assigns
+    the copy a fresh ``sheetId`` (gid) server-side and echoes it in the
+    batchUpdate reply (``replies[i].duplicateSheet.properties.sheetId``),
+    so the api layer can surface the new gid for follow-up calls.
+
+    Args:
+        source_sheet_id: The gid of the tab to copy — NOT the tab name
+            and NOT the spreadsheet id. The first/default tab is ``0``.
+        new_sheet_name: Name for the copy. ``None`` (default) lets Sheets
+            auto-name it (``"Copy of <source>"``). A duplicate name is
+            rejected by Sheets server-side; blank rejected client-side.
+        insert_index: 0-based position to insert the copy among existing
+            tabs (0 = leftmost). ``None`` lets Sheets place it (right
+            after the source).
+
+    Returns:
+        A single ``{"duplicateSheet": {...}}`` request dict.
+
+    Raises:
+        ValueError: a negative ``source_sheet_id`` / ``insert_index``, or
+            a blank (but non-``None``) ``new_sheet_name``.
+    """
+    if source_sheet_id < 0:
+        raise ValueError(
+            f"source_sheet_id must be >= 0 (a sheet gid is non-negative); "
+            f"got {source_sheet_id}."
+        )
+    if insert_index is not None and insert_index < 0:
+        raise ValueError(
+            f"insert_index must be >= 0 (0 = leftmost tab); got {insert_index}."
+        )
+    if new_sheet_name is not None and not new_sheet_name.strip():
+        raise ValueError(
+            "new_sheet_name cannot be blank — omit it (None) to let Sheets "
+            "auto-name the copy, or pass a non-empty name."
+        )
+
+    body: dict[str, Any] = {"sheetId": source_sheet_id}
+    if insert_index is not None:
+        body["insertSheetIndex"] = insert_index
+    if new_sheet_name is not None:
+        body["newSheetName"] = new_sheet_name.strip()
+    return {"duplicateSheet": body}
+
+
+def freeze_request(
+    sheet_id: int,
+    *,
+    frozen_row_count: int | None = None,
+    frozen_column_count: int | None = None,
+) -> dict[str, Any]:
+    """Build an ``updateSheetProperties`` request that freezes rows/cols.
+
+    Frozen rows/columns stay visible while the rest of the sheet scrolls
+    — the canonical way to pin a header row (``frozen_row_count=1``) or a
+    label column. This sets ``gridProperties.frozenRowCount`` /
+    ``frozenColumnCount`` via ``updateSheetProperties`` with a ``fields``
+    mask scoped to exactly the dimension(s) supplied, so no other sheet
+    property (title, index, tabColor, the OTHER frozen count, ...) is
+    touched.
+
+    Args:
+        sheet_id: The numeric sheet (tab) id — the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        frozen_row_count: Number of rows to freeze from the top (``0``
+            unfreezes rows). ``None`` leaves the row freeze untouched.
+        frozen_column_count: Number of columns to freeze from the left
+            (``0`` unfreezes columns). ``None`` leaves the column freeze
+            untouched.
+
+    Returns:
+        A single ``{"updateSheetProperties": {...}}`` request dict whose
+        ``fields`` mask names only the supplied
+        ``gridProperties.frozen*Count`` sub-field(s).
+
+    Raises:
+        ValueError: a negative ``sheet_id`` / count, or neither count
+            supplied (an empty freeze is a no-op Sheets rejects).
+    """
+    if sheet_id < 0:
+        raise ValueError(
+            f"sheet_id must be >= 0 (a sheet gid is non-negative); "
+            f"got {sheet_id}."
+        )
+    for name, value in (
+        ("frozen_row_count", frozen_row_count),
+        ("frozen_column_count", frozen_column_count),
+    ):
+        if value is not None and value < 0:
+            raise ValueError(
+                f"{name} must be >= 0 (use 0 to unfreeze); got {value}."
+            )
+    if frozen_row_count is None and frozen_column_count is None:
+        raise ValueError(
+            "freeze_request needs at least one of frozen_row_count / "
+            "frozen_column_count (an empty freeze is a no-op)."
+        )
+
+    grid_properties: dict[str, Any] = {}
+    fields: list[str] = []
+    if frozen_row_count is not None:
+        grid_properties["frozenRowCount"] = frozen_row_count
+        fields.append("gridProperties.frozenRowCount")
+    if frozen_column_count is not None:
+        grid_properties["frozenColumnCount"] = frozen_column_count
+        fields.append("gridProperties.frozenColumnCount")
+
+    return {
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": sheet_id,
+                "gridProperties": grid_properties,
+            },
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def add_protected_range_request(
+    grid: dict[str, Any],
+    *,
+    description: str | None = None,
+    warning_only: bool = False,
+    editor_emails: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build an ``addProtectedRange`` request that protects a cell range.
+
+    A protected range restricts who can edit it. Two modes:
+
+      * ``warning_only=True`` — edits show a "are you sure?" warning but
+        are NOT blocked (a soft guard against accidental edits).
+      * ``warning_only=False`` (default) — edits are BLOCKED for everyone
+        except the listed editors (and the owner). With no
+        ``editor_emails``, only the owner can edit.
+
+    Reuses the same ``GridRange`` primitive (``grid_range``) as the
+    formatting builders — protection targets a rectangular block.
+
+    Args:
+        grid: The ``GridRange`` to protect (build with ``grid_range``;
+            omit all bounds to protect the whole sheet).
+        description: Optional human-readable label for the protected
+            range (shown in the Sheets protection UI).
+        warning_only: When ``True``, edits warn but aren't blocked; when
+            ``False`` (default), edits are restricted to the editors.
+            ``editor_emails`` is incompatible with ``warning_only`` (a
+            warning-only range has no editor allow-list) — passing both
+            is rejected.
+        editor_emails: Email addresses allowed to edit the protected
+            range (ignored when ``warning_only=True``). ``None`` / empty
+            means only the owner can edit.
+
+    Returns:
+        A single ``{"addProtectedRange": {...}}`` request dict.
+
+    Raises:
+        ValueError: ``warning_only=True`` combined with ``editor_emails``
+            (mutually exclusive), or an inverted GridRange (caught by the
+            ``grid_range`` builder before this is reached).
+    """
+    if warning_only and editor_emails:
+        raise ValueError(
+            "editor_emails is incompatible with warning_only=True — a "
+            "warning-only range warns everyone rather than restricting to "
+            "an editor allow-list. Drop one of the two."
+        )
+
+    protected_range: dict[str, Any] = {"range": grid}
+    if description is not None:
+        protected_range["description"] = description
+    if warning_only:
+        protected_range["warningOnly"] = True
+    elif editor_emails:
+        protected_range["editors"] = {"users": list(editor_emails)}
+
+    return {"addProtectedRange": {"protectedRange": protected_range}}
+
+
 # ---------------------------------------------------------------------
 # Dispatcher (the ONLY function here that calls Google)
 # ---------------------------------------------------------------------

@@ -45,9 +45,13 @@ from appscriptly.services.sheets.api import (
     add_sheet,
     append_rows,
     apply_conditional_format,
+    clear_range,
     create_spreadsheet,
     delete_sheet,
+    duplicate_sheet,
     format_range,
+    freeze,
+    protect_range,
     read_range,
     rename_sheet,
     write_range,
@@ -212,14 +216,45 @@ def test_write_range_passes_spreadsheetId_and_range(stub_sheets_for_write):
 
 
 def test_write_range_uses_USER_ENTERED_value_input_option(stub_sheets_for_write):
-    """PINNED INVARIANT: ``valueInputOption="USER_ENTERED"`` is the
-    semantic difference between "formulas / dates parse as the user
-    typed them" (intended) and "everything is a literal string"
-    (RAW mode). A future "try RAW for a second" experiment that
-    silently breaks formula support fires this guard."""
+    """PINNED INVARIANT: ``valueInputOption`` DEFAULTS to ``USER_ENTERED``
+    — formulas / dates parse as the user typed them. A regression that
+    flipped the default to RAW (silently breaking formula support) fires
+    this guard."""
     write_range(MagicMock(), "SPREAD1", "A1", [["=SUM(B1:B10)"]])
     kw = _last_update_kwargs(stub_sheets_for_write)
     assert kw["valueInputOption"] == "USER_ENTERED"
+
+
+def test_write_range_RAW_value_input_option_keeps_leading_equals_literal(
+    stub_sheets_for_write,
+):
+    """RAW SAFETY (the headline of this enhancement): with
+    ``value_input_option="RAW"``, a value with a leading ``=`` is sent to
+    Sheets under RAW — so Sheets stores it as the literal string ``"=1+1"``
+    rather than evaluating it to the formula result ``2``. We assert BOTH
+    that RAW reaches the API AND that the literal value is forwarded
+    unchanged (the body is not mangled), which together prove the
+    leading-``=`` stays literal."""
+    write_range(
+        MagicMock(), "SPREAD1", "A1", [["=1+1"]],
+        value_input_option="RAW",
+    )
+    kw = _last_update_kwargs(stub_sheets_for_write)
+    assert kw["valueInputOption"] == "RAW"
+    # The literal value is forwarded verbatim — under RAW, Sheets keeps it
+    # as the 4-char string "=1+1", NOT the number 2.
+    assert kw["body"] == {"values": [["=1+1"]]}
+
+
+def test_write_range_rejects_unknown_value_input_option(stub_sheets_for_write):
+    """A typo'd option (e.g. lowercase ``"raw"``) is rejected client-side
+    with a message naming the two valid options — rather than bouncing off
+    a generic Google 400."""
+    with pytest.raises(ValueError, match="value_input_option must be one of"):
+        write_range(
+            MagicMock(), "SPREAD1", "A1", [["x"]],
+            value_input_option="raw",
+        )
 
 
 def test_write_range_wraps_values_in_body(stub_sheets_for_write):
@@ -501,14 +536,37 @@ def test_append_rows_uses_append_endpoint_not_update(stub_sheets_for_append):
 
 def test_append_rows_passes_insert_rows_and_user_entered(stub_sheets_for_append):
     """PINNED INVARIANTS: insertDataOption=INSERT_ROWS (push existing rows
-    down, never overwrite) + valueInputOption=USER_ENTERED (formulas/dates
-    parse, consistent with write_range)."""
+    down, never overwrite) + valueInputOption DEFAULTS to USER_ENTERED
+    (formulas/dates parse, consistent with write_range)."""
     append_rows(MagicMock(), "SPREAD-XYZ", [["=SUM(A1:A2)"]])
     kw = _last_append_kwargs(stub_sheets_for_append)
     assert kw["spreadsheetId"] == "SPREAD-XYZ"
     assert kw["valueInputOption"] == "USER_ENTERED"
     assert kw["insertDataOption"] == "INSERT_ROWS"
     assert kw["body"] == {"values": [["=SUM(A1:A2)"]]}
+
+
+def test_append_rows_RAW_keeps_leading_equals_literal(stub_sheets_for_append):
+    """RAW SAFETY for append: value_input_option="RAW" reaches the API and
+    a leading ``=`` is forwarded verbatim — so Sheets appends the literal
+    string ``"=1+1"``, not the evaluated formula. insertDataOption stays
+    INSERT_ROWS regardless of the value-input mode."""
+    append_rows(
+        MagicMock(), "SPREAD1", [["=1+1"]],
+        value_input_option="RAW",
+    )
+    kw = _last_append_kwargs(stub_sheets_for_append)
+    assert kw["valueInputOption"] == "RAW"
+    assert kw["insertDataOption"] == "INSERT_ROWS"
+    assert kw["body"] == {"values": [["=1+1"]]}
+
+
+def test_append_rows_rejects_unknown_value_input_option(stub_sheets_for_append):
+    with pytest.raises(ValueError, match="value_input_option must be one of"):
+        append_rows(
+            MagicMock(), "SPREAD1", [["x"]],
+            value_input_option="USER",
+        )
 
 
 def test_append_rows_default_search_range(stub_sheets_for_append):
@@ -757,4 +815,221 @@ def test_apply_conditional_format_propagates_grid_validation(stub_sheets_for_con
             MagicMock(), "SPREAD1", sheet_id=0,
             condition_type="NOT_BLANK", bold=True,
             start_col=5, end_col=2,
+        )
+
+
+# ---------------------------------------------------------------------
+# clear_range — values.clear (values-only wipe), call shape + envelope
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_clear():
+    sheets = MagicMock(name="sheets-v4-stub-clear")
+    sheets.spreadsheets().values().clear().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "clearedRange": "Sheet1!A1:B2",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_clear_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().values().clear.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no values().clear() call captured spreadsheetId")
+
+
+def test_clear_range_uses_clear_endpoint(stub_sheets_for_clear):
+    """The values-only wipe MUST go through values().clear (formatting
+    preserved), NOT values().update with blanks (which the docstring
+    distinguishes from a true clear)."""
+    clear_range(MagicMock(), "SPREAD1", "A1:B2")
+    assert stub_sheets_for_clear.spreadsheets().values().clear.called
+
+
+def test_clear_range_passes_spreadsheetId_and_range(stub_sheets_for_clear):
+    clear_range(MagicMock(), "SPREAD-XYZ", "Sheet2!B2:D10")
+    kw = _last_clear_kwargs(stub_sheets_for_clear)
+    assert kw["spreadsheetId"] == "SPREAD-XYZ"
+    assert kw["range"] == "Sheet2!B2:D10"
+    # values.clear takes an empty body (the range carries the target).
+    assert kw["body"] == {}
+
+
+def test_clear_range_returns_flat_envelope(stub_sheets_for_clear):
+    """Maps Sheets' ``clearedRange`` → ``cleared_range`` (snake_case)."""
+    result = clear_range(MagicMock(), "SPREAD1", "A1:B2")
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "cleared_range": "Sheet1!A1:B2",
+    }
+
+
+def test_clear_range_range_fallback_when_sheets_omits_it(stub_sheets_for_clear):
+    """Defensive: if Sheets omits ``clearedRange``, the envelope falls back
+    to the requested range rather than KeyError."""
+    stub_sheets_for_clear.spreadsheets().values().clear().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+    }
+    result = clear_range(MagicMock(), "SPREAD1", "A1:A1")
+    assert result["cleared_range"] == "A1:A1"
+
+
+def test_clear_range_rejects_blank_range(stub_sheets_for_clear):
+    """Clearing "nothing" is a caller bug — reject blank range client-side."""
+    with pytest.raises(ValueError, match="range_str cannot be empty"):
+        clear_range(MagicMock(), "SPREAD1", "   ")
+
+
+# ---------------------------------------------------------------------
+# duplicate_sheet / freeze / protect_range — batchUpdate api wrappers
+# ---------------------------------------------------------------------
+# (The pure builders are unit-tested in test_batch.py; here we cover the
+# api wrappers: request reaching batchUpdate + the envelope.)
+
+
+@pytest.fixture
+def stub_sheets_for_batch_api():
+    sheets = MagicMock(name="sheets-v4-stub-batch-api")
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_batch_api_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().batchUpdate.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no batchUpdate() call captured spreadsheetId")
+
+
+def test_duplicate_sheet_dispatches_duplicate_request(stub_sheets_for_batch_api):
+    duplicate_sheet(
+        MagicMock(), "SPREAD-ABC", 0,
+        new_sheet_name="Copy", insert_index=2,
+    )
+    kw = _last_batch_api_kwargs(stub_sheets_for_batch_api)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    assert kw["body"]["requests"] == [{
+        "duplicateSheet": {
+            "sheetId": 0,
+            "insertSheetIndex": 2,
+            "newSheetName": "Copy",
+        }
+    }]
+
+
+def test_duplicate_sheet_returns_assigned_gid_from_reply(stub_sheets_for_batch_api):
+    """Sheets assigns the copy a new gid server-side; duplicate_sheet
+    surfaces it (parsed from replies[0].duplicateSheet.properties)."""
+    stub_sheets_for_batch_api.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [
+            {"duplicateSheet": {"properties": {
+                "sheetId": 424242, "title": "Copy of Sheet1", "index": 1,
+            }}}
+        ],
+    }
+    result = duplicate_sheet(MagicMock(), "SPREAD1", 0)
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 424242,
+        "title": "Copy of Sheet1",
+        "index": 1,
+    }
+
+
+def test_duplicate_sheet_rejects_negative_source(stub_sheets_for_batch_api):
+    with pytest.raises(ValueError, match="source_sheet_id must be >= 0"):
+        duplicate_sheet(MagicMock(), "SPREAD1", -1)
+
+
+def test_freeze_dispatches_scoped_update(stub_sheets_for_batch_api):
+    """freeze composes updateSheetProperties masked to exactly the frozen
+    counts supplied."""
+    freeze(MagicMock(), "SPREAD-ABC", 0, frozen_row_count=1)
+    kw = _last_batch_api_kwargs(stub_sheets_for_batch_api)
+    assert kw["body"]["requests"] == [{
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": 0,
+                "gridProperties": {"frozenRowCount": 1},
+            },
+            "fields": "gridProperties.frozenRowCount",
+        }
+    }]
+
+
+def test_freeze_returns_batch_envelope(stub_sheets_for_batch_api):
+    result = freeze(MagicMock(), "SPREAD1", 0, frozen_column_count=2)
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_freeze_rejects_no_counts(stub_sheets_for_batch_api):
+    with pytest.raises(ValueError, match="at least one of frozen_row_count"):
+        freeze(MagicMock(), "SPREAD1", 0)
+
+
+def test_protect_range_builds_protected_range_request(stub_sheets_for_batch_api):
+    """protect_range composes one addProtectedRange with the grid + the
+    editor allow-list."""
+    protect_range(
+        MagicMock(), "SPREAD-ABC", sheet_id=0,
+        start_row=0, end_row=10, start_col=0, end_col=1,
+        description="Locked", editor_emails=["a@x.com"],
+    )
+    kw = _last_batch_api_kwargs(stub_sheets_for_batch_api)
+    pr = kw["body"]["requests"][0]["addProtectedRange"]["protectedRange"]
+    assert pr["range"] == {
+        "sheetId": 0,
+        "startRowIndex": 0,
+        "endRowIndex": 10,
+        "startColumnIndex": 0,
+        "endColumnIndex": 1,
+    }
+    assert pr["description"] == "Locked"
+    assert pr["editors"] == {"users": ["a@x.com"]}
+
+
+def test_protect_range_warning_only(stub_sheets_for_batch_api):
+    protect_range(
+        MagicMock(), "SPREAD1", sheet_id=0, warning_only=True,
+    )
+    kw = _last_batch_api_kwargs(stub_sheets_for_batch_api)
+    pr = kw["body"]["requests"][0]["addProtectedRange"]["protectedRange"]
+    assert pr["warningOnly"] is True
+
+
+def test_protect_range_returns_batch_envelope(stub_sheets_for_batch_api):
+    result = protect_range(MagicMock(), "SPREAD1", sheet_id=0)
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_protect_range_rejects_warning_with_editors(stub_sheets_for_batch_api):
+    with pytest.raises(ValueError, match="incompatible with warning_only"):
+        protect_range(
+            MagicMock(), "SPREAD1", sheet_id=0,
+            warning_only=True, editor_emails=["a@x.com"],
+        )
+
+
+def test_protect_range_propagates_grid_validation(stub_sheets_for_batch_api):
+    """An inverted GridRange is caught by the grid_range builder."""
+    with pytest.raises(ValueError, match="end_row.*must be >"):
+        protect_range(
+            MagicMock(), "SPREAD1", sheet_id=0,
+            start_row=5, end_row=2,
         )

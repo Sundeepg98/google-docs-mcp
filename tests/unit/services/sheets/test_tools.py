@@ -71,6 +71,10 @@ def sheets_stub():
         "spreadsheetId": "S1",
         "replies": [{}],
     }
+    sheets.spreadsheets().values().clear().execute.return_value = {
+        "spreadsheetId": "S1",
+        "clearedRange": "Sheet1!A1:B2",
+    }
     return sheets
 
 
@@ -153,6 +157,42 @@ def test_gsheets_write_range_validation_propagates_through_tool(
             range="A1",
             values=[],
         )
+
+
+def test_gsheets_write_range_RAW_forwards_to_values_update(with_sheets_stub):
+    """RAW SAFETY through the tool envelope: passing
+    value_input_option="RAW" reaches values.update as RAW and the literal
+    ``=1+1`` is forwarded unchanged — so Sheets keeps it as text, not the
+    formula result. This is the tool-layer proof of the leading-= safety."""
+    tools.gsheets_write_range(
+        spreadsheet_id="SPREAD1",
+        range="A1",
+        values=[["=1+1"]],
+        value_input_option="RAW",
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().update.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().update() call captured spreadsheetId"
+    kw = real_calls[-1].kwargs
+    assert kw["valueInputOption"] == "RAW"
+    assert kw["body"] == {"values": [["=1+1"]]}
+
+
+def test_gsheets_write_range_defaults_to_USER_ENTERED(with_sheets_stub):
+    """Omitting value_input_option keeps the USER_ENTERED default (a
+    leading ``=`` becomes a formula) — the backward-compatible behavior."""
+    tools.gsheets_write_range(
+        spreadsheet_id="SPREAD1", range="A1", values=[["=SUM(A1:A2)"]],
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().update.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls[-1].kwargs["valueInputOption"] == "USER_ENTERED"
 
 
 # ---------------------------------------------------------------------
@@ -473,4 +513,205 @@ def test_gsheets_apply_conditional_format_rejects_empty_format(with_sheets_stub)
             spreadsheet_id="SPREAD1",
             sheet_id=0,
             condition_type="NOT_BLANK",
+        )
+
+
+def test_gsheets_append_rows_RAW_forwards_to_values_append(with_sheets_stub):
+    """RAW SAFETY through the append tool envelope: value_input_option="RAW"
+    reaches values.append as RAW with the literal ``=1+1`` forwarded
+    unchanged (Sheets keeps it as text)."""
+    with_sheets_stub.spreadsheets().values().append().execute.return_value = {
+        "updates": {"updatedRange": "S!A1", "updatedCells": 1, "updatedRows": 1},
+    }
+    tools.gsheets_append_rows(
+        spreadsheet_id="SPREAD1",
+        values=[["=1+1"]],
+        value_input_option="RAW",
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().append.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().append() call captured spreadsheetId"
+    kw = real_calls[-1].kwargs
+    assert kw["valueInputOption"] == "RAW"
+    assert kw["insertDataOption"] == "INSERT_ROWS"
+    assert kw["body"] == {"values": [["=1+1"]]}
+
+
+# ---------------------------------------------------------------------
+# 10. gsheets_clear_range — values.clear
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_clear_range_happy_path(with_sheets_stub):
+    """clear_range goes through values.clear and returns the flat
+    ``{spreadsheet_id, cleared_range}`` envelope."""
+    result = tools.gsheets_clear_range(spreadsheet_id="SPREAD1", range="A1:B2")
+    assert result == {
+        "spreadsheet_id": "S1",
+        "cleared_range": "Sheet1!A1:B2",
+    }
+
+
+def test_gsheets_clear_range_forwards_range_to_clear_endpoint(with_sheets_stub):
+    """Tool-layer pass-through: the range reaches values.clear verbatim
+    (NOT values.update — formatting must be preserved)."""
+    tools.gsheets_clear_range(spreadsheet_id="SPREAD1", range="Sheet2!B2:D10")
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().clear.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().clear() call captured spreadsheetId"
+    assert real_calls[-1].kwargs["range"] == "Sheet2!B2:D10"
+
+
+def test_gsheets_clear_range_validation_propagates(with_sheets_stub):
+    with pytest.raises(ValueError, match="range_str cannot be empty"):
+        tools.gsheets_clear_range(spreadsheet_id="SPREAD1", range="  ")
+
+
+# ---------------------------------------------------------------------
+# 11. gsheets_duplicate_sheet — batchUpdate (duplicateSheet)
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_duplicate_sheet_happy_path(with_sheets_stub):
+    """duplicate_sheet surfaces the gid Sheets assigned the copy."""
+    with_sheets_stub.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [
+            {"duplicateSheet": {"properties": {
+                "sheetId": 999, "title": "Copy of Sheet1", "index": 1,
+            }}}
+        ],
+    }
+    result = tools.gsheets_duplicate_sheet(
+        spreadsheet_id="SPREAD1", source_sheet_id=0,
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "sheet_id": 999,
+        "title": "Copy of Sheet1",
+        "index": 1,
+    }
+
+
+def test_gsheets_duplicate_sheet_forwards_options(with_sheets_stub):
+    tools.gsheets_duplicate_sheet(
+        spreadsheet_id="SPREAD1", source_sheet_id=2,
+        new_sheet_name="Backup", insert_index=0,
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls[-1].kwargs["body"]["requests"] == [{
+        "duplicateSheet": {
+            "sheetId": 2,
+            "insertSheetIndex": 0,
+            "newSheetName": "Backup",
+        }
+    }]
+
+
+def test_gsheets_duplicate_sheet_validation_propagates(with_sheets_stub):
+    with pytest.raises(ValueError, match="source_sheet_id must be >= 0"):
+        tools.gsheets_duplicate_sheet(
+            spreadsheet_id="SPREAD1", source_sheet_id=-1,
+        )
+
+
+# ---------------------------------------------------------------------
+# 12. gsheets_freeze — batchUpdate (updateSheetProperties / gridProperties)
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_freeze_happy_path(with_sheets_stub):
+    """freeze dispatches a gridProperties-scoped updateSheetProperties and
+    returns the flat batch envelope."""
+    result = tools.gsheets_freeze(
+        spreadsheet_id="SPREAD1", sheet_id=0, frozen_row_count=1,
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_gsheets_freeze_forwards_counts(with_sheets_stub):
+    tools.gsheets_freeze(
+        spreadsheet_id="SPREAD1", sheet_id=3,
+        frozen_row_count=1, frozen_column_count=2,
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    props = real_calls[-1].kwargs["body"]["requests"][0][
+        "updateSheetProperties"
+    ]["properties"]
+    assert props["sheetId"] == 3
+    assert props["gridProperties"] == {
+        "frozenRowCount": 1, "frozenColumnCount": 2,
+    }
+
+
+def test_gsheets_freeze_validation_propagates(with_sheets_stub):
+    """An all-omitted freeze raises ValueError through the envelope."""
+    with pytest.raises(ValueError, match="at least one of frozen_row_count"):
+        tools.gsheets_freeze(spreadsheet_id="SPREAD1", sheet_id=0)
+
+
+# ---------------------------------------------------------------------
+# 13. gsheets_protect_range — batchUpdate (addProtectedRange)
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_protect_range_happy_path(with_sheets_stub):
+    """protect_range dispatches one addProtectedRange and returns the flat
+    batch envelope."""
+    result = tools.gsheets_protect_range(
+        spreadsheet_id="SPREAD1", sheet_id=0,
+        start_row=0, end_row=10,
+    )
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_requests": 1,
+        "replies": [{}],
+    }
+
+
+def test_gsheets_protect_range_forwards_editors(with_sheets_stub):
+    """Tool-layer pass-through: the grid + editor allow-list reach Sheets
+    as one addProtectedRange."""
+    tools.gsheets_protect_range(
+        spreadsheet_id="SPREAD1", sheet_id=2,
+        start_col=0, end_col=1,
+        editor_emails=["a@x.com"],
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    pr = real_calls[-1].kwargs["body"]["requests"][0][
+        "addProtectedRange"
+    ]["protectedRange"]
+    assert pr["range"]["sheetId"] == 2
+    assert pr["editors"] == {"users": ["a@x.com"]}
+
+
+def test_gsheets_protect_range_validation_propagates(with_sheets_stub):
+    """warning_only + editor_emails are mutually exclusive — the ValueError
+    bubbles through the decorator envelope."""
+    with pytest.raises(ValueError, match="incompatible with warning_only"):
+        tools.gsheets_protect_range(
+            spreadsheet_id="SPREAD1", sheet_id=0,
+            warning_only=True, editor_emails=["a@x.com"],
         )

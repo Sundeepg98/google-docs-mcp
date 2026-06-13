@@ -35,11 +35,14 @@ from appscriptly.services.sheets.batch import (
     _format_field_mask,
     _infer_number_format_type,
     add_conditional_format_rule_request,
+    add_protected_range_request,
     add_sheet_request,
     batch_update,
     cell_format,
     color,
     delete_sheet_request,
+    duplicate_sheet_request,
+    freeze_request,
     grid_range,
     repeat_cell_request,
     update_sheet_title_request,
@@ -497,3 +500,161 @@ def test_update_sheet_title_request_rejects_blank_title():
 def test_update_sheet_title_request_rejects_negative_gid():
     with pytest.raises(ValueError, match="sheet_id must be >= 0"):
         update_sheet_title_request(-5, "X")
+
+
+# ---------------------------------------------------------------------
+# duplicate_sheet_request — sheet-lifecycle builder (tab copy)
+# ---------------------------------------------------------------------
+
+
+def test_duplicate_sheet_request_minimal_shape():
+    """Just a source gid -> duplicateSheet with only sheetId (Sheets
+    auto-names + auto-places the copy)."""
+    req = duplicate_sheet_request(0)
+    assert req == {"duplicateSheet": {"sheetId": 0}}
+
+
+def test_duplicate_sheet_request_with_name_and_index():
+    """An explicit name + index land in newSheetName / insertSheetIndex."""
+    req = duplicate_sheet_request(7, new_sheet_name="Copy", insert_index=2)
+    assert req == {
+        "duplicateSheet": {
+            "sheetId": 7,
+            "insertSheetIndex": 2,
+            "newSheetName": "Copy",
+        }
+    }
+
+
+def test_duplicate_sheet_request_strips_name_whitespace():
+    req = duplicate_sheet_request(0, new_sheet_name="  Padded  ")
+    assert req["duplicateSheet"]["newSheetName"] == "Padded"
+
+
+def test_duplicate_sheet_request_rejects_negative_source_gid():
+    with pytest.raises(ValueError, match="source_sheet_id must be >= 0"):
+        duplicate_sheet_request(-1)
+
+
+def test_duplicate_sheet_request_rejects_negative_index():
+    with pytest.raises(ValueError, match="insert_index must be >= 0"):
+        duplicate_sheet_request(0, insert_index=-1)
+
+
+def test_duplicate_sheet_request_rejects_blank_name():
+    """A blank (non-None) name is a caller bug — omit it for auto-naming."""
+    with pytest.raises(ValueError, match="new_sheet_name cannot be blank"):
+        duplicate_sheet_request(0, new_sheet_name="   ")
+
+
+# ---------------------------------------------------------------------
+# freeze_request — sheet-lifecycle builder (freeze rows/cols)
+# ---------------------------------------------------------------------
+
+
+def test_freeze_request_rows_only_scoped_mask():
+    """Freezing rows sets only frozenRowCount + a mask scoped to it (the
+    column count is untouched)."""
+    req = freeze_request(0, frozen_row_count=1)
+    assert req == {
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": 0,
+                "gridProperties": {"frozenRowCount": 1},
+            },
+            "fields": "gridProperties.frozenRowCount",
+        }
+    }
+
+
+def test_freeze_request_cols_only_scoped_mask():
+    req = freeze_request(3, frozen_column_count=2)
+    assert req == {
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": 3,
+                "gridProperties": {"frozenColumnCount": 2},
+            },
+            "fields": "gridProperties.frozenColumnCount",
+        }
+    }
+
+
+def test_freeze_request_both_rows_and_cols():
+    """Both counts -> both gridProperties fields + a two-field mask."""
+    req = freeze_request(0, frozen_row_count=1, frozen_column_count=1)
+    props = req["updateSheetProperties"]["properties"]["gridProperties"]
+    assert props == {"frozenRowCount": 1, "frozenColumnCount": 1}
+    mask = set(req["updateSheetProperties"]["fields"].split(","))
+    assert mask == {
+        "gridProperties.frozenRowCount",
+        "gridProperties.frozenColumnCount",
+    }
+
+
+def test_freeze_request_zero_count_unfreezes():
+    """``0`` is a valid value (unfreeze) — not rejected, and it appears in
+    the request so Sheets clears the freeze."""
+    req = freeze_request(0, frozen_row_count=0)
+    props = req["updateSheetProperties"]["properties"]["gridProperties"]
+    assert props == {"frozenRowCount": 0}
+
+
+def test_freeze_request_rejects_negative_gid():
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        freeze_request(-1, frozen_row_count=1)
+
+
+def test_freeze_request_rejects_negative_count():
+    with pytest.raises(ValueError, match="frozen_row_count must be >= 0"):
+        freeze_request(0, frozen_row_count=-1)
+
+
+def test_freeze_request_rejects_no_counts():
+    """An all-None freeze is a no-op Sheets rejects — caught client-side."""
+    with pytest.raises(ValueError, match="at least one of frozen_row_count"):
+        freeze_request(0)
+
+
+# ---------------------------------------------------------------------
+# add_protected_range_request — range-protection builder
+# ---------------------------------------------------------------------
+
+
+def test_add_protected_range_request_restricted_default():
+    """Default (warning_only=False, no editors) -> a bare protectedRange
+    with just the range — only the owner can edit."""
+    grid = grid_range(0, start_row=0, end_row=10, start_col=0, end_col=1)
+    req = add_protected_range_request(grid)
+    assert req == {"addProtectedRange": {"protectedRange": {"range": grid}}}
+
+
+def test_add_protected_range_request_warning_only():
+    """warning_only=True sets warningOnly and does NOT add an editors list."""
+    grid = grid_range(0)
+    req = add_protected_range_request(grid, warning_only=True)
+    pr = req["addProtectedRange"]["protectedRange"]
+    assert pr["warningOnly"] is True
+    assert "editors" not in pr
+
+
+def test_add_protected_range_request_with_editors():
+    """Editors land under editors.users; description is carried through."""
+    grid = grid_range(0, start_col=0, end_col=2)
+    req = add_protected_range_request(
+        grid,
+        description="Locked totals",
+        editor_emails=["a@x.com", "b@x.com"],
+    )
+    pr = req["addProtectedRange"]["protectedRange"]
+    assert pr["description"] == "Locked totals"
+    assert pr["editors"] == {"users": ["a@x.com", "b@x.com"]}
+    assert "warningOnly" not in pr
+
+
+def test_add_protected_range_request_rejects_warning_with_editors():
+    """warning_only + editor_emails are mutually exclusive."""
+    with pytest.raises(ValueError, match="incompatible with warning_only"):
+        add_protected_range_request(
+            grid_range(0), warning_only=True, editor_emails=["a@x.com"],
+        )
