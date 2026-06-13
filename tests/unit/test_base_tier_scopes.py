@@ -30,10 +30,12 @@ _RESTRICTED = {
 
 # The exact intended connector (HTTP) scope set after the base-tier
 # redesign, plus the sensitive-scope additions for the newer services:
-# ``calendar`` (read/write, services/calendar/), ``contacts`` (People API
-# read/write, services/contacts/), and ``tasks`` (Google Tasks read/write,
-# services/tasks/). ALL THREE are Google-SENSITIVE scopes, NOT in
-# ``_RESTRICTED`` below — so none adds a CASA obligation and the free
+# ``forms.body`` + ``forms.responses.readonly`` (create/edit forms + read
+# responses, services/forms/), ``calendar`` (read/write,
+# services/calendar/), ``contacts`` (People API read/write,
+# services/contacts/), and ``tasks`` (Google Tasks read/write,
+# services/tasks/). ALL of these are Google-SENSITIVE scopes, NOT in
+# ``_RESTRICTED`` above — so none adds a CASA obligation and the free
 # "sensitive scopes only" verification eligibility is preserved (the
 # no-restricted-scope guard below still holds for all of them).
 _TARGET_CONNECTOR = {
@@ -43,6 +45,8 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",

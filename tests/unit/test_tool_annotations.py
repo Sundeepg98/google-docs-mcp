@@ -68,6 +68,15 @@ READONLY_TOOLS = {
     # ``gslides_create_presentation`` (creates a new deck) are NOT
     # readonly.
     "gslides_get_outline",
+    # Forms (new service): pure reads. ``gforms_get_form`` reads the
+    # form's structure; ``gforms_list_responses`` / ``gforms_get_response``
+    # read submitted responses (forms.responses.readonly scope). Sister
+    # tools ``gforms_create_form`` (creates a form), ``gforms_add_question``
+    # (adds an item), ``gforms_update_item`` (edits an item) and
+    # ``gforms_delete_item`` (removes an item) are NOT readonly.
+    "gforms_get_form",
+    "gforms_list_responses",
+    "gforms_get_response",
     # v2.4.0: Calendar reads — events.list / events.get / calendarList.list
     # / freebusy.query are all pure reads (no writes, no probe side-effects).
     # Sister tools ``gcal_create_event`` / ``gcal_update_event`` (mutate
@@ -109,6 +118,11 @@ DESTRUCTIVE_TOOLS = {
     # prompt for confirmation. (gdocs_create_folder is NOT here — it
     # only adds state.)
     "gdocs_revoke_permission",
+    # Forms (new service): removes a form item (deleteItem). Destructive
+    # so MCP clients can prompt for confirmation. (gforms_update_item is
+    # NOT here — it only edits an item's title/description, never removes
+    # content.)
+    "gforms_delete_item",
     # v2.4.0: Calendar events.delete — removes an event (and its data).
     # Sister tool ``gcal_update_event`` only patches (NOT destructive);
     # ``gcal_create_event`` only adds. Destructive so MCP clients can

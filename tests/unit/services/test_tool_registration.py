@@ -357,6 +357,15 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
     )
 
 
+def test_forms_service_tools_register_from_services_forms_tools_module():
+    """The 7 forms-service tools must be defined in
+    ``services/forms/tools.py``, NOT server.py."""
+    _assert_tools_live_in_module(
+        _declared_by_service()["forms"],
+        "appscriptly.services.forms.tools",
+    )
+
+
 def test_calendar_service_tools_register_from_services_calendar_tools_module():
     """The 7 calendar-service tools must be defined in
     ``services/calendar/tools.py``, NOT server.py."""

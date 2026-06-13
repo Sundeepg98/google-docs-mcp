@@ -106,6 +106,15 @@ EXPECTED_TOOLS = {
     "as_install_form_handler",  # ROADMAP_SPECS #8: reactive onFormSubmit handler for Forms (lifts Forms reject)
     "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
     "as_encode_video",  # PR-Δ12: encode rendered frames into an MP4 (ffmpeg, server-side)
+    # Forms (new service) — SENSITIVE scopes forms.body + forms.responses.readonly
+    # (NOT restricted → no CASA). Pairs with as_install_form_handler.
+    "gforms_create_form",  # Forms forms.create (+ updateFormInfo for description)
+    "gforms_get_form",  # Forms forms.get — structure + item ids
+    "gforms_add_question",  # Forms batchUpdate (createItem) — text/choice/scale
+    "gforms_update_item",  # Forms batchUpdate (updateItem) — title/description
+    "gforms_delete_item",  # Forms batchUpdate (deleteItem) — by position
+    "gforms_list_responses",  # Forms responses.list — paginated read
+    "gforms_get_response",  # Forms responses.get — single response read
 }
 
 
