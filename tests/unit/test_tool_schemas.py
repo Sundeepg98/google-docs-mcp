@@ -69,11 +69,15 @@ EXPECTED_TOOLS = {
     "gslides_add_slide",  # Slides batchUpdate (createSlide + insertText) — deck population
     "gslides_create_image",  # Slides batchUpdate (createImage) — image by URL
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
+    "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
+    "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
     "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
+    "as_install_edit_trigger",  # ROADMAP_SPECS #8: reactive onEdit trigger for Sheets
+    "as_install_form_handler",  # ROADMAP_SPECS #8: reactive onFormSubmit handler for Forms (lifts Forms reject)
     "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
     "as_encode_video",  # PR-Δ12: encode rendered frames into an MP4 (ffmpeg, server-side)
 }
