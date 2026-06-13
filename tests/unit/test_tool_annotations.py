@@ -68,6 +68,15 @@ READONLY_TOOLS = {
     # ``gslides_create_presentation`` (creates a new deck) are NOT
     # readonly.
     "gslides_get_outline",
+    # Forms (new service): pure reads. ``gforms_get_form`` reads the
+    # form's structure; ``gforms_list_responses`` / ``gforms_get_response``
+    # read submitted responses (forms.responses.readonly scope). Sister
+    # tools ``gforms_create_form`` (creates a form), ``gforms_add_question``
+    # (adds an item), ``gforms_update_item`` (edits an item) and
+    # ``gforms_delete_item`` (removes an item) are NOT readonly.
+    "gforms_get_form",
+    "gforms_list_responses",
+    "gforms_get_response",
 }
 
 
@@ -86,6 +95,11 @@ DESTRUCTIVE_TOOLS = {
     # prompt for confirmation. (gdocs_create_folder is NOT here — it
     # only adds state.)
     "gdocs_revoke_permission",
+    # Forms (new service): removes a form item (deleteItem). Destructive
+    # so MCP clients can prompt for confirmation. (gforms_update_item is
+    # NOT here — it only edits an item's title/description, never removes
+    # content.)
+    "gforms_delete_item",
 }
 
 

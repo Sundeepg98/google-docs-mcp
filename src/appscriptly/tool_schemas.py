@@ -668,6 +668,123 @@ GSLIDES_CREATE_LINE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ---------------------------------------------------------------------
+# Forms (services/forms/) — new service (sensitive scopes, no CASA)
+# ---------------------------------------------------------------------
+
+
+# ``gforms_create_form`` creates a form (title + optional description) and
+# returns its id + responder URL.
+GFORMS_CREATE_FORM_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+    },
+    required=["form_id", "url", "title"],
+)
+
+
+# Shared sub-schema: one entry in the ``items`` array returned by
+# ``gforms_get_form``. ``type`` is a coarse item kind.
+_FORMS_ITEM_ENTRY_SCHEMA = _object(
+    properties={
+        "item_id": {"type": "string"},
+        "title": {"type": "string"},
+        "type": {"type": "string"},
+    },
+    required=["item_id", "type"],
+)
+
+
+# ``gforms_get_form`` reads a form's structure (title/description + items).
+GFORMS_GET_FORM_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "url": {"type": "string", "format": "uri"},
+        "items": {"type": "array", "items": _FORMS_ITEM_ENTRY_SCHEMA},
+    },
+    required=["form_id", "title", "url", "items"],
+)
+
+
+# ``gforms_add_question`` adds a question; echoes the new item's id +
+# question_type + position.
+GFORMS_ADD_QUESTION_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "item_id": {"type": "string"},
+        "question_type": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+    },
+    required=["form_id", "item_id", "question_type", "index"],
+)
+
+
+# ``gforms_update_item`` updates an item's title/description; echoes the
+# position + the fields that changed.
+GFORMS_UPDATE_ITEM_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+        "updated_fields": {"type": "array", "items": {"type": "string"}},
+    },
+    required=["form_id", "index", "updated_fields"],
+)
+
+
+# ``gforms_delete_item`` deletes an item by position; echoes the position.
+GFORMS_DELETE_ITEM_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "deleted_index": {"type": "integer", "minimum": 0},
+    },
+    required=["form_id", "deleted_index"],
+)
+
+
+# Shared sub-schema: one entry in the ``responses`` array returned by
+# ``gforms_list_responses`` (and the body of ``gforms_get_response``).
+_FORMS_RESPONSE_ENTRY_SCHEMA = _object(
+    properties={
+        "response_id": {"type": "string"},
+        "create_time": {"type": "string"},
+        "last_submitted_time": {"type": "string"},
+        "answers": {"type": "object"},
+    },
+    required=["response_id", "answers"],
+)
+
+
+# ``gforms_list_responses`` lists submitted responses (paginated).
+GFORMS_LIST_RESPONSES_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "responses": {
+            "type": "array", "items": _FORMS_RESPONSE_ENTRY_SCHEMA,
+        },
+        "next_page_token": {"type": "string"},
+    },
+    required=["form_id", "responses", "next_page_token"],
+)
+
+
+# ``gforms_get_response`` reads one submitted response.
+GFORMS_GET_RESPONSE_OUTPUT_SCHEMA = _object(
+    properties={
+        "form_id": {"type": "string"},
+        "response_id": {"type": "string"},
+        "create_time": {"type": "string"},
+        "last_submitted_time": {"type": "string"},
+        "answers": {"type": "object"},
+    },
+    required=["form_id", "response_id", "answers"],
+)
+
+
 # ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
 # project carrying a doGet/doPost handler as a Web App, returning the
 # live /exec endpoint + the IDs/version. ``exec_url`` is the load-bearing
@@ -1176,6 +1293,15 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # #155 geometry trio — createShape + createLine complete the set
     "gslides_create_shape": GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
+    # Forms (new service, sensitive scopes forms.body +
+    # forms.responses.readonly — NOT restricted, no CASA)
+    "gforms_create_form": GFORMS_CREATE_FORM_OUTPUT_SCHEMA,
+    "gforms_get_form": GFORMS_GET_FORM_OUTPUT_SCHEMA,
+    "gforms_add_question": GFORMS_ADD_QUESTION_OUTPUT_SCHEMA,
+    "gforms_update_item": GFORMS_UPDATE_ITEM_OUTPUT_SCHEMA,
+    "gforms_delete_item": GFORMS_DELETE_ITEM_OUTPUT_SCHEMA,
+    "gforms_list_responses": GFORMS_LIST_RESPONSES_OUTPUT_SCHEMA,
+    "gforms_get_response": GFORMS_GET_RESPONSE_OUTPUT_SCHEMA,
     # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)

@@ -29,6 +29,9 @@ _RESTRICTED = {
 }
 
 # The exact intended connector (HTTP) scope set after the base-tier redesign.
+# The Forms scopes (forms.body + forms.responses.readonly) are SENSITIVE,
+# not restricted — they're absent from _RESTRICTED above, so they keep the
+# base tier CASA-free while expanding capability.
 _TARGET_CONNECTOR = {
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -36,6 +39,8 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 }

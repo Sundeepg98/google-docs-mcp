@@ -357,6 +357,15 @@ def test_slides_service_tools_register_from_services_slides_tools_module():
     )
 
 
+def test_forms_service_tools_register_from_services_forms_tools_module():
+    """The 7 forms-service tools must be defined in
+    ``services/forms/tools.py``, NOT server.py."""
+    _assert_tools_live_in_module(
+        _declared_by_service()["forms"],
+        "appscriptly.services.forms.tools",
+    )
+
+
 # apps_script spreads its tools across multiple feature files (unlike the
 # single-tools.py services). This per-tool → module map is KEPT (the spec
 # explicitly preserves it) — it's the location witness for the multi-file

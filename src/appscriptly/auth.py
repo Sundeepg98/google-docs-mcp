@@ -29,9 +29,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 # other, and stdio vs HTTP consent silently diverge).
 #
 # They are now derived from THIS one list:
-#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                  (6)
+#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                  (8)
 #   * ``oauth_google.GOOGLE_API_SCOPES`` = OIDC identity scopes
-#                                          + WORKSPACE_SCOPES            (8)
+#                                          + WORKSPACE_SCOPES           (10)
 # (``oauth_google`` imports ``WORKSPACE_SCOPES`` from here — ``auth`` is a
 # leaf module so there's no import cycle.)
 #
@@ -86,6 +86,22 @@ WORKSPACE_SCOPES = [
     # scope automatically on next token refresh via the include-
     # granted-scopes flow. No forced re-consent.
     "https://www.googleapis.com/auth/presentations",
+    # Forms (new service) — create/edit forms + read responses. BOTH are
+    # Google-SENSITIVE, NOT RESTRICTED → no CASA security assessment (only
+    # restricted scopes trigger CASA; Forms scopes are not on Google's
+    # restricted list — see tests/unit/test_base_tier_scopes.py::_RESTRICTED).
+    # The base tier stays CASA-free.
+    #   * forms.body              — forms.create / forms.get / batchUpdate
+    #     (createItem / updateItem / deleteItem). Operator-directed scope
+    #     expansion paired with the as_install_form_handler submit trigger.
+    #   * forms.responses.readonly — forms.responses.list / .get (read-only
+    #     access to submitted responses).
+    # Same incremental-consent semantics as the Sheets (#119) / Slides
+    # (#120) additions — existing users pick the new scopes up
+    # automatically on next token refresh via include_granted_scopes=true.
+    # No forced re-consent.
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/forms.responses.readonly",
     # PR-Δ1 (v2.3.4) — Apps Script management scopes promoted from
     # the per-tool GAS_DEPLOY_SCOPES list into the baseline union.
     # Reasoning: the Workspace automation runtime install
