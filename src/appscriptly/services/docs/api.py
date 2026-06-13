@@ -875,6 +875,123 @@ def format_paragraph(
     }
 
 
+def edit_range(
+    creds: Credentials,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    *,
+    text: str | None = None,
+    tab_id: str | None = None,
+) -> dict:
+    """Edit a specific ``[start_index, end_index)`` span via batchUpdate.
+
+    Location-indexed editing: delete the half-open UTF-16 range
+    ``[start_index, end_index)`` with ``deleteContentRange``, then
+    (optionally) ``insertText`` ``text`` at ``start_index``. The two
+    requests run in ONE ``batchUpdate``; the Docs API applies them
+    sequentially, so the insert lands exactly where the deletion left a
+    gap (deletion collapses ``[start, end)`` to a zero-width point at
+    ``start_index``, and the insert at ``start_index`` fills it). This
+    is the "replace a range" primitive that ``gdocs_replace_all_text``
+    (whole-doc find/replace) and ``gdocs_append_to_tab`` (append-only)
+    don't cover.
+
+    **Index contract — raw UTF-16 code units.** ``start_index`` and
+    ``end_index`` are addresses in Google Docs' native coordinate
+    system: UTF-16 code units, 1-based (body content starts at index 1;
+    index 0 is the section break). This is the SAME address space
+    ``gdocs_format_range`` / ``gdocs_format_paragraph`` already accept
+    and that ``gdocs_read_doc`` reports, so a caller reads structure,
+    computes a range, and edits it without any code-point↔UTF-16
+    conversion. Because the API measures in UTF-16, an above-BMP
+    character (emoji, math-alphanumeric) occupies 2 units, not 1 — the
+    caller's indices must already account for that (Docs' own
+    ``startIndex`` / ``endIndex`` values do). The renderer's ``_insert``
+    advances by ``len(text.encode("utf-16-le")) // 2`` for the same
+    reason (R6 fix, PR #184); this tool consumes indices in that unit
+    basis rather than recomputing them.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline — no extra grant).
+        doc_id: The Google Doc ID.
+        start_index: Range start (inclusive), >= 1, in UTF-16 code units.
+        end_index: Range end (exclusive), > ``start_index``, in UTF-16
+            code units.
+        text: Optional replacement text to insert at ``start_index``
+            after the deletion. Omit (or ``None``) for a pure delete.
+            Empty string is treated as a pure delete (the Docs
+            ``insertText`` request rejects empty text, so no insert is
+            emitted).
+        tab_id: Optional tab to target (from ``gdocs_get_doc_outline``);
+            ``None`` targets the default/first tab.
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, deleted, inserted,
+        inserted_units}`` — ``deleted`` is always True (the delete
+        always runs); ``inserted`` is True iff non-empty ``text`` was
+        inserted; ``inserted_units`` is the UTF-16 code-unit length of
+        the inserted text (0 for a pure delete).
+
+    Raises:
+        ValueError: ``start_index`` < 1 or ``end_index`` <= ``start_index``.
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated.
+    """
+    if start_index < 1:
+        raise ValueError("start_index must be >= 1.")
+    if end_index <= start_index:
+        raise ValueError("end_index must be greater than start_index.")
+
+    docs = get_service("docs", "v1", credentials=creds)
+
+    # The delete range + (optional) insert location share the same
+    # coordinate dict shape that format_range uses — startIndex/endIndex
+    # for the range, index for the location, both optionally tab-scoped.
+    del_range: dict[str, Any] = {"startIndex": start_index, "endIndex": end_index}
+    insert_loc: dict[str, Any] = {"index": start_index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        del_range["tabId"] = tab_id
+        insert_loc["tabId"] = tab_id
+
+    requests: list[dict] = [{"deleteContentRange": {"range": del_range}}]
+
+    # Insert AFTER the delete. In a single batchUpdate the requests apply
+    # in order: deleteContentRange removes [start, end) (collapsing it to
+    # a zero-width gap at start_index and shifting everything at/after
+    # end_index left by end_index - start_index), then insertText at
+    # start_index fills that gap. Empty/omitted text → pure delete (Docs
+    # rejects an empty insertText, so we simply don't emit it).
+    inserted = bool(text)
+    inserted_units = len(text.encode("utf-16-le")) // 2 if text else 0
+    if inserted:
+        requests.append(
+            {"insertText": {"location": insert_loc, "text": text}}
+        )
+
+    # NOT idempotent: a second call deletes a DIFFERENT span (the doc has
+    # shifted), so re-running mutates further. Matches insert_table /
+    # insert_markdown_table (which also shift document state per call).
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.editRange",
+    )
+    return {
+        "doc_id": doc_id,
+        "start_index": start_index,
+        "end_index": end_index,
+        "tab_id": tab_id,
+        "deleted": True,
+        "inserted": inserted,
+        "inserted_units": inserted_units,
+    }
+
+
 def insert_markdown_table(
     creds: Credentials,
     doc_id: str,
@@ -1343,6 +1460,7 @@ __all__ = [
     "add_tabs_to_doc",
     "append_to_tab",
     "delete_tab",
+    "edit_range",
     "get_doc_outline",
     "make_doc_with_tabs",
     "read_all_tabs",

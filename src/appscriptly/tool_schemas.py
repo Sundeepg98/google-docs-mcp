@@ -175,6 +175,23 @@ GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gdocs_edit_range`` echoes the edited range + what happened: a
+# deleteContentRange (always) and an optional insertText. ``inserted_units``
+# is the UTF-16 code-unit length of any inserted text (0 for a pure delete).
+GDOCS_EDIT_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "start_index": {"type": "integer", "minimum": 1},
+        "end_index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+        "deleted": {"type": "boolean"},
+        "inserted": {"type": "boolean"},
+        "inserted_units": {"type": "integer", "minimum": 0},
+    },
+    required=["doc_id", "start_index", "end_index", "deleted", "inserted"],
+)
+
+
 # ``gdocs_insert_markdown_table`` echoes the parsed shape + how many
 # non-empty cells were populated.
 GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA = _object(
@@ -954,6 +971,7 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_insert_table": GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
     "gdocs_format_range": GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     "gdocs_format_paragraph": GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
+    "gdocs_edit_range": GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
     "gdocs_insert_markdown_table": GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
     "gdocs_set_tab_icons": GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
     "gdocs_get_doc_outline": GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,

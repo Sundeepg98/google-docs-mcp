@@ -6,7 +6,7 @@ with the live ``mcp`` instance — ``server.py`` performs the import
 at the bottom of its module, AFTER constructing ``mcp`` and AFTER
 registering its remaining (non-docs) tools.
 
-**Tools registered here** (16 docs-service tools, in canonical order):
+**Tools registered here** (17 docs-service tools, in canonical order):
 
 1.  ``gdocs_make_tabbed_doc``       — create a new tabbed Google Doc from text
 2.  ``gdocs_add_tabs``              — append tabs to an existing doc
@@ -23,7 +23,8 @@ registering its remaining (non-docs) tools.
 13. ``gdocs_insert_table``          — insert a table at a location in a tab
 14. ``gdocs_format_range``          — apply text formatting to a range
 15. ``gdocs_format_paragraph``      — apply paragraph-level formatting
-16. ``gdocs_insert_markdown_table`` — render a markdown table into a doc
+16. ``gdocs_edit_range``            — delete/replace a specific range (UTF-16)
+17. ``gdocs_insert_markdown_table`` — render a markdown table into a doc
 
 The authoritative declaration of this surface lives in
 ``services/docs/_expected_tools.py`` (``EXPECTED``), which the
@@ -58,6 +59,7 @@ from appscriptly.services.docs.api import (
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
     delete_tab as _delete_tab,
+    edit_range as _edit_range,
     format_paragraph as _format_paragraph,
     format_range as _format_range,
     get_doc_outline as _get_doc_outline,
@@ -74,6 +76,7 @@ from appscriptly.tool_schemas import (
     GDOCS_ADD_TABS_OUTPUT_SCHEMA,
     GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
     GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
+    GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
     GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
     GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
@@ -1131,6 +1134,85 @@ def gdocs_format_paragraph(
             alignment=alignment, named_style=named_style,
             line_spacing=line_spacing,
             space_above_pt=space_above_pt, space_below_pt=space_below_pt,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_edit_range — documents.batchUpdate (deleteContentRange [+ insertText])
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Edit (delete/replace) a specific range in a document",
+    # Deletes a content span (and optionally re-inserts) — this REMOVES
+    # existing content, so destructive=True (unlike format_range, which
+    # only restyles). NOT idempotent: a re-run deletes a different span
+    # because the document has shifted. Matches gdocs_delete_tab's
+    # destructive framing.
+    readonly=False, destructive=True, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
+)
+def gdocs_edit_range(
+    creds,
+    doc_id: str,
+    start_index: int,
+    end_index: int,
+    text: str | None = None,
+    tab_id: str | None = None,
+) -> dict:
+    """Edit a specific ``[start_index, end_index)`` range — delete or replace.
+
+    USE WHEN: you need to change a SPECIFIC location in a doc — delete a
+    span, or swap one span's text for different text — rather than a
+    whole-document find/replace (``gdocs_replace_all_text``) or an
+    append (``gdocs_append_to_tab``). Deletes ``[start_index, end_index)``
+    via ``deleteContentRange``; if you pass ``text`` it is inserted at
+    ``start_index`` in the same ``batchUpdate``, giving an in-place
+    "replace this range" edit.
+
+    INDEX CONTRACT — raw UTF-16 code units (NOT Python characters).
+    ``start_index`` / ``end_index`` are positions in Google Docs' native
+    coordinate system: UTF-16 code units, 1-based (body starts at index
+    1). This is the SAME address space ``gdocs_format_range`` accepts and
+    that ``gdocs_read_doc`` / the Docs API report, so you read structure,
+    take the ``startIndex`` / ``endIndex`` Docs gives you, and pass them
+    straight through. An above-BMP character (emoji 😀, math-alphanumeric
+    𝐀) occupies TWO UTF-16 units, so a range that spans one drifts by a
+    unit per such char if you count Python characters instead — always
+    use the indices the API reports, never ``len(python_string)``.
+
+    Args:
+        doc_id: Document ID.
+        start_index: Range start (inclusive), >= 1, in UTF-16 code units.
+        end_index: Range end (exclusive), > start_index, in UTF-16 units.
+        text: Optional replacement text inserted at ``start_index`` after
+            the deletion. Omit / None / "" for a pure delete.
+        tab_id: Optional tab to target (from ``gdocs_get_doc_outline``);
+            omit / None = default/first tab.
+
+    Returns:
+        ``{doc_id, start_index, end_index, tab_id, deleted, inserted,
+        inserted_units}`` — ``deleted`` is always True; ``inserted`` is
+        True iff non-empty ``text`` was inserted; ``inserted_units`` is
+        the UTF-16 length of the inserted text.
+
+    Choreography: ``gdocs_read_doc`` to locate the range (its reported
+    indices are already UTF-16) → ``gdocs_edit_range`` to delete/replace
+    it. For appearance-only changes use ``gdocs_format_range`` (it does
+    not remove content); for whole-doc swaps use ``gdocs_replace_all_text``.
+
+    WARNING: this is a destructive, NON-idempotent edit — the indices are
+    only valid against the document's CURRENT state. After any edit that
+    shifts content, re-read before computing a new range.
+    """
+    try:
+        return _edit_range(
+            creds, doc_id, start_index, end_index,
+            text=text, tab_id=tab_id,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
