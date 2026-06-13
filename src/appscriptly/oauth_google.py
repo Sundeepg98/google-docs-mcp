@@ -34,68 +34,59 @@ from pathlib import Path
 
 from google_auth_oauthlib.flow import Flow
 
+from .auth import WORKSPACE_SCOPES
 from .crypto import NonceStore
 from .oauth_state import sign_state, verify_state
 
-# Default consent set requested at first authorization — mirrors what
-# the upstream stdio mode requests (auth.py:SCOPES) for ordinary
-# read/write Workspace operations.
-#
-# **PR-Δ1 (v2.3.4)** added the Apps Script management scopes
-# (``script.projects``, ``script.deployments``) so the Workspace
-# automation runtime install (``gdocs_install_automation``, see PR-α
-# reframe) is bundled into the first-consent screen rather than
-# triggering a "scary second consent" later. Reverses the v1.x scope
-# reduction (Issue #17) — that reduction made sense when Apps Script
-# was hidden infrastructure; the PR-α reframe surfaces it as headline
-# functionality, so bundling is the right call.
-#
-# The ``_check_scopes_or_raise`` path uses ``include_granted_scopes=
-# true`` (see ``build_authorization_url`` below), so existing users
-# pick up the new baseline scopes automatically on next token refresh
-# — no forced re-consent.
-GOOGLE_API_SCOPES = [
-    "openid",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/drive.file",
-    # drive.readonly REMOVED for the free base tier (it's Google's only
-    # RESTRICTED scope here → CASA + 7-day token cap). Both consumers
-    # (legacy .docx ingest, slides→video frame handoff) were re-plumbed to
-    # drive.file + the server's signed-upload staging. Existing tokens keep
-    # working via OAUTHLIB_RELAX_TOKEN_SCOPE; new consents won't request
-    # it. A future restricted tier will reintroduce it for "read any Drive
-    # file". Mirror of the auth.py:SCOPES change — keep the two in sync.
-    # v2.3.1: Sheets read/write/create for the 2nd new service.
-    # See auth.py:SCOPES for the rationale + non-breaking note.
-    # Mirrored here so HTTP/cloud-mode users get the same consent
-    # screen as stdio-mode users.
-    "https://www.googleapis.com/auth/spreadsheets",
-    # v2.3.2: Slides read + batchUpdate (replaceAllText) + create for
-    # the 3rd new service. Mirrored from auth.py:SCOPES for HTTP/cloud
-    # mode parity. Same incremental-consent path proven by previous
-    # additions.
-    "https://www.googleapis.com/auth/presentations",
-    # PR-Δ1 (v2.3.4): Apps Script management scopes promoted to baseline.
-    # See header comment for the rationale + the gas_deploy/tools.py
-    # discussion of the now-redundant-but-kept-for-documentation
-    # ``required_scopes=GAS_DEPLOY_SCOPES`` parameter.
-    "https://www.googleapis.com/auth/script.projects",
-    "https://www.googleapis.com/auth/script.deployments",
-]
-
-CALLBACK_PATH = "/oauth/google/api/callback"
-START_PATH = "/oauth/google/api/start"
-
-# Identity-only scopes — what GoogleProvider's ``required_scopes``
+# Identity-only (OIDC) scopes — what GoogleProvider's ``required_scopes``
 # advertises so Claude.ai's connector OAuth completes with at least
 # enough to identify the user. The full Workspace scope set goes into
 # ``valid_scopes`` (and the post-init patches) so it gets requested
 # during the same consent screen.
+#
+# ``email`` must be present (and REQUIRED in ``configure_auth_for_http``)
+# or ``get_access_token().claims["email"]`` returns None and the per-user
+# lookup breaks. We deliberately do NOT include ``userinfo.profile`` —
+# nothing reads profile claims (pinned by test_identity_scopes_unchanged).
 IDENTITY_SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
+
+# Default consent set requested at first authorization (HTTP/connector
+# mode) — the OIDC identity scopes PLUS the Workspace scopes the stdio
+# mode requests.
+#
+# SINGLE SOURCE OF TRUTH (Hardening-P1, ROADMAP_SPECS #7): the Workspace
+# half is DERIVED from ``auth.WORKSPACE_SCOPES`` rather than re-typed
+# here. Previously this was a hand-maintained twin of ``auth.py:SCOPES``
+# with a "keep the two in sync" comment — exactly the drift trap this
+# refactor removes. To add a Workspace service scope, edit
+# ``auth.WORKSPACE_SCOPES`` ONCE; this list (and ``auth.SCOPES``) update
+# automatically. ``tests/unit/test_scope_union_single_source.py`` asserts
+# this derivation equals the exact prior 8-scope literal (frozenset
+# equality + ordered identity) so drift fails CI.
+#
+# Ordering: OIDC scopes first, then the Workspace scopes verbatim — this
+# reproduces the prior literal byte-for-byte. (``configure_auth_for_http``
+# and the RFC 9728 metadata endpoint ``sorted()`` this before use, and
+# the credentials re-auth path takes a ``set()`` union, so nothing
+# downstream depends on this order — but preserving it keeps it a true
+# no-op.)
+#
+# Apps Script scopes (``script.projects`` / ``script.deployments``,
+# promoted to baseline in PR-Δ1 / v2.3.4) and the drive.readonly removal
+# (free base-tier redesign) both live in ``auth.WORKSPACE_SCOPES`` now —
+# see its comment block for the full per-scope rationale.
+#
+# The ``_check_scopes_or_raise`` path uses ``include_granted_scopes=
+# true`` (see ``build_authorization_url`` below), so existing users pick
+# up baseline scope additions automatically on next token refresh — no
+# forced re-consent.
+GOOGLE_API_SCOPES = [*IDENTITY_SCOPES, *WORKSPACE_SCOPES]
+
+CALLBACK_PATH = "/oauth/google/api/callback"
+START_PATH = "/oauth/google/api/start"
 
 
 def configure_auth_for_http(mcp) -> None:
