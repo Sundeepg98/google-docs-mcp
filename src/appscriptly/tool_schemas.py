@@ -739,6 +739,72 @@ AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_edit_trigger`` (ROADMAP_SPECS #8) composes the bound-script
+# generator into a reactive onEdit automation for a Sheet. Returns the
+# bound project's IDs + the Sheet it bound to + the trigger TYPE ("onEdit")
+# + the parsed handler name + a deep-link, PLUS the honest
+# trigger-activation state (same shape as as_install_sheet_dashboard:
+# an installable trigger only exists once installTrigger runs, and deploy
+# doesn't run it). additionalProperties stays True (the _object default).
+AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "trigger_type": {"type": "string", "enum": ["onEdit"]},
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "trigger_type",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+    ],
+)
+
+
+# ``as_install_form_handler`` (ROADMAP_SPECS #8) composes the bound-script
+# generator into a reactive onFormSubmit automation for a Form — the ONE
+# reactive surface a Form has (the generic primitive otherwise rejects
+# Forms; this purpose-built path lifts that). Returns the bound project's
+# IDs + the Form it bound to + the trigger TYPE ("onFormSubmit") + the
+# parsed handler name + a deep-link, PLUS the honest trigger-activation
+# state. additionalProperties stays True (the _object default).
+AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "form_id": {"type": "string"},
+        "trigger_type": {"type": "string", "enum": ["onFormSubmit"]},
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "form_id",
+        "trigger_type",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+    ],
+)
+
+
 # ``as_generate_video_deck`` (PR-Δ11) composes the bound-script generator
 # into the RENDER half of a slides-to-video pipeline. Returns the bound
 # project's IDs + the deck it bound to + the output folder + the render
@@ -1048,6 +1114,11 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "as_install_custom_function": AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA,
     # PR-Δ9 — scheduled dashboard refresh for Sheets (composes PR-Δ7)
     "as_install_sheet_dashboard": AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA,
+    # ROADMAP_SPECS #8 — reactive onEdit trigger for Sheets (composes PR-Δ7)
+    "as_install_edit_trigger": AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA,
+    # ROADMAP_SPECS #8 — reactive onFormSubmit handler for Forms (composes
+    # PR-Δ7; lifts the Forms hard-rejection for this one reactive surface)
+    "as_install_form_handler": AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA,
     # PR-Δ11 — render a Slides deck to video frames (composes PR-Δ7;
     # the render half of the slides-to-video pipeline)
     "as_generate_video_deck": AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA,

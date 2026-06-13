@@ -5,6 +5,8 @@
   "as_generate_video_deck",
   "as_install_custom_function",
   "as_install_doc_menu",
+  "as_install_edit_trigger",
+  "as_install_form_handler",
   "as_install_sheet_dashboard",
   "gdocs_add_tabs",
   "gdocs_admin_audit",

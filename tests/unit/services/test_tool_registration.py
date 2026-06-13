@@ -371,6 +371,12 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_install_sheet_dashboard": (
         "appscriptly.services.apps_script.sheet_dashboard"
     ),
+    "as_install_edit_trigger": (
+        "appscriptly.services.apps_script.edit_trigger"
+    ),
+    "as_install_form_handler": (
+        "appscriptly.services.apps_script.form_handler"
+    ),
     "as_generate_video_deck": (
         "appscriptly.services.apps_script.video_deck"
     ),
