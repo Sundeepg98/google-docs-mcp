@@ -303,7 +303,7 @@ def _assert_tools_live_in_module(tool_names, expected_module: str) -> None:
 
 
 def test_docs_service_tools_register_from_services_docs_tools_module():
-    """The 16 docs-service tools must be defined in
+    """The docs-service tools must be defined in
     ``services/docs/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["docs"],
@@ -349,7 +349,7 @@ def test_sheets_service_tools_register_from_services_sheets_tools_module():
 
 
 def test_slides_service_tools_register_from_services_slides_tools_module():
-    """The 6 slides-service tools must be defined in
+    """The 8 slides-service tools must be defined in
     ``services/slides/tools.py``, NOT server.py."""
     _assert_tools_live_in_module(
         _declared_by_service()["slides"],
@@ -370,6 +370,12 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     ),
     "as_install_sheet_dashboard": (
         "appscriptly.services.apps_script.sheet_dashboard"
+    ),
+    "as_install_edit_trigger": (
+        "appscriptly.services.apps_script.edit_trigger"
+    ),
+    "as_install_form_handler": (
+        "appscriptly.services.apps_script.form_handler"
     ),
     "as_generate_video_deck": (
         "appscriptly.services.apps_script.video_deck"

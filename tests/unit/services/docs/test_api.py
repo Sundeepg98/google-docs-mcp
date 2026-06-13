@@ -342,3 +342,163 @@ def test_read_tab_content_requires_an_identifier():
     """Neither tab_id nor tab_title -> ValueError (the up-front guard)."""
     with pytest.raises(ValueError, match="Provide either tab_id or tab_title"):
         _read_tab([], tab_id=None, tab_title=None)
+
+
+# ---------------------------------------------------------------------
+# edit_range — deleteContentRange [+ insertText], UTF-16 index contract
+#
+# edit_range is the location-indexed "delete/replace a span" primitive.
+# It takes RAW UTF-16 code-unit indices (same address space as
+# format_range and as Docs' own startIndex/endIndex) and emits a
+# deleteContentRange over [start, end) followed by an optional insertText
+# at start. The hard correctness property — and the reason this tool
+# needs a dedicated above-BMP regression test — is that Google Docs
+# measures positions in UTF-16 code units, NOT Python code points, so a
+# range must be expressed in UTF-16 units (an emoji is 1 code point but
+# 2 units; PR #184 / R6 fixed the renderer's _insert for the same
+# reason). These tests stub the Docs Resource through the GoogleAPIClient
+# port and assert on the batchUpdate body the function builds.
+# ---------------------------------------------------------------------
+
+
+def _edit_range_docs_stub():
+    """A Docs v1 stub whose batchUpdate captures its request body."""
+    docs = MagicMock(name="docs-v1")
+    docs.documents().batchUpdate().execute.return_value = {"replies": []}
+    client = InMemoryGoogleAPIClient({("docs", "v1"): docs})
+    return docs, client
+
+
+def _last_edit_batch_requests(docs) -> list[dict]:
+    """The ``requests`` list of the most recent batchUpdate(body=...) call."""
+    for call in reversed(docs.documents().batchUpdate.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs["body"]["requests"]
+    raise AssertionError("no documents().batchUpdate(body=...) call captured")
+
+
+def _utf16_doc_slice(body: str, start: int, end: int) -> str:
+    """Slice ``body`` by 1-based Docs indices treating it as UTF-16.
+
+    Mirrors the helper in test_markdown_render.py: Docs ranges are
+    ``[start, end)`` in UTF-16 code units, 1-based (body content begins
+    at index 1). Encode UTF-16-LE (2 bytes/unit) and slice on unit
+    boundaries — the inverse of the index math, so if a deletion range
+    is positioned correctly in UTF-16 space this returns the exact run
+    the range is supposed to address.
+    """
+    enc = body.encode("utf-16-le")
+    return enc[(start - 1) * 2:(end - 1) * 2].decode("utf-16-le")
+
+
+def _call_edit_range(**kwargs):
+    from appscriptly.services.docs.api import edit_range
+    docs, client = _edit_range_docs_stub()
+    with with_google_api_client(client):
+        result = edit_range(MagicMock(), "DOC1", **kwargs)
+    return result, docs
+
+
+def test_edit_range_pure_delete_builds_single_deleteContentRange():
+    """No text → exactly one deleteContentRange over [start, end); the
+    return envelope reports deleted=True, inserted=False."""
+    result, docs = _call_edit_range(start_index=5, end_index=12)
+    assert result["deleted"] is True
+    assert result["inserted"] is False
+    assert result["inserted_units"] == 0
+    assert _last_edit_batch_requests(docs) == [
+        {"deleteContentRange": {"range": {"startIndex": 5, "endIndex": 12}}}
+    ]
+
+
+def test_edit_range_replace_orders_delete_before_insert():
+    """With text → deleteContentRange FIRST, then insertText at
+    start_index. Order matters: the delete collapses [start, end) to a
+    gap at start_index, and the insert at start_index fills it."""
+    result, docs = _call_edit_range(start_index=4, end_index=9, text="new")
+    reqs = _last_edit_batch_requests(docs)
+    assert list(reqs[0]) == ["deleteContentRange"]
+    assert list(reqs[1]) == ["insertText"]
+    assert reqs[1]["insertText"]["location"]["index"] == 4
+    assert reqs[1]["insertText"]["text"] == "new"
+    assert result["inserted_units"] == 3
+
+
+def test_edit_range_deletion_targets_correct_utf16_span_after_emoji():
+    """R6/UTF-16 REGRESSION — the load-bearing correctness test.
+
+    Reference body ``"a😀bcd"``: the emoji (U+1F600) is a surrogate pair
+    = 1 Python code point but 2 UTF-16 code units. Suppose the caller
+    wants to delete ``"bc"``. In Docs' UTF-16, 1-based addressing:
+
+        index 1 → "a"          (1 unit)
+        index 2,3 → "😀"        (2 units, surrogate pair)
+        index 4 → "b"
+        index 5 → "c"
+        index 6 → "d"
+
+    So ``"bc"`` is the half-open range [4, 6). The deleteContentRange the
+    function emits MUST carry exactly those UTF-16 indices — and slicing
+    the reference body by them (as UTF-16) must return ``"bc"``.
+
+    The CALLER supplies UTF-16 indices and the tool passes them through
+    verbatim. This test pins that pass-through is faithful AND documents
+    the unit basis: [4, 6) is the correct range for ``"bc"``, whereas the
+    code-point start a buggy ``len()``-based caller would compute (3) is
+    STRICTLY SMALLER — it would target the wrong run.
+    """
+    body = "a\U0001f600bcd"  # "a" + U+1F600 emoji + "bcd"
+    # The half-open UTF-16 range that addresses "bc".
+    start, end = 4, 6
+    # Sanity: in UTF-16, [4, 6) really is "bc" in this body.
+    assert _utf16_doc_slice(body, start, end) == "bc"
+    # And the code-point start the buggy len()-based math would pick is
+    # STRICTLY SMALLER (the surrogate pair shifts the real index up by 1).
+    # Same R6 discriminator as test_markdown_render.py — we don't slice
+    # the buggy range (it would split the surrogate pair and raise); the
+    # index inequality IS the behavioural difference.
+    cp_start = 1 + len("a\U0001f600")  # 1 + 2 == 3 (code points)
+    assert cp_start == 3 and start == 4
+    assert cp_start < start  # code-point math under-counts the surrogate pair
+
+    result, docs = _call_edit_range(start_index=start, end_index=end, text="XY")
+    rng = _last_edit_batch_requests(docs)[0]["deleteContentRange"]["range"]
+    assert rng == {"startIndex": 4, "endIndex": 6}, (
+        "deleteContentRange must carry the UTF-16 indices verbatim so the "
+        f"emoji-preceded span is targeted correctly; got {rng}"
+    )
+    assert result["start_index"] == 4 and result["end_index"] == 6
+
+
+def test_edit_range_inserted_units_counts_above_bmp_as_two():
+    """``inserted_units`` is the UTF-16 length of the inserted text, so an
+    above-BMP char counts as 2. ``"x𝐀"`` (x + U+1D400 MATHEMATICAL BOLD
+    CAPITAL A) is 2 code points but 3 UTF-16 units."""
+    result, _docs = _call_edit_range(
+        start_index=1, end_index=2, text="x\U0001d400",
+    )
+    assert result["inserted_units"] == 3  # NOT len("x𝐀") == 2
+
+
+def test_edit_range_threads_tab_id_onto_range_and_location():
+    result, docs = _call_edit_range(
+        start_index=2, end_index=5, text="z", tab_id="t.xyz",
+    )
+    reqs = _last_edit_batch_requests(docs)
+    assert reqs[0]["deleteContentRange"]["range"]["tabId"] == "t.xyz"
+    assert reqs[1]["insertText"]["location"]["tabId"] == "t.xyz"
+    assert result["tab_id"] == "t.xyz"
+
+
+def test_edit_range_rejects_invalid_range():
+    from appscriptly.services.docs.api import edit_range
+    with pytest.raises(ValueError, match="start_index must be >= 1"):
+        edit_range(MagicMock(), "DOC1", 0, 5)
+    with pytest.raises(ValueError, match="end_index must be greater"):
+        edit_range(MagicMock(), "DOC1", 5, 5)
+
+
+def test_edit_range_rejects_empty_tab_id():
+    from appscriptly.services.docs.api import edit_range
+    with pytest.raises(ValueError, match="tab_id cannot be the empty string"):
+        edit_range(MagicMock(), "DOC1", 1, 3, tab_id="   ")

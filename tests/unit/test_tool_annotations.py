@@ -75,6 +75,11 @@ DESTRUCTIVE_TOOLS = {
     "gdocs_delete_tab",
     "gdocs_trash_file",
     "gdocs_reset_authorization",
+    # Deletes a content span (deleteContentRange) before any optional
+    # re-insert — removes existing document text, so MCP clients should
+    # be able to prompt for confirmation. (gdocs_format_range is NOT here:
+    # it only restyles, never removes content.)
+    "gdocs_edit_range",
     "gsheets_delete_sheet",  # removes a tab + all its cell data
     # Revokes a share (permissions.delete) — removes someone's access,
     # the inverse of gdocs_share_file. Destructive so MCP clients can

@@ -21,6 +21,11 @@ EXPECTED: frozenset[str] = frozenset({
     "as_install_custom_function",
     # PR-Δ9 — scheduled dashboard refresh (sheet_dashboard.py).
     "as_install_sheet_dashboard",
+    # ROADMAP_SPECS #8 — reactive onEdit trigger (edit_trigger.py).
+    "as_install_edit_trigger",
+    # ROADMAP_SPECS #8 — reactive onFormSubmit handler (form_handler.py);
+    # lifts the Forms hard-rejection for this one reactive surface.
+    "as_install_form_handler",
     # PR-Δ11 — slides-to-video RENDER half (video_deck.py).
     "as_generate_video_deck",
     # PR-Δ12 — slides-to-video ENCODE half, server-side ffmpeg
