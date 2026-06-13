@@ -104,7 +104,7 @@ test = [
 # PR when ready to absorb new findings.
 lint = [
     "pyright>=1.1.410",
-    "ruff>=0.7",
+    "ruff>=0.15.17",
 ]
 # === PR-Δ6: Vercel pilot extras ===
 # The VercelKvBackend talks to Upstash KV via the HTTP REST API; the
