@@ -63,6 +63,10 @@ EXPECTED_TOOLS = {
     "gsheets_add_sheet",  # Sheets batchUpdate (addSheet) — tab lifecycle
     "gsheets_delete_sheet",  # Sheets batchUpdate (deleteSheet) — tab lifecycle
     "gsheets_rename_sheet",  # Sheets batchUpdate (updateSheetProperties) — tab lifecycle
+    "gsheets_clear_range",  # Sheets values.clear — values-only wipe
+    "gsheets_duplicate_sheet",  # Sheets batchUpdate (duplicateSheet) — tab lifecycle
+    "gsheets_freeze",  # Sheets batchUpdate (updateSheetProperties / gridProperties)
+    "gsheets_protect_range",  # Sheets batchUpdate (addProtectedRange) — range protection
     "gslides_get_outline",  # v2.3.2: Slides presentations.get
     "gslides_replace_all_text",  # v2.3.2: Slides batchUpdate (replaceAllText)
     "gslides_create_presentation",  # v2.3.2: Slides presentations.create

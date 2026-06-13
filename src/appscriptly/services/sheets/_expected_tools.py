@@ -15,4 +15,8 @@ EXPECTED: frozenset[str] = frozenset({
     "gsheets_add_sheet",
     "gsheets_delete_sheet",
     "gsheets_rename_sheet",
+    "gsheets_clear_range",
+    "gsheets_duplicate_sheet",
+    "gsheets_freeze",
+    "gsheets_protect_range",
 })

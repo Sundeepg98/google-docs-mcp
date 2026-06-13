@@ -490,6 +490,55 @@ GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_clear_range`` echoes the A1 range Sheets reports it cleared
+# (values.clear — formatting left intact).
+GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "cleared_range": {"type": "string"},
+    },
+    required=["spreadsheet_id", "cleared_range"],
+)
+
+
+# ``gsheets_duplicate_sheet`` returns the gid Sheets assigned the copy.
+# ``title`` / ``index`` may be absent if Sheets omits them from the reply
+# (hence not required), mirroring gsheets_add_sheet.
+GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "sheet_id": {"type": ["integer", "null"]},
+        "title": {"type": ["string", "null"]},
+        "index": {"type": ["integer", "null"], "minimum": 0},
+    },
+    required=["spreadsheet_id", "sheet_id"],
+)
+
+
+# ``gsheets_freeze`` returns the flat batch_update envelope — one
+# updateSheetProperties request setting gridProperties.frozen*Count.
+GSHEETS_FREEZE_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
+# ``gsheets_protect_range`` returns the same flat batch_update envelope —
+# one addProtectedRange request.
+GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
 # ---------------------------------------------------------------------
 # Slides (services/slides/) — v2.3.2 minimal start (3rd new service)
 # ---------------------------------------------------------------------
@@ -1112,6 +1161,11 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_add_sheet": GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
     "gsheets_delete_sheet": GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA,
     "gsheets_rename_sheet": GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA,
+    # Sheets values.clear + duplicate/freeze/protect lifecycle (this PR)
+    "gsheets_clear_range": GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA,
+    "gsheets_duplicate_sheet": GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
+    "gsheets_freeze": GSHEETS_FREEZE_OUTPUT_SCHEMA,
+    "gsheets_protect_range": GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
     # v2.3.2 — Slides (3rd new service, minimal start)
     "gslides_get_outline": GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     "gslides_replace_all_text": GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,

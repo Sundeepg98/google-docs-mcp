@@ -7,17 +7,21 @@ imported. ``server.py`` performs the import at the bottom AFTER
 constructing ``mcp``, the same side-effect pattern as Phase A/B/C
 and Gap #7.
 
-**Tools registered here** (9 sheets-service tools):
+**Tools registered here** (13 sheets-service tools):
 
-1. ``gsheets_read_range``               — read cell values from a range
-2. ``gsheets_write_range``              — write 2D values to a range
-3. ``gsheets_create_spreadsheet``       — create an empty new spreadsheet
-4. ``gsheets_format_range``             — format a cell block (batchUpdate)
-5. ``gsheets_append_rows``              — append rows after the last row of data
-6. ``gsheets_add_sheet``                — add a tab/sheet to a spreadsheet
-7. ``gsheets_delete_sheet``             — delete a tab/sheet by id
-8. ``gsheets_rename_sheet``             — rename a tab/sheet
-9. ``gsheets_apply_conditional_format`` — apply a conditional-format rule
+1.  ``gsheets_read_range``               — read cell values from a range
+2.  ``gsheets_write_range``              — write 2D values to a range
+3.  ``gsheets_create_spreadsheet``       — create an empty new spreadsheet
+4.  ``gsheets_format_range``             — format a cell block (batchUpdate)
+5.  ``gsheets_append_rows``              — append rows after the last row of data
+6.  ``gsheets_add_sheet``                — add a tab/sheet to a spreadsheet
+7.  ``gsheets_delete_sheet``             — delete a tab/sheet by id
+8.  ``gsheets_rename_sheet``             — rename a tab/sheet
+9.  ``gsheets_apply_conditional_format`` — apply a conditional-format rule
+10. ``gsheets_clear_range``              — clear cell values in a range (values.clear)
+11. ``gsheets_duplicate_sheet``          — copy a tab/sheet (batchUpdate)
+12. ``gsheets_freeze``                   — freeze header rows/columns (batchUpdate)
+13. ``gsheets_protect_range``            — protect a cell range (batchUpdate)
 
 (Authoritative declaration: ``services/sheets/_expected_tools.py``.)
 
@@ -53,9 +57,13 @@ from appscriptly.services.sheets.api import (
     add_sheet as _add_sheet,
     append_rows as _append_rows,
     apply_conditional_format as _apply_conditional_format,
+    clear_range as _clear_range,
     create_spreadsheet as _create_spreadsheet,
     delete_sheet as _delete_sheet,
+    duplicate_sheet as _duplicate_sheet,
     format_range as _format_range,
+    freeze as _freeze,
+    protect_range as _protect_range,
     read_range as _read_range,
     rename_sheet as _rename_sheet,
     write_range as _write_range,
@@ -64,9 +72,13 @@ from appscriptly.tool_schemas import (
     GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
     GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
     GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
+    GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA,
     GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA,
+    GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
     GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
+    GSHEETS_FREEZE_OUTPUT_SCHEMA,
+    GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
     GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA,
     GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
@@ -161,6 +173,7 @@ def gsheets_write_range(
     spreadsheet_id: str,
     range: str,
     values: list[list],
+    value_input_option: str = "USER_ENTERED",
 ) -> dict:
     """Write 2D values to a range in a Google Sheet — overwrites in place.
 
@@ -169,12 +182,12 @@ def gsheets_write_range(
     spreadsheet range. Common chained call after
     ``gsheets_create_spreadsheet``.
 
-    Uses Sheets' ``spreadsheets.values.update`` REST endpoint with
-    ``valueInputOption="USER_ENTERED"`` — values parse as if the
-    user typed them in the UI: ``"=SUM(A1:A10)"`` becomes a formula,
-    ``"1/2/2026"`` becomes a date, ``"42"`` becomes a number.
-    Literal-string writes (``RAW`` mode) aren't exposed yet — call
-    the Sheets API directly if you need that.
+    Uses Sheets' ``spreadsheets.values.update`` REST endpoint. By
+    default (``value_input_option="USER_ENTERED"``) values parse as if
+    the user typed them in the UI: ``"=SUM(A1:A10)"`` becomes a
+    formula, ``"1/2/2026"`` becomes a date, ``"42"`` becomes a number.
+    Pass ``value_input_option="RAW"`` to store values EXACTLY as given
+    — a leading ``=`` stays literal text, not a formula.
 
     Args:
         spreadsheet_id: The spreadsheet ID.
@@ -186,6 +199,11 @@ def gsheets_write_range(
         values: 2D row-major list. Each inner list is one row
             (left-to-right cells). Strings / numbers / bools / None
             all permitted. ``None`` writes a blank cell.
+        value_input_option: ``"USER_ENTERED"`` (default) parses values
+            as if typed (formulas / dates / numbers); ``"RAW"`` stores
+            them literally. Use ``RAW`` when a value beginning with
+            ``=`` (or that looks like a date/number) must be kept as
+            plain text rather than interpreted.
 
     Returns:
         ``{updated_range, updated_cells}``. ``updated_range`` is the
@@ -198,7 +216,10 @@ def gsheets_write_range(
     (which returns the ID) or pairs with ``gsheets_read_range`` for
     a read-modify-write loop.
     """
-    return _write_range(creds, spreadsheet_id, range, values)
+    return _write_range(
+        creds, spreadsheet_id, range, values,
+        value_input_option=value_input_option,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -375,6 +396,7 @@ def gsheets_append_rows(
     spreadsheet_id: str,
     values: list[list],
     range: str = DEFAULT_RANGE,
+    value_input_option: str = "USER_ENTERED",
 ) -> dict:
     """Append rows to the END of a sheet's data — the race-free way.
 
@@ -387,9 +409,10 @@ def gsheets_append_rows(
 
     Uses Sheets' ``spreadsheets.values.append`` — SHEETS finds the
     table's last row and writes below it SERVER-SIDE in one atomic
-    call, so concurrent appends land on consecutive rows. Values parse
-    with ``valueInputOption="USER_ENTERED"`` (formulas / dates / numbers
-    behave as if typed, same as ``gsheets_write_range``) and
+    call, so concurrent appends land on consecutive rows. By default
+    (``value_input_option="USER_ENTERED"``) values parse as if typed
+    (formulas / dates / numbers, same as ``gsheets_write_range``); pass
+    ``"RAW"`` to store them literally. Always uses
     ``insertDataOption="INSERT_ROWS"`` (existing rows below the table
     are pushed down, never overwritten).
 
@@ -402,6 +425,9 @@ def gsheets_append_rows(
             here for the data block, then appends after its last row) —
             NOT the write destination. Defaults to ``"A1:Z1000"`` (first
             tab). Pass e.g. ``"Sheet2!A:Z"`` to append to a specific tab.
+        value_input_option: ``"USER_ENTERED"`` (default) parses values
+            as if typed; ``"RAW"`` stores them literally (a leading ``=``
+            stays text). Same semantics as ``gsheets_write_range``.
 
     Returns:
         ``{updated_range, updated_cells, updated_rows}`` — ``updated_range``
@@ -414,7 +440,10 @@ def gsheets_append_rows(
     or stands alone to add to an existing sheet. Use
     ``gsheets_read_range`` afterward to read the table back.
     """
-    return _append_rows(creds, spreadsheet_id, values, range_str=range)
+    return _append_rows(
+        creds, spreadsheet_id, values, range_str=range,
+        value_input_option=value_input_option,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -688,4 +717,292 @@ def gsheets_apply_conditional_format(
         background_color=background_color,
         bold=bold,
         index=index,
+    )
+
+
+# ---------------------------------------------------------------------
+# 10. gsheets_clear_range — values.clear (values-only wipe)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Clear cell values in a Google Sheet range",
+    readonly=False,
+    # Clearing VALUES leaves formatting + the sheet itself intact and the
+    # cells can be re-written — not "destructive" in our sense (matches
+    # gsheets_write_range, which also overwrites cell contents in place).
+    # gsheets_delete_sheet (removes a whole tab + its data) IS destructive;
+    # this is not.
+    destructive=False,
+    # Clearing an already-cleared range yields the same empty state — safe
+    # to retry. (The api layer dispatches it idempotent=True.)
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA,
+)
+def gsheets_clear_range(
+    creds,
+    spreadsheet_id: str,
+    range: str,
+) -> dict:
+    """Clear cell VALUES in a range — keeps formatting, keeps the tab.
+
+    USE WHEN: the agent needs to empty cells (wipe stale data before a
+    fresh write, clear a scratch area) WITHOUT removing their formatting
+    or deleting the tab. This is the values-only counterpart to
+    ``gsheets_write_range`` — bold/colors/number-formats/validation in
+    the cleared range survive. To remove an ENTIRE tab (data AND
+    formatting AND the tab), use ``gsheets_delete_sheet`` instead.
+
+    Uses Sheets' ``spreadsheets.values.clear`` REST endpoint.
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        range: A1-notation range to clear, e.g. ``"A1:Z1000"`` (default
+            tab) or ``"Sheet2!B2:D10"`` (named tab + range). Required —
+            state exactly what to wipe (there is no clear-everything
+            default).
+
+    Returns:
+        ``{spreadsheet_id, cleared_range}`` — ``cleared_range`` is the A1
+        range Sheets reports it cleared (echoed back so you can confirm
+        what was wiped).
+
+    Choreography: often precedes ``gsheets_write_range`` (clear stale
+    rows, then write fresh ones). To clear AND remove the tab, use
+    ``gsheets_delete_sheet``.
+    """
+    return _clear_range(creds, spreadsheet_id, range)
+
+
+# ---------------------------------------------------------------------
+# 11. gsheets_duplicate_sheet — batchUpdate (duplicateSheet)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Duplicate a tab (sheet) in a Google Sheets spreadsheet",
+    # Adds a fresh tab (a copy) — not a mutation of existing tabs. Matches
+    # gsheets_add_sheet's annotations.
+    readonly=False,
+    destructive=False,
+    # NOT idempotent: re-running creates ANOTHER copy. Same convention as
+    # gsheets_add_sheet / gsheets_create_spreadsheet.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
+)
+def gsheets_duplicate_sheet(
+    creds,
+    spreadsheet_id: str,
+    source_sheet_id: int,
+    new_sheet_name: str | None = None,
+    insert_index: int | None = None,
+) -> dict:
+    """Duplicate a tab (sheet) — a full copy (values + formatting).
+
+    USE WHEN: the agent needs a copy of an existing tab — a per-month
+    sheet seeded from a template tab, a "scratch" copy to edit without
+    touching the original, a backup before a risky transformation. The
+    copy includes everything: values, formats, conditional rules, charts.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with a ``duplicateSheet``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+    Sheets assigns the copy a fresh numeric ``sheet_id`` (gid) — returned
+    here so you can immediately target it with the gid-based tools.
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        source_sheet_id: The numeric tab id (``gid``) of the tab to COPY —
+            NOT the tab name and NOT the spreadsheet id. The first/default
+            tab is ``0`` (find a tab's gid in its URL ``#gid=...`` or from
+            ``gsheets_add_sheet``).
+        new_sheet_name: Name for the copy. Omit to let Sheets auto-name it
+            (``"Copy of <source>"``). Must be UNIQUE — a duplicate name is
+            rejected by Sheets.
+        insert_index: 0-based position for the copy among existing tabs
+            (``0`` = leftmost). Omit to let Sheets place it right after the
+            source tab.
+
+    Returns:
+        ``{spreadsheet_id, sheet_id, title, index}`` — ``sheet_id`` is the
+        gid Sheets assigned the copy (pass it to the gid-based tools);
+        ``title`` / ``index`` echo the copy's properties.
+
+    Choreography: get the source gid from ``gsheets_add_sheet`` or the tab
+    URL. Follow with ``gsheets_rename_sheet`` /
+    ``gsheets_write_range`` (target the returned ``sheet_id``) to customise
+    the copy.
+    """
+    return _duplicate_sheet(
+        creds,
+        spreadsheet_id,
+        source_sheet_id,
+        new_sheet_name=new_sheet_name,
+        insert_index=insert_index,
+    )
+
+
+# ---------------------------------------------------------------------
+# 12. gsheets_freeze — batchUpdate (updateSheetProperties / gridProperties)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Freeze header rows/columns of a Google Sheet tab",
+    # An in-place view property change — not destructive (values + other
+    # properties untouched; only the frozen counts change). Matches
+    # gsheets_rename_sheet.
+    readonly=False,
+    destructive=False,
+    # Setting the same frozen counts twice yields the same state — safe to
+    # retry. (The api layer dispatches it idempotent=True.)
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_FREEZE_OUTPUT_SCHEMA,
+)
+def gsheets_freeze(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    frozen_row_count: int | None = None,
+    frozen_column_count: int | None = None,
+) -> dict:
+    """Freeze header rows and/or columns so they stay visible on scroll.
+
+    USE WHEN: a sheet has a header row (or label column) that should stay
+    pinned while the data scrolls — the standard "freeze row 1" you'd do
+    by hand in the UI. Freeze the top N rows (``frozen_row_count``) and/or
+    the left N columns (``frozen_column_count``).
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with an
+    ``updateSheetProperties`` request masked to exactly the
+    ``gridProperties.frozen*Count`` field(s) you set — so the other frozen
+    count and every other sheet property are left untouched.
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id — the ``gid``, NOT the tab name. The
+            first/default tab is ``0`` (find a tab's gid in its URL
+            ``#gid=...`` or from ``gsheets_add_sheet``).
+        frozen_row_count: Number of rows to freeze from the top (e.g. ``1``
+            to pin a header row). Pass ``0`` to UNFREEZE rows. Omit to
+            leave the row freeze unchanged.
+        frozen_column_count: Number of columns to freeze from the left.
+            Pass ``0`` to UNFREEZE columns. Omit to leave the column freeze
+            unchanged.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}`` — ``total_requests``
+        is 1 (one updateSheetProperties); ``replies`` is Sheets' raw reply
+        list.
+
+    Choreography: typically follows ``gsheets_write_range`` (write a header
+    row, then ``gsheets_freeze(frozen_row_count=1)`` to pin it). Pass at
+    least one of the two counts — an all-omitted call raises a ValueError
+    rather than issuing a no-op batchUpdate.
+    """
+    return _freeze(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        frozen_row_count=frozen_row_count,
+        frozen_column_count=frozen_column_count,
+    )
+
+
+# ---------------------------------------------------------------------
+# 13. gsheets_protect_range — batchUpdate (addProtectedRange)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Protect a cell range in a Google Sheet",
+    # Adds a protection rule on top of existing cells without altering
+    # their values — not "destructive" (same posture as
+    # gsheets_apply_conditional_format, which also layers a rule).
+    readonly=False,
+    destructive=False,
+    # NOT idempotent: addProtectedRange APPENDS a protected range, so
+    # re-running adds a SECOND overlapping protection. Same convention as
+    # gsheets_apply_conditional_format / gsheets_append_rows. The api layer
+    # dispatches idempotent=False.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
+)
+def gsheets_protect_range(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    description: str | None = None,
+    warning_only: bool = False,
+    editor_emails: list[str] | None = None,
+) -> dict:
+    """Protect a cell range — restrict (or warn on) edits to a block.
+
+    USE WHEN: the agent should guard cells from edits — lock a formula
+    column, freeze a finalized report area, or (soft mode) warn editors
+    before they change a sensitive range. Two modes:
+
+      * ``warning_only=True`` — edits show an "are you sure?" warning but
+        are NOT blocked (a gentle guard against accidental changes).
+      * ``warning_only=False`` (default) — edits are BLOCKED for everyone
+        except the listed ``editor_emails`` (and the owner). With no
+        editors, only the owner can edit.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with an ``addProtectedRange``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id — the ``gid``, NOT the tab name. The
+            first/default tab is ``0`` (find a tab's gid in its URL
+            ``#gid=...``).
+        start_row / end_row / start_col / end_col: 0-based, half-open cell
+            bounds (``end`` EXCLUSIVE, like a Python slice — so
+            ``start_row=0, end_row=1`` is just the first row). Omit a bound
+            to leave that side unbounded; omit all four to protect the
+            WHOLE sheet.
+        description: Optional label for the protected range (shown in the
+            Sheets protection UI).
+        warning_only: When ``True``, edits warn but aren't blocked; when
+            ``False`` (default), edits are restricted to ``editor_emails``
+            (+ owner). Incompatible with ``editor_emails``.
+        editor_emails: Email addresses allowed to edit the protected range
+            (ignored when ``warning_only=True``). Omit / empty means only
+            the owner can edit.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}`` — ``total_requests``
+        is 1 (one addProtectedRange); ``replies`` is Sheets' raw reply
+        list.
+
+    Choreography: get the ``sheet_id`` (gid) from ``gsheets_add_sheet`` or
+    the tab URL. Re-running ADDS another protected range (they stack)
+    rather than replacing — protect each distinct range once.
+    """
+    return _protect_range(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+        description=description,
+        warning_only=warning_only,
+        editor_emails=editor_emails,
     )
