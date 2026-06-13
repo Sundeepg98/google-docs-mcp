@@ -68,6 +68,12 @@ READONLY_TOOLS = {
     # ``gslides_create_presentation`` (creates a new deck) are NOT
     # readonly.
     "gslides_get_outline",
+    # Tasks (4th service): tasklists.list / tasks.list — pure reads.
+    # Sister tools gtasks_create_* / gtasks_update_task /
+    # gtasks_complete_task (mutations) and gtasks_delete_task
+    # (destructive) are NOT readonly.
+    "gtasks_list_tasklists",
+    "gtasks_list_tasks",
 }
 
 
@@ -86,6 +92,11 @@ DESTRUCTIVE_TOOLS = {
     # prompt for confirmation. (gdocs_create_folder is NOT here — it
     # only adds state.)
     "gdocs_revoke_permission",
+    # Tasks (4th service): tasks.delete — removes a task (and its
+    # sub-tasks). Destructive so MCP clients can prompt for confirmation.
+    # (gtasks_complete_task is NOT here — it only flips status, the task
+    # persists.)
+    "gtasks_delete_task",
 }
 
 

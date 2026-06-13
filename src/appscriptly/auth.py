@@ -86,6 +86,20 @@ WORKSPACE_SCOPES = [
     # scope automatically on next token refresh via the include-
     # granted-scopes flow. No forced re-consent.
     "https://www.googleapis.com/auth/presentations",
+    # Tasks read/write/create/delete for the 4th new service (tasklists +
+    # tasks CRUD). The full ``tasks`` scope (not the narrower
+    # ``tasks.readonly``) is needed because gtasks_create_task /
+    # gtasks_update_task / gtasks_delete_task mutate. This scope is
+    # SENSITIVE, NOT RESTRICTED — it is absent from Google's closed
+    # restricted-scope list (Gmail / Drive / Fit / Chat / Data
+    # Portability / Photos / Health), so it adds NO CASA requirement and
+    # keeps the free base tier eligible for the sensitive-only
+    # verification. Existing users pick it up automatically on next token
+    # refresh via the ``include_granted_scopes=true`` incremental-consent
+    # flow (same pattern as the Sheets / Slides / Apps Script additions);
+    # no forced re-consent. DEPLOY NOTE: the Google Tasks API must be
+    # enabled in the GCP project before the gtasks_* tools work live.
+    "https://www.googleapis.com/auth/tasks",
     # PR-Δ1 (v2.3.4) — Apps Script management scopes promoted from
     # the per-tool GAS_DEPLOY_SCOPES list into the baseline union.
     # Reasoning: the Workspace automation runtime install

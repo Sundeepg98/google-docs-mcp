@@ -34,19 +34,26 @@ from __future__ import annotations
 # The exact, current consent scope sets — the SOURCE OF TRUTH for this
 # test. These mirror what Google's consent screen requests today.
 #
-#   * 6 Workspace scopes  → auth.SCOPES (stdio / baseline)
-#   * +2 OIDC identity     → oauth_google.GOOGLE_API_SCOPES (HTTP) = 8
+#   * 7 Workspace scopes  → auth.SCOPES (stdio / baseline)
+#   * +2 OIDC identity     → oauth_google.GOOGLE_API_SCOPES (HTTP) = 9
 #
 # Frozensets: scope SET identity is what matters for consent (Google
 # ignores order on the screen). Order is checked separately below via the
 # ordered-list assertions so a future reorder is still caught as a
 # (benign) change rather than passing silently.
+#
+# The ``.../auth/tasks`` scope (Google Tasks service, 4th new service) is
+# SENSITIVE, NOT restricted — it adds no CASA requirement. Adding it here
+# is the conscious, operator-gated consent-screen change this test exists
+# to force; it was added to the single source ``auth.WORKSPACE_SCOPES`` in
+# the same commit.
 # ---------------------------------------------------------------------
 _EXPECTED_WORKSPACE_SCOPES = frozenset({
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 })
@@ -65,6 +72,7 @@ _EXPECTED_SCOPES_ORDERED = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 ]
@@ -75,6 +83,7 @@ _EXPECTED_GOOGLE_API_SCOPES_ORDERED = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 ]
@@ -86,7 +95,8 @@ _EXPECTED_GOOGLE_API_SCOPES_ORDERED = [
 
 
 def test_stdio_consent_set_is_exactly_the_six_workspace_scopes():
-    """``auth.SCOPES`` (stdio/baseline) == the exact 6 Workspace scopes.
+    """``auth.SCOPES`` (stdio/baseline) == the exact Workspace scope set
+    (7 after the Tasks-service addition).
 
     A mismatch means the stdio consent screen would request a different
     scope set. Under verify-LAST that is operator-gated — update the
@@ -103,8 +113,8 @@ def test_stdio_consent_set_is_exactly_the_six_workspace_scopes():
 
 
 def test_connector_consent_set_is_exactly_oidc_plus_workspace():
-    """``oauth_google.GOOGLE_API_SCOPES`` (HTTP/connector) == the exact 8
-    scopes (2 OIDC + 6 Workspace).
+    """``oauth_google.GOOGLE_API_SCOPES`` (HTTP/connector) == the exact 9
+    scopes (2 OIDC + 7 Workspace).
 
     Same verify-LAST gate as the stdio set: this is the consent screen
     claude.ai's connector flow renders.

@@ -668,6 +668,98 @@ GSLIDES_CREATE_LINE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ---------------------------------------------------------------------
+# Tasks (services/tasks/) — Google Tasks API v1 (sensitive scope, no CASA)
+# ---------------------------------------------------------------------
+
+
+# Shared sub-schema: one entry in the ``tasklists`` array. Pins the
+# load-bearing id + title; ``updated`` (RFC 3339) may be absent.
+_TASKLIST_ENTRY_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# Shared sub-schema: one entry in the ``tasks`` array. ``id`` / ``title``
+# / ``status`` are the load-bearing fields; notes / due / completed /
+# parent / position are present only on some tasks (sub-tasks, dated /
+# completed tasks), hence nullable + not required.
+_TASK_ENTRY_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "status": {"type": ["string", "null"]},
+        "notes": {"type": ["string", "null"]},
+        "due": {"type": ["string", "null"]},
+        "completed": {"type": ["string", "null"]},
+        "parent": {"type": ["string", "null"]},
+        "position": {"type": ["string", "null"]},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# ``gtasks_list_tasklists`` returns a flat list of the user's task lists.
+GTASKS_LIST_TASKLISTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklists": {"type": "array", "items": _TASKLIST_ENTRY_SCHEMA},
+    },
+    required=["tasklists"],
+)
+
+
+# ``gtasks_create_tasklist`` echoes the created list (server-assigned id).
+GTASKS_CREATE_TASKLIST_OUTPUT_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "updated": {"type": ["string", "null"]},
+    },
+    required=["id", "title"],
+)
+
+
+# ``gtasks_list_tasks`` returns the tasks in a list + echoes the queried
+# tasklist id so the caller can correlate.
+GTASKS_LIST_TASKS_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklist": {"type": "string"},
+        "tasks": {"type": "array", "items": _TASK_ENTRY_SCHEMA},
+    },
+    required=["tasklist", "tasks"],
+)
+
+
+# ``gtasks_create_task`` / ``gtasks_update_task`` / ``gtasks_complete_task``
+# all return a single task as the flat envelope (same shape as a
+# ``gtasks_list_tasks`` entry).
+GTASKS_CREATE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+GTASKS_UPDATE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+GTASKS_COMPLETE_TASK_OUTPUT_SCHEMA = _TASK_ENTRY_SCHEMA
+
+
+# ``gtasks_delete_task`` echoes what was removed (tasks.delete returns an
+# empty 204 body, so there's nothing else to surface).
+GTASKS_DELETE_TASK_OUTPUT_SCHEMA = _object(
+    properties={
+        "tasklist": {"type": "string"},
+        "deleted_task_id": {"type": "string"},
+    },
+    required=["tasklist", "deleted_task_id"],
+)
+
+
+# ---------------------------------------------------------------------
+# Apps Script — web-app deploy (ROADMAP 59)
+# ---------------------------------------------------------------------
+
+
 # ``as_deploy_web_app`` (ROADMAP 59) deploys a standalone Apps Script
 # project carrying a doGet/doPost handler as a Web App, returning the
 # live /exec endpoint + the IDs/version. ``exec_url`` is the load-bearing
@@ -1176,6 +1268,14 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # #155 geometry trio — createShape + createLine complete the set
     "gslides_create_shape": GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
+    # Tasks (4th new service) — Google Tasks API v1 (sensitive scope, no CASA)
+    "gtasks_list_tasklists": GTASKS_LIST_TASKLISTS_OUTPUT_SCHEMA,
+    "gtasks_create_tasklist": GTASKS_CREATE_TASKLIST_OUTPUT_SCHEMA,
+    "gtasks_list_tasks": GTASKS_LIST_TASKS_OUTPUT_SCHEMA,
+    "gtasks_create_task": GTASKS_CREATE_TASK_OUTPUT_SCHEMA,
+    "gtasks_update_task": GTASKS_UPDATE_TASK_OUTPUT_SCHEMA,
+    "gtasks_complete_task": GTASKS_COMPLETE_TASK_OUTPUT_SCHEMA,
+    "gtasks_delete_task": GTASKS_DELETE_TASK_OUTPUT_SCHEMA,
     # ROADMAP 59 — deploy a standalone doGet/doPost project as a Web App
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)

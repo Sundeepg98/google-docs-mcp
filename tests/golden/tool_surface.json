@@ -64,5 +64,12 @@
   "gslides_create_shape",
   "gslides_create_table",
   "gslides_get_outline",
-  "gslides_replace_all_text"
+  "gslides_replace_all_text",
+  "gtasks_complete_task",
+  "gtasks_create_task",
+  "gtasks_create_tasklist",
+  "gtasks_delete_task",
+  "gtasks_list_tasklists",
+  "gtasks_list_tasks",
+  "gtasks_update_task"
 ]

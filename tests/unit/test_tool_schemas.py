@@ -75,6 +75,13 @@ EXPECTED_TOOLS = {
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
     "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
     "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
+    "gtasks_list_tasklists",  # Tasks (4th service): tasklists.list
+    "gtasks_create_tasklist",  # Tasks: tasklists.insert
+    "gtasks_list_tasks",  # Tasks: tasks.list (show completed/hidden)
+    "gtasks_create_task",  # Tasks: tasks.insert (title/notes/due/parent)
+    "gtasks_update_task",  # Tasks: tasks.patch (partial update)
+    "gtasks_complete_task",  # Tasks: tasks.patch (status=completed convenience)
+    "gtasks_delete_task",  # Tasks: tasks.delete (destructive)
     "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet

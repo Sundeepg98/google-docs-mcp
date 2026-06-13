@@ -28,7 +28,10 @@ _RESTRICTED = {
     "https://www.googleapis.com/auth/gmail.metadata",
 }
 
-# The exact intended connector (HTTP) scope set after the base-tier redesign.
+# The exact intended connector (HTTP) scope set after the base-tier
+# redesign. Includes ``.../auth/tasks`` (Google Tasks service) — a
+# SENSITIVE scope, NOT one of Google's RESTRICTED scopes, so it adds no
+# CASA requirement and keeps the free base tier eligible.
 _TARGET_CONNECTOR = {
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -36,6 +39,7 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 }
