@@ -248,22 +248,87 @@ def test_build_manifest_oauth_scopes_must_be_strings():
 
 def test_build_manifest_combined_unions_all_scopes():
     """All capabilities together → the manifest declares the union of
-    every derived + explicit scope."""
-    drive_scope = "https://www.googleapis.com/auth/drive.readonly"
+    every derived + explicit scope. Uses a SENSITIVE (non-restricted)
+    explicit scope so the union is exercised without tripping the
+    restricted-scope guard (that guard has its own dedicated tests below)."""
+    sheets_scope = "https://www.googleapis.com/auth/spreadsheets"
     m = build_manifest({
         "menu": [{"name": "Run", "function_name": "run"}],
         "triggers": [{"type": "time", "every_hours": 24}, {"type": "edit"}],
         "sidebar_html": "<p>panel</p>",
-        "oauth_scopes": [drive_scope],
+        "oauth_scopes": [sheets_scope],
     })
     scopes = m["oauthScopes"]
     assert _UI_SCOPE in scopes        # menu + sidebar
     assert _TRIGGER_SCOPE in scopes   # time trigger
-    assert drive_scope in scopes      # explicit
+    assert sheets_scope in scopes     # explicit
     # Plan echoes everything.
     assert len(m["__plan__"]["menu"]) == 1
     assert len(m["__plan__"]["triggers"]) == 2
     assert m["__plan__"]["has_sidebar"] is True
+
+
+# ---------------------------------------------------------------------
+# restricted-scope guard (v2.0c)
+# ---------------------------------------------------------------------
+
+_RESTRICTED_SAMPLES = [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+]
+
+
+@pytest.mark.parametrize("restricted", _RESTRICTED_SAMPLES)
+def test_build_manifest_rejects_restricted_scope_by_default(restricted):
+    """A RESTRICTED scope in oauth_scopes is refused unless explicitly
+    allowed — the generic generator must not silently mint full-Gmail /
+    broad-Drive authority."""
+    with pytest.raises(ValueError, match="RESTRICTED scope"):
+        build_manifest({"oauth_scopes": [restricted]})
+
+
+def test_build_manifest_restricted_scope_allowed_with_optin():
+    """With the explicit opt-in, a restricted scope IS permitted (the
+    user-acknowledged escape hatch)."""
+    drive = "https://www.googleapis.com/auth/drive"
+    m = build_manifest({"oauth_scopes": [drive]}, allow_restricted_scopes=True)
+    assert drive in m["oauthScopes"]
+
+
+def test_build_manifest_restricted_guard_names_only_restricted_scopes():
+    """When a mix of sensitive + restricted scopes is passed, the error
+    names the RESTRICTED one(s), not the innocent sensitive scope."""
+    sheets = "https://www.googleapis.com/auth/spreadsheets"
+    gmail = "https://www.googleapis.com/auth/gmail.readonly"
+    with pytest.raises(ValueError) as exc:
+        build_manifest({"oauth_scopes": [sheets, gmail]})
+    assert gmail in str(exc.value)
+    assert sheets not in str(exc.value)
+
+
+def test_build_manifest_sensitive_scopes_pass_without_optin():
+    """SENSITIVE (non-restricted) scopes — drive.file, spreadsheets,
+    documents, presentations, calendar, tasks, contacts, forms — are
+    NOT gated; they pass with no opt-in."""
+    sensitive = [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/tasks",
+        "https://www.googleapis.com/auth/contacts",
+        "https://www.googleapis.com/auth/forms.body",
+    ]
+    m = build_manifest({"oauth_scopes": sensitive})
+    for s in sensitive:
+        assert s in m["oauthScopes"]
 
 
 def test_build_manifest_combined_runtime_and_timezone_still_present():
@@ -300,9 +365,21 @@ _trigger_item = st.one_of(
         "every_hours": st.integers(min_value=1, max_value=24),
     }),
 )
-_scope = st.from_regex(
-    r"https://www\.googleapis\.com/auth/[a-z.]{3,30}", fullmatch=True
-)
+# Draw only NON-restricted scopes: the restricted-scope guard (its own
+# tests above) would reject a randomly-generated drive/gmail scope, which is
+# orthogonal to the structural invariants this property test pins. A curated
+# sensitive-scope pool keeps the de-dup / union / ordering coverage intact.
+_scope = st.sampled_from([
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/forms.body",
+    "https://www.googleapis.com/auth/script.external_request",
+])
 
 _valid_manifest_dict = st.fixed_dictionaries(
     {},

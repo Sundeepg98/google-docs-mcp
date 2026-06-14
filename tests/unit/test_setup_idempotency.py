@@ -73,8 +73,23 @@ def mock_setup(tmp_path):
         load_oauth.return_value = MagicMock()
         client = MagicMock()
         client_class.return_value = client
-        cfg_mod.load.return_value = {}
-        cfg_mod.save.return_value = None
+        # Stateful config stub: setup_apps_script_auto now provisions a
+        # per-deployment HMAC key via config.load()/config.save() (v2.0c)
+        # and must REUSE the persisted key on re-runs for the deploy to stay
+        # idempotent (a fresh key each run would change the content_hash and
+        # re-create the project). A static load()->{} stub would defeat that,
+        # so back the stub with a real dict that save() merges into.
+        _cfg_store: dict = {}
+
+        def _cfg_load():
+            return dict(_cfg_store)
+
+        def _cfg_save(updates):
+            _cfg_store.update(updates)
+            return dict(_cfg_store)
+
+        cfg_mod.load.side_effect = _cfg_load
+        cfg_mod.save.side_effect = _cfg_save
 
         # Sensible default returns for a cold-start happy path.
         from appscriptly.services.gas_deploy.api import WebAppDeployment
@@ -178,9 +193,13 @@ def test_content_change_starts_fresh(mock_setup):
     setup_apps_script_auto(data_dir=mock_setup["data_dir"])
     assert mock_setup["client"].create_project.call_count == 1
 
-    # Simulate edited content by patching the source path.
+    # Simulate edited content by patching the source path. The fake source
+    # must still carry the HMAC key sentinel (every real restructure.gs
+    # does) so the v2.0c key-injection step doesn't reject it.
     fake_path = mock_setup["data_dir"] / "edited.gs"
-    fake_path.write_text("// totally different content")
+    fake_path.write_text(
+        "// totally different content\nvar MCP_HMAC_KEY = '__MCP_HMAC_KEY__';"
+    )
     with patch(
         "appscriptly.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path
     ):

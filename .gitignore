@@ -26,6 +26,10 @@ htmlcov/
 test-results.json
 mutation-check.json
 
+# Disposable local audit scratch output (audit_analysis.json,
+# audit_clean.json, audit_output.json, etc.) — never commit.
+audit_*.json
+
 # Editors
 .idea/
 .vscode/

@@ -1,10 +1,10 @@
-# STATUS NOTE (R12/R16 audit): this script backfills `apps_script_hmac_key`
-# for legacy users so the v2.0a schema is uniform. The key is currently
-# stored but NOT consumed at runtime — restructure.gs has no
-# `Utilities.computeHmacSha256Signature` and `_call_webapp` doesn't sign.
-# The verify-path is planned for v2.0c. Running this migration today
-# does not provide any runtime security uplift; it prepares the schema
-# for v2.0c.
+# STATUS NOTE: this script backfills `apps_script_hmac_key` for legacy
+# users. As of v2.0c the key IS consumed at runtime — restructure.gs
+# verifies the per-request signature (`Utilities.computeHmacSha256Signature`)
+# and `_call_webapp` signs every POST. Backfilling now provides real
+# runtime security uplift: a legacy user gains an authenticated /exec
+# endpoint once they re-run gdocs_install_automation so their DEPLOYED
+# script carries the key (see the re-run note below).
 """v2.0a migration — backfill ``apps_script_hmac_key`` for legacy user rows.
 
 Pre-v2.0 the MCP server signed requests to each user's Apps Script Web App

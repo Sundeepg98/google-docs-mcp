@@ -5,7 +5,7 @@
 > **⚠️ STATUS: verification was already SUBMITTED (~2026-06-01) and is UNDER REVIEW** (per `START_HERE.md`). This kit is now the *strategy/why* reference; the **exact field values** to enter/confirm in the Console live in the companion **`VERIFICATION_SUBMISSION.md`**. The operator punch-list (§1) below was executed; treat it as the record of what was done + a re-do checklist if Google bounces the submission.
 
 **Target repo:** `Sundeepg98/google-docs-mcp` (module `appscriptly`).
-**Deployed:** Fly app `sundeepg98-docs-mcp` → `https://sundeepg98-docs-mcp.fly.dev` (new app `appscriptly` reserved, not yet cut over).
+**Deployed:** Fly app `sundeepg98-docs-mcp`, now served at the custom domain **`https://mcp.appscriptly.com/mcp`** (live serving URL as of the 2026-06-14 cutover: TLS cert + Cloudflare DNS + redirect URIs + 13 scopes on the consent screen + `TRUSTED_HOSTS` secret), still backed by the same Fly app. The raw `https://sundeepg98-docs-mcp.fly.dev` host remains the backing origin (and the Fly-app handle for `fly` commands / redirect-URI registration below). (New app name `appscriptly` reserved, not yet cut over.)
 **Tool surface:** **66 tools** (`origin/main` golden = 62 + the 4 sheets tools in open PR #191). All 66 stay within the 8 scopes below — zero verification impact.
 
 ## 0. Scope set submitted in the FIRST verification round (8 scopes; `drive.readonly` removed in #148, MERGED + deployed + live-verified)
@@ -29,7 +29,7 @@
 
 ## 1. OPERATOR PUNCH-LIST (one sitting, in order; 🔒 = needs your password/2FA/human click)
 
-**Pre-flight:** logo PNG 120×120; a support email you own; confirm publicly-reachable URL (today `https://sundeepg98-docs-mcp.fly.dev`); home `https://appscriptly.com/` + privacy `https://appscriptly.com/privacy` live before submit.
+**Pre-flight:** logo PNG 120×120; a support email you own; confirm publicly-reachable URL (now the custom domain `https://mcp.appscriptly.com/mcp`, backed by the Fly app `sundeepg98-docs-mcp`); home `https://appscriptly.com/` + privacy `https://appscriptly.com/privacy` live before submit.
 
 1. **🔒 Create dedicated GCP project** — console.cloud.google.com/projectcreate → name `appscriptly` → select it. (A clean project = a consent screen listing ONLY the 8 scopes, shedding the gmail-mcp inheritance.)
 2. **🔒 Enable APIs** — APIs & Services → Library → enable: Docs, Sheets, Slides, Drive, **Apps Script**.
@@ -94,7 +94,7 @@ appscriptly is a Google Workspace automation tool that creates, edits, and manag
 
 ## 4. DEMO VIDEO SHOTLIST (unlisted YouTube, English, record against prod — already serving the final 8-scope set; 3–5 min)
 
-> **A demo was already recorded + submitted: `https://youtu.be/hBuuDemD8Js`** (unlisted, on `sundeepg8@`), against the earlier ~41-tool surface. The **8 scopes are unchanged** since, so it almost certainly still satisfies Google (reviewers check scope-usage, not tool count). **Re-record only if Google asks.** Shotlist below is canonical for any re-record and now references the newer 66-tool surface.
+> **CURRENT demo: `https://youtu.be/r7ZB1YeT3SE`** (unlisted, on `sundeepg8@` / channel "Sundeep G") — re-recorded to exercise all deployed scopes end-to-end. **The prior demo `https://youtu.be/hBuuDemD8Js` was REJECTED by Google as chat-only / insufficient and is SUPERSEDED by `r7ZB1YeT3SE`; do not resubmit it.** The T&S verification reply with the new link was **sent 2026-06-14 and is awaiting Google re-review.** Shotlist below is canonical for any further re-record and references the 66-tool surface as it stood at this kit's last refresh.
 
 0. Title card + say "appscriptly" (5s).
 1. Trigger connect → Google consent screen, pause (15s) — **OAuth grant flow**.

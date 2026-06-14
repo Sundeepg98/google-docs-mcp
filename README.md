@@ -194,7 +194,7 @@ Every one of these is a Google **sensitive** scope; **none is restricted**, so t
 google-docs-mcp setup-apps-script-auto
 ```
 
-Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs`, deploys as a Web App with `executeAs: USER_DEPLOYING / access: ANYONE_ANONYMOUS` (URL secrecy = the access control; see `docs/THREAT_MODEL.md` §4 row 5), and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
+Does everything end-to-end via the Apps Script REST API: creates the project, pushes `restructure.gs` (with a per-deployment HMAC key baked in), deploys as a Web App with `executeAs: USER_DEPLOYING / access: ANYONE_ANONYMOUS`, and saves the resulting `/exec` URL to `~/.google-docs-mcp/config.json`. The endpoint is anonymous because the server posts with no Google sign-in, but every request is authenticated by a per-deployment HMAC signature verified in `doPost` (v2.0c; see `docs/THREAT_MODEL.md` §4 row 5) — URL secrecy is no longer the access control. First run triggers one OAuth consent screen to add Apps Script scopes (`script.projects`, `script.deployments`); subsequent runs reuse the token.
 
 The plumbing lives in `src/appscriptly/gas_deploy/` as a clean sub-package boundary — if a second project ever needs Apps Script project management, that folder can be `git mv`'d out and published as a standalone package.
 

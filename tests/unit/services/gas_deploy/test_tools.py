@@ -471,9 +471,29 @@ def _stub_creds_and_script_svc(monkeypatch):
     return svc, with_google_api_client, InMemoryGoogleAPIClient
 
 
-def test_as_deploy_web_app_happy_path(monkeypatch):
-    """End-to-end through the decorator envelope: returns the flat
-    envelope with the live /exec URL as ``exec_url``."""
+def _captured_pushed_source(svc) -> str:
+    """Return the SERVER_JS source pushed to updateContent (the deployed .gs).
+
+    Lets a test inspect the source that was actually shipped — e.g. to
+    confirm the HMAC guard was injected for an ANYONE_ANONYMOUS deploy.
+    """
+    body_calls = [
+        c for c in svc.projects().updateContent.call_args_list
+        if "body" in c.kwargs
+    ]
+    assert body_calls, "no updateContent() call captured a body"
+    files = body_calls[-1].kwargs["body"]["files"]
+    code = next(f for f in files if f["type"] == "SERVER_JS")
+    return code["source"]
+
+
+def test_as_deploy_web_app_anonymous_injects_hmac_guard(monkeypatch):
+    """ANYONE_ANONYMOUS deploy: the tool returns a usable hmac_key + the
+    deployed source is the caller's doPost WRAPPED by an HMAC verify gate.
+    The signature scheme must match apps_script_hmac.compute_signature so a
+    correctly-signed request would pass and the user's handler is delegated
+    to under the new name."""
+    from appscriptly.apps_script_hmac import compute_signature
     from appscriptly.services.gas_deploy import tools
 
     svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
@@ -483,20 +503,75 @@ def test_as_deploy_web_app_happy_path(monkeypatch):
             title="Stripe hook",
             access="ANYONE_ANONYMOUS",
         )
+
+    # Core envelope unchanged.
+    assert result["script_id"] == "SID-9"
+    assert result["exec_url"] == "https://script.google.com/macros/s/z/exec"
+    assert result["access"] == "ANYONE_ANONYMOUS"
+    # New: a 64-hex HMAC key + instructions are returned.
+    key = result["hmac_key"]
+    assert len(key) == 64 and all(c in "0123456789abcdef" for c in key)
+    assert "X-MCP-Signature" in result["hmac_instructions"]
+
+    # The deployed source carries the guard, bakes the SAME key, renames the
+    # caller's handler, and gates with a new doPost.
+    pushed = _captured_pushed_source(svc)
+    assert key in pushed
+    assert "function __mcpUserDoPost(e)" in pushed
+    assert "function doPost(e)" in pushed
+    assert "computeHmacSha256Signature" in pushed
+    # compute_signature is the server-side counterpart used by docx_import;
+    # its presence here is a cross-check that the scheme name is stable.
+    assert compute_signature(key, timestamp="0", body="{}")  # no raise
+
+
+def test_as_deploy_web_app_non_public_access_no_hmac_key(monkeypatch):
+    """A non-public access mode (MYSELF / DOMAIN) does NOT inject a guard
+    and returns the original flat envelope with NO hmac_key — the endpoint
+    isn't world-reachable so Google's own access control suffices."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    with with_client(InMem({("script", "v1"): svc})):
+        result = tools.as_deploy_web_app(
+            script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+            title="Internal hook",
+            access="MYSELF",
+        )
     assert result == {
         "script_id": "SID-9",
         "deployment_id": "DEP-9",
         "version": 1,
         "exec_url": "https://script.google.com/macros/s/z/exec",
         "execute_as": "USER_DEPLOYING",
-        "access": "ANYONE_ANONYMOUS",
+        "access": "MYSELF",
         "project_url": "https://script.google.com/d/SID-9/edit",
     }
+    # Original body shipped verbatim (no wrapper) for a non-public deploy.
+    pushed = _captured_pushed_source(svc)
+    assert "__mcpUserDoPost" not in pushed
 
 
 def test_as_deploy_web_app_validation_propagates(monkeypatch):
-    """A body without doGet/doPost is rejected (bubbles from the api
-    layer through the decorator envelope as ValueError)."""
+    """A body without doGet/doPost is rejected. For the default
+    (ANYONE_ANONYMOUS) access the rejection now comes from the HMAC-guard
+    injector (no guardable doPost) — still a hard refusal to deploy an
+    unauthenticated/unprotected public endpoint."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    with with_client(InMem({("script", "v1"): svc})):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="doPost|doGet"):
+            tools.as_deploy_web_app(
+                script_body="function helper(){ return 1; }",
+                title="No handler",
+            )
+
+
+def test_as_deploy_web_app_non_public_validation_propagates(monkeypatch):
+    """For a non-public deploy (no guard injection), the handler-less body
+    is rejected by the api layer's doGet/doPost requirement."""
     from appscriptly.services.gas_deploy import tools
 
     svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
@@ -506,4 +581,5 @@ def test_as_deploy_web_app_validation_propagates(monkeypatch):
             tools.as_deploy_web_app(
                 script_body="function helper(){ return 1; }",
                 title="No handler",
+                access="MYSELF",
             )

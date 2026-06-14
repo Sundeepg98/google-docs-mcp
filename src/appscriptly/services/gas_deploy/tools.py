@@ -75,6 +75,7 @@ import warnings
 from fastmcp.exceptions import ToolError
 
 from appscriptly._deprecation import warn_deprecated_alias
+from appscriptly.apps_script_hmac import generate_hmac_key
 from appscriptly.credentials import (
     NeedsReauthError,
     current_user_id_or_none,
@@ -85,6 +86,7 @@ from appscriptly.server import workspace_tool
 from appscriptly.services.gas_deploy import GAS_DEPLOY_SCOPES
 from appscriptly.services.gas_deploy.api import (
     deploy_web_app_project as _deploy_web_app_project,
+    inject_webapp_hmac_guard as _inject_webapp_hmac_guard,
 )
 from appscriptly.setup_apps_script import (
     setup_apps_script_auto,
@@ -416,14 +418,17 @@ def as_deploy_web_app(
 
     Returns:
         ``{script_id, deployment_id, version, exec_url, execute_as,
-        access, project_url}``. ``exec_url`` is the live endpoint —
-        give it to the external caller. ``project_url`` deep-links to the
-        script editor so the user can inspect / tweak the code.
+        access, project_url}`` — plus ``hmac_key`` + ``hmac_instructions``
+        WHEN ``access="ANYONE_ANONYMOUS"`` (see SECURITY NOTE). ``exec_url``
+        is the live endpoint; ``project_url`` deep-links to the editor so
+        the user can inspect / tweak the code.
 
     Raises:
         ToolError: blank / handler-less ``script_body``, blank ``title``,
-            an invalid ``execute_as`` / ``access``, or any Apps Script
-            API error — the standard decorator envelope renders these.
+            an invalid ``execute_as`` / ``access``, an ANYONE_ANONYMOUS
+            deploy whose ``script_body`` has no guardable top-level
+            ``doPost`` declaration, or any Apps Script API error — the
+            standard decorator envelope renders these.
 
     Choreography: Claude writes the ``doGet`` / ``doPost`` body for the
     integration, calls this once, and hands the returned ``exec_url`` to
@@ -431,20 +436,39 @@ def as_deploy_web_app(
     Re-running creates a SEPARATE deployment with a NEW URL (not an
     in-place update) — deploy once, reuse the URL.
 
-    SECURITY NOTE: with ``access="ANYONE_ANONYMOUS"`` the ``/exec`` URL is
-    world-reachable (unguessable, but public). For sensitive actions, have
-    the ``doPost`` body verify a shared secret / HMAC signature from the
-    request before acting — Apps Script can't add auth in front of an
-    anonymous Web App, so the check belongs in the handler.
+    SECURITY NOTE: ``access="ANYONE_ANONYMOUS"`` makes ``/exec`` world-
+    reachable. Because Apps Script can't put auth in front of an anonymous
+    Web App, this tool now AUTO-INJECTS an HMAC request guard into the
+    deployed code for the anonymous case: it wraps your ``doPost`` so every
+    request must carry a valid ``X-MCP-Signature`` /  ``X-MCP-Timestamp``
+    (HMAC-SHA256 over ``"<timestamp>.<body>"`` with a freshly generated
+    per-deploy key) before your handler runs; unsigned/forged/stale requests
+    are rejected with ``stage:'auth'``. The generated key is returned as
+    ``hmac_key`` (shown ONCE) along with ``hmac_instructions`` describing the
+    header scheme — give them to whoever calls the webhook. If a guard can't
+    be injected (no top-level ``doPost``), the deploy is refused rather than
+    shipped unprotected; deploy with ``DOMAIN`` / ``MYSELF`` for a non-
+    public endpoint instead, or for a public GET-only/unauthenticated webhook
+    do your own in-handler check and use ``access="ANYONE"``.
     """
+    hmac_key: str | None = None
+    effective_body = script_body
+    if access == "ANYONE_ANONYMOUS":
+        # World-reachable: don't ship the handler unguarded. Generate a
+        # per-deploy key and wrap doPost with an HMAC verify gate. Injection
+        # raises (→ ToolError) if there's no guardable doPost, so we never
+        # silently deploy an unauthenticated public endpoint.
+        hmac_key = generate_hmac_key()
+        effective_body = _inject_webapp_hmac_guard(script_body, hmac_key)
+
     deployment = _deploy_web_app_project(
         creds,
-        script_body=script_body,
+        script_body=effective_body,
         title=title,
         execute_as=execute_as,
         access=access,
     )
-    return {
+    result = {
         "script_id": deployment.script_id,
         "deployment_id": deployment.deployment_id,
         "version": deployment.version,
@@ -455,3 +479,15 @@ def as_deploy_web_app(
             f"https://script.google.com/d/{deployment.script_id}/edit"
         ),
     }
+    if hmac_key is not None:
+        result["hmac_key"] = hmac_key
+        result["hmac_instructions"] = (
+            "This endpoint is public, so it is protected by an HMAC request "
+            "guard. Each request must include headers: "
+            "X-MCP-Timestamp: <current unix seconds>, and "
+            "X-MCP-Signature: lowercase hex of "
+            "HMAC_SHA256(hmac_key, timestamp + '.' + raw_request_body). "
+            "Requests without a valid, fresh (within 5 minutes) signature are "
+            "rejected. Store hmac_key as a secret; it is shown only once."
+        )
+    return result
