@@ -62,6 +62,16 @@ DEFAULT_PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,metadat
 # still carries each person's resourceName + etag regardless of mask).
 DEFAULT_SEARCH_READ_MASK = "names,emailAddresses,phoneNumbers,organizations"
 
+# Default readMask for otherContacts.list. The "other contacts" (auto-
+# saved addresses the user interacted with but never explicitly saved)
+# expose a NARROWER field set under the default READ_SOURCE_TYPE_CONTACT
+# source: only names / emailAddresses / phoneNumbers / metadata / photos
+# are valid — ``organizations`` is NOT (it requires the PROFILE source +
+# a profile-scoped readMask, which the contacts.other.readonly scope does
+# not cover). So this mask deliberately omits ``organizations``. metadata
+# is included so each entry carries its resourceName + etag.
+DEFAULT_OTHER_CONTACTS_READ_MASK = "names,emailAddresses,phoneNumbers,metadata"
+
 # People API list page size bounds (connections.list): 1-1000, default
 # 100. We clamp into range so an out-of-bounds request gets a clean
 # result instead of a Google 400.
@@ -277,6 +287,72 @@ def list_contacts(
         "contacts": [_simplify_person(p) for p in connections],
         "next_page_token": resp.get("nextPageToken"),
         "total_people": resp.get("totalPeople"),
+    }
+
+
+def list_other_contacts(
+    creds: Credentials,
+    *,
+    page_size: int = _LIST_PAGE_SIZE_DEFAULT,
+    page_token: str | None = None,
+    read_mask: str = DEFAULT_OTHER_CONTACTS_READ_MASK,
+) -> dict:
+    """List the user's "other contacts" via ``people.otherContacts.list``.
+
+    "Other contacts" are addresses Google auto-saved from the user's
+    interactions (people they emailed but never explicitly added to their
+    address book). This is a SEPARATE collection from the main contacts
+    list (``list_contacts``) and is served by the dedicated read-only
+    scope ``contacts.other.readonly`` (SENSITIVE, not restricted → no
+    CASA).
+
+    One page per call; pass the returned ``next_page_token`` back as
+    ``page_token`` to walk the rest. The default source is
+    ``READ_SOURCE_TYPE_CONTACT``, whose valid readMask fields are narrower
+    than the main People surface — ``organizations`` is NOT available here
+    (see ``DEFAULT_OTHER_CONTACTS_READ_MASK``).
+
+    Args:
+        creds: OAuth credentials carrying ``contacts.other.readonly``.
+        page_size: Contacts per page (clamped to 1-1000; People API
+            default 100).
+        page_token: Token from a prior call's ``next_page_token`` to fetch
+            the next page. ``None`` (default) starts at the first.
+        read_mask: Comma-separated People API field mask. Defaults to
+            ``DEFAULT_OTHER_CONTACTS_READ_MASK`` (names / emailAddresses /
+            phoneNumbers / metadata — NOT organizations).
+
+    Returns:
+        ``{contacts, next_page_token}`` — ``contacts`` is the flattened
+        ``_simplify_person`` list (``organization`` will be None since the
+        mask omits it), ``next_page_token`` is ``None`` on the last page.
+
+    Raises:
+        HttpError: from the underlying SDK on 4xx / 5xx — propagated to the
+            tool-layer envelope.
+    """
+    people = get_service("people", "v1", credentials=creds)
+    mask = _ensure_metadata(read_mask)
+    size = _clamp(int(page_size), _LIST_PAGE_SIZE_MIN, _LIST_PAGE_SIZE_MAX)
+
+    list_kwargs: dict[str, Any] = {
+        "readMask": mask,
+        "pageSize": size,
+    }
+    if page_token:
+        list_kwargs["pageToken"] = page_token
+
+    # otherContacts.list is a pure read (idempotent) — safe to retry on a
+    # transient 429/5xx.
+    resp = execute_with_retry(
+        lambda: people.otherContacts().list(**list_kwargs).execute(),
+        idempotent=True,
+        op_name="people.otherContacts.list",
+    )
+    other = resp.get("otherContacts", []) or []
+    return {
+        "contacts": [_simplify_person(p) for p in other],
+        "next_page_token": resp.get("nextPageToken"),
     }
 
 

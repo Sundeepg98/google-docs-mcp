@@ -42,7 +42,7 @@ in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
 wraps that flow + the supporting Drive / Sheets / Slides / Apps Script
-operations into 128 tools (primarily `gdocs_*`, plus `gsheets_*` /
+operations into 134 tools (primarily `gdocs_*`, plus `gsheets_*` /
 `gslides_*` / `as_*` for the newer services) covering the full
 lifecycle: create, edit, read, find, retrofit, trash/untrash, convert
 existing docs, one-shot per-user Apps Script Web App setup, plus
@@ -59,7 +59,7 @@ No external reference file required.
 Most tools are prefixed `gdocs_`; the Sheets / Slides verticals use
 `gsheets_` / `gslides_` and the appscriptly-native automation tools use
 `as_`. Call `gdocs_server_info` on a live server to get the
-authoritative list (all 128 tools) with descriptions.
+authoritative list (all 134 tools) with descriptions.
 
 | Purpose | Tool |
 |---|---|
@@ -179,10 +179,14 @@ First tool call opens the browser. Sign in → grant scopes. Tokens cached after
 - `https://www.googleapis.com/auth/script.deployments`
 - `https://www.googleapis.com/auth/calendar`
 - `https://www.googleapis.com/auth/contacts`
+- `https://www.googleapis.com/auth/gmail.send` — send email on the user's behalf (Gmail; **sensitive**, send-only, no mailbox read)
+- `https://www.googleapis.com/auth/gmail.labels` — manage Gmail labels (create/list/delete label objects; **non-sensitive**)
+- `https://www.googleapis.com/auth/contacts.other.readonly` — read auto-saved "other" contacts (**sensitive**, read-only)
+- `https://www.googleapis.com/auth/script.processes` — read Apps Script execution history (**sensitive**, read-only)
 
-Every one of these is a Google **sensitive** scope; **none is restricted**, so the app needs sensitive-scope OAuth verification but no CASA security assessment. `drive.readonly` (Google's only RESTRICTED scope this app ever requested) was deliberately dropped from the base tier to preserve that no-CASA posture; it is no longer requested at consent (see `auth.py:WORKSPACE_SCOPES` for the per-scope rationale and the removal note). The HTTP/cloud connector flow additionally requests `openid` + `userinfo.email` for identity, for 13 scopes total; see `oauth_google.py:GOOGLE_API_SCOPES`.
+Every one of these is a Google **sensitive** scope (except `gmail.labels`, which is **non-sensitive**); **none is restricted**, so the app needs sensitive-scope OAuth verification but no CASA security assessment. The four most recent (`gmail.send`, `gmail.labels`, `contacts.other.readonly`, `script.processes`) were added together as CASA-free scope growth so the verification covers the maximal app in one pass — each was checked against Google's restricted-scope list and confirmed not restricted. In particular the broad/read Gmail scopes (`mail.google.com`, `gmail.readonly`, `gmail.modify`, etc.) and `drive.readonly` (Google's only RESTRICTED scope this app ever requested) are deliberately NOT requested, to preserve the no-CASA posture (see `auth.py:WORKSPACE_SCOPES` for the per-scope rationale and the `drive.readonly` removal note). The HTTP/cloud connector flow additionally requests `openid` + `userinfo.email` for identity, for 17 scopes total; see `oauth_google.py:GOOGLE_API_SCOPES`.
 
-> **Verification posture (why the code lists more scopes than the consent screen currently under review shows).** The live OAuth verification round currently covers the base set (Docs / Drive.file / Sheets / Slides / Apps Script + identity). The additional sensitive services (Calendar, Tasks, Forms, Contacts) reach existing users via Google's incremental-consent flow (`include_granted_scopes=true`), and their live rollout is held back by the CI deploy gate (`DEPLOY_ENABLED` repo variable set to `false`, which halts auto-deploy on push to `main`) until their own verification round (this project verifies LAST, after the surface is complete). So `auth.py:WORKSPACE_SCOPES` legitimately enumerates the full target set in code while the consent screen currently under review shows the subset already submitted. None of the additional scopes is restricted, so they add no CASA requirement.
+> **Verification posture (why the code lists more scopes than the consent screen currently under review shows).** The live OAuth verification round currently covers the base set (Docs / Drive.file / Sheets / Slides / Apps Script + identity). The additional sensitive services (Calendar, Tasks, Forms, Contacts, Gmail send + the `contacts.other.readonly` / `script.processes` reads) reach existing users via Google's incremental-consent flow (`include_granted_scopes=true`), and their live rollout is held back by the CI deploy gate (`DEPLOY_ENABLED` repo variable set to `false`, which halts auto-deploy on push to `main`) until their own verification round (this project verifies LAST, after the surface is complete). So `auth.py:WORKSPACE_SCOPES` legitimately enumerates the full target set in code while the consent screen currently under review shows the subset already submitted. None of the additional scopes is restricted, so they add no CASA requirement. Each new scope still needs a demo scene in the verification recording (handled separately in the recorder).
 
 ## Apps Script setup (required for converting existing docs)
 
@@ -281,7 +285,7 @@ Verify: `curl https://<your-app>.fly.dev/health` returns `{"ok":true,...}`.
 1. Settings → Connectors → **Add custom connector**
 2. URL: `https://<your-app>.fly.dev/mcp`
 3. (No OAuth fields needed — the `/mcp` endpoint is open by convention; auth lives at `/api/*` and is bypassed by signed URLs)
-4. Save → start a new chat. All 128 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
+4. Save → start a new chat. All 134 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
 
 **Also add `<your-app>.fly.dev` to Settings → Capabilities → Additional allowed domains** so cloud chat's Python sandbox can POST to `/api/convert`.
 

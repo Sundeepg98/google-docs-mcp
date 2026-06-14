@@ -400,6 +400,8 @@ def test_tasks_service_tools_register_from_services_tasks_tools_module():
 # + the apps_script _expected_tools.py declaration.
 _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_generate_bound_script": "appscriptly.services.apps_script.tools",
+    # CASA-free growth — execution-history read tool in its own feature file.
+    "as_list_script_processes": "appscriptly.services.apps_script.processes",
     "as_install_doc_menu": "appscriptly.services.apps_script.doc_menu",
     "as_install_custom_function": (
         "appscriptly.services.apps_script.custom_function"

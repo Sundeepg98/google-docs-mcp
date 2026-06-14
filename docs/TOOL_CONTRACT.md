@@ -26,17 +26,34 @@ Special hard-fatal: `NeedsReauthError → ToolError` containing a Markdown link 
 
 > **This section is an ABBREVIATED contract surface, not the full tool
 > inventory.** It details one tool fully (§3.1) and names ~22 of the
-> `gdocs_*` tools (§3.2–3.22). The **live** surface is **57 tools** and
-> includes the Sheets / Slides / Apps Script verticals (`gsheets_*`,
-> `gslides_*`, `as_*`) plus newer `gdocs_*` tools (e.g.
-> `gdocs_insert_table`, `gdocs_format_range`, `gdocs_export_doc`,
-> `gdocs_find_file`, `gdocs_create_folder`, `gdocs_share_file`,
-> `gdocs_list_permissions`, `gdocs_revoke_permission`) that this
-> abbreviated doc does not yet enumerate. **The authoritative,
-> always-current inventory is `gdocs_server_info()` (full `tools`
-> list + contract metadata) and `gdocs_guide()`** — treat those as the
-> source of truth; this doc is a hand-written excerpt that trails the
-> code.
+> `gdocs_*` tools (§3.2–3.22). The **live** surface is much larger and
+> includes the Sheets / Slides / Apps Script / Forms / Calendar /
+> Contacts / Tasks / Gmail verticals (`gsheets_*`, `gslides_*`, `as_*`,
+> `gforms_*`, `gcal_*`, `gcontacts_*`, `gtasks_*`, `gmail_*`) plus newer
+> `gdocs_*` tools (e.g. `gdocs_insert_table`, `gdocs_format_range`,
+> `gdocs_export_doc`, `gdocs_find_file`, `gdocs_create_folder`,
+> `gdocs_share_file`, `gdocs_list_permissions`, `gdocs_revoke_permission`)
+> that this abbreviated doc does not enumerate. **The authoritative,
+> always-current inventory is `server_info()` (full `tools` list +
+> contract metadata) and `server_guide()`** — treat those as the source
+> of truth; this doc is a hand-written excerpt that trails the code.
+
+### 3.0 New data categories (CASA-free scope growth)
+
+The most recent scope additions are all **CASA-free** (none is on Google's
+restricted list, so no security assessment is required). Each scope ships
+with at least one tool and touches a distinct data category:
+
+| Scope | Sensitivity | Data category | Tool(s) | One-line justification |
+|---|---|---|---|---|
+| `gmail.send` | Sensitive | Send email on the user's behalf | `gmail_send_message` | Lets the assistant send mail the user composes; send-only — grants **no** mailbox read (the restricted `gmail.readonly`/`gmail.modify` are deliberately not requested). |
+| `gmail.labels` | Non-sensitive | Manage Gmail labels | `gmail_create_label`, `gmail_list_labels`, `gmail_delete_label` | Create/list/delete label **objects** for mail organization; cannot read messages or relabel them (that would need restricted `gmail.modify`). |
+| `contacts.other.readonly` | Sensitive | Read auto-saved "other" contacts | `gcontacts_list_other_contacts` | Read-only access to the auto-saved "other contacts" list so the assistant can surface people the user has corresponded with but not explicitly saved. |
+| `script.processes` | Sensitive | Read Apps Script execution history | `as_list_script_processes` | Read-only "did my automation run / did it fail?" observability over a script project's executions; runs nothing and mutates nothing. |
+
+Return shapes for these tools follow §2's universal contract; per-tool
+output schemas live in `tool_schemas.py` (queryable on a live server via
+`server_info()`).
 
 ### 3.1 `gdocs_make_tabbed_doc`
 

@@ -42,3 +42,15 @@ GAS_BOUND_SCOPES = [
     # Cut a version + create a deployment of the bound project.
     "https://www.googleapis.com/auth/script.deployments",
 ]
+
+# CASA-free scope growth — Apps Script EXECUTION-HISTORY read.
+# ``script.processes`` is a Google **SENSITIVE** scope (verification =
+# brand/app review only), NOT one of Google's **RESTRICTED** scopes, so it
+# triggers NO CASA security assessment. Google's classification text:
+# "View Google Apps Script processes." It is baseline-granted via the
+# single-source ``auth.WORKSPACE_SCOPES`` (added this PR), so the per-tool
+# ``scopes=[GAS_PROCESSES_SCOPE]`` on ``as_list_script_processes`` is
+# redundant for resolution but kept for documentation + the machine-
+# readable ``tool.annotations.scopes`` field — same convention as
+# GAS_BOUND_SCOPES above.
+GAS_PROCESSES_SCOPE = "https://www.googleapis.com/auth/script.processes"

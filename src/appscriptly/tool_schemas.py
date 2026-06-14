@@ -1191,6 +1191,83 @@ GCONTACTS_DELETE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gcontacts_list_other_contacts`` — one page of the auto-saved "other
+# contacts" (People API otherContacts.list). Same flat _CONTACT_ENTRY
+# projection as the regular contacts reads; next_page_token is null on the
+# last page. otherContacts has no total count, so there's no total_people.
+GCONTACTS_LIST_OTHER_CONTACTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "contacts": {"type": "array", "items": _CONTACT_ENTRY_SCHEMA},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["contacts"],
+)
+
+
+# ---------------------------------------------------------------------
+# Gmail (services/gmail/) — Gmail API v1 (send + labels; CASA-free)
+# ---------------------------------------------------------------------
+#
+# Two scopes, four tools. ``gmail_send_message`` uses gmail.send
+# (SENSITIVE, no CASA); the three label tools use gmail.labels
+# (NON-sensitive). additionalProperties stays True (the _object default)
+# so a future field is additive.
+
+
+# ``gmail_send_message`` — the sent message's identifiers. ``id`` is the
+# load-bearing field (the message id Gmail assigned); ``thread_id`` is the
+# conversation; ``label_ids`` are the labels Gmail attached (usually
+# ["SENT"]).
+GMAIL_SEND_MESSAGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "thread_id": {"type": ["string", "null"]},
+        "label_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    required=["id"],
+)
+
+
+# Shared single-label projection (gmail_create_label + the per-item shape
+# in gmail_list_labels). ``id`` is the only field guaranteed across every
+# label (a label always has an id); ``type`` is "system" or "user".
+_GMAIL_LABEL_ENTRY_SCHEMA = _object(
+    properties={
+        "id": {"type": "string"},
+        "name": {"type": ["string", "null"]},
+        "type": {"type": ["string", "null"]},
+        "message_list_visibility": {"type": ["string", "null"]},
+        "label_list_visibility": {"type": ["string", "null"]},
+    },
+    required=["id"],
+)
+
+
+# ``gmail_create_label`` — the created label (the flat projection).
+GMAIL_CREATE_LABEL_OUTPUT_SCHEMA = _GMAIL_LABEL_ENTRY_SCHEMA
+
+
+# ``gmail_list_labels`` — all labels (system + user) + the count.
+# users.labels.list does not paginate, so there's no next-page token.
+GMAIL_LIST_LABELS_OUTPUT_SCHEMA = _object(
+    properties={
+        "labels": {"type": "array", "items": _GMAIL_LABEL_ENTRY_SCHEMA},
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["labels", "count"],
+)
+
+
+# ``gmail_delete_label`` — echoes the removed label id.
+GMAIL_DELETE_LABEL_OUTPUT_SCHEMA = _object(
+    properties={
+        "label_id": {"type": "string"},
+        "deleted": {"type": "boolean"},
+    },
+    required=["label_id", "deleted"],
+)
+
+
 # ---------------------------------------------------------------------
 # Apps Script — web-app deploy (ROADMAP 59)
 # ---------------------------------------------------------------------
@@ -1247,6 +1324,41 @@ AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA = _object(
         "container_kind",
         "project_url",
     ],
+)
+
+
+# One execution-process entry in ``as_list_script_processes``. The Apps
+# Script API ``Process`` resource carries the function/type/status plus
+# timing; we surface the load-bearing fields flat. ``project_name`` is the
+# script's title; the timing fields are RFC3339/duration strings when the
+# API supplies them (nullable otherwise). additionalProperties stays True.
+_AS_PROCESS_ENTRY_SCHEMA = _object(
+    properties={
+        "project_name": {"type": ["string", "null"]},
+        "function_name": {"type": ["string", "null"]},
+        "process_type": {"type": ["string", "null"]},
+        "process_status": {"type": ["string", "null"]},
+        "start_time": {"type": ["string", "null"]},
+        "duration": {"type": ["string", "null"]},
+        "user_access_level": {"type": ["string", "null"]},
+    },
+    required=[],
+)
+
+
+# ``as_list_script_processes`` returns one page of a script project's
+# execution history (Apps Script API processes.list /
+# processes.listScriptProcesses). ``processes`` is the flat list;
+# ``next_page_token`` is null on the last page; ``script_id`` echoes the
+# queried project. additionalProperties stays True (the _object default).
+AS_LIST_SCRIPT_PROCESSES_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": ["string", "null"]},
+        "processes": {"type": "array", "items": _AS_PROCESS_ENTRY_SCHEMA},
+        "next_page_token": {"type": ["string", "null"]},
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["processes", "count"],
 )
 
 
@@ -2014,6 +2126,15 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gcontacts_create": GCONTACTS_CREATE_OUTPUT_SCHEMA,
     "gcontacts_update": GCONTACTS_UPDATE_OUTPUT_SCHEMA,
     "gcontacts_delete": GCONTACTS_DELETE_OUTPUT_SCHEMA,
+    # CASA-free growth — "other contacts" read (contacts.other.readonly,
+    # SENSITIVE, no CASA): People API otherContacts.list (auto-saved).
+    "gcontacts_list_other_contacts": GCONTACTS_LIST_OTHER_CONTACTS_OUTPUT_SCHEMA,
+    # Gmail (services/gmail/) — Gmail API v1 (send + labels). gmail.send is
+    # SENSITIVE (no CASA); gmail.labels is NON-sensitive.
+    "gmail_send_message": GMAIL_SEND_MESSAGE_OUTPUT_SCHEMA,
+    "gmail_create_label": GMAIL_CREATE_LABEL_OUTPUT_SCHEMA,
+    "gmail_list_labels": GMAIL_LIST_LABELS_OUTPUT_SCHEMA,
+    "gmail_delete_label": GMAIL_DELETE_LABEL_OUTPUT_SCHEMA,
     # Tasks (services/tasks/) — Google Tasks API v1 (sensitive scope, no CASA)
     "gtasks_list_tasklists": GTASKS_LIST_TASKLISTS_OUTPUT_SCHEMA,
     "gtasks_create_tasklist": GTASKS_CREATE_TASKLIST_OUTPUT_SCHEMA,
@@ -2026,6 +2147,11 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "as_deploy_web_app": AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA,
     # PR-Δ7 — Apps Script bound-script generator (the feature foundation)
     "as_generate_bound_script": AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA,
+    # CASA-free growth — Apps Script execution-history read
+    # (script.processes, SENSITIVE, no CASA): processes.list /
+    # processes.listScriptProcesses. Observability companion to the
+    # create+deploy levers above.
+    "as_list_script_processes": AS_LIST_SCRIPT_PROCESSES_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)
     "as_install_doc_menu": AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)
