@@ -120,6 +120,9 @@ EXPECTED_TOOLS = {
     "as_grade_form_responses",  # GAS service-parity: FormApp.submitGrades() (full forms scope in generated manifest)
     "as_generate_video_deck",  # PR-Δ11: render a Slides deck to video frames
     "as_encode_video",  # PR-Δ12: encode rendered frames into an MP4 (ffmpeg, server-side)
+    "as_install_calendar_sync",  # GAS service-parity (Calendar): time-driven Sheet→Calendar event sync (CalendarApp; calendar scope in generated manifest)
+    "as_install_task_rollover",  # GAS service-parity (Tasks): time-driven Tasks orchestration via the Tasks advanced service (tasks scope in generated manifest)
+    "as_install_contact_sync",  # GAS service-parity (Contacts): reactive onFormSubmit contact create/sync (ContactsApp; contacts scope in generated manifest; binds to a Form)
     # Forms (new service) — SENSITIVE scopes forms.body + forms.responses.readonly
     # (NOT restricted → no CASA). Pairs with as_install_form_handler.
     "gforms_create_form",  # Forms forms.create (+ updateFormInfo for description)
