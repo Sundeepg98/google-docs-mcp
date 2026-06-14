@@ -1443,6 +1443,134 @@ AS_ENCODE_VIDEO_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_calendar_sync`` (GAS service-parity — Calendar) composes the
+# bound-script generator into a TIME-DRIVEN "create/sync Calendar events
+# from Sheet rows" automation. A bound script on a Sheet runs the caller's
+# sync function on a schedule via an installable time trigger; the function
+# uses ``CalendarApp`` to create/update events from the Sheet's rows — the
+# kind of cross-surface (Sheet -> Calendar) automation the Calendar REST
+# tools can't express. Same time-driven shape as
+# AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA, plus ``manifest_scope`` (the
+# ``calendar`` scope the GENERATED bound script declares — reported for
+# transparency; it lives in the generated manifest, NOT appscriptly's own
+# consent). The deploy WIRES the trigger but does NOT run installTrigger, so
+# ``trigger_active`` is False / ``activation_required`` True with the
+# one-step instruction. additionalProperties stays True (the _object
+# default) so a future field is additive.
+AS_INSTALL_CALENDAR_SYNC_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "schedule": {"type": "string", "enum": ["daily", "hourly", "weekly"]},
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+        "manifest_scope": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "schedule",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+        "manifest_scope",
+    ],
+)
+
+
+# ``as_install_task_rollover`` (GAS service-parity — Tasks) composes the
+# bound-script generator into a TIME-DRIVEN Tasks automation. A bound script
+# on a Sheet runs the caller's task function on a schedule via an
+# installable time trigger; the function uses the Tasks ADVANCED service
+# (``Tasks.Tasks``) to roll over incomplete tasks, create tasks from Sheet
+# rows, etc. — recurring Tasks orchestration the Tasks REST tools (one-shot
+# CRUD) don't express. Same time-driven shape as the calendar-sync schema,
+# plus ``manifest_scope`` (the ``tasks`` scope the GENERATED bound script
+# declares — in the generated manifest, NOT appscriptly's own consent). The
+# deploy WIRES the trigger but does NOT run installTrigger, so
+# ``trigger_active`` is False / ``activation_required`` True.
+# additionalProperties stays True (the _object default) so a future field is
+# additive.
+AS_INSTALL_TASK_ROLLOVER_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "sheet_id": {"type": "string"},
+        "schedule": {"type": "string", "enum": ["daily", "hourly", "weekly"]},
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+        "manifest_scope": {"type": "string"},
+        # The Tasks advanced service must be enabled in the generated
+        # script's manifest (dependencies.enabledAdvancedServices) for
+        # ``Tasks.Tasks...`` to resolve — echoed so the caller knows the
+        # generated manifest wired it.
+        "advanced_service": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "sheet_id",
+        "schedule",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+        "manifest_scope",
+        "advanced_service",
+    ],
+)
+
+
+# ``as_install_contact_sync`` (GAS service-parity — Contacts) composes the
+# bound-script generator into a REACTIVE onFormSubmit automation that
+# creates/updates a Google contact from each submission via ``ContactsApp``.
+# Like as_install_form_handler it binds DIRECTLY to a Form (lifting the
+# generic primitive's Forms rejection) and wires an installable
+# ``onFormSubmit`` trigger; like as_grade_form_responses it lands a
+# SENSITIVE scope (``contacts``) in the GENERATED manifest only (NOT
+# appscriptly's own consent), reported under ``manifest_scope``. Same honest
+# trigger-activation state as the form-handler schema (trigger_active False
+# / activation_required True). additionalProperties stays True (the _object
+# default) so a future field is additive.
+AS_INSTALL_CONTACT_SYNC_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "form_id": {"type": "string"},
+        "trigger_type": {"type": "string", "enum": ["onFormSubmit"]},
+        "trigger_handler": {"type": "string"},
+        "project_url": {"type": "string", "format": "uri"},
+        "trigger_active": {"type": "boolean"},
+        "activation_required": {"type": "boolean"},
+        "activation_instructions": {"type": "string"},
+        "manifest_scope": {"type": "string"},
+    },
+    required=[
+        "script_id",
+        "deployment_id",
+        "form_id",
+        "trigger_type",
+        "trigger_handler",
+        "project_url",
+        "trigger_active",
+        "activation_required",
+        "activation_instructions",
+        "manifest_scope",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Server identity / diagnostics / local-only
 # ---------------------------------------------------------------------
@@ -1756,6 +1884,18 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # PR-Δ12 — encode those rendered frames into an MP4 (server-side
     # ffmpeg; the encode half that completes slides-to-video)
     "as_encode_video": AS_ENCODE_VIDEO_OUTPUT_SCHEMA,
+    # GAS service-parity (Calendar) — time-driven create/sync Calendar
+    # events from Sheet rows (CalendarApp; calendar scope in GENERATED
+    # manifest only; composes PR-Δ7)
+    "as_install_calendar_sync": AS_INSTALL_CALENDAR_SYNC_OUTPUT_SCHEMA,
+    # GAS service-parity (Tasks) — time-driven Tasks orchestration via the
+    # Tasks advanced service (tasks scope in GENERATED manifest only;
+    # composes PR-Δ7)
+    "as_install_task_rollover": AS_INSTALL_TASK_ROLLOVER_OUTPUT_SCHEMA,
+    # GAS service-parity (Contacts) — reactive onFormSubmit contact
+    # create/sync (ContactsApp; contacts scope in GENERATED manifest only;
+    # binds directly to a Form; composes PR-Δ7)
+    "as_install_contact_sync": AS_INSTALL_CONTACT_SYNC_OUTPUT_SCHEMA,
     "gdocs_server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "gdocs_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "gdocs_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
