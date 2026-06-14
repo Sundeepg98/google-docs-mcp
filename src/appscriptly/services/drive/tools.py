@@ -250,12 +250,16 @@ def gdrive_find_doc_by_title(
     service="drive",
     title="DEPRECATED alias of gdrive_find_doc_by_title",
     readonly=True, destructive=False, idempotent=True, external=True,
-    # creds=False: delegates to the canonical gdrive_* tool, which does
-    # its own creds injection. The alias only forwards the public args.
-    creds=False,
+    # creds=True: delegates to the same api-layer function the canonical
+    # uses (the decorator injects creds here too). Delegating to the
+    # canonical's creds-stripped wrapper instead would mismatch the
+    # static signature; calling the api function directly keeps the alias
+    # honest to pyright and replicates only the thin guard clause.
+    creds=True,
     output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
 )
 def gdocs_find_doc_by_title(
+    creds,
     query: str,
     exact: bool = False,
     include_trashed: bool = False,
@@ -268,8 +272,10 @@ def gdocs_find_doc_by_title(
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_find_doc_by_title", "gdrive_find_doc_by_title")
-    return gdrive_find_doc_by_title(
-        query,
+    if not query.strip():
+        raise ToolError("query cannot be empty")
+    return _find_doc_by_title(
+        creds, query,
         exact=exact,
         include_trashed=include_trashed,
         verify_writable=verify_writable,
@@ -330,10 +336,10 @@ def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     service="drive",
     title="DEPRECATED alias of gdrive_move_to_folder",
     readonly=False, destructive=False, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
 )
-def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
+def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     """DEPRECATED — use ``gdrive_move_to_folder`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
@@ -341,7 +347,7 @@ def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_move_to_folder", "gdrive_move_to_folder")
-    return gdrive_move_to_folder(file_id, folder_id)
+    return _move_to_folder(creds, file_id, folder_id)
 
 
 # ---------------------------------------------------------------------
@@ -397,10 +403,10 @@ def gdrive_untrash_file(creds, file_id: str | list[str]) -> dict:
     service="drive",
     title="DEPRECATED alias of gdrive_untrash_file",
     readonly=False, destructive=False, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_untrash_file(file_id: str | list[str]) -> dict:
+def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
     """DEPRECATED — use ``gdrive_untrash_file`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
@@ -408,7 +414,9 @@ def gdocs_untrash_file(file_id: str | list[str]) -> dict:
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_untrash_file", "gdrive_untrash_file")
-    return gdrive_untrash_file(file_id)
+    if isinstance(file_id, list):
+        return _run_batch(file_id, _untrash_drive_file, "active")
+    return _untrash_drive_file(creds, file_id)
 
 
 # ---------------------------------------------------------------------
@@ -469,10 +477,10 @@ def gdrive_trash_file(creds, file_id: str | list[str]) -> dict:
     service="drive",
     title="DEPRECATED alias of gdrive_trash_file",
     readonly=False, destructive=True, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_trash_file(file_id: str | list[str]) -> dict:
+def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     """DEPRECATED — use ``gdrive_trash_file`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
@@ -480,7 +488,9 @@ def gdocs_trash_file(file_id: str | list[str]) -> dict:
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_trash_file", "gdrive_trash_file")
-    return gdrive_trash_file(file_id)
+    if isinstance(file_id, list):
+        return _run_batch(file_id, _trash_drive_file, "trashed")
+    return _trash_drive_file(creds, file_id)
 
 
 # ---------------------------------------------------------------------
@@ -577,10 +587,11 @@ def gdrive_share_file(
     service="drive",
     title="DEPRECATED alias of gdrive_share_file",
     readonly=False, destructive=False, idempotent=False, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
 )
 def gdocs_share_file(
+    creds,
     drive_file_id: str,
     email: str,
     role: str = "writer",
@@ -594,13 +605,24 @@ def gdocs_share_file(
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_share_file", "gdrive_share_file")
-    return gdrive_share_file(
-        drive_file_id,
-        email,
-        role=role,
-        notify=notify,
-        message=message,
-    )
+    if role not in _VALID_ROLES:
+        raise ToolError(
+            f"role must be one of {sorted(_VALID_ROLES)}, got {role!r}. "
+            "Drive accepts only reader / writer / commenter for "
+            "user-type permissions ('editor' is a UI label, not an API "
+            "role literal)."
+        )
+    try:
+        return _grant_permission(
+            creds,
+            drive_file_id=drive_file_id,
+            email=email,
+            role=role,
+            notify=notify,
+            message=message,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 # ---------------------------------------------------------------------
@@ -661,10 +683,10 @@ def gdrive_list_permissions(creds, drive_file_id: str) -> dict:
     service="drive",
     title="DEPRECATED alias of gdrive_list_permissions",
     readonly=True, destructive=False, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
 )
-def gdocs_list_permissions(drive_file_id: str) -> dict:
+def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
     """DEPRECATED — use ``gdrive_list_permissions`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
@@ -672,7 +694,7 @@ def gdocs_list_permissions(drive_file_id: str) -> dict:
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_list_permissions", "gdrive_list_permissions")
-    return gdrive_list_permissions(drive_file_id)
+    return _list_permissions(creds, drive_file_id)
 
 
 # ---------------------------------------------------------------------
@@ -749,10 +771,11 @@ def gdrive_create_folder(
     service="drive",
     title="DEPRECATED alias of gdrive_create_folder",
     readonly=False, destructive=False, idempotent=False, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
 )
 def gdocs_create_folder(
+    creds,
     name: str,
     parent_folder_id: str | None = None,
 ) -> dict:
@@ -763,7 +786,7 @@ def gdocs_create_folder(
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_create_folder", "gdrive_create_folder")
-    return gdrive_create_folder(name, parent_folder_id=parent_folder_id)
+    return _create_folder(creds, name=name, parent_folder_id=parent_folder_id)
 
 
 # ---------------------------------------------------------------------
@@ -848,10 +871,11 @@ def gdrive_revoke_permission(
     service="drive",
     title="DEPRECATED alias of gdrive_revoke_permission",
     readonly=False, destructive=True, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
 )
 def gdocs_revoke_permission(
+    creds,
     drive_file_id: str,
     permission_id: str,
 ) -> dict:
@@ -862,7 +886,11 @@ def gdocs_revoke_permission(
     an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_revoke_permission", "gdrive_revoke_permission")
-    return gdrive_revoke_permission(drive_file_id, permission_id)
+    return _revoke_permission(
+        creds,
+        drive_file_id=drive_file_id,
+        permission_id=permission_id,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -964,10 +992,11 @@ def gdrive_export_file(
     service="drive",
     title="DEPRECATED alias of gdrive_export_file",
     readonly=False, destructive=False, idempotent=False, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
 )
 def gdocs_export_doc(
+    creds,
     drive_file_id: str,
     export_format: str,
     output_name: str | None = None,
@@ -980,9 +1009,10 @@ def gdocs_export_doc(
     in v3.0.
     """
     warn_deprecated_alias("gdocs_export_doc", "gdrive_export_file")
-    return gdrive_export_file(
-        drive_file_id,
-        export_format,
+    return _export_doc(
+        creds,
+        drive_file_id=drive_file_id,
+        export_format=export_format,
         output_name=output_name,
     )
 
@@ -1098,10 +1128,11 @@ def gdrive_find_file(
     service="drive",
     title="DEPRECATED alias of gdrive_find_file",
     readonly=True, destructive=False, idempotent=True, external=True,
-    creds=False,
+    creds=True,
     output_schema=GDOCS_FIND_FILE_OUTPUT_SCHEMA,
 )
 def gdocs_find_file(
+    creds,
     query: str = "",
     mime_type: str | None = None,
     full_text: str | None = None,
@@ -1117,7 +1148,8 @@ def gdocs_find_file(
     registered as an alias and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_find_file", "gdrive_find_file")
-    return gdrive_find_file(
+    return _find_file(
+        creds,
         query,
         mime_type=mime_type,
         full_text=full_text,
