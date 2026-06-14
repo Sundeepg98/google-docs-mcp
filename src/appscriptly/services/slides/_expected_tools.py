@@ -14,4 +14,5 @@ EXPECTED: frozenset[str] = frozenset({
     "gslides_create_table",
     "gslides_create_shape",
     "gslides_create_line",
+    "gslides_set_speaker_notes",
 })

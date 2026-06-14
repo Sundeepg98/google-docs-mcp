@@ -6,7 +6,7 @@ with the live ``mcp`` instance — ``server.py`` performs the import
 at the bottom of its module, AFTER constructing ``mcp`` and AFTER
 registering its remaining (non-docs) tools.
 
-**Tools registered here** (17 docs-service tools, in canonical order):
+**Tools registered here** (21 docs-service tools, in canonical order):
 
 1.  ``gdocs_make_tabbed_doc``       — create a new tabbed Google Doc from text
 2.  ``gdocs_add_tabs``              — append tabs to an existing doc
@@ -25,6 +25,10 @@ registering its remaining (non-docs) tools.
 15. ``gdocs_format_paragraph``      — apply paragraph-level formatting
 16. ``gdocs_edit_range``            — delete/replace a specific range (UTF-16)
 17. ``gdocs_insert_markdown_table`` — render a markdown table into a doc
+18. ``gdocs_insert_image``          — insert an inline image from a URL
+19. ``gdocs_list_comments``         — list comments on an app-created doc
+20. ``gdocs_create_comment``        — add a comment to an app-created doc
+21. ``gdocs_reply_to_comment``      — reply to a comment on an app-created doc
 
 The authoritative declaration of this surface lives in
 ``services/docs/_expected_tools.py`` (``EXPECTED``), which the
@@ -58,36 +62,44 @@ from appscriptly.services.docs.api import (
     TabSpec,
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
+    create_comment as _create_comment,
     delete_tab as _delete_tab,
     edit_range as _edit_range,
     format_paragraph as _format_paragraph,
     format_range as _format_range,
     get_doc_outline as _get_doc_outline,
+    insert_image as _insert_image,
     insert_markdown_table as _insert_markdown_table,
     insert_table as _insert_table,
+    list_comments as _list_comments,
     make_doc_with_tabs,
     read_all_tabs as _read_all_tabs,
     read_tab_content as _read_tab_content,
     rename_tab as _rename_tab,
     replace_all_text as _replace_all_text,
+    reply_to_comment as _reply_to_comment,
     set_tab_icons as _set_tab_icons,
 )
 from appscriptly.tool_schemas import (
     GDOCS_ADD_TABS_OUTPUT_SCHEMA,
     GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
+    GDOCS_CREATE_COMMENT_OUTPUT_SCHEMA,
     GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
     GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
     GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
     GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     GDOCS_GET_DOC_OUTLINE_OUTPUT_SCHEMA,
     GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
+    GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA,
     GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
     GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
+    GDOCS_LIST_COMMENTS_OUTPUT_SCHEMA,
     GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
     GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA,
     GDOCS_READ_DOC_OUTPUT_SCHEMA,
     GDOCS_RENAME_TAB_OUTPUT_SCHEMA,
     GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    GDOCS_REPLY_TO_COMMENT_OUTPUT_SCHEMA,
     GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
     GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA,
 )
@@ -337,8 +349,9 @@ def gdocs_read_doc(
     doc_id: str,
     tab_id: str | None = None,
     tab_title: str | None = None,
+    suggestions_view_mode: str | None = None,
 ) -> dict:
-    """Read tab body content — one tab or all of them.
+    """Read tab body content, one tab or all of them.
 
     USE WHEN: you need the actual text/paragraphs inside a doc.
     For tab structure WITHOUT body text (faster, smaller), use
@@ -348,6 +361,19 @@ def gdocs_read_doc(
     - ``tab_id`` given (exact) OR ``tab_title`` (first pre-order match):
       returns a single-tab dict.
     - Neither given: returns ALL tabs as a list (whole-doc dump).
+
+    Args:
+        doc_id: The document ID.
+        tab_id: Optional exact tab ID (single-tab mode).
+        tab_title: Optional tab title, first pre-order match (single-tab
+            mode).
+        suggestions_view_mode: Optional control over how tracked-change
+            SUGGESTIONS render. ``"PREVIEW_WITHOUT_SUGGESTIONS"`` reads
+            the clean current text (suggestions rejected),
+            ``"PREVIEW_SUGGESTIONS_ACCEPTED"`` reads as if all
+            suggestions were accepted, ``"SUGGESTIONS_INLINE"`` keeps
+            them inline, ``"DEFAULT_FOR_CURRENT_ACCESS"`` lets Docs
+            decide. Omit to use Docs' default.
 
     Returns:
         Single-tab mode: ``{"tab_id", "title", "paragraph_count",
@@ -367,9 +393,12 @@ def gdocs_read_doc(
     """
     try:
         if tab_id is None and tab_title is None:
-            return _read_all_tabs(creds, doc_id)
+            return _read_all_tabs(
+                creds, doc_id, suggestions_view_mode=suggestions_view_mode
+            )
         return _read_tab_content(
-            creds, doc_id, tab_id=tab_id, tab_title=tab_title
+            creds, doc_id, tab_id=tab_id, tab_title=tab_title,
+            suggestions_view_mode=suggestions_view_mode,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
@@ -1269,5 +1298,200 @@ def gdocs_insert_markdown_table(
         return _insert_markdown_table(
             creds, doc_id, markdown, index=index, tab_id=tab_id,
         )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_image (documents.batchUpdate: insertInlineImage)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Insert an inline image (from a URL) into a Google Doc",
+    # Inserts a new image (a write, not destructive: existing content is
+    # untouched and the image can be removed). Matches gdocs_insert_table.
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA,
+)
+def gdocs_insert_image(
+    creds,
+    doc_id: str,
+    image_uri: str,
+    index: int = 1,
+    tab_id: str | None = None,
+    width_pt: float | None = None,
+    height_pt: float | None = None,
+) -> dict:
+    """Insert an inline image into a Doc from a public image URL.
+
+    USE WHEN: adding a picture, logo, chart image, or screenshot to a
+    Doc. Google Docs fetches the image from ``image_uri`` SERVER-SIDE
+    and stores its own copy, so the URL only needs to be reachable at
+    insert time (it can go away afterward). Because Docs does the fetch,
+    this needs only the baseline documents scope (no Drive scope).
+
+    Uses the Docs ``insertInlineImage`` batchUpdate request at a body
+    ``index`` (optionally scoped to a ``tab_id`` for multi-tab docs).
+
+    Args:
+        doc_id: Document ID.
+        image_uri: A public http(s) URL to a PNG / JPEG / GIF image
+            (Docs limits: up to 50 MB and 25 megapixels). Must be
+            reachable by Google's servers.
+        index: Body location index to insert at. Default 1 (start of the
+            body; index 0 is reserved by Docs). Must be >= 1.
+        tab_id: Optional tab to target (from ``gdocs_get_doc_outline``).
+            Omit / None targets the default/first tab.
+        width_pt: Optional width in points (1/72 inch). Supply BOTH
+            width_pt and height_pt to size the image, or NEITHER to use
+            the image's natural size (supplying only one is rejected).
+        height_pt: Optional height in points. See ``width_pt``.
+
+    Returns:
+        ``{doc_id, image_object_id, index, tab_id, uri}``.
+        ``image_object_id`` is the inserted image's stable objectId.
+
+    Choreography: ``gdocs_make_tabbed_doc`` (or an existing doc) then
+    ``gdocs_insert_image``, then ``gdocs_read_doc`` to verify (the image
+    shows up as an ``[image]`` marker in the paragraph text).
+    """
+    try:
+        return _insert_image(
+            creds, doc_id, image_uri,
+            index=index, tab_id=tab_id,
+            width_pt=width_pt, height_pt=height_pt,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_list_comments / gdocs_create_comment / gdocs_reply_to_comment
+# (Drive v3 comments() / replies() on app-created docs; drive.file scope)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="List comments on a Google Doc (app-created files)",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_LIST_COMMENTS_OUTPUT_SCHEMA,
+)
+def gdocs_list_comments(
+    creds,
+    doc_id: str,
+    include_deleted: bool = False,
+    page_size: int = 100,
+) -> dict:
+    """List the comments (and their replies) on a Google Doc.
+
+    USE WHEN: reviewing feedback on a doc, summarizing open comment
+    threads, or finding a comment to reply to. Returns each comment with
+    its author, text, resolved state, timestamps, and nested replies.
+
+    Works on docs this app can access under the drive.file scope (the
+    ones it created, or that the user opened with it). A file outside
+    that access returns an error.
+
+    Args:
+        doc_id: The Google Doc (Drive file) ID.
+        include_deleted: When True, include deleted comments (content
+            blanked by Drive, thread structure kept). Default False.
+        page_size: Max comments to return (Drive caps at 100). Returns
+            the first page; ``next_page_token`` is set when more exist.
+
+    Returns:
+        ``{doc_id, comments: [...], next_page_token}``. Each comment is a
+        Drive comment resource. ``next_page_token`` is None when there
+        are no further pages.
+
+    Choreography: pair with ``gdocs_create_comment`` (start a thread) or
+    ``gdocs_reply_to_comment`` (reply using a comment id from here).
+    """
+    return _list_comments(
+        creds, doc_id,
+        include_deleted=include_deleted, page_size=page_size,
+    )
+
+
+@workspace_tool(
+    service="docs",
+    title="Add a comment to a Google Doc (app-created files)",
+    # Creates a new comment (a write, not destructive: nothing existing
+    # is changed). NOT idempotent (each call adds another comment).
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_CREATE_COMMENT_OUTPUT_SCHEMA,
+)
+def gdocs_create_comment(creds, doc_id: str, content: str) -> dict:
+    """Add a document-level comment to a Google Doc.
+
+    USE WHEN: leaving feedback or a note on a doc the app created. The
+    comment is document-level (not anchored to a specific text range);
+    range-anchored comments are a follow-up.
+
+    Works on docs this app can access under the drive.file scope. A file
+    outside that access returns an error.
+
+    Args:
+        doc_id: The Google Doc (Drive file) ID.
+        content: The comment text (rejected if blank).
+
+    Returns:
+        ``{doc_id, comment: {...}}``: the created Drive comment resource
+        (id, content, author, timestamps).
+
+    Choreography: ``gdocs_list_comments`` to review threads, then
+    ``gdocs_reply_to_comment`` to continue one (using its comment id).
+    """
+    try:
+        return _create_comment(creds, doc_id, content)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+@workspace_tool(
+    service="docs",
+    title="Reply to a comment on a Google Doc (app-created files)",
+    # Adds a reply under an existing comment (a write, not destructive).
+    # NOT idempotent (each call adds another reply).
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_REPLY_TO_COMMENT_OUTPUT_SCHEMA,
+)
+def gdocs_reply_to_comment(
+    creds,
+    doc_id: str,
+    comment_id: str,
+    content: str,
+) -> dict:
+    """Reply to an existing comment thread on a Google Doc.
+
+    USE WHEN: continuing a comment thread, answering a reviewer, or
+    resolving a discussion in-line. Adds a reply under the comment whose
+    id you pass (get it from ``gdocs_list_comments``).
+
+    Works on docs this app can access under the drive.file scope. A file
+    or comment outside that access returns an error.
+
+    Args:
+        doc_id: The Google Doc (Drive file) ID.
+        comment_id: The id of the comment to reply to (from
+            ``gdocs_list_comments`` / ``gdocs_create_comment``).
+        content: The reply text (rejected if blank).
+
+    Returns:
+        ``{doc_id, comment_id, reply: {...}}``: the created Drive reply
+        resource (id, content, author, timestamps).
+
+    Choreography: ``gdocs_list_comments`` (find the comment id), then
+    ``gdocs_reply_to_comment``.
+    """
+    try:
+        return _reply_to_comment(creds, doc_id, comment_id, content)
     except ValueError as e:
         raise ToolError(str(e)) from e

@@ -715,3 +715,82 @@ def test_gsheets_protect_range_validation_propagates(with_sheets_stub):
             spreadsheet_id="SPREAD1", sheet_id=0,
             warning_only=True, editor_emails=["a@x.com"],
         )
+
+
+# ---------------------------------------------------------------------
+# 14-18. dimension / merge / data-validation / chart tools
+#
+# Happy-path coverage at the decorator-envelope boundary (the shared
+# with_sheets_stub wires batchUpdate to a {spreadsheetId, replies}
+# reply). Builder + api shapes are covered in test_batch.py / test_api.py.
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_insert_dimension_happy_path(with_sheets_stub):
+    result = tools.gsheets_insert_dimension(
+        spreadsheet_id="S1", sheet_id=0,
+        dimension="ROWS", start_index=2, end_index=5,
+    )
+    assert result["spreadsheet_id"] == "S1"
+    assert result["total_requests"] == 1
+    last = with_sheets_stub.spreadsheets().batchUpdate.call_args_list[-1]
+    assert last.kwargs["body"]["requests"][0]["insertDimension"]["range"][
+        "dimension"
+    ] == "ROWS"
+
+
+def test_gsheets_delete_dimension_happy_path(with_sheets_stub):
+    result = tools.gsheets_delete_dimension(
+        spreadsheet_id="S1", sheet_id=0,
+        dimension="COLUMNS", start_index=0, end_index=2,
+    )
+    assert result["spreadsheet_id"] == "S1"
+    last = with_sheets_stub.spreadsheets().batchUpdate.call_args_list[-1]
+    assert "deleteDimension" in last.kwargs["body"]["requests"][0]
+
+
+def test_gsheets_merge_cells_happy_path(with_sheets_stub):
+    result = tools.gsheets_merge_cells(
+        spreadsheet_id="S1", sheet_id=0,
+        start_row=0, end_row=1, start_col=0, end_col=3,
+    )
+    assert result["spreadsheet_id"] == "S1"
+    last = with_sheets_stub.spreadsheets().batchUpdate.call_args_list[-1]
+    assert last.kwargs["body"]["requests"][0]["mergeCells"][
+        "mergeType"
+    ] == "MERGE_ALL"
+
+
+def test_gsheets_set_data_validation_happy_path(with_sheets_stub):
+    result = tools.gsheets_set_data_validation(
+        spreadsheet_id="S1", sheet_id=0,
+        condition_type="ONE_OF_LIST",
+        start_row=1, end_row=10, start_col=0, end_col=1,
+        values=["A", "B"],
+    )
+    assert result["spreadsheet_id"] == "S1"
+    last = with_sheets_stub.spreadsheets().batchUpdate.call_args_list[-1]
+    rule = last.kwargs["body"]["requests"][0]["setDataValidation"]["rule"]
+    assert rule["condition"]["type"] == "ONE_OF_LIST"
+
+
+def test_gsheets_add_chart_happy_path(with_sheets_stub):
+    with_sheets_stub.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "S1",
+        "replies": [{"addChart": {"chart": {"chartId": 777}}}],
+    }
+    result = tools.gsheets_add_chart(
+        spreadsheet_id="S1",
+        chart_type="COLUMN",
+        domain_sheet_id=0,
+        domain_start_row=0, domain_end_row=5,
+        domain_start_col=0, domain_end_col=1,
+        series_ranges=[{
+            "sheet_id": 0, "start_row": 0, "end_row": 5,
+            "start_col": 1, "end_col": 2,
+        }],
+        anchor_sheet_id=0, anchor_row=1, anchor_col=4,
+        title="Sales",
+    )
+    assert result["spreadsheet_id"] == "S1"
+    assert result["chart_id"] == 777

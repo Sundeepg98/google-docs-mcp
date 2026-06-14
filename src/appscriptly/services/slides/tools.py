@@ -4,9 +4,9 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (8 slides-service tools):
+**Tools registered here** (9 slides-service tools):
 
-1. ``gslides_get_outline``         — read structure + per-slide text
+1. ``gslides_get_outline``         — read structure + per-slide text/elements/notes
 2. ``gslides_replace_all_text``    — find/replace across all slides
 3. ``gslides_create_presentation`` — create an empty new deck
 4. ``gslides_add_slide``           — append a slide (+ title/body text)
@@ -14,6 +14,7 @@ live ``mcp`` instance via ``server.py``'s side-effect import.
 6. ``gslides_create_table``        — insert an empty table on a slide
 7. ``gslides_create_shape``        — insert a shape (rect/ellipse/…) on a slide
 8. ``gslides_create_line``         — draw a line (start→end) on a slide
+9. ``gslides_set_speaker_notes``   — set (replace) a slide's speaker notes
 
 The first three were the minimal trio; ``gslides_add_slide`` closed
 the slide-population gap; ``gslides_create_image`` /
@@ -52,6 +53,7 @@ from appscriptly.services.slides.api import (
     create_table as _create_table,
     get_outline as _get_outline,
     replace_all_text as _replace_all_text,
+    set_speaker_notes as _set_speaker_notes,
 )
 from appscriptly.tool_schemas import (
     GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
@@ -62,6 +64,7 @@ from appscriptly.tool_schemas import (
     GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
 )
 
 # Imported for parity with services/sheets/tools.py; not currently
@@ -97,22 +100,26 @@ def gslides_get_outline(creds, presentation_id: str) -> dict:
     find a specific slide by its text, or verify the result of a
     prior ``replace_all_text`` call.
 
-    Uses Slides' ``presentations.get`` REST endpoint. Returns each
-    slide's stable ``object_id`` (the Slides equivalent of docs'
-    tab IDs — usable later as a target for batchUpdate write
-    operations when those ship), its layout objectId, and the
-    flattened readable text from all text shapes on the slide.
+    Uses Slides' ``presentations.get`` REST endpoint. For each slide it
+    returns the stable ``object_id`` (the Slides equivalent of docs' tab
+    IDs, a valid target for batchUpdate write operations), the 0-based
+    ``index`` (filmstrip position), the layout objectId, the flattened
+    readable ``text`` from all text shapes, an ``elements`` inventory
+    (one ``{object_id, type}`` per page element, classified shape /
+    table / image / line / video / word_art / sheets_chart / group /
+    unknown), and the slide's speaker ``notes`` text.
 
     Args:
         presentation_id: The presentation ID (the ID part of the
             sharing URL).
 
     Returns:
-        ``{presentation_id, title, url, slides: [{object_id, layout,
-        text}, ...]}``. ``slides`` is empty when the deck has no
-        slides (rare; Slides auto-creates a default slide on
-        ``create_presentation``). Per-slide ``text`` is the empty
-        string for image-only slides.
+        ``{presentation_id, title, url, slides: [{object_id, index,
+        layout, text, elements, notes}, ...]}``. ``slides`` is empty
+        when the deck has no slides (rare; Slides auto-creates a default
+        slide on ``create_presentation``). Per-slide ``text`` / ``notes``
+        are the empty string when absent (e.g. an image-only slide with
+        no notes); ``elements`` is empty for a truly blank slide.
 
     Choreography: ``presentation_id`` typically from
     ``gdocs_find_doc_by_title`` (slides files have
@@ -618,4 +625,70 @@ def gslides_create_line(
         end_x_inches=end_x_inches,
         end_y_inches=end_y_inches,
         line_category=line_category,
+    )
+
+
+# ---------------------------------------------------------------------
+# 9. gslides_set_speaker_notes (batchUpdate: deleteText + insertText)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Set the speaker notes of a slide",
+    # Replaces the slide's notes text in place (a write, not
+    # destructive: the slide and its visible content are untouched; the
+    # notes can be re-set). Matches gslides_replace_all_text's posture.
+    readonly=False,
+    destructive=False,
+    # Setting the same notes twice yields the same state (delete-all then
+    # insert the same text is deterministic), so idempotent. The api layer
+    # dispatches idempotent=True.
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
+)
+def gslides_set_speaker_notes(
+    creds,
+    presentation_id: str,
+    slide_object_id: str,
+    notes_text: str,
+) -> dict:
+    """Set (replace) the speaker notes of a single slide.
+
+    USE WHEN: adding presenter notes to a deck (talking points for a
+    slide, a script for a slides-to-video render, or context for
+    collaborators). This REPLACES the slide's existing notes with
+    ``notes_text`` (pass an empty string to CLEAR the notes).
+
+    Uses Slides' ``presentations.batchUpdate``. It first resolves the
+    slide's speaker-notes shape (reading the presentation to find the
+    notesPage's ``speakerNotesObjectId``), then deletes any existing
+    notes text and inserts the new text in a single batch, so the change
+    commits atomically.
+
+    Args:
+        presentation_id: The presentation ID.
+        slide_object_id: The target slide's ``object_id`` (from
+            ``gslides_get_outline`` / ``gslides_add_slide``).
+        notes_text: The notes text to set. Empty string CLEARS the
+            slide's notes.
+
+    Returns:
+        ``{presentation_id, slide_object_id, speaker_notes_object_id,
+        notes_text}`` (echoes the request plus the resolved notes-shape
+        objectId).
+
+    Choreography: ``gslides_get_outline`` (to pick the slide's
+    ``object_id`` and read its current ``notes``) then
+    ``gslides_set_speaker_notes``. Verify with another
+    ``gslides_get_outline`` (the per-slide ``notes`` field reflects the
+    change).
+    """
+    return _set_speaker_notes(
+        creds,
+        presentation_id=presentation_id,
+        slide_object_id=slide_object_id,
+        notes_text=notes_text,
     )

@@ -100,6 +100,11 @@ READONLY_TOOLS = {
     # (destructive) are NOT readonly.
     "gtasks_list_tasklists",
     "gtasks_list_tasks",
+    # Comments: Drive comments.list on app-created docs — a pure read of
+    # the comment threads (no writes). Sister tools gdocs_create_comment
+    # (adds a comment) and gdocs_reply_to_comment (adds a reply) are NOT
+    # readonly.
+    "gdocs_list_comments",
 }
 
 
@@ -138,6 +143,13 @@ DESTRUCTIVE_TOOLS = {
     # (gtasks_complete_task is NOT here — it only flips status, the task
     # persists.)
     "gtasks_delete_task",
+    # Sheets batchUpdate (deleteDimension): removes rows/columns and their
+    # cell data (and shifts later cells). Destructive so MCP clients can
+    # prompt for confirmation. Sister tool gsheets_insert_dimension only
+    # adds blank rows/cols, and gsheets_merge_cells only combines them, so
+    # those are NOT here. (gsheets_clear_range only blanks values; it is a
+    # values wipe, not a structural delete, and is not in this list.)
+    "gsheets_delete_dimension",
 }
 
 

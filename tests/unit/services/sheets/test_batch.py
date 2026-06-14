@@ -34,17 +34,22 @@ from appscriptly.google_api_client import (
 from appscriptly.services.sheets.batch import (
     _format_field_mask,
     _infer_number_format_type,
+    add_chart_request,
     add_conditional_format_rule_request,
     add_protected_range_request,
     add_sheet_request,
     batch_update,
     cell_format,
     color,
+    delete_dimension_request,
     delete_sheet_request,
     duplicate_sheet_request,
     freeze_request,
     grid_range,
+    insert_dimension_request,
+    merge_cells_request,
     repeat_cell_request,
+    set_data_validation_request,
     update_sheet_title_request,
 )
 
@@ -657,4 +662,240 @@ def test_add_protected_range_request_rejects_warning_with_editors():
     with pytest.raises(ValueError, match="incompatible with warning_only"):
         add_protected_range_request(
             grid_range(0), warning_only=True, editor_emails=["a@x.com"],
+        )
+
+
+# ---------------------------------------------------------------------
+# insert_dimension_request / delete_dimension_request
+# ---------------------------------------------------------------------
+
+
+def test_insert_dimension_request_rows_shape():
+    req = insert_dimension_request(
+        0, dimension="ROWS", start_index=2, end_index=5
+    )
+    assert req == {
+        "insertDimension": {
+            "range": {
+                "sheetId": 0,
+                "dimension": "ROWS",
+                "startIndex": 2,
+                "endIndex": 5,
+            },
+            "inheritFromBefore": False,
+        }
+    }
+
+
+def test_insert_dimension_request_inherit_from_before_propagates():
+    req = insert_dimension_request(
+        3, dimension="COLUMNS", start_index=1, end_index=2,
+        inherit_from_before=True,
+    )
+    assert req["insertDimension"]["inheritFromBefore"] is True
+    assert req["insertDimension"]["range"]["dimension"] == "COLUMNS"
+
+
+def test_delete_dimension_request_shape():
+    req = delete_dimension_request(
+        7, dimension="COLUMNS", start_index=0, end_index=2
+    )
+    assert req == {
+        "deleteDimension": {
+            "range": {
+                "sheetId": 7,
+                "dimension": "COLUMNS",
+                "startIndex": 0,
+                "endIndex": 2,
+            },
+        }
+    }
+
+
+def test_dimension_request_rejects_bad_dimension():
+    with pytest.raises(ValueError, match="dimension must be one of"):
+        insert_dimension_request(
+            0, dimension="DIAGONAL", start_index=0, end_index=1
+        )
+
+
+def test_dimension_request_rejects_inverted_band():
+    with pytest.raises(ValueError, match="end_index .* must be > start_index"):
+        delete_dimension_request(
+            0, dimension="ROWS", start_index=5, end_index=5
+        )
+
+
+def test_dimension_request_rejects_negative_index():
+    with pytest.raises(ValueError, match="start_index must be >= 0"):
+        insert_dimension_request(
+            0, dimension="ROWS", start_index=-1, end_index=2
+        )
+
+
+def test_dimension_request_rejects_negative_gid():
+    with pytest.raises(ValueError, match="sheet_id must be >= 0"):
+        delete_dimension_request(
+            -1, dimension="ROWS", start_index=0, end_index=2
+        )
+
+
+# ---------------------------------------------------------------------
+# merge_cells_request
+# ---------------------------------------------------------------------
+
+
+def test_merge_cells_request_default_merge_all():
+    grid = grid_range(0, start_row=0, end_row=1, start_col=0, end_col=3)
+    req = merge_cells_request(grid)
+    assert req == {"mergeCells": {"range": grid, "mergeType": "MERGE_ALL"}}
+
+
+def test_merge_cells_request_custom_merge_type():
+    grid = grid_range(0, start_row=0, end_row=3, start_col=0, end_col=1)
+    req = merge_cells_request(grid, merge_type="MERGE_COLUMNS")
+    assert req["mergeCells"]["mergeType"] == "MERGE_COLUMNS"
+
+
+def test_merge_cells_request_rejects_bad_merge_type():
+    grid = grid_range(0, start_row=0, end_row=2, start_col=0, end_col=2)
+    with pytest.raises(ValueError, match="merge_type must be one of"):
+        merge_cells_request(grid, merge_type="MERGE_DIAGONAL")
+
+
+# ---------------------------------------------------------------------
+# set_data_validation_request
+# ---------------------------------------------------------------------
+
+
+def test_set_data_validation_request_dropdown_shape():
+    grid = grid_range(0, start_row=1, end_row=10, start_col=0, end_col=1)
+    req = set_data_validation_request(
+        grid, condition_type="ONE_OF_LIST", values=["A", "B", "C"]
+    )
+    rule = req["setDataValidation"]["rule"]
+    assert req["setDataValidation"]["range"] == grid
+    assert rule["condition"] == {
+        "type": "ONE_OF_LIST",
+        "values": [
+            {"userEnteredValue": "A"},
+            {"userEnteredValue": "B"},
+            {"userEnteredValue": "C"},
+        ],
+    }
+    assert rule["strict"] is True
+    assert rule["showCustomUi"] is True
+
+
+def test_set_data_validation_request_valueless_condition_omits_values():
+    grid = grid_range(0, start_row=0, end_row=1, start_col=0, end_col=1)
+    req = set_data_validation_request(grid, condition_type="BOOLEAN")
+    assert "values" not in req["setDataValidation"]["rule"]["condition"]
+
+
+def test_set_data_validation_request_input_message_and_flags():
+    grid = grid_range(0, start_row=0, end_row=1, start_col=0, end_col=1)
+    req = set_data_validation_request(
+        grid, condition_type="NUMBER_BETWEEN", values=["1", "10"],
+        strict=False, show_custom_ui=False, input_message="1-10 only",
+    )
+    rule = req["setDataValidation"]["rule"]
+    assert rule["strict"] is False
+    assert rule["showCustomUi"] is False
+    assert rule["inputMessage"] == "1-10 only"
+
+
+def test_set_data_validation_request_rejects_blank_condition_type():
+    grid = grid_range(0, start_row=0, end_row=1, start_col=0, end_col=1)
+    with pytest.raises(ValueError, match="condition_type cannot be empty"):
+        set_data_validation_request(grid, condition_type="  ")
+
+
+# ---------------------------------------------------------------------
+# add_chart_request
+# ---------------------------------------------------------------------
+
+
+def test_add_chart_request_basic_shape():
+    domain = grid_range(0, start_row=0, end_row=5, start_col=0, end_col=1)
+    series = grid_range(0, start_row=0, end_row=5, start_col=1, end_col=2)
+    req = add_chart_request(
+        chart_type="COLUMN",
+        title="Sales",
+        domain_grid=domain,
+        series_grids=[series],
+        anchor_sheet_id=0,
+        anchor_row=1,
+        anchor_col=4,
+    )
+    chart = req["addChart"]["chart"]
+    spec = chart["spec"]
+    assert spec["title"] == "Sales"
+    assert spec["basicChart"]["chartType"] == "COLUMN"
+    assert spec["basicChart"]["headerCount"] == 1
+    assert spec["basicChart"]["domains"] == [
+        {"domain": {"sourceRange": {"sources": [domain]}}}
+    ]
+    assert spec["basicChart"]["series"] == [
+        {"series": {"sourceRange": {"sources": [series]}}}
+    ]
+    anchor = chart["position"]["overlayPosition"]["anchorCell"]
+    assert anchor == {"sheetId": 0, "rowIndex": 1, "columnIndex": 4}
+
+
+def test_add_chart_request_multiple_series():
+    domain = grid_range(0, start_row=0, end_row=5, start_col=0, end_col=1)
+    s1 = grid_range(0, start_row=0, end_row=5, start_col=1, end_col=2)
+    s2 = grid_range(0, start_row=0, end_row=5, start_col=2, end_col=3)
+    req = add_chart_request(
+        chart_type="LINE",
+        domain_grid=domain,
+        series_grids=[s1, s2],
+        anchor_sheet_id=0,
+        anchor_row=0,
+        anchor_col=0,
+    )
+    assert len(req["addChart"]["chart"]["spec"]["basicChart"]["series"]) == 2
+    # No title supplied -> spec omits the key.
+    assert "title" not in req["addChart"]["chart"]["spec"]
+
+
+def test_add_chart_request_rejects_bad_chart_type():
+    domain = grid_range(0, start_row=0, end_row=2, start_col=0, end_col=1)
+    series = grid_range(0, start_row=0, end_row=2, start_col=1, end_col=2)
+    with pytest.raises(ValueError, match="chart_type must be one of"):
+        add_chart_request(
+            chart_type="PIE",
+            domain_grid=domain,
+            series_grids=[series],
+            anchor_sheet_id=0,
+            anchor_row=0,
+            anchor_col=0,
+        )
+
+
+def test_add_chart_request_rejects_empty_series():
+    domain = grid_range(0, start_row=0, end_row=2, start_col=0, end_col=1)
+    with pytest.raises(ValueError, match="series_grids cannot be empty"):
+        add_chart_request(
+            chart_type="BAR",
+            domain_grid=domain,
+            series_grids=[],
+            anchor_sheet_id=0,
+            anchor_row=0,
+            anchor_col=0,
+        )
+
+
+def test_add_chart_request_rejects_negative_anchor():
+    domain = grid_range(0, start_row=0, end_row=2, start_col=0, end_col=1)
+    series = grid_range(0, start_row=0, end_row=2, start_col=1, end_col=2)
+    with pytest.raises(ValueError, match="anchor_row / anchor_col must be >= 0"):
+        add_chart_request(
+            chart_type="BAR",
+            domain_grid=domain,
+            series_grids=[series],
+            anchor_sheet_id=0,
+            anchor_row=-1,
+            anchor_col=0,
         )

@@ -39,6 +39,10 @@ EXPECTED_TOOLS = {
     "gdocs_format_paragraph",  # documents.batchUpdate (updateParagraphStyle)
     "gdocs_edit_range",  # documents.batchUpdate (deleteContentRange [+ insertText])
     "gdocs_insert_markdown_table",  # parse markdown table -> Docs table
+    "gdocs_insert_image",  # documents.batchUpdate (insertInlineImage) — URI fetched server-side
+    "gdocs_list_comments",  # Drive comments.list on app-created docs (drive.file)
+    "gdocs_create_comment",  # Drive comments.create on app-created docs (drive.file)
+    "gdocs_reply_to_comment",  # Drive replies.create on app-created docs (drive.file)
     "gdocs_reset_authorization",  # v1.1.1+: force re-consent / recovery
     "gdocs_server_info",
     "gdocs_test_manifest",  # v1.1.3+: surface test inventory + outcomes
@@ -67,6 +71,11 @@ EXPECTED_TOOLS = {
     "gsheets_duplicate_sheet",  # Sheets batchUpdate (duplicateSheet) — tab lifecycle
     "gsheets_freeze",  # Sheets batchUpdate (updateSheetProperties / gridProperties)
     "gsheets_protect_range",  # Sheets batchUpdate (addProtectedRange) — range protection
+    "gsheets_insert_dimension",  # Sheets batchUpdate (insertDimension) — insert rows/cols
+    "gsheets_delete_dimension",  # Sheets batchUpdate (deleteDimension) — delete rows/cols
+    "gsheets_merge_cells",  # Sheets batchUpdate (mergeCells) — merge a range
+    "gsheets_set_data_validation",  # Sheets batchUpdate (setDataValidation) — dropdown/checkbox/bound
+    "gsheets_add_chart",  # Sheets batchUpdate (addChart) — embedded basic chart
     # v2.4.0: Calendar (4th new service). Scope /auth/calendar (SENSITIVE,
     # not restricted → no CASA). Event + availability surface.
     "gcal_list_events",  # Calendar events.list — time-range read
@@ -84,6 +93,7 @@ EXPECTED_TOOLS = {
     "gslides_create_table",  # Slides batchUpdate (createTable) — empty table
     "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
     "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
+    "gslides_set_speaker_notes",  # Slides batchUpdate (deleteText+insertText) — set speaker notes
     "gcontacts_list",  # contacts: People API connections.list — list contacts (paged)
     "gcontacts_search",  # contacts: People API searchContacts — prefix search
     "gcontacts_get",  # contacts: People API people.get — single contact (etag)

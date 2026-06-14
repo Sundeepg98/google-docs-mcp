@@ -34,7 +34,12 @@ from appscriptly.google_api_client import (
 )
 from appscriptly.services.docs.api import (
     _summarize_body_paragraphs,
+    create_comment,
+    insert_image,
+    list_comments,
+    read_all_tabs,
     read_tab_content,
+    reply_to_comment,
 )
 
 
@@ -502,3 +507,232 @@ def test_edit_range_rejects_empty_tab_id():
     from appscriptly.services.docs.api import edit_range
     with pytest.raises(ValueError, match="tab_id cannot be the empty string"):
         edit_range(MagicMock(), "DOC1", 1, 3, tab_id="   ")
+
+
+# ---------------------------------------------------------------------
+# insert_image — insertInlineImage batchUpdate
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_docs_for_image():
+    docs = MagicMock(name="docs-v1-image")
+    docs.documents().batchUpdate().execute.return_value = {
+        "replies": [{"insertInlineImage": {"objectId": "IMG_AB12"}}],
+    }
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("docs", "v1"): docs})
+    ):
+        yield docs
+
+
+def _last_image_batch_body(docs: MagicMock) -> dict:
+    for call in reversed(docs.documents().batchUpdate.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs["body"]
+    raise AssertionError("no batchUpdate() call captured a body")
+
+
+def test_insert_image_builds_insert_inline_image_request(stub_docs_for_image):
+    insert_image(MagicMock(), "DOC1", "https://example.com/pic.png", index=5)
+    body = _last_image_batch_body(stub_docs_for_image)
+    assert body["requests"] == [
+        {"insertInlineImage": {
+            "location": {"index": 5},
+            "uri": "https://example.com/pic.png",
+        }}
+    ]
+
+
+def test_insert_image_includes_object_size_when_both_dims_given(
+    stub_docs_for_image,
+):
+    insert_image(
+        MagicMock(), "DOC1", "https://example.com/p.png",
+        width_pt=120, height_pt=80,
+    )
+    req = _last_image_batch_body(stub_docs_for_image)["requests"][0]
+    assert req["insertInlineImage"]["objectSize"] == {
+        "width": {"magnitude": 120, "unit": "PT"},
+        "height": {"magnitude": 80, "unit": "PT"},
+    }
+
+
+def test_insert_image_scopes_to_tab_when_tab_id_given(stub_docs_for_image):
+    insert_image(
+        MagicMock(), "DOC1", "https://example.com/p.png", tab_id="t.0",
+    )
+    req = _last_image_batch_body(stub_docs_for_image)["requests"][0]
+    assert req["insertInlineImage"]["location"]["tabId"] == "t.0"
+
+
+def test_insert_image_returns_object_id_from_reply(stub_docs_for_image):
+    result = insert_image(MagicMock(), "DOC1", "https://example.com/p.png")
+    assert result == {
+        "doc_id": "DOC1",
+        "image_object_id": "IMG_AB12",
+        "index": 1,
+        "tab_id": None,
+        "uri": "https://example.com/p.png",
+    }
+
+
+def test_insert_image_rejects_non_http_uri():
+    with pytest.raises(ValueError, match="must be a public http"):
+        insert_image(MagicMock(), "DOC1", "ftp://example.com/p.png")
+
+
+def test_insert_image_rejects_blank_uri():
+    with pytest.raises(ValueError, match="image_uri cannot be empty"):
+        insert_image(MagicMock(), "DOC1", "   ")
+
+
+def test_insert_image_rejects_one_dimension_only():
+    with pytest.raises(ValueError, match="must be supplied together"):
+        insert_image(
+            MagicMock(), "DOC1", "https://example.com/p.png", width_pt=100,
+        )
+
+
+def test_insert_image_rejects_index_below_one():
+    with pytest.raises(ValueError, match="index must be >= 1"):
+        insert_image(MagicMock(), "DOC1", "https://example.com/p.png", index=0)
+
+
+# ---------------------------------------------------------------------
+# read_*: suggestions_view_mode threading
+# ---------------------------------------------------------------------
+
+
+def test_read_tab_content_passes_suggestions_view_mode(monkeypatch):
+    docs, drive, client = _docs_drive_stubs(
+        [{"tabProperties": {"tabId": "t.0", "title": "T"},
+          "documentTab": {"body": {"content": []}}}]
+    )
+    with with_google_api_client(client):
+        read_tab_content(
+            MagicMock(), "DOC1", tab_id="t.0",
+            suggestions_view_mode="PREVIEW_WITHOUT_SUGGESTIONS",
+        )
+    # The most recent documents().get with a documentId carries the mode.
+    got = None
+    for call in reversed(docs.documents().get.call_args_list):
+        if "documentId" in call.kwargs:
+            got = call.kwargs
+            break
+    assert got is not None
+    assert got["suggestionsViewMode"] == "PREVIEW_WITHOUT_SUGGESTIONS"
+
+
+def test_read_tab_content_rejects_bad_suggestions_view_mode():
+    with pytest.raises(ValueError, match="suggestions_view_mode must be one of"):
+        read_tab_content(
+            MagicMock(), "DOC1", tab_id="t.0", suggestions_view_mode="BOGUS",
+        )
+
+
+def test_read_all_tabs_passes_suggestions_view_mode():
+    docs = MagicMock(name="docs-v1-all")
+    docs.documents().get().execute.return_value = {"documentId": "DOC1", "tabs": []}
+    drive = MagicMock(name="drive-v3-all")
+    drive.files().get().execute.return_value = {"trashed": False}
+    client = InMemoryGoogleAPIClient(
+        {("docs", "v1"): docs, ("drive", "v3"): drive}
+    )
+    with with_google_api_client(client):
+        read_all_tabs(
+            MagicMock(), "DOC1",
+            suggestions_view_mode="SUGGESTIONS_INLINE",
+        )
+    got = None
+    for call in reversed(docs.documents().get.call_args_list):
+        if "documentId" in call.kwargs:
+            got = call.kwargs
+            break
+    assert got["suggestionsViewMode"] == "SUGGESTIONS_INLINE"
+
+
+# ---------------------------------------------------------------------
+# Comments — Drive v3 comments()/replies() on app-created docs
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_drive_for_comments():
+    drive = MagicMock(name="drive-v3-comments")
+    drive.comments().list().execute.return_value = {
+        "comments": [{"id": "c1", "content": "hi", "replies": []}],
+        "nextPageToken": "TOK",
+    }
+    drive.comments().create().execute.return_value = {
+        "id": "c2", "content": "new comment",
+    }
+    drive.replies().create().execute.return_value = {
+        "id": "r1", "content": "a reply",
+    }
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("drive", "v3"): drive})
+    ):
+        yield drive
+
+
+def test_list_comments_passes_fileId_and_fields(stub_drive_for_comments):
+    result = list_comments(MagicMock(), "DOC-XYZ")
+    # fileId targets the doc; a fields mask is mandatory for Drive comments.
+    last = None
+    for call in reversed(stub_drive_for_comments.comments().list.call_args_list):
+        if "fileId" in call.kwargs:
+            last = call.kwargs
+            break
+    assert last["fileId"] == "DOC-XYZ"
+    assert last["fields"]  # non-empty mask
+    assert result["doc_id"] == "DOC-XYZ"
+    assert result["comments"] == [{"id": "c1", "content": "hi", "replies": []}]
+    assert result["next_page_token"] == "TOK"
+
+
+def test_create_comment_passes_content_and_returns_resource(
+    stub_drive_for_comments,
+):
+    result = create_comment(MagicMock(), "DOC-XYZ", "Please review")
+    last = None
+    for call in reversed(stub_drive_for_comments.comments().create.call_args_list):
+        if "fileId" in call.kwargs:
+            last = call.kwargs
+            break
+    assert last["fileId"] == "DOC-XYZ"
+    assert last["body"] == {"content": "Please review"}
+    assert last["fields"]
+    assert result == {"doc_id": "DOC-XYZ", "comment": {"id": "c2", "content": "new comment"}}
+
+
+def test_create_comment_rejects_blank_content():
+    with pytest.raises(ValueError, match="content cannot be empty"):
+        create_comment(MagicMock(), "DOC1", "   ")
+
+
+def test_reply_to_comment_passes_comment_id_and_content(stub_drive_for_comments):
+    result = reply_to_comment(MagicMock(), "DOC-XYZ", "c1", "Thanks")
+    last = None
+    for call in reversed(stub_drive_for_comments.replies().create.call_args_list):
+        if "commentId" in call.kwargs:
+            last = call.kwargs
+            break
+    assert last["fileId"] == "DOC-XYZ"
+    assert last["commentId"] == "c1"
+    assert last["body"] == {"content": "Thanks"}
+    assert result == {
+        "doc_id": "DOC-XYZ",
+        "comment_id": "c1",
+        "reply": {"id": "r1", "content": "a reply"},
+    }
+
+
+def test_reply_to_comment_rejects_blank_comment_id():
+    with pytest.raises(ValueError, match="comment_id cannot be empty"):
+        reply_to_comment(MagicMock(), "DOC1", "  ", "hi")
+
+
+def test_reply_to_comment_rejects_blank_content():
+    with pytest.raises(ValueError, match="content cannot be empty"):
+        reply_to_comment(MagicMock(), "DOC1", "c1", "   ")

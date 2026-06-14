@@ -467,3 +467,43 @@ def test_gslides_get_outline_invokes_get_credentials_fn(
         "_get_credentials_fn was not called exactly once — the "
         "decorator envelope may have changed or the fixture missed."
     )
+
+
+# ---------------------------------------------------------------------
+# gslides_set_speaker_notes — happy path through the decorator envelope
+# ---------------------------------------------------------------------
+
+
+def test_gslides_set_speaker_notes_happy_path(with_slides_stub):
+    """The tool resolves the slide's notes shape and returns the
+    {presentation_id, slide_object_id, speaker_notes_object_id,
+    notes_text} envelope through the standard creds=True boundary."""
+    with_slides_stub.presentations().get().execute.return_value = {
+        "presentationId": "DECK1",
+        "slides": [
+            {
+                "objectId": "SL1",
+                "slideProperties": {
+                    "notesPage": {
+                        "notesProperties": {
+                            "speakerNotesObjectId": "NOTES1",
+                        },
+                    },
+                },
+            },
+        ],
+    }
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "replies": [],
+    }
+    result = tools.gslides_set_speaker_notes(
+        presentation_id="DECK1",
+        slide_object_id="SL1",
+        notes_text="Presenter script here",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "slide_object_id": "SL1",
+        "speaker_notes_object_id": "NOTES1",
+        "notes_text": "Presenter script here",
+    }

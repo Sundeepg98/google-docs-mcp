@@ -42,18 +42,23 @@ from appscriptly.google_api_client import (
 )
 from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
+    add_chart,
     add_sheet,
     append_rows,
     apply_conditional_format,
     clear_range,
     create_spreadsheet,
+    delete_dimension,
     delete_sheet,
     duplicate_sheet,
     format_range,
     freeze,
+    insert_dimension,
+    merge_cells,
     protect_range,
     read_range,
     rename_sheet,
+    set_data_validation,
     write_range,
 )
 
@@ -1032,4 +1037,189 @@ def test_protect_range_propagates_grid_validation(stub_sheets_for_batch_api):
         protect_range(
             MagicMock(), "SPREAD1", sheet_id=0,
             start_row=5, end_row=2,
+        )
+
+
+# ---------------------------------------------------------------------
+# insert_dimension / delete_dimension / merge_cells /
+# set_data_validation / add_chart — batchUpdate api wrappers
+#
+# (Builder shapes are unit-tested in test_batch.py; these cover the api
+# wrappers: the request reaching batchUpdate + the envelope.)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_dim():
+    sheets = MagicMock(name="sheets-v4-stub-dim")
+    sheets.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def _last_dim_batch_kwargs(sheets: MagicMock) -> dict:
+    for call in reversed(sheets.spreadsheets().batchUpdate.call_args_list):
+        if "spreadsheetId" in call.kwargs:
+            return call.kwargs
+    raise AssertionError("no batchUpdate() call captured spreadsheetId")
+
+
+def test_insert_dimension_dispatches_insert_dimension_request(stub_sheets_for_dim):
+    insert_dimension(
+        MagicMock(), "SPREAD-ABC", 0,
+        dimension="ROWS", start_index=2, end_index=5,
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    assert kw["spreadsheetId"] == "SPREAD-ABC"
+    assert kw["body"]["requests"] == [
+        {"insertDimension": {
+            "range": {
+                "sheetId": 0, "dimension": "ROWS",
+                "startIndex": 2, "endIndex": 5,
+            },
+            "inheritFromBefore": False,
+        }}
+    ]
+
+
+def test_insert_dimension_returns_flat_envelope(stub_sheets_for_dim):
+    result = insert_dimension(
+        MagicMock(), "SPREAD1", 0,
+        dimension="COLUMNS", start_index=0, end_index=1,
+    )
+    assert result["spreadsheet_id"] == "SPREAD1"
+    assert result["total_requests"] == 1
+    assert result["replies"] == [{}]
+
+
+def test_delete_dimension_dispatches_delete_dimension_request(stub_sheets_for_dim):
+    delete_dimension(
+        MagicMock(), "SPREAD-ABC", 7,
+        dimension="COLUMNS", start_index=0, end_index=2,
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    assert kw["body"]["requests"] == [
+        {"deleteDimension": {"range": {
+            "sheetId": 7, "dimension": "COLUMNS",
+            "startIndex": 0, "endIndex": 2,
+        }}}
+    ]
+
+
+def test_delete_dimension_rejects_bad_dimension(stub_sheets_for_dim):
+    with pytest.raises(ValueError, match="dimension must be one of"):
+        delete_dimension(
+            MagicMock(), "SPREAD1", 0,
+            dimension="X", start_index=0, end_index=1,
+        )
+
+
+def test_merge_cells_dispatches_merge_cells_request(stub_sheets_for_dim):
+    merge_cells(
+        MagicMock(), "SPREAD-ABC", 0,
+        start_row=0, end_row=1, start_col=0, end_col=3,
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    assert kw["body"]["requests"] == [
+        {"mergeCells": {
+            "range": {
+                "sheetId": 0, "startRowIndex": 0, "endRowIndex": 1,
+                "startColumnIndex": 0, "endColumnIndex": 3,
+            },
+            "mergeType": "MERGE_ALL",
+        }}
+    ]
+
+
+def test_merge_cells_custom_merge_type_propagates(stub_sheets_for_dim):
+    merge_cells(
+        MagicMock(), "SPREAD1", 0,
+        start_row=0, end_row=3, start_col=0, end_col=1,
+        merge_type="MERGE_COLUMNS",
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    assert kw["body"]["requests"][0]["mergeCells"]["mergeType"] == "MERGE_COLUMNS"
+
+
+def test_set_data_validation_dispatches_request(stub_sheets_for_dim):
+    set_data_validation(
+        MagicMock(), "SPREAD-ABC", 0,
+        condition_type="ONE_OF_LIST",
+        start_row=1, end_row=10, start_col=0, end_col=1,
+        values=["A", "B"],
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    req = kw["body"]["requests"][0]["setDataValidation"]
+    assert req["range"]["sheetId"] == 0
+    assert req["rule"]["condition"]["type"] == "ONE_OF_LIST"
+    assert req["rule"]["condition"]["values"] == [
+        {"userEnteredValue": "A"}, {"userEnteredValue": "B"},
+    ]
+
+
+def test_set_data_validation_rejects_blank_condition(stub_sheets_for_dim):
+    with pytest.raises(ValueError, match="condition_type cannot be empty"):
+        set_data_validation(
+            MagicMock(), "SPREAD1", 0, condition_type="",
+        )
+
+
+def test_add_chart_dispatches_add_chart_request(stub_sheets_for_dim):
+    add_chart(
+        MagicMock(), "SPREAD-ABC",
+        chart_type="COLUMN",
+        domain_sheet_id=0,
+        domain_start_row=0, domain_end_row=5,
+        domain_start_col=0, domain_end_col=1,
+        series_ranges=[{
+            "sheet_id": 0, "start_row": 0, "end_row": 5,
+            "start_col": 1, "end_col": 2,
+        }],
+        anchor_sheet_id=0, anchor_row=1, anchor_col=4,
+        title="Sales",
+    )
+    kw = _last_dim_batch_kwargs(stub_sheets_for_dim)
+    spec = kw["body"]["requests"][0]["addChart"]["chart"]["spec"]
+    assert spec["basicChart"]["chartType"] == "COLUMN"
+    assert spec["title"] == "Sales"
+    assert len(spec["basicChart"]["series"]) == 1
+
+
+def test_add_chart_surfaces_assigned_chart_id_from_reply(stub_sheets_for_dim):
+    stub_sheets_for_dim.spreadsheets().batchUpdate().execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "replies": [{"addChart": {"chart": {"chartId": 555}}}],
+    }
+    result = add_chart(
+        MagicMock(), "SPREAD1",
+        chart_type="BAR",
+        domain_sheet_id=0,
+        domain_start_row=0, domain_end_row=3,
+        domain_start_col=0, domain_end_col=1,
+        series_ranges=[{
+            "sheet_id": 0, "start_row": 0, "end_row": 3,
+            "start_col": 1, "end_col": 2,
+        }],
+        anchor_sheet_id=0, anchor_row=0, anchor_col=0,
+    )
+    assert result["spreadsheet_id"] == "SPREAD1"
+    assert result["chart_id"] == 555
+    assert result["total_requests"] == 1
+
+
+def test_add_chart_rejects_empty_series(stub_sheets_for_dim):
+    # The api passes an empty series_ranges straight to the builder, which
+    # raises with its own param name (series_grids).
+    with pytest.raises(ValueError, match="series_grids cannot be empty"):
+        add_chart(
+            MagicMock(), "SPREAD1",
+            chart_type="BAR",
+            domain_sheet_id=0,
+            domain_start_row=0, domain_end_row=3,
+            domain_start_col=0, domain_end_col=1,
+            series_ranges=[],
+            anchor_sheet_id=0, anchor_row=0, anchor_col=0,
         )

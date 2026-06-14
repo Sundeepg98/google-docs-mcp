@@ -909,3 +909,109 @@ def test_gdocs_edit_range_rejects_bad_range(with_docs_stub):
         tools.gdocs_edit_range(doc_id="DOC1", start_index=5, end_index=5)
     with pytest.raises(ToolError, match="start_index must be >= 1"):
         tools.gdocs_edit_range(doc_id="DOC1", start_index=0, end_index=5)
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_image — happy path + validation through the envelope
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_insert_image_happy_path(with_docs_stub):
+    with_docs_stub.documents().batchUpdate().execute.return_value = {
+        "replies": [{"insertInlineImage": {"objectId": "IMG1"}}],
+    }
+    result = tools.gdocs_insert_image(
+        doc_id="DOC1", image_uri="https://example.com/p.png", index=3,
+    )
+    assert result["doc_id"] == "DOC1"
+    assert result["image_object_id"] == "IMG1"
+    assert result["uri"] == "https://example.com/p.png"
+
+
+def test_gdocs_insert_image_validation_becomes_toolerror(with_docs_stub):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="must be a public http"):
+        tools.gdocs_insert_image(doc_id="DOC1", image_uri="file:///etc/x")
+
+
+# ---------------------------------------------------------------------
+# gdocs_read_doc — suggestions_view_mode reaches the API
+# ---------------------------------------------------------------------
+
+
+def test_gdocs_read_doc_threads_suggestions_view_mode():
+    docs = MagicMock(name="docs-v1-svm")
+    docs.documents().get().execute.return_value = {"documentId": "DOC1", "tabs": []}
+    drive = MagicMock(name="drive-v3-svm")
+    drive.files().get().execute.return_value = {"trashed": False}
+    with with_google_api_client(InMemoryGoogleAPIClient({
+        ("docs", "v1"): docs, ("drive", "v3"): drive,
+    })):
+        tools.gdocs_read_doc(
+            doc_id="DOC1",
+            suggestions_view_mode="PREVIEW_WITHOUT_SUGGESTIONS",
+        )
+    got = None
+    for call in reversed(docs.documents().get.call_args_list):
+        if "documentId" in call.kwargs:
+            got = call.kwargs
+            break
+    assert got["suggestionsViewMode"] == "PREVIEW_WITHOUT_SUGGESTIONS"
+
+
+# ---------------------------------------------------------------------
+# gdocs comments tools (Drive v3 stub)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def with_drive_comments_stub():
+    drive = MagicMock(name="drive-v3-comments-tools")
+    drive.comments().list().execute.return_value = {
+        "comments": [{"id": "c1", "content": "hi", "replies": []}],
+        "nextPageToken": None,
+    }
+    drive.comments().create().execute.return_value = {"id": "c2", "content": "x"}
+    drive.replies().create().execute.return_value = {"id": "r1", "content": "y"}
+    with with_google_api_client(InMemoryGoogleAPIClient({
+        ("drive", "v3"): drive,
+    })):
+        yield drive
+
+
+def test_gdocs_list_comments_happy_path(with_drive_comments_stub):
+    result = tools.gdocs_list_comments(doc_id="DOC-XYZ")
+    assert result["doc_id"] == "DOC-XYZ"
+    assert result["comments"][0]["id"] == "c1"
+    assert result["next_page_token"] is None
+
+
+def test_gdocs_create_comment_happy_path(with_drive_comments_stub):
+    result = tools.gdocs_create_comment(doc_id="DOC-XYZ", content="Review please")
+    assert result["doc_id"] == "DOC-XYZ"
+    assert result["comment"]["id"] == "c2"
+
+
+def test_gdocs_create_comment_validation_becomes_toolerror(
+    with_drive_comments_stub,
+):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="content cannot be empty"):
+        tools.gdocs_create_comment(doc_id="DOC1", content="   ")
+
+
+def test_gdocs_reply_to_comment_happy_path(with_drive_comments_stub):
+    result = tools.gdocs_reply_to_comment(
+        doc_id="DOC-XYZ", comment_id="c1", content="Thanks",
+    )
+    assert result["doc_id"] == "DOC-XYZ"
+    assert result["comment_id"] == "c1"
+    assert result["reply"]["id"] == "r1"
+
+
+def test_gdocs_reply_to_comment_validation_becomes_toolerror(
+    with_drive_comments_stub,
+):
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="comment_id cannot be empty"):
+        tools.gdocs_reply_to_comment(doc_id="DOC1", comment_id="", content="hi")

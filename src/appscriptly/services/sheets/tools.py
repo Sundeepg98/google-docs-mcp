@@ -7,7 +7,7 @@ imported. ``server.py`` performs the import at the bottom AFTER
 constructing ``mcp``, the same side-effect pattern as Phase A/B/C
 and Gap #7.
 
-**Tools registered here** (13 sheets-service tools):
+**Tools registered here** (18 sheets-service tools):
 
 1.  ``gsheets_read_range``               — read cell values from a range
 2.  ``gsheets_write_range``              — write 2D values to a range
@@ -22,6 +22,11 @@ and Gap #7.
 11. ``gsheets_duplicate_sheet``          — copy a tab/sheet (batchUpdate)
 12. ``gsheets_freeze``                   — freeze header rows/columns (batchUpdate)
 13. ``gsheets_protect_range``            — protect a cell range (batchUpdate)
+14. ``gsheets_insert_dimension``         — insert rows/columns (batchUpdate)
+15. ``gsheets_delete_dimension``         — delete rows/columns (batchUpdate)
+16. ``gsheets_merge_cells``              — merge a cell range (batchUpdate)
+17. ``gsheets_set_data_validation``      — set a validation rule (batchUpdate)
+18. ``gsheets_add_chart``                — add an embedded chart (batchUpdate)
 
 (Authoritative declaration: ``services/sheets/_expected_tools.py``.)
 
@@ -54,33 +59,43 @@ from __future__ import annotations
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.sheets.api import (
     DEFAULT_RANGE,
+    add_chart as _add_chart,
     add_sheet as _add_sheet,
     append_rows as _append_rows,
     apply_conditional_format as _apply_conditional_format,
     clear_range as _clear_range,
     create_spreadsheet as _create_spreadsheet,
+    delete_dimension as _delete_dimension,
     delete_sheet as _delete_sheet,
     duplicate_sheet as _duplicate_sheet,
     format_range as _format_range,
     freeze as _freeze,
+    insert_dimension as _insert_dimension,
+    merge_cells as _merge_cells,
     protect_range as _protect_range,
     read_range as _read_range,
     rename_sheet as _rename_sheet,
+    set_data_validation as _set_data_validation,
     write_range as _write_range,
 )
 from appscriptly.tool_schemas import (
+    GSHEETS_ADD_CHART_OUTPUT_SCHEMA,
     GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
     GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
     GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
     GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA,
     GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
+    GSHEETS_DELETE_DIMENSION_OUTPUT_SCHEMA,
     GSHEETS_DELETE_SHEET_OUTPUT_SCHEMA,
     GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
     GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
     GSHEETS_FREEZE_OUTPUT_SCHEMA,
+    GSHEETS_INSERT_DIMENSION_OUTPUT_SCHEMA,
+    GSHEETS_MERGE_CELLS_OUTPUT_SCHEMA,
     GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
     GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     GSHEETS_RENAME_SHEET_OUTPUT_SCHEMA,
+    GSHEETS_SET_DATA_VALIDATION_OUTPUT_SCHEMA,
     GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
 )
 
@@ -1005,4 +1020,391 @@ def gsheets_protect_range(
         description=description,
         warning_only=warning_only,
         editor_emails=editor_emails,
+    )
+
+
+# ---------------------------------------------------------------------
+# 14. gsheets_insert_dimension, batchUpdate (insertDimension)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Insert empty rows or columns in a Google Sheet",
+    # Inserts blank rows/cols (existing data shifts but is preserved) -
+    # a write, not destructive. Matches gsheets_add_sheet's posture.
+    readonly=False,
+    destructive=False,
+    # NOT idempotent: re-running inserts ANOTHER band. The api layer
+    # dispatches idempotent=False.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_INSERT_DIMENSION_OUTPUT_SCHEMA,
+)
+def gsheets_insert_dimension(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+    inherit_from_before: bool = False,
+) -> dict:
+    """Insert empty rows or columns, shifting existing cells down/right.
+
+    USE WHEN: making room in a sheet, inserting blank rows before a
+    total line, adding columns between existing data, etc. Inserts
+    ``end_index - start_index`` rows (``dimension="ROWS"``) or columns
+    (``dimension="COLUMNS"``) before ``start_index``.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with an ``insertDimension``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id, the ``gid``, NOT the tab name. The
+            first/default tab is ``0`` (find a tab's gid in its URL
+            ``#gid=...`` or from ``gsheets_add_sheet``).
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based index to insert before (``0`` = very top /
+            left).
+        end_index: 0-based EXCLUSIVE end; the count inserted is
+            ``end_index - start_index`` (e.g. start 2, end 5 inserts 3).
+        inherit_from_before: When ``True``, new rows/cols copy formatting
+            from the row/col BEFORE them; ``False`` (default) from after.
+            ``True`` with ``start_index=0`` is rejected by Sheets.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, ``total_requests``
+        is 1; ``replies`` is Sheets' raw reply list.
+
+    Choreography: ``gsheets_get_outline``-style discovery of the gid (or
+    ``gsheets_add_sheet``), then insert, then ``gsheets_write_range`` to
+    fill the new band.
+    """
+    return _insert_dimension(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        dimension=dimension,
+        start_index=start_index,
+        end_index=end_index,
+        inherit_from_before=inherit_from_before,
+    )
+
+
+# ---------------------------------------------------------------------
+# 15. gsheets_delete_dimension, batchUpdate (deleteDimension)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Delete rows or columns from a Google Sheet",
+    # Removes rows/cols and their data, DESTRUCTIVE. Matches
+    # gsheets_delete_sheet's posture.
+    readonly=False,
+    destructive=True,
+    # NOT idempotent: indices shift after the first delete, so a replay
+    # would remove a DIFFERENT band. The api layer dispatches
+    # idempotent=False.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_DELETE_DIMENSION_OUTPUT_SCHEMA,
+)
+def gsheets_delete_dimension(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+) -> dict:
+    """Delete a band of rows or columns (DESTRUCTIVE, data is removed).
+
+    USE WHEN: removing rows/columns entirely (not just clearing their
+    values), deleting empty filler rows, dropping an obsolete column,
+    etc. Removes the half-open band ``[start_index, end_index)`` of rows
+    (``dimension="ROWS"``) or columns (``dimension="COLUMNS"``), shifting
+    later cells up / left.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with a ``deleteDimension``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id, the ``gid``, NOT the tab name. The
+            first/default tab is ``0``.
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based inclusive first row/col to delete.
+        end_index: 0-based EXCLUSIVE end; count deleted is
+            ``end_index - start_index``.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, ``total_requests``
+        is 1; ``replies`` is Sheets' raw reply list.
+
+    WARNING: this DELETES the cells in the band (unlike
+    ``gsheets_clear_range``, which only blanks values). To remove
+    multiple non-adjacent bands, call this once per band (highest index
+    first, so earlier deletes don't shift later indices).
+    """
+    return _delete_dimension(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        dimension=dimension,
+        start_index=start_index,
+        end_index=end_index,
+    )
+
+
+# ---------------------------------------------------------------------
+# 16. gsheets_merge_cells, batchUpdate (mergeCells)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Merge a cell range in a Google Sheet",
+    # Combines cells in place, a layout change, not destructive in our
+    # sense (cells can be unmerged). Matches gsheets_format_range.
+    readonly=False,
+    destructive=False,
+    # Merging the same range the same way twice is a no-op the 2nd time
+    #, idempotent. The api layer dispatches idempotent=True.
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_MERGE_CELLS_OUTPUT_SCHEMA,
+)
+def gsheets_merge_cells(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    merge_type: str = "MERGE_ALL",
+) -> dict:
+    """Merge a rectangular block of cells into one (or per row / column).
+
+    USE WHEN: building a header that spans columns, a banner cell, or a
+    grouped label. Three modes via ``merge_type``: ``MERGE_ALL`` (one
+    combined cell), ``MERGE_COLUMNS`` (merge down each column),
+    ``MERGE_ROWS`` (merge across each row).
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with a ``mergeCells``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id, the ``gid``, NOT the tab name. The
+            first/default tab is ``0``.
+        start_row / end_row / start_col / end_col: 0-based, half-open cell
+            bounds (``end`` EXCLUSIVE). Supply bounds covering 2+ cells -
+            a single-cell range has nothing to merge (Sheets 400s).
+        merge_type: ``"MERGE_ALL"`` (default), ``"MERGE_COLUMNS"``, or
+            ``"MERGE_ROWS"``.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, ``total_requests``
+        is 1; ``replies`` is Sheets' raw reply list.
+
+    Choreography: typically follows ``gsheets_write_range`` (write a
+    banner value into the top-left cell, then merge the range over it).
+    """
+    return _merge_cells(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+        merge_type=merge_type,
+    )
+
+
+# ---------------------------------------------------------------------
+# 17. gsheets_set_data_validation, batchUpdate (setDataValidation)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Set a data-validation rule (dropdown, checkbox, bound) on a range",
+    # Attaches a validation rule in place, a write, not destructive
+    # (cells keep their values; the rule can be cleared). Matches
+    # gsheets_apply_conditional_format.
+    readonly=False,
+    destructive=False,
+    # Setting the same rule on the same range twice yields the same state
+    #, idempotent. The api layer dispatches idempotent=True.
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_SET_DATA_VALIDATION_OUTPUT_SCHEMA,
+)
+def gsheets_set_data_validation(
+    creds,
+    spreadsheet_id: str,
+    sheet_id: int,
+    condition_type: str,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    values: list[str] | None = None,
+    strict: bool = True,
+    show_custom_ui: bool = True,
+    input_message: str | None = None,
+) -> dict:
+    """Set a data-validation rule on a range (dropdown / checkbox / bound).
+
+    USE WHEN: constraining what a user can type, a dropdown of allowed
+    values (``condition_type="ONE_OF_LIST"`` with ``values=[...]``), a
+    checkbox (``"BOOLEAN"``), a numeric range (``"NUMBER_BETWEEN"`` with
+    ``values=["1","10"]``), an email check (``"TEXT_IS_EMAIL"``), etc.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with a ``setDataValidation``
+    request (via the reusable builder in ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        sheet_id: The numeric tab id, the ``gid``, NOT the tab name. The
+            first/default tab is ``0``.
+        condition_type: A Sheets ``ConditionType``, e.g. ``"ONE_OF_LIST"``
+            (dropdown), ``"BOOLEAN"`` (checkbox), ``"NUMBER_BETWEEN"``,
+            ``"NUMBER_GREATER"``, ``"TEXT_IS_EMAIL"``, ``"DATE_IS_VALID"``.
+        start_row / end_row / start_col / end_col: 0-based, half-open cell
+            bounds (``end`` EXCLUSIVE). Omit a bound to leave that side
+            unbounded; omit all four to target the whole sheet.
+        values: the condition's value(s) as strings, the dropdown items
+            for ``ONE_OF_LIST``, ``["1","10"]`` for ``NUMBER_BETWEEN``,
+            etc. Omit for valueless conditions.
+        strict: ``True`` (default) REJECTS invalid entries; ``False``
+            allows them but flags a warning.
+        show_custom_ui: ``True`` (default) shows the UI affordance (e.g.
+            the dropdown arrow for ``ONE_OF_LIST``).
+        input_message: optional help text shown when a cell is selected.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, ``total_requests``
+        is 1; ``replies`` is Sheets' raw reply list.
+
+    Choreography: pair with ``gsheets_write_range`` to seed the allowed
+    values elsewhere, then point a ``ONE_OF_LIST`` rule at the input
+    column.
+    """
+    return _set_data_validation(
+        creds,
+        spreadsheet_id,
+        sheet_id,
+        condition_type=condition_type,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+        values=values,
+        strict=strict,
+        show_custom_ui=show_custom_ui,
+        input_message=input_message,
+    )
+
+
+# ---------------------------------------------------------------------
+# 18. gsheets_add_chart, batchUpdate (addChart, EmbeddedChartSpec)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Add an embedded chart to a Google Sheet",
+    # Adds a new chart overlay, a write, not destructive (the chart can
+    # be removed; underlying data untouched). Matches gsheets_add_sheet.
+    readonly=False,
+    destructive=False,
+    # NOT idempotent: addChart APPENDS a fresh chart (new chartId) each
+    # call. The api layer dispatches idempotent=False.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_ADD_CHART_OUTPUT_SCHEMA,
+)
+def gsheets_add_chart(
+    creds,
+    spreadsheet_id: str,
+    chart_type: str,
+    domain_sheet_id: int,
+    domain_start_row: int,
+    domain_end_row: int,
+    domain_start_col: int,
+    domain_end_col: int,
+    series_ranges: list[dict],
+    anchor_sheet_id: int,
+    anchor_row: int,
+    anchor_col: int,
+    title: str | None = None,
+    header_count: int = 1,
+) -> dict:
+    """Add a basic embedded chart (bar / line / area / column / scatter).
+
+    USE WHEN: visualizing sheet data, a bar chart of monthly totals, a
+    line chart of a trend, etc. Builds a basic cartesian chart from one
+    domain range (the X axis / categories) plus one or more series ranges
+    (the plotted Y values), anchored as an overlay at a cell.
+
+    Uses Sheets' ``spreadsheets.batchUpdate`` with an ``addChart`` request
+    carrying an ``EmbeddedChartSpec`` (via the reusable builder in
+    ``services/sheets/batch.py``).
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        chart_type: A Sheets ``BasicChartType``, ``"BAR"`` / ``"LINE"`` /
+            ``"AREA"`` / ``"COLUMN"`` / ``"SCATTER"`` / ``"COMBO"`` /
+            ``"STEPPED_AREA"``.
+        domain_sheet_id: gid of the tab holding the domain data.
+        domain_start_row / domain_end_row / domain_start_col /
+            domain_end_col: 0-based, half-open GridRange of the domain
+            (X axis / category labels).
+        series_ranges: a list of dicts, each describing one data series
+            as ``{"sheet_id": int, "start_row": int, "end_row": int,
+            "start_col": int, "end_col": int}`` (the bounds are 0-based,
+            half-open; omit a bound to leave it unbounded). At least one
+            series is required.
+        anchor_sheet_id: gid of the tab the chart overlay is placed on.
+        anchor_row / anchor_col: 0-based cell coordinates of the chart's
+            top-left anchor on ``anchor_sheet_id``.
+        title: optional chart title.
+        header_count: number of leading header rows/cols Sheets labels
+            series from (default 1).
+
+    Returns:
+        ``{spreadsheet_id, chart_id, total_requests, replies}`` -
+        ``chart_id`` is the gid Sheets assigned the new chart (use it to
+        target the chart in a future update/delete tool).
+
+    Choreography: ``gsheets_write_range`` (lay out the data) →
+    ``gsheets_add_chart`` (point domain + series at it). Find tab gids in
+    their URLs (``#gid=...``) or from ``gsheets_add_sheet``.
+    """
+    return _add_chart(
+        creds,
+        spreadsheet_id,
+        chart_type=chart_type,
+        domain_sheet_id=domain_sheet_id,
+        domain_start_row=domain_start_row,
+        domain_end_row=domain_end_row,
+        domain_start_col=domain_start_col,
+        domain_end_col=domain_end_col,
+        series_ranges=series_ranges,
+        anchor_sheet_id=anchor_sheet_id,
+        anchor_row=anchor_row,
+        anchor_col=anchor_col,
+        title=title,
+        header_count=header_count,
     )
