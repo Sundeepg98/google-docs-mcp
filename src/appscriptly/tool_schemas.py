@@ -2076,4 +2076,31 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_setup_apps_script": GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
     "gdocs_reset_authorization": GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
     "gdocs_admin_audit": GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
+    # -----------------------------------------------------------------
+    # chore/tool-namespace-cleanup — canonical names for the 18 renamed
+    # tools. Each maps to the SAME schema object as its gdocs_* alias
+    # above (one implementation, two registrations). The old gdocs_*
+    # entries are retained for the deprecated aliases (removal v3.0).
+    # -----------------------------------------------------------------
+    # Drive (gdrive_*).
+    "gdrive_find_doc_by_title": GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+    "gdrive_move_to_folder": GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+    "gdrive_trash_file": GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
+    "gdrive_untrash_file": GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+    "gdrive_share_file": GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
+    "gdrive_list_permissions": GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
+    "gdrive_create_folder": GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
+    "gdrive_revoke_permission": GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
+    "gdrive_export_file": GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
+    "gdrive_find_file": GDOCS_FIND_FILE_OUTPUT_SCHEMA,
+    "gdrive_get_signed_upload_url": GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+    # admin / introspection / auth.
+    "server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
+    "server_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
+    "server_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
+    "server_help": GDOCS_HELP_OUTPUT_SCHEMA,
+    "admin_audit": GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
+    "account_reset_authorization": GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
+    # Apps Script installer (3rd registration; shares the installer schema).
+    "as_install_automation": GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
 }

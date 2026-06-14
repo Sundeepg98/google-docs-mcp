@@ -7,28 +7,44 @@ this module triggers registration with the live ``mcp`` instance —
 constructing ``mcp`` and AFTER ``decorators.register(mcp, ...)`` wires
 the ``@workspace_tool`` decorator.
 
-**Tools registered here** (7 admin-service tools):
+**Namespace cleanup (chore/tool-namespace-cleanup).** These tools are
+admin / introspection / auth, not Docs, so they were renamed off the
+historical ``gdocs_`` prefix to honest prefixes (``server_`` for
+introspection, ``admin_`` for admin-gated, ``account_`` for auth-state,
+``gdrive_`` for the Drive-bound signed-upload URL). Every old ``gdocs_``
+name stays registered as a DEPRECATED ALIAS (dual-registration; planned
+removal v3.0) so nothing breaks — the same model PR-α used for
+``gdocs_install_automation`` / ``gdocs_setup_apps_script``. Each alias
+emits a ``DeprecationWarning`` (via
+``appscriptly._deprecation.warn_deprecated_alias``) and delegates to the
+canonical body.
 
-1. ``gdocs_server_info``           — server identity + tool inventory + CI status
-2. ``gdocs_test_manifest``         — full test inventory + per-test outcomes
-3. ``gdocs_guide``                 — orientation as a structured payload
-4. ``gdocs_help``                  — error-message recovery guidance
-5. ``gdocs_get_signed_upload_url`` — mint one-shot signed upload URL
-6. ``gdocs_reset_authorization``   — clear stored OAuth credentials
-7. ``gdocs_admin_audit``           — forensic timeline (admin-token gated)
+**Tools registered here** (7 admin-service tools — canonical → alias):
+
+1. ``server_info``               (alias ``gdocs_server_info``)           — server identity + tool inventory + CI status
+2. ``server_test_manifest``      (alias ``gdocs_test_manifest``)         — full test inventory + per-test outcomes
+3. ``server_guide``              (alias ``gdocs_guide``)                 — orientation as a structured payload
+4. ``server_help``               (alias ``gdocs_help``)                  — error-message recovery guidance
+5. ``gdrive_get_signed_upload_url`` (alias ``gdocs_get_signed_upload_url``) — mint one-shot signed upload URL
+6. ``account_reset_authorization`` (alias ``gdocs_reset_authorization``) — clear stored OAuth credentials
+7. ``admin_audit``               (alias ``gdocs_admin_audit``)           — forensic timeline (admin-token gated)
 
 **Several tools use ``creds=False``** (decorator's standard credentials
 injection is the wrong shape for each):
 
-- ``gdocs_server_info`` / ``gdocs_test_manifest`` / ``gdocs_guide`` /
-  ``gdocs_help`` — no Google API call (local introspection / lookup).
-- ``gdocs_get_signed_upload_url`` — mints HMAC URL via ``keys.get_key``;
+- ``server_info`` / ``server_test_manifest`` / ``server_guide`` /
+  ``server_help`` — no Google API call (local introspection / lookup).
+- ``gdrive_get_signed_upload_url`` — mints HMAC URL via ``keys.get_key``;
   handles its own ``current_user_id_or_none()`` check.
-- ``gdocs_reset_authorization`` — DELETES creds (inverse of normal auth
+- ``account_reset_authorization`` — DELETES creds (inverse of normal auth
   path); pre-fetching creds would break the reset for users whose creds
   are already broken.
-- ``gdocs_admin_audit`` — gated by ``MCP_ADMIN_TOKEN`` (not user OAuth);
+- ``admin_audit`` — gated by ``MCP_ADMIN_TOKEN`` (not user OAuth);
   reads ``user_store`` directly.
+
+NOTE: the signed-upload-URL tool keeps ``service="admin"`` (it lives in
+this admin folder; the ``service=`` tag follows the folder, the prefix
+follows the domain) — its declaration stays in ``admin/_expected_tools.py``.
 
 **Import discipline.** Imports the 2 shared helpers
 (``_get_credentials``, ``_format_http_error``) directly from
@@ -55,6 +71,7 @@ from pathlib import Path
 
 from fastmcp.exceptions import ToolError
 
+from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.auth import default_data_dir
 from appscriptly.credentials import current_user_id_or_none
 from appscriptly.crypto import (
@@ -284,7 +301,7 @@ def _check_admin_token(provided: object) -> None:
     if not expected:
         raise ToolError(
             "admin disabled; set MCP_ADMIN_TOKEN env var on the server "
-            "to enable gdocs_admin_audit."
+            "to enable admin_audit."
         )
     if not isinstance(provided, str):
         raise ToolError(
@@ -310,7 +327,7 @@ def _check_admin_token(provided: object) -> None:
     readonly=True, destructive=False, idempotent=True, external=True,
     output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
 )
-async def gdocs_server_info() -> dict:
+async def server_info() -> dict:
     """Server identity + full tool inventory — for change detection across sessions.
 
     USE WHEN: you want to confirm what version of the MCP you're
@@ -331,8 +348,8 @@ async def gdocs_server_info() -> dict:
         they show as ``"unknown"``.
 
     Choreography: typical introspection trio — pair with
-    ``gdocs_guide()`` (workflows + rules + tool groupings) and
-    ``gdocs_test_manifest()`` (full per-test inventory). Cheap; no
+    ``server_guide()`` (workflows + rules + tool groupings) and
+    ``server_test_manifest()`` (full per-test inventory). Cheap; no
     Google API call required.
     """
     # FastMCP's tool registry is async-accessed via list_tools().
@@ -418,6 +435,23 @@ async def gdocs_server_info() -> dict:
     }
 
 
+@workspace_tool(
+    title="DEPRECATED alias of server_info",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
+)
+async def gdocs_server_info() -> dict:
+    """DEPRECATED — use ``server_info`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this is server
+    introspection, not a Docs tool). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_server_info", "server_info")
+    return await server_info()
+
+
 # ---------------------------------------------------------------------
 # 2. gdocs_test_manifest
 # ---------------------------------------------------------------------
@@ -429,7 +463,7 @@ async def gdocs_server_info() -> dict:
     readonly=True, destructive=False, idempotent=True, external=True,
     output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
 )
-def gdocs_test_manifest() -> dict:
+def server_test_manifest() -> dict:
     """List every test in the CI artifact + its pass/fail outcome.
 
     Read / verify / audit / inspect / list the test inventory of the
@@ -451,10 +485,10 @@ def gdocs_test_manifest() -> dict:
 
     Status "unknown" when the artifact's missing/unparseable;
     "tampered" when the report_digest doesn't match the canonicalized
-    payload (same logic as gdocs_server_info.test_suite); "ok"
+    payload (same logic as server_info.test_suite); "ok"
     otherwise.
 
-    Choreography: pairs with ``gdocs_server_info.test_suite``. The
+    Choreography: pairs with ``server_info.test_suite``. The
     summary is in server_info; this tool gives the full per-test
     breakdown. No Google API call.
     """
@@ -523,6 +557,23 @@ def gdocs_test_manifest() -> dict:
     }
 
 
+@workspace_tool(
+    title="DEPRECATED alias of server_test_manifest",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
+)
+def gdocs_test_manifest() -> dict:
+    """DEPRECATED — use ``server_test_manifest`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this is server
+    introspection, not a Docs tool). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_test_manifest", "server_test_manifest")
+    return server_test_manifest()
+
+
 # ---------------------------------------------------------------------
 # 3. gdocs_guide
 # ---------------------------------------------------------------------
@@ -534,7 +585,7 @@ def gdocs_test_manifest() -> dict:
     readonly=True, destructive=False, idempotent=True, external=False,
     output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA,
 )
-def gdocs_guide() -> dict:
+def server_guide() -> dict:
     """Orientation payload — the "start here" / --help for this server.
 
     Returns the same content as the connect-time server ``instructions``
@@ -548,7 +599,7 @@ def gdocs_guide() -> dict:
 
     No arguments. No side effects. Cheap (no API calls). Typically the
     first call an agent makes after connecting — pairs naturally with
-    ``gdocs_server_info()`` (version + verified CI test status).
+    ``server_info()`` (version + verified CI test status).
 
     Returned shape:
         {
@@ -576,21 +627,44 @@ def gdocs_guide() -> dict:
                 "Google Docs with native sidebar Tabs (Oct 2024+ feature) "
                 "plus Sheets, Slides, Drive, and Apps Script projects."
             ),
-            # Load-bearing for clients building tool calls: the core
-            # tool surface is ``gdocs_``-prefixed. Newer (appscriptly-
-            # native) tools use ``as_``, and the Sheets/Slides verticals
-            # use ``gsheets_`` / ``gslides_`` — see additional_tool_prefixes.
+            # Load-bearing for clients building tool calls: tools are
+            # prefixed by DOMAIN. ``gdocs_`` is the Docs/native-tabs
+            # surface; the other domains use their own honest prefix
+            # (see additional_tool_prefixes). The historical ``gdocs_``
+            # names for Drive / admin / auth tools are kept as DEPRECATED
+            # ALIASES (planned removal v3.0) — prefer the canonical name.
             "all_tools_prefixed": "gdocs_",
             "additional_tool_prefixes": {
-                "as_": (
-                    "appscriptly-native automation tools (e.g. "
-                    "as_generate_bound_script)."
+                "gdrive_": (
+                    "Google Drive file management (find / move / trash / "
+                    "share / export / signed-upload-URL)."
                 ),
                 "gsheets_": "Google Sheets tools.",
                 "gslides_": "Google Slides tools.",
+                "gforms_": "Google Forms tools.",
+                "gcal_": "Google Calendar tools.",
+                "gtasks_": "Google Tasks tools.",
+                "gcontacts_": "Google Contacts (People API) tools.",
+                "as_": (
+                    "appscriptly-native automation tools (e.g. "
+                    "as_generate_bound_script, as_install_automation)."
+                ),
+                "server_": (
+                    "server introspection (server_info / server_guide / "
+                    "server_help / server_test_manifest)."
+                ),
+                "admin_": "admin-gated operator tools (admin_audit).",
+                "account_": "account/auth state (account_reset_authorization).",
             },
+            "deprecated_aliases_note": (
+                "Tools renamed off the historical gdocs_ prefix keep the "
+                "old gdocs_ name registered as a deprecated alias (planned "
+                "removal v3.0): e.g. gdocs_find_file -> gdrive_find_file, "
+                "gdocs_server_info -> server_info, gdocs_admin_audit -> "
+                "admin_audit. Prefer the canonical name."
+            ),
             "more_info": (
-                "Call gdocs_server_info for build version + verified CI "
+                "Call server_info for build version + verified CI "
                 "test status (digest, ci_run_url, mutation_check), and for "
                 "the authoritative full tool inventory (tools list)."
             ),
@@ -645,7 +719,7 @@ def gdocs_guide() -> dict:
                     "caller's sandbox (cloud chat scenario)"
                 ),
                 "tool_sequence": [
-                    "gdocs_get_signed_upload_url",
+                    "gdrive_get_signed_upload_url",
                     "POST {url}",
                 ],
                 "notes": (
@@ -659,8 +733,8 @@ def gdocs_guide() -> dict:
                 "name": "cleanup",
                 "goal": "Trash / restore Drive files this app created",
                 "tool_sequence": [
-                    "gdocs_trash_file",
-                    "gdocs_untrash_file",
+                    "gdrive_trash_file",
+                    "gdrive_untrash_file",
                 ],
                 "notes": (
                     "ONLY acts on files this app created; others return "
@@ -676,11 +750,11 @@ def gdocs_guide() -> dict:
                     "own future edits (persistent Workspace automation)"
                 ),
                 "tool_sequence": [
-                    "gdocs_install_automation",
+                    "as_install_automation",
                     "as_generate_bound_script",
                 ],
                 "notes": (
-                    "One-time: gdocs_install_automation provisions the "
+                    "One-time: as_install_automation provisions the "
                     "per-user Apps Script runtime (returns "
                     "status='needs_authorization' with an authorize_url if "
                     "consent is missing — surface that link, then retry). "
@@ -756,7 +830,7 @@ def gdocs_guide() -> dict:
                 "no script needed."
             ),
             (
-                "On any error, pass the raw error text to gdocs_help for a "
+                "On any error, pass the raw error text to server_help for a "
                 "structured next-action. An auth error's body carries a "
                 "'Click here to authorize' link — surface it to the user; "
                 "do NOT silently retry."
@@ -767,7 +841,7 @@ def gdocs_guide() -> dict:
             "convert_existing": [
                 "gdocs_preview_tab_split",
                 "gdocs_tab_existing_doc",
-                "gdocs_get_signed_upload_url",
+                "gdrive_get_signed_upload_url",
             ],
             "edit_tabs": [
                 "gdocs_rename_tab",
@@ -783,24 +857,24 @@ def gdocs_guide() -> dict:
                 "gdocs_get_tab_url",
             ],
             "drive_management": [
-                "gdocs_find_doc_by_title",
-                "gdocs_move_to_folder",
-                "gdocs_trash_file",
-                "gdocs_untrash_file",
+                "gdrive_find_doc_by_title",
+                "gdrive_move_to_folder",
+                "gdrive_trash_file",
+                "gdrive_untrash_file",
             ],
             "setup_and_auth": [
-                # PR-α canonical name. The deprecation alias
-                # gdocs_setup_apps_script is still registered for
-                # backward compatibility but is intentionally omitted
-                # from the user-facing groups so the orientation
-                # surface stays clean.
-                "gdocs_install_automation",
-                "gdocs_reset_authorization",
+                # as_install_automation is the canonical name (the
+                # gdocs_install_automation and gdocs_setup_apps_script
+                # deprecation aliases are registered for backward
+                # compatibility but omitted here so the orientation
+                # surface stays clean).
+                "as_install_automation",
+                "account_reset_authorization",
             ],
             "automation": [
                 # Persistent Workspace automation (the appscriptly moat):
                 # install the runtime, then generate bound scripts.
-                "gdocs_install_automation",
+                "as_install_automation",
                 "as_generate_bound_script",
             ],
             "spreadsheets": [
@@ -814,15 +888,32 @@ def gdocs_guide() -> dict:
                 "gslides_replace_all_text",
             ],
             "introspection": [
-                "gdocs_server_info",
-                "gdocs_test_manifest",
-                "gdocs_guide",
-                # gdocs_help: pass a raw error string, get the recovery
+                "server_info",
+                "server_test_manifest",
+                "server_guide",
+                # server_help: pass a raw error string, get the recovery
                 # action. Belongs in the discoverable surface.
-                "gdocs_help",
+                "server_help",
             ],
         },
     }
+
+
+@workspace_tool(
+    title="DEPRECATED alias of server_guide",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=False,
+    output_schema=GDOCS_GUIDE_OUTPUT_SCHEMA,
+)
+def gdocs_guide() -> dict:
+    """DEPRECATED — use ``server_guide`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this is server
+    orientation, not a Docs tool). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_guide", "server_guide")
+    return server_guide()
 
 
 # ---------------------------------------------------------------------
@@ -836,7 +927,7 @@ def gdocs_guide() -> dict:
     readonly=True, destructive=False, idempotent=True, external=False,
     output_schema=GDOCS_HELP_OUTPUT_SCHEMA,
 )
-def gdocs_help(error_message: str) -> dict:
+def server_help(error_message: str) -> dict:
     """Look up recovery guidance for a server error string.
 
     USE WHEN: a previous gdocs_* tool call returned an error / warning
@@ -883,7 +974,7 @@ def gdocs_help(error_message: str) -> dict:
 
     Choreography: typically called RIGHT AFTER a failing tool call,
     before deciding whether to retry, surface to the user, or pivot
-    to a different tool. Pairs with gdocs_server_info() when filing
+    to a different tool. Pairs with server_info() when filing
     bug reports for the unexpected_exception case.
     """
     # Lazy-import the recovery table to avoid forcing resources.py
@@ -926,11 +1017,28 @@ def gdocs_help(error_message: str) -> dict:
             "No registered recovery pattern matched the error text "
             "(matching is case-insensitive substring). Fetch the "
             "resource gdocs://error-recovery for the full table, "
-            "call gdocs_server_info() to capture version + commit, "
+            "call server_info() to capture version + commit, "
             "and consider filing an issue at the project repo with "
             "the raw error string so a new entry can be added."
         ),
     }
+
+
+@workspace_tool(
+    title="DEPRECATED alias of server_help",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=False,
+    output_schema=GDOCS_HELP_OUTPUT_SCHEMA,
+)
+def gdocs_help(error_message: str) -> dict:
+    """DEPRECATED — use ``server_help`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this is an error-recovery
+    lookup, not a Docs tool). Behavior is identical; the old name stays
+    registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_help", "server_help")
+    return server_help(error_message)
 
 
 # ---------------------------------------------------------------------
@@ -946,7 +1054,7 @@ def gdocs_help(error_message: str) -> dict:
     # It handles its own user_id check via current_user_id_or_none().
     output_schema=GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
 )
-def gdocs_get_signed_upload_url(
+def gdrive_get_signed_upload_url(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict:
@@ -1043,7 +1151,7 @@ def gdocs_get_signed_upload_url(
     user_id = current_user_id_or_none()
     if user_id is None:
         raise ToolError(
-            "gdocs_get_signed_upload_url requires an authenticated MCP "
+            "gdrive_get_signed_upload_url requires an authenticated MCP "
             "session (cloud / HTTP mode). Stdio callers should pass "
             "docx_path directly to gdocs_tab_existing_doc instead."
         )
@@ -1063,6 +1171,31 @@ def gdocs_get_signed_upload_url(
     return minted
 
 
+@workspace_tool(
+    title="DEPRECATED alias of gdrive_get_signed_upload_url",
+    service="admin",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    output_schema=GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+)
+def gdocs_get_signed_upload_url(
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> dict:
+    """DEPRECATED — use ``gdrive_get_signed_upload_url`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (the signed URL uploads
+    to Drive, not Docs specifically). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias(
+        "gdocs_get_signed_upload_url", "gdrive_get_signed_upload_url"
+    )
+    return gdrive_get_signed_upload_url(
+        ttl_seconds=ttl_seconds,
+        max_bytes=max_bytes,
+    )
+
+
 # ---------------------------------------------------------------------
 # 6. gdocs_reset_authorization
 # ---------------------------------------------------------------------
@@ -1078,7 +1211,7 @@ def gdocs_get_signed_upload_url(
     # when their creds are already broken.
     output_schema=GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
 )
-def gdocs_reset_authorization(full: bool = False) -> dict:
+def account_reset_authorization(full: bool = False) -> dict:
     """Reset / revoke / clear stored Google OAuth credentials. Force re-consent.
 
     Use this tool to: sign out, re-authorize, re-consent after a scope
@@ -1188,6 +1321,25 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
     }
 
 
+@workspace_tool(
+    title="DEPRECATED alias of account_reset_authorization",
+    service="admin",
+    readonly=False, destructive=True, idempotent=True, external=True,
+    output_schema=GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
+)
+def gdocs_reset_authorization(full: bool = False) -> dict:
+    """DEPRECATED — use ``account_reset_authorization`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this resets the account
+    OAuth state, not a Docs object). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias(
+        "gdocs_reset_authorization", "account_reset_authorization"
+    )
+    return account_reset_authorization(full=full)
+
+
 # ---------------------------------------------------------------------
 # 7. gdocs_admin_audit
 # ---------------------------------------------------------------------
@@ -1219,7 +1371,7 @@ def gdocs_reset_authorization(full: bool = False) -> dict:
     # gated by an admin token (not user OAuth). No Google API call.
     output_schema=GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
 )
-def gdocs_admin_audit(
+def admin_audit(
     admin_token: str, user_id: str, since_hours: int = 24,
 ) -> dict:
     """Return server-side state for ``user_id`` within a time window — admin only.
@@ -1293,7 +1445,7 @@ def gdocs_admin_audit(
     # user_id is PII (Google sub claim) and must not land in logs
     # that may be shipped to third-party aggregators.
     _log.info(
-        "gdocs_admin_audit: user=%s window=%dh",
+        "admin_audit: user=%s window=%dh",
         user_id[:8], since_hours,
     )
 
@@ -1327,3 +1479,27 @@ def gdocs_admin_audit(
             "Finer-grained audit logging is tracked in issue #25."
         ),
     }
+
+
+# ---------------------------------------------------------------------
+# Deprecated alias — gdocs_admin_audit → admin_audit
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    title="DEPRECATED alias of admin_audit",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    output_schema=GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
+)
+def gdocs_admin_audit(
+    admin_token: str, user_id: str, since_hours: int = 24,
+) -> dict:
+    """DEPRECATED — use ``admin_audit`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this is an admin-gated
+    forensic query, not a Docs tool). Behavior is identical; the old name
+    stays registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_admin_audit", "admin_audit")
+    return admin_audit(admin_token, user_id, since_hours=since_hours)

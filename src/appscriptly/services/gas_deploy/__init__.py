@@ -17,11 +17,13 @@ Layout:
 - ``scopes.py`` — ``GAS_DEPLOY_SCOPES`` constant for OAuth provisioning.
 - ``tools.py``  — ``@workspace_tool``-decorated MCP tool functions
                   for the Workspace automation runtime installer.
-                  PR-α (v2.3.4): registers both
-                  ``gdocs_install_automation`` (canonical) and
-                  ``gdocs_setup_apps_script`` (deprecation alias).
-                  Imported explicitly from ``server.py`` AFTER the
-                  ``mcp`` instance is constructed.
+                  Registers the canonical ``as_install_automation``
+                  (chore/tool-namespace-cleanup) plus its two deprecation
+                  aliases ``gdocs_install_automation`` (PR-α name) and
+                  ``gdocs_setup_apps_script`` (original name), and the
+                  separate ``as_deploy_web_app`` Web App deploy tool.
+                  Imported by discovery AFTER the ``mcp`` instance is
+                  constructed.
 
 Historical note: pre-Phase-C, the original ``gas_deploy/__init__.py``
 claimed "zero imports from appscriptly" as a portability goal.

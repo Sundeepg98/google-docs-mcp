@@ -1,24 +1,37 @@
 """Google Drive MCP tool registrations (M3 Phase B — v2.1.4).
 
-This module defines the ``@gdocs_tool``-decorated tool functions for
+This module defines the ``@workspace_tool``-decorated tool functions for
 the Drive file-management service. Importing this module triggers
 registration with the live ``mcp`` instance — ``server.py`` performs
 the import at the bottom of its module, AFTER constructing ``mcp``
-and AFTER ``decorators.register(mcp, ...)`` wires the ``@gdocs_tool``
+and AFTER ``decorators.register(mcp, ...)`` wires the ``@workspace_tool``
 decorator.
 
-**Tools registered here** (10 drive-service tools):
+**Namespace cleanup (chore/tool-namespace-cleanup).** These tools act on
+Drive, not Docs, so they were renamed off the historical ``gdocs_``
+prefix to the honest ``gdrive_`` prefix. Every old ``gdocs_`` name stays
+registered as a DEPRECATED ALIAS (dual-registration) so nothing breaks —
+the same model PR-α used for ``gdocs_install_automation`` /
+``gdocs_setup_apps_script``. The canonical ``gdrive_*`` body does the
+work; each ``gdocs_*`` alias emits a ``DeprecationWarning`` (via
+``appscriptly._deprecation.warn_deprecated_alias``) and delegates. Both
+names are module-level attrs (the location witnesses require it) and both
+register (the declared==registered witness requires it). Planned alias
+removal: v3.0.
 
-1. ``gdocs_find_doc_by_title`` — look up a Google Doc / .docx by title (search)
-2. ``gdocs_move_to_folder``    — move a file into a Drive folder
-3. ``gdocs_untrash_file``      — restore a trashed file (single or batch)
-4. ``gdocs_trash_file``        — move a file to trash (single or batch)
-5. ``gdocs_share_file``        — grant a user permission on a file (v2.3.0)
-6. ``gdocs_list_permissions``  — list who has access to a file (v2.3.0)
-7. ``gdocs_create_folder``     — create a Drive folder (destination for move)
-8. ``gdocs_revoke_permission`` — revoke a previously-granted share
-9. ``gdocs_export_doc``        — export a Google-native file to PDF/Office/etc.
-10. ``gdocs_find_file``        — find app-accessible files of ANY type (filters)
+**Tools registered here** (10 drive-service tools — canonical name →
+deprecated alias):
+
+1. ``gdrive_find_doc_by_title``  (alias ``gdocs_find_doc_by_title``)   — look up a Google Doc / .docx by title
+2. ``gdrive_move_to_folder``     (alias ``gdocs_move_to_folder``)      — move a file into a Drive folder
+3. ``gdrive_untrash_file``       (alias ``gdocs_untrash_file``)        — restore a trashed file (single or batch)
+4. ``gdrive_trash_file``         (alias ``gdocs_trash_file``)          — move a file to trash (single or batch)
+5. ``gdrive_share_file``         (alias ``gdocs_share_file``)          — grant a user permission on a file (v2.3.0)
+6. ``gdrive_list_permissions``   (alias ``gdocs_list_permissions``)    — list who has access to a file (v2.3.0)
+7. ``gdrive_create_folder``      (alias ``gdocs_create_folder``)       — create a Drive folder (destination for move)
+8. ``gdrive_revoke_permission``  (alias ``gdocs_revoke_permission``)   — revoke a previously-granted share
+9. ``gdrive_export_file``        (alias ``gdocs_export_doc``)          — export a Google-native file to PDF/Office/etc.
+10. ``gdrive_find_file``         (alias ``gdocs_find_file``)           — find app-accessible files of ANY type (filters)
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
@@ -45,6 +58,7 @@ import logging
 
 from fastmcp.exceptions import ToolError
 
+from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.drive.api import (
     create_folder as _create_folder,
@@ -162,7 +176,7 @@ def _run_batch(items: list[str], fn, success_key: str) -> dict:
     creds=True,
     output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
 )
-def gdocs_find_doc_by_title(
+def gdrive_find_doc_by_title(
     creds,
     query: str,
     exact: bool = False,
@@ -232,6 +246,36 @@ def gdocs_find_doc_by_title(
     )
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_find_doc_by_title",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    # creds=False: delegates to the canonical gdrive_* tool, which does
+    # its own creds injection. The alias only forwards the public args.
+    creds=False,
+    output_schema=GDOCS_FIND_DOC_BY_TITLE_OUTPUT_SCHEMA,
+)
+def gdocs_find_doc_by_title(
+    query: str,
+    exact: bool = False,
+    include_trashed: bool = False,
+    verify_writable: bool = False,
+) -> dict:
+    """DEPRECATED — use ``gdrive_find_doc_by_title`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_find_doc_by_title", "gdrive_find_doc_by_title")
+    return gdrive_find_doc_by_title(
+        query,
+        exact=exact,
+        include_trashed=include_trashed,
+        verify_writable=verify_writable,
+    )
+
+
 # ---------------------------------------------------------------------
 # 2. gdocs_move_to_folder
 # ---------------------------------------------------------------------
@@ -244,7 +288,7 @@ def gdocs_find_doc_by_title(
     creds=True,
     output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
 )
-def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
+def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     """Move a Drive file into a folder (out of root or wherever it lives).
 
     USE WHEN: the MCP just created a doc (which lands in Drive root by
@@ -282,6 +326,24 @@ def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     return _move_to_folder(creds, file_id, folder_id)
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_move_to_folder",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
+)
+def gdocs_move_to_folder(file_id: str, folder_id: str) -> dict:
+    """DEPRECATED — use ``gdrive_move_to_folder`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_move_to_folder", "gdrive_move_to_folder")
+    return gdrive_move_to_folder(file_id, folder_id)
+
+
 # ---------------------------------------------------------------------
 # 3. gdocs_untrash_file
 # ---------------------------------------------------------------------
@@ -294,7 +356,7 @@ def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     creds=True,
     output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
+def gdrive_untrash_file(creds, file_id: str | list[str]) -> dict:
     """Restore a trashed Drive file back to its original location.
 
     Inverse of ``gdocs_trash_file``. Ships together so a wrong trash
@@ -331,6 +393,24 @@ def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
     return _untrash_drive_file(creds, file_id)
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_untrash_file",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_untrash_file(file_id: str | list[str]) -> dict:
+    """DEPRECATED — use ``gdrive_untrash_file`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_untrash_file", "gdrive_untrash_file")
+    return gdrive_untrash_file(file_id)
+
+
 # ---------------------------------------------------------------------
 # 4. gdocs_trash_file
 # ---------------------------------------------------------------------
@@ -343,7 +423,7 @@ def gdocs_untrash_file(creds, file_id: str | list[str]) -> dict:
     creds=True,
     output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
+def gdrive_trash_file(creds, file_id: str | list[str]) -> dict:
     """Move a Drive file (Google Doc, .docx, anything) to trash.
 
     USE WHEN: you need to clean up an obsolete Drive file — a
@@ -385,6 +465,24 @@ def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     return _trash_drive_file(creds, file_id)
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_trash_file",
+    readonly=False, destructive=True, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_trash_file(file_id: str | list[str]) -> dict:
+    """DEPRECATED — use ``gdrive_trash_file`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_trash_file", "gdrive_trash_file")
+    return gdrive_trash_file(file_id)
+
+
 # ---------------------------------------------------------------------
 # 5. gdocs_share_file (v2.3.0 — first new tool of the multi-service era)
 # ---------------------------------------------------------------------
@@ -400,7 +498,7 @@ def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     creds=True,
     output_schema=GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_share_file(
+def gdrive_share_file(
     creds,
     drive_file_id: str,
     email: str,
@@ -475,6 +573,36 @@ def gdocs_share_file(
         raise ToolError(str(e)) from e
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_share_file",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=False,
+    output_schema=GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_share_file(
+    drive_file_id: str,
+    email: str,
+    role: str = "writer",
+    notify: bool = True,
+    message: str = "",
+) -> dict:
+    """DEPRECATED — use ``gdrive_share_file`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_share_file", "gdrive_share_file")
+    return gdrive_share_file(
+        drive_file_id,
+        email,
+        role=role,
+        notify=notify,
+        message=message,
+    )
+
+
 # ---------------------------------------------------------------------
 # 6. gdocs_list_permissions (v2.3.0)
 # ---------------------------------------------------------------------
@@ -493,7 +621,7 @@ def gdocs_share_file(
     creds=True,
     output_schema=GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
 )
-def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
+def gdrive_list_permissions(creds, drive_file_id: str) -> dict:
     """List who has access to a Google Drive file — the share roster.
 
     USE WHEN: confirming a share landed (after ``gdocs_share_file``),
@@ -529,6 +657,24 @@ def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
     return _list_permissions(creds, drive_file_id)
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_list_permissions",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_LIST_PERMISSIONS_OUTPUT_SCHEMA,
+)
+def gdocs_list_permissions(drive_file_id: str) -> dict:
+    """DEPRECATED — use ``gdrive_list_permissions`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_list_permissions", "gdrive_list_permissions")
+    return gdrive_list_permissions(drive_file_id)
+
+
 # ---------------------------------------------------------------------
 # 7. gdocs_create_folder — create a Drive folder (files.create, folder mime)
 # ---------------------------------------------------------------------
@@ -548,7 +694,7 @@ def gdocs_list_permissions(creds, drive_file_id: str) -> dict:
     creds=True,
     output_schema=GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
 )
-def gdocs_create_folder(
+def gdrive_create_folder(
     creds,
     name: str,
     parent_folder_id: str | None = None,
@@ -599,6 +745,27 @@ def gdocs_create_folder(
     return _create_folder(creds, name=name, parent_folder_id=parent_folder_id)
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_create_folder",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=False,
+    output_schema=GDOCS_CREATE_FOLDER_OUTPUT_SCHEMA,
+)
+def gdocs_create_folder(
+    name: str,
+    parent_folder_id: str | None = None,
+) -> dict:
+    """DEPRECATED — use ``gdrive_create_folder`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_create_folder", "gdrive_create_folder")
+    return gdrive_create_folder(name, parent_folder_id=parent_folder_id)
+
+
 # ---------------------------------------------------------------------
 # 8. gdocs_revoke_permission — revoke a share (permissions.delete)
 # ---------------------------------------------------------------------
@@ -618,7 +785,7 @@ def gdocs_create_folder(
     creds=True,
     output_schema=GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
 )
-def gdocs_revoke_permission(
+def gdrive_revoke_permission(
     creds,
     drive_file_id: str,
     permission_id: str,
@@ -677,6 +844,27 @@ def gdocs_revoke_permission(
     )
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_revoke_permission",
+    readonly=False, destructive=True, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_REVOKE_PERMISSION_OUTPUT_SCHEMA,
+)
+def gdocs_revoke_permission(
+    drive_file_id: str,
+    permission_id: str,
+) -> dict:
+    """DEPRECATED — use ``gdrive_revoke_permission`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
+    not Docs). Behavior is identical; the old name stays registered as
+    an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_revoke_permission", "gdrive_revoke_permission")
+    return gdrive_revoke_permission(drive_file_id, permission_id)
+
+
 # ---------------------------------------------------------------------
 # 9. gdocs_export_doc — export a Google-native file (files.export)
 # ---------------------------------------------------------------------
@@ -696,7 +884,7 @@ def gdocs_revoke_permission(
     creds=True,
     output_schema=GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
 )
-def gdocs_export_doc(
+def gdrive_export_file(
     creds,
     drive_file_id: str,
     export_format: str,
@@ -772,6 +960,33 @@ def gdocs_export_doc(
     )
 
 
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_export_file",
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=False,
+    output_schema=GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
+)
+def gdocs_export_doc(
+    drive_file_id: str,
+    export_format: str,
+    output_name: str | None = None,
+) -> dict:
+    """DEPRECATED — use ``gdrive_export_file`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this acts on any Drive
+    file, not just Docs) and given a clearer name. Behavior is identical;
+    the old name stays registered as an alias and is slated for removal
+    in v3.0.
+    """
+    warn_deprecated_alias("gdocs_export_doc", "gdrive_export_file")
+    return gdrive_export_file(
+        drive_file_id,
+        export_format,
+        output_name=output_name,
+    )
+
+
 # ---------------------------------------------------------------------
 # 10. gdocs_find_file — generalized search over app-accessible files
 # ---------------------------------------------------------------------
@@ -790,7 +1005,7 @@ def gdocs_export_doc(
     creds=True,
     output_schema=GDOCS_FIND_FILE_OUTPUT_SCHEMA,
 )
-def gdocs_find_file(
+def gdrive_find_file(
     creds,
     query: str = "",
     mime_type: str | None = None,
@@ -864,6 +1079,45 @@ def gdocs_find_file(
     """
     return _find_file(
         creds,
+        query,
+        mime_type=mime_type,
+        full_text=full_text,
+        parent_folder_id=parent_folder_id,
+        exact=exact,
+        include_trashed=include_trashed,
+        verify_writable=verify_writable,
+    )
+
+
+# ---------------------------------------------------------------------
+# Deprecated alias — gdocs_find_file → gdrive_find_file
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="DEPRECATED alias of gdrive_find_file",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    creds=False,
+    output_schema=GDOCS_FIND_FILE_OUTPUT_SCHEMA,
+)
+def gdocs_find_file(
+    query: str = "",
+    mime_type: str | None = None,
+    full_text: str | None = None,
+    parent_folder_id: str | None = None,
+    exact: bool = False,
+    include_trashed: bool = False,
+    verify_writable: bool = False,
+) -> dict:
+    """DEPRECATED — use ``gdrive_find_file`` instead.
+
+    Renamed off the historical ``gdocs_`` prefix (this finds files of any
+    type, not just Docs). Behavior is identical; the old name stays
+    registered as an alias and is slated for removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_find_file", "gdrive_find_file")
+    return gdrive_find_file(
         query,
         mime_type=mime_type,
         full_text=full_text,

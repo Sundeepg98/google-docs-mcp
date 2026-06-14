@@ -70,12 +70,23 @@ appscriptly — Workspace Automation MCP. Generates persistent workflows
 your Google Workspace and run on Google's infrastructure. Also creates,
 edits, reads, and manages Google Docs with native sidebar Tabs
 (Google's October 2024 feature) plus Sheets, Slides, Drive, and Apps
-Script project management. All existing tools are prefixed ``gdocs_``
-(historical from the docs-first era); newer tools may use the ``as_``
-prefix (appscriptly-native).
+Script project management.
 
-START HERE: call ``gdocs_guide()`` for the orientation as a structured
-payload, or ``gdocs_server_info()`` for build version + verified CI
+Tools are prefixed by DOMAIN: ``gdocs_`` (Google Docs / native tabs),
+``gdrive_`` (Drive file management), ``gsheets_`` (Sheets), ``gslides_``
+(Slides), ``gforms_`` (Forms), ``gcal_`` (Calendar), ``gtasks_``
+(Tasks), ``gcontacts_`` (Contacts), ``as_`` (appscriptly-native Apps
+Script automation), and ``server_`` / ``admin_`` / ``account_`` for
+introspection / admin / auth. NOTE: tools that historically wore a
+``gdocs_`` prefix but act on Drive / admin / auth were renamed to the
+honest prefix; the old ``gdocs_`` names still work as DEPRECATED ALIASES
+(planned removal v3.0) — prefer the canonical name (e.g.
+``gdrive_find_file`` not ``gdocs_find_file``, ``server_info`` not
+``gdocs_server_info``, ``as_install_automation`` not
+``gdocs_install_automation``).
+
+START HERE: call ``server_guide()`` for the orientation as a structured
+payload, or ``server_info()`` for build version + verified CI
 test status.
 
 THE 6 CORE WORKFLOWS
@@ -108,7 +119,7 @@ THE 6 CORE WORKFLOWS
 4. CONVERT SANDBOX .docx (bytes only, no Drive file)
    Goal: convert a .docx the model has built / has as raw bytes in
    its sandbox (cloud chat scenario).
-   Tools: gdocs_get_signed_upload_url(...) -> POST {url} with the
+   Tools: gdrive_get_signed_upload_url(...) -> POST {url} with the
           .docx bytes as multipart upload
    Notes: ``docx_path`` arguments DO NOT WORK from cloud chat — the
    server cannot see the caller's filesystem. Signed-URL upload is
@@ -117,7 +128,7 @@ THE 6 CORE WORKFLOWS
    sandbox rather than on Drive.
 
 5. CLEANUP — trash / restore Drive files
-   Tools: gdocs_trash_file(file_id), gdocs_untrash_file(file_id)
+   Tools: gdrive_trash_file(file_id), gdrive_untrash_file(file_id)
    Notes: ONLY acts on files this app created. Files created
    elsewhere return app_not_authorized (no recovery — the file
    belongs to its owner). file_id accepts a string or list (batch).
@@ -136,7 +147,7 @@ THE 6 CORE WORKFLOWS
    Use for ANYTHING persistent (recurring jobs, re-clickable menus,
    reactions to the user's future edits). For a one-off edit, use the
    direct docs/sheets/slides tools instead. DISTINCT from
-   gdocs_install_automation (that installs the standalone runtime;
+   as_install_automation (that installs the standalone runtime;
    this binds a per-file script). Example: "make this Doc refresh from
    the linked Sheet every morning."
 
@@ -170,15 +181,19 @@ gdocs_get_tab_url(doc_id, tab_id) — direct deep-link to a tab
 
 DRIVE MANAGEMENT
 ================
-gdocs_find_doc_by_title, gdocs_move_to_folder,
-gdocs_trash_file, gdocs_untrash_file
+gdrive_find_doc_by_title, gdrive_find_file, gdrive_move_to_folder,
+gdrive_create_folder, gdrive_trash_file, gdrive_untrash_file,
+gdrive_share_file, gdrive_list_permissions, gdrive_revoke_permission,
+gdrive_export_file
+(the old gdocs_* names for these still work as deprecated aliases)
 
 INTROSPECTION
 =============
-gdocs_guide() — this orientation as a structured payload
-gdocs_server_info() — version + verified CI test status (digest,
+server_guide() — this orientation as a structured payload
+server_info() — version + verified CI test status (digest,
   ci_run_url, mutation_check with stale_patches / imprecise_patches)
-gdocs_test_manifest() — full test inventory + per-test outcomes
+server_test_manifest() — full test inventory + per-test outcomes
+server_help(error) — structured recovery guidance for an error string
 """
 
 mcp = FastMCP(
@@ -348,7 +363,7 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # Calendar / Tasks / Contacts their second (automation) lever
 # (as_install_calendar_sync, as_install_task_rollover,
 # as_install_contact_sync — sensitive scope in the GENERATED manifest only).
-_MIN_EXPECTED_TOOL_COUNT = 110
+_MIN_EXPECTED_TOOL_COUNT = 128
 
 _discovery_failures: list[tuple[str, str]] = []
 

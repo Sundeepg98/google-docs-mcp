@@ -7,23 +7,34 @@ registration with the live ``mcp`` instance — ``server.py`` performs
 the import at the bottom of its module, AFTER constructing ``mcp``
 and AFTER ``decorators.register(mcp, ...)`` wires the decorator.
 
-**Tools registered here** (3 tools). The first two share one
-underlying implementation (install/alias); the third is a distinct
-surface with its own implementation:
+**Tools registered here** (4 tools). The first THREE share one
+underlying implementation (install + two aliases); the fourth is a
+distinct surface with its own implementation:
 
-1. ``gdocs_install_automation`` — CANONICAL (PR-α / v2.3.4+). User-
-   facing automation-install tool: provisions the per-user Workspace
-   Automation runtime so Claude can build persistent workflows
-   (time-driven jobs, custom menus inside docs/sheets/slides,
-   reactive automations).
+1. ``as_install_automation`` — CANONICAL (chore/tool-namespace-cleanup).
+   User-facing automation-install tool: provisions the per-user
+   Workspace Automation runtime so Claude can build persistent
+   workflows (time-driven jobs, custom menus inside docs/sheets/slides,
+   reactive automations). Renamed off the ``gdocs_`` prefix to the
+   ``as_`` (appscriptly-native) prefix since installing the runtime is
+   an Apps-Script automation operation, not a Docs operation.
 
-2. ``gdocs_setup_apps_script`` — DEPRECATED ALIAS. Pre-v2.3.4 name.
-   Kept registered so existing user prompts / saved automations /
-   external integrations don't break. Emits a runtime
-   ``DeprecationWarning`` on call and instructs the caller to use
-   ``gdocs_install_automation`` instead. Planned removal in v3.0.
+2. ``gdocs_install_automation`` — DEPRECATED ALIAS. The PR-α name
+   (was canonical before the namespace cleanup). Kept registered so
+   existing prompts / saved automations / external integrations don't
+   break. Emits a ``DeprecationWarning`` and delegates. Removal v3.0.
 
-3. ``as_deploy_web_app`` — deploy a caller-supplied doGet/doPost
+3. ``gdocs_setup_apps_script`` — DEPRECATED ALIAS. The original
+   pre-PR-α name. Already an alias before this change; it now points at
+   the renamed ``as_install_automation`` (still the same underlying
+   installer). Emits a ``DeprecationWarning``. Removal v3.0.
+
+   (All three names share the one ``_install_automation_runtime()``
+   implementation — one installer, three registrations. No new
+   ``gdocs_`` aliases were minted; ``gdocs_setup_apps_script`` is the
+   pre-existing legacy alias kept per the task spec.)
+
+4. ``as_deploy_web_app`` — deploy a caller-supplied doGet/doPost
    project as an Apps Script Web App / webhook (ROADMAP 59). A
    separate surface with its own ``_deploy_web_app_project``
    implementation, layered on the existing ``AppsScriptClient``
@@ -63,6 +74,7 @@ import warnings
 
 from fastmcp.exceptions import ToolError
 
+from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.credentials import (
     NeedsReauthError,
     current_user_id_or_none,
@@ -99,12 +111,14 @@ _WEB_APP_DEPLOY_SCOPES = [
 
 
 def _install_automation_runtime() -> dict:
-    """Underlying installer; both registered tools delegate here.
+    """Underlying installer; all registered install tools delegate here.
 
-    Extracted out of the decorated function bodies so the alias
-    (``gdocs_setup_apps_script``) can call exactly the same code
-    path without duplicating it. Both decorated wrappers do nothing
-    but: (a) optionally emit a deprecation warning, (b) call this.
+    Extracted out of the decorated function bodies so the canonical
+    ``as_install_automation`` AND both aliases
+    (``gdocs_install_automation``, ``gdocs_setup_apps_script``) can call
+    exactly the same code path without duplicating it. The decorated
+    wrappers do nothing but: (a) optionally emit a deprecation warning,
+    (b) call this.
 
     The reframe (PR-α) is in the user-facing copy this function
     returns — the underlying OAuth dance, Apps Script provisioning,
@@ -181,7 +195,7 @@ def _install_automation_runtime() -> dict:
 
 
 # ---------------------------------------------------------------------
-# 1. gdocs_install_automation — CANONICAL (PR-α / v2.3.4+)
+# 1. as_install_automation — CANONICAL (chore/tool-namespace-cleanup)
 # ---------------------------------------------------------------------
 
 
@@ -196,7 +210,7 @@ def _install_automation_runtime() -> dict:
     creds=False,
     output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
 )
-def gdocs_install_automation() -> dict:
+def as_install_automation() -> dict:
     """Install the Workspace Automation runtime into your Google account.
 
     One-time setup that enables Claude to build persistent workflows
@@ -249,22 +263,51 @@ def gdocs_install_automation() -> dict:
 
 
 # ---------------------------------------------------------------------
-# 2. gdocs_setup_apps_script — DEPRECATED ALIAS (pre-PR-α name)
+# 2. gdocs_install_automation — DEPRECATED ALIAS (PR-α name; namespace
+#    cleanup renamed the canonical to as_install_automation)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    title="DEPRECATED alias of as_install_automation",
+    service="gas_deploy",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    # creds=False: same rationale as the canonical tool above — the
+    # alias MUST share this opt-out so the structured
+    # needs_authorization response shape is preserved.
+    creds=False,
+    output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
+)
+def gdocs_install_automation() -> dict:
+    """DEPRECATED — use ``as_install_automation`` instead.
+
+    The PR-α name for the Workspace Automation runtime installer. The
+    namespace cleanup renamed the canonical to ``as_install_automation``
+    (the ``as_`` appscriptly-native prefix — installing the runtime is an
+    Apps-Script automation operation, not a Docs operation). Kept
+    registered as an alias so existing prompts / saved automations /
+    external integrations keep working. Behavior is identical; planned
+    removal in v3.0.
+    """
+    warn_deprecated_alias("gdocs_install_automation", "as_install_automation")
+    return _install_automation_runtime()
+
+
+# ---------------------------------------------------------------------
+# 3. gdocs_setup_apps_script — DEPRECATED ALIAS (original pre-PR-α name)
 # ---------------------------------------------------------------------
 
 
 _SETUP_APPS_SCRIPT_DEPRECATION_MSG = (
-    "gdocs_setup_apps_script is deprecated since PR-α; use "
-    "gdocs_install_automation instead. The reframe surfaces this "
-    "as the headline automation-install feature rather than as "
-    "Apps-Script infrastructure plumbing. The underlying behavior "
+    "gdocs_setup_apps_script is deprecated; use "
+    "as_install_automation instead. The underlying behavior "
     "is identical — the rename is a copy change only. The old "
     "name will be removed in v3.0."
 )
 
 
 @workspace_tool(
-    title="DEPRECATED — use gdocs_install_automation instead",
+    title="DEPRECATED — use as_install_automation instead",
     service="gas_deploy",
     readonly=False, destructive=False, idempotent=True, external=True,
     # creds=False: same rationale as the canonical tool above. The
@@ -274,24 +317,22 @@ _SETUP_APPS_SCRIPT_DEPRECATION_MSG = (
     output_schema=GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA,
 )
 def gdocs_setup_apps_script() -> dict:
-    """DEPRECATED — use ``gdocs_install_automation`` instead.
+    """DEPRECATED — use ``as_install_automation`` instead.
 
-    Pre-PR-α name for the Workspace Automation runtime installer.
-    Preserved as a deprecation alias so existing user prompts,
-    saved automations, and external integrations that reference
-    the old name keep working through v2.x.
+    The original pre-PR-α name for the Workspace Automation runtime
+    installer. Preserved as a deprecation alias so existing user prompts,
+    saved automations, and external integrations that reference the old
+    name keep working.
 
-    Behavior is identical to ``gdocs_install_automation``: same
-    underlying OAuth dance, same Apps Script provisioning, same
-    Web App deploy, same structured response shape.
-
-    The reframe (PR-α): the original name framed this as an
-    "Apps Script setup" obligation; the new name frames it as
-    installing the automation capability. Same code path; different
-    headline.
+    Behavior is identical to ``as_install_automation``: same underlying
+    OAuth dance, same Apps Script provisioning, same Web App deploy, same
+    structured response shape. (The canonical name was renamed twice:
+    ``gdocs_setup_apps_script`` → ``gdocs_install_automation`` (PR-α
+    reframe) → ``as_install_automation`` (namespace cleanup); all three
+    names remain registered as aliases of the one installer.)
 
     Planned removal in v3.0. Migrate by replacing every call to
-    ``gdocs_setup_apps_script()`` with ``gdocs_install_automation()``.
+    ``gdocs_setup_apps_script()`` with ``as_install_automation()``.
     """
     warnings.warn(
         _SETUP_APPS_SCRIPT_DEPRECATION_MSG,

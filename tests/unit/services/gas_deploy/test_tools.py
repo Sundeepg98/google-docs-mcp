@@ -295,11 +295,13 @@ def test_gdocs_install_automation_body_returns_structured_needs_authorization_on
 def test_gdocs_setup_apps_script_alias_emits_deprecation_warning_and_returns_same_result(
     monkeypatch,
 ):
-    """PR-α regression: calling the deprecated ``gdocs_setup_apps_script``
-    alias MUST (a) emit a ``DeprecationWarning`` instructing the
-    caller to use ``gdocs_install_automation``, AND (b) return the
-    SAME structured response the canonical tool would (i.e. delegate
-    to the shared underlying installer rather than diverge).
+    """Deprecation-alias regression: calling the deprecated
+    ``gdocs_setup_apps_script`` alias MUST (a) emit a
+    ``DeprecationWarning`` instructing the caller to use the canonical
+    ``as_install_automation`` (renamed from ``gdocs_install_automation``
+    by chore/tool-namespace-cleanup), AND (b) return the SAME structured
+    response the canonical tool would (i.e. delegate to the shared
+    underlying installer rather than diverge).
 
     Catches: a future refactor that splits the alias and canonical
     into two separate implementations and lets them drift; or one
@@ -343,13 +345,13 @@ def test_gdocs_setup_apps_script_alias_emits_deprecation_warning_and_returns_sam
     ]
     assert deprecation_warnings, (
         "Calling gdocs_setup_apps_script did not emit a "
-        "DeprecationWarning. PR-α requires the alias to nudge "
-        "callers toward gdocs_install_automation."
+        "DeprecationWarning. The alias must nudge callers toward "
+        "as_install_automation."
     )
     warning_text = str(deprecation_warnings[0].message)
-    assert "gdocs_install_automation" in warning_text, (
+    assert "as_install_automation" in warning_text, (
         f"DeprecationWarning text did not name the canonical "
-        f"replacement (``gdocs_install_automation``). Message:\n"
+        f"replacement (``as_install_automation``). Message:\n"
         f"{warning_text!r}"
     )
 

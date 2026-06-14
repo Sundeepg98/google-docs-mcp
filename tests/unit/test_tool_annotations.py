@@ -105,6 +105,17 @@ READONLY_TOOLS = {
     # (adds a comment) and gdocs_reply_to_comment (adds a reply) are NOT
     # readonly.
     "gdocs_list_comments",
+    # chore/tool-namespace-cleanup — canonical names for the renamed
+    # read-only tools (the gdocs_* aliases above stay readonly too; their
+    # old names are already in this set).
+    "gdrive_find_doc_by_title",   # was gdocs_find_doc_by_title
+    "gdrive_find_file",           # was gdocs_find_file
+    "gdrive_list_permissions",    # was gdocs_list_permissions
+    "server_info",                # was gdocs_server_info
+    "server_test_manifest",       # was gdocs_test_manifest
+    "server_guide",               # was gdocs_guide
+    "server_help",                # was gdocs_help
+    "admin_audit",                # was gdocs_admin_audit
 }
 
 
@@ -150,6 +161,12 @@ DESTRUCTIVE_TOOLS = {
     # those are NOT here. (gsheets_clear_range only blanks values; it is a
     # values wipe, not a structural delete, and is not in this list.)
     "gsheets_delete_dimension",
+    # chore/tool-namespace-cleanup — canonical names for the renamed
+    # destructive tools (the gdocs_* aliases above stay destructive too;
+    # their old names are already in this set).
+    "gdrive_trash_file",          # was gdocs_trash_file
+    "gdrive_revoke_permission",   # was gdocs_revoke_permission
+    "account_reset_authorization",  # was gdocs_reset_authorization
 }
 
 
@@ -159,6 +176,11 @@ DESTRUCTIVE_TOOLS = {
 NOT_OPEN_WORLD_TOOLS = {
     "gdocs_help",
     "gdocs_guide",
+    # chore/tool-namespace-cleanup — canonical names for the two
+    # pure-local introspection helpers (openWorldHint=False). The old
+    # gdocs_* aliases above remain pure-local too.
+    "server_help",   # was gdocs_help
+    "server_guide",  # was gdocs_guide
 }
 
 
