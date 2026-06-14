@@ -147,6 +147,54 @@ GDOCS_INSERT_TABLE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gdocs_insert_image`` echoes the inserted image's stable objectId
+# (parsed from the insertInlineImage reply; may be null if Docs omits
+# it) plus the request echo.
+GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "image_object_id": {"type": ["string", "null"]},
+        "index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+        "uri": {"type": "string"},
+    },
+    required=["doc_id", "image_object_id", "index", "uri"],
+)
+
+
+# ``gdocs_list_comments`` returns the Drive comment resources (with
+# nested replies) plus the next-page token.
+GDOCS_LIST_COMMENTS_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "comments": {"type": "array"},
+        "next_page_token": {"type": ["string", "null"]},
+    },
+    required=["doc_id", "comments"],
+)
+
+
+# ``gdocs_create_comment`` returns the created Drive comment resource.
+GDOCS_CREATE_COMMENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "comment": {"type": "object"},
+    },
+    required=["doc_id", "comment"],
+)
+
+
+# ``gdocs_reply_to_comment`` returns the created Drive reply resource.
+GDOCS_REPLY_TO_COMMENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "comment_id": {"type": "string"},
+        "reply": {"type": "object"},
+    },
+    required=["doc_id", "comment_id", "reply"],
+)
+
+
 # ``gdocs_format_range`` echoes the formatted range + the list of style
 # fields actually applied (the updateTextStyle ``fields`` mask).
 GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA = _object(
@@ -539,6 +587,64 @@ GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_insert_dimension`` / ``gsheets_delete_dimension`` /
+# ``gsheets_merge_cells`` / ``gsheets_set_data_validation`` all return the
+# flat batch_update envelope (one request each). Shared shape — declared
+# once and reused for the four (matches gsheets_freeze / protect_range).
+GSHEETS_INSERT_DIMENSION_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
+GSHEETS_DELETE_DIMENSION_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
+GSHEETS_MERGE_CELLS_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
+GSHEETS_SET_DATA_VALIDATION_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "total_requests", "replies"],
+)
+
+
+# ``gsheets_add_chart`` returns the flat batch_update envelope PLUS the
+# Sheets-assigned chart_id (the gid of the new embedded chart, parsed
+# from the addChart reply; may be null if Sheets omits it).
+GSHEETS_ADD_CHART_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "chart_id": {"type": ["integer", "null"]},
+        "total_requests": {"type": "integer", "minimum": 0},
+        "replies": {"type": "array"},
+    },
+    required=["spreadsheet_id", "chart_id", "total_requests", "replies"],
+)
+
+
 # ---------------------------------------------------------------------
 # Calendar (services/calendar/) — v2.4.0 (4th new service)
 #
@@ -633,12 +739,38 @@ GCAL_FREEBUSY_OUTPUT_SCHEMA = _object(
 # ---------------------------------------------------------------------
 
 
+# One entry in ``gslides_get_outline``'s ``slides`` array. Pins the
+# load-bearing per-slide keys: stable object_id, 0-based index, layout
+# objectId, flattened text, the page-element inventory, and the
+# speaker-notes text. ``elements`` entries are ``{object_id, type}``.
+_SLIDE_OUTLINE_ENTRY_SCHEMA = _object(
+    properties={
+        "object_id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0},
+        "layout": {"type": "string"},
+        "text": {"type": "string"},
+        "elements": {
+            "type": "array",
+            "items": _object(
+                properties={
+                    "object_id": {"type": "string"},
+                    "type": {"type": "string"},
+                },
+                required=["object_id", "type"],
+            ),
+        },
+        "notes": {"type": "string"},
+    },
+    required=["object_id", "index", "layout", "text", "elements", "notes"],
+)
+
+
 GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA = _object(
     properties={
         "presentation_id": {"type": "string"},
         "title": {"type": "string"},
         "url": {"type": "string", "format": "uri"},
-        "slides": {"type": "array"},
+        "slides": {"type": "array", "items": _SLIDE_OUTLINE_ENTRY_SCHEMA},
     },
     required=["presentation_id", "title", "url", "slides"],
 )
@@ -753,6 +885,24 @@ GSLIDES_CREATE_LINE_OUTPUT_SCHEMA = _object(
         "line_object_id",
         "line_category",
         "url",
+    ],
+)
+
+
+# ``gslides_set_speaker_notes`` replaces a slide's speaker notes; echoes
+# the resolved notes-shape objectId + the notes text that was set.
+GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "slide_object_id": {"type": "string"},
+        "speaker_notes_object_id": {"type": "string"},
+        "notes_text": {"type": "string"},
+    },
+    required=[
+        "presentation_id",
+        "slide_object_id",
+        "speaker_notes_object_id",
+        "notes_text",
     ],
 )
 
@@ -1767,6 +1917,14 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_delete_tab": GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
     "gdocs_replace_all_text": GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gdocs_insert_table": GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
+    # Inline image insert (rides the deployed documents scope; Docs
+    # fetches the URI server-side, so no Drive scope needed)
+    "gdocs_insert_image": GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA,
+    # Comments on app-created docs (Drive comments/replies under the
+    # deployed drive.file scope)
+    "gdocs_list_comments": GDOCS_LIST_COMMENTS_OUTPUT_SCHEMA,
+    "gdocs_create_comment": GDOCS_CREATE_COMMENT_OUTPUT_SCHEMA,
+    "gdocs_reply_to_comment": GDOCS_REPLY_TO_COMMENT_OUTPUT_SCHEMA,
     "gdocs_format_range": GDOCS_FORMAT_RANGE_OUTPUT_SCHEMA,
     "gdocs_format_paragraph": GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
     "gdocs_edit_range": GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
@@ -1807,6 +1965,13 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gsheets_duplicate_sheet": GSHEETS_DUPLICATE_SHEET_OUTPUT_SCHEMA,
     "gsheets_freeze": GSHEETS_FREEZE_OUTPUT_SCHEMA,
     "gsheets_protect_range": GSHEETS_PROTECT_RANGE_OUTPUT_SCHEMA,
+    # Sheets dimension ops + merge + data-validation + chart (ride the
+    # existing batch.py builder seam; deployed spreadsheets scope)
+    "gsheets_insert_dimension": GSHEETS_INSERT_DIMENSION_OUTPUT_SCHEMA,
+    "gsheets_delete_dimension": GSHEETS_DELETE_DIMENSION_OUTPUT_SCHEMA,
+    "gsheets_merge_cells": GSHEETS_MERGE_CELLS_OUTPUT_SCHEMA,
+    "gsheets_set_data_validation": GSHEETS_SET_DATA_VALIDATION_OUTPUT_SCHEMA,
+    "gsheets_add_chart": GSHEETS_ADD_CHART_OUTPUT_SCHEMA,
     # v2.4.0 — Calendar (4th new service): event + availability surface.
     # Scope https://www.googleapis.com/auth/calendar (SENSITIVE, no CASA).
     "gcal_list_events": GCAL_LIST_EVENTS_OUTPUT_SCHEMA,
@@ -1826,6 +1991,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # #155 geometry trio — createShape + createLine complete the set
     "gslides_create_shape": GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
+    # Speaker-notes write path (rides the deployed presentations scope)
+    "gslides_set_speaker_notes": GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
     # Forms (new service, sensitive scopes forms.body +
     # forms.responses.readonly — NOT restricted, no CASA)
     "gforms_create_form": GFORMS_CREATE_FORM_OUTPUT_SCHEMA,

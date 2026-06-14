@@ -74,17 +74,33 @@ def get_outline(creds: Credentials, presentation_id: str) -> dict:
 
     Returns:
         ``{presentation_id, title, url, slides: [...]}``. Each entry
-        in ``slides`` is ``{object_id, layout, text}`` — the
-        ``object_id`` is Slides' stable per-slide identifier (the
-        Slides equivalent of docs' tab IDs, per the multi-service
-        audit), the ``layout`` is the layout's objectId (empty
-        string when the slide has no explicit layout), and ``text``
-        is the readable copy concatenated from all shapes on the
-        slide. Empty when the slide has no text shapes (e.g. an
-        image-only slide).
+        in ``slides`` is ``{object_id, index, layout, text, elements,
+        notes}``:
+
+          * ``object_id``, Slides' stable per-slide identifier (the
+            Slides equivalent of docs' tab IDs, per the multi-service
+            audit).
+          * ``index``, the slide's 0-based position in the deck (the
+            same order Slides shows in the filmstrip). Stable handle
+            for "the 3rd slide" without re-deriving it caller-side.
+          * ``layout``, the layout's objectId (empty string when the
+            slide has no explicit layout).
+          * ``text``, the readable copy concatenated from all shapes
+            on the slide. Empty when the slide has no text shapes
+            (e.g. an image-only slide).
+          * ``elements``, a list of ``{object_id, type}`` for every
+            page element on the slide, classified as ``shape`` /
+            ``table`` / ``image`` / ``line`` / ``video`` /
+            ``word_art`` / ``sheets_chart`` / ``group`` / ``unknown``
+            (see ``_classify_page_element``). Lets a caller inventory
+            a slide's structure (count tables, find an image's
+            objectId to delete, etc.) without a second round trip.
+          * ``notes``, the speaker-notes text for the slide (read
+            from ``slideProperties.notesPage``), or the empty string
+            when the slide has no notes.
 
     Raises:
-        HttpError: from the underlying SDK on 4xx / 5xx — let it
+        HttpError: from the underlying SDK on 4xx / 5xx, let it
             propagate; the tool-layer envelope renders it.
     """
     slides = get_service("slides", "v1", credentials=creds)
@@ -103,13 +119,16 @@ def get_outline(creds: Credentials, presentation_id: str) -> dict:
         "slides": [
             {
                 "object_id": slide.get("objectId", ""),
+                "index": index,
                 "layout": (
                     slide.get("slideProperties", {})
                     .get("layoutObjectId", "")
                 ),
                 "text": _extract_slide_text(slide),
+                "elements": _list_slide_elements(slide),
+                "notes": _extract_slide_notes(slide),
             }
-            for slide in presentation.get("slides", [])
+            for index, slide in enumerate(presentation.get("slides", []))
         ],
     }
 
@@ -373,7 +392,143 @@ def add_slide(
     }
 
 
-# EMU (English Metric Units) — Slides' geometry unit. 914400 EMU = 1
+def _resolve_speaker_notes_object_id(
+    slides: object,
+    presentation_id: str,
+    slide_object_id: str,
+) -> str:
+    """Resolve a slide's speaker-notes shape objectId.
+
+    Speaker notes are text inside a dedicated shape on the slide's
+    notesPage. Its objectId is NOT something the caller knows up front -
+    Slides assigns it, so we read the presentation and pull
+    ``slideProperties.notesPage.notesProperties.speakerNotesObjectId``
+    for the requested slide.
+
+    Args:
+        slides: A Slides v1 service Resource.
+        presentation_id: The Slides file ID.
+        slide_object_id: The target slide's objectId (from
+            ``get_outline`` / ``add_slide``).
+
+    Returns:
+        The speaker-notes shape objectId.
+
+    Raises:
+        ValueError: the slide isn't found in the deck, or it has no
+            resolvable speaker-notes shape (no notesPage /
+            speakerNotesObjectId).
+    """
+    presentation = execute_with_retry(
+        lambda: slides.presentations().get(  # type: ignore[attr-defined]
+            presentationId=presentation_id,
+        ).execute(),
+        idempotent=True,
+        op_name="slides.presentations.get.notes_id",
+    )
+    for slide in presentation.get("slides", []) or []:
+        if slide.get("objectId") != slide_object_id:
+            continue
+        notes_id = (
+            slide.get("slideProperties", {})
+            .get("notesPage", {})
+            .get("notesProperties", {})
+            .get("speakerNotesObjectId")
+        )
+        if not notes_id:
+            raise ValueError(
+                f"slide {slide_object_id!r} has no resolvable speaker-notes "
+                "shape (no notesPage.notesProperties.speakerNotesObjectId). "
+                "This is unusual, every slide normally has a notes shape."
+            )
+        return notes_id
+    raise ValueError(
+        f"slide {slide_object_id!r} not found in presentation "
+        f"{presentation_id!r}. Pass a slide objectId from "
+        "gslides_get_outline (the per-slide object_id)."
+    )
+
+
+def set_speaker_notes(
+    creds: Credentials,
+    presentation_id: str,
+    slide_object_id: str,
+    notes_text: str,
+) -> dict:
+    """Set (replace) the speaker notes of a single slide.
+
+    Resolves the slide's speaker-notes shape objectId (via
+    ``_resolve_speaker_notes_object_id``), then issues ONE
+    ``presentations.batchUpdate`` that deletes any existing notes text
+    and inserts ``notes_text``, so the call is a full REPLACE (the
+    slide ends with exactly ``notes_text`` as its notes), committed
+    atomically.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (already in ``auth.SCOPES`` baseline, no extra grant).
+        presentation_id: The Slides file ID.
+        slide_object_id: The target slide's objectId (from
+            ``get_outline``'s per-slide ``object_id`` or ``add_slide``).
+        notes_text: The notes text to set. May be empty, an empty
+            string CLEARS the slide's notes (the deleteText runs; no
+            insertText is emitted).
+
+    Returns:
+        ``{presentation_id, slide_object_id, speaker_notes_object_id,
+        notes_text}``, echoes the request plus the resolved notes
+        shape objectId.
+
+    Raises:
+        ValueError: the slide isn't found / has no notes shape (from
+            ``_resolve_speaker_notes_object_id``).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    slides = get_service("slides", "v1", credentials=creds)
+    notes_object_id = _resolve_speaker_notes_object_id(
+        slides, presentation_id, slide_object_id
+    )
+
+    # deleteText with an ALL range clears whatever notes exist (a no-op
+    # on already-empty notes, Slides accepts it), then insertText sets
+    # the new copy. insertText rejects an empty string, so for an empty
+    # notes_text we emit ONLY the delete (clearing the notes).
+    requests: list[dict] = [
+        {
+            "deleteText": {
+                "objectId": notes_object_id,
+                "textRange": {"type": "ALL"},
+            }
+        }
+    ]
+    if notes_text:
+        requests.append({
+            "insertText": {
+                "objectId": notes_object_id,
+                "insertionIndex": 0,
+                "text": notes_text,
+            }
+        })
+
+    # idempotent=True: setting the same notes twice yields the same
+    # state (delete-all then insert the same text is deterministic).
+    execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=True,
+        op_name="slides.presentations.batchUpdate.setSpeakerNotes",
+    )
+    return {
+        "presentation_id": presentation_id,
+        "slide_object_id": slide_object_id,
+        "speaker_notes_object_id": notes_object_id,
+        "notes_text": notes_text,
+    }
+
+
+# EMU (English Metric Units), Slides' geometry unit. 914400 EMU = 1
 # inch. A default slide is 10in × 5.63in (16:9). These defaults place a
 # created element at a comfortable inset with a readable size; callers
 # can override. Kept module-level so create_image / create_table share
@@ -893,6 +1048,94 @@ def _extract_slide_text(slide: dict) -> str:
     for element in slide.get("pageElements", []) or []:
         shape = element.get("shape")
         if not shape:
+            continue
+        text = shape.get("text", {})
+        for te in text.get("textElements", []) or []:
+            text_run = te.get("textRun")
+            if text_run:
+                parts.append(text_run.get("content", ""))
+    return "".join(parts).strip()
+
+
+# Map a pageElement's discriminating key to a stable, human-readable
+# ``type`` label. Slides models each page element as exactly one of
+# these keyed sub-objects (a tagged union); the key that is present is
+# the element's kind. Kept as an ordered tuple (not a dict) so the
+# classification is deterministic even in the (spec-illegal) event that
+# an element ever carried two keys — first match wins.
+_PAGE_ELEMENT_KINDS: tuple[tuple[str, str], ...] = (
+    ("shape", "shape"),
+    ("table", "table"),
+    ("image", "image"),
+    ("line", "line"),
+    ("video", "video"),
+    ("wordArt", "word_art"),
+    ("sheetsChart", "sheets_chart"),
+    ("elementGroup", "group"),
+)
+
+
+def _classify_page_element(element: dict) -> str:
+    """Classify a Slides ``pageElement`` into a stable type label.
+
+    Slides represents a page element as a tagged union, the element
+    carries exactly one of ``shape`` / ``table`` / ``image`` / ``line``
+    / ``video`` / ``wordArt`` / ``sheetsChart`` / ``elementGroup``. This
+    returns the snake_case label for whichever discriminator is present,
+    or ``"unknown"`` for an element that carries none of them (forward
+    compatibility, Slides may add element kinds we don't yet map; an
+    unknown kind is reported rather than dropped).
+    """
+    for key, label in _PAGE_ELEMENT_KINDS:
+        if key in element:
+            return label
+    return "unknown"
+
+
+def _list_slide_elements(slide: dict) -> list[dict]:
+    """List ``{object_id, type}`` for every page element on a slide.
+
+    Walks ``slide.pageElements`` in document order, classifying each via
+    ``_classify_page_element``. The ``object_id`` is the element's stable
+    Slides objectId (usable as a later batchUpdate target, e.g. to
+    delete an image or restyle a shape). Returns an empty list for a
+    slide with no page elements (a truly blank slide).
+    """
+    return [
+        {
+            "object_id": element.get("objectId", ""),
+            "type": _classify_page_element(element),
+        }
+        for element in slide.get("pageElements", []) or []
+    ]
+
+
+def _extract_slide_notes(slide: dict) -> str:
+    """Extract the speaker-notes text for a slide.
+
+    Speaker notes live on the slide's ``slideProperties.notesPage``, a
+    page whose own ``pageElements`` contain the notes body shape. The
+    notes shape is the one whose ``shape.placeholder.type`` is
+    ``BODY``; reusing ``_extract_slide_text`` on the notesPage would
+    also pick up the slide-number placeholder, so this targets the BODY
+    placeholder specifically.
+
+    Returns the readable notes text (trailing whitespace stripped), or
+    the empty string when the slide has no notesPage or an empty notes
+    body. Stable identity for the consumer: empty string, not ``None``.
+    """
+    notes_page = (
+        slide.get("slideProperties", {}).get("notesPage", {})
+    )
+    parts: list[str] = []
+    for element in notes_page.get("pageElements", []) or []:
+        shape = element.get("shape")
+        if not shape:
+            continue
+        # The notes body is the BODY placeholder; skip the slide-number
+        # (and any other) placeholder so we return only the notes copy.
+        placeholder_type = shape.get("placeholder", {}).get("type")
+        if placeholder_type != "BODY":
             continue
         text = shape.get("text", {})
         for te in text.get("textElements", []) or []:

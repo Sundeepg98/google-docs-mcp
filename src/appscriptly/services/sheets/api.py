@@ -51,17 +51,22 @@ from typing import TYPE_CHECKING, Any
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 from appscriptly.services.sheets.batch import (
+    add_chart_request,
     add_conditional_format_rule_request,
     add_protected_range_request,
     add_sheet_request,
     batch_update,
     cell_format,
     color,
+    delete_dimension_request,
     delete_sheet_request,
     duplicate_sheet_request,
     freeze_request,
     grid_range,
+    insert_dimension_request,
+    merge_cells_request,
     repeat_cell_request,
+    set_data_validation_request,
     update_sheet_title_request,
 )
 
@@ -940,3 +945,369 @@ def protect_range(
         [request],
         op_name="sheets.spreadsheets.batchUpdate.addProtectedRange",
     )
+
+
+def insert_dimension(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+    inherit_from_before: bool = False,
+) -> dict:
+    """Insert empty rows or columns via ``batchUpdate`` (``insertDimension``).
+
+    Inserts ``end_index - start_index`` empty rows (``dimension="ROWS"``)
+    or columns (``dimension="COLUMNS"``) before ``start_index``, shifting
+    existing cells down / right. Uses the reusable batch request-builder
+    (``services/sheets/batch.py``).
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id, the ``gid``, not the tab
+            name. The first/default tab is ``0``.
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based index to insert before (``0`` = very top /
+            left).
+        end_index: 0-based EXCLUSIVE end; count inserted is
+            ``end_index - start_index``.
+        inherit_from_before: When ``True``, new rows/cols inherit the
+            formatting of the row/col before them; ``False`` (default)
+            inherits from after. ``True`` with ``start_index=0`` is
+            rejected by Sheets (nothing before to inherit), that 400
+            propagates.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, the flat
+        ``batch_update`` envelope (``total_requests`` is 1).
+
+    Raises:
+        ValueError: bad dimension / index (from the builder).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+
+    Note:
+        Dispatched with ``idempotent=False`` (the ``batch_update``
+        default): re-running inserts ANOTHER band, so a transient-error
+        replay could insert twice. Not blanket-retried.
+    """
+    request = insert_dimension_request(
+        sheet_id,
+        dimension=dimension,
+        start_index=start_index,
+        end_index=end_index,
+        inherit_from_before=inherit_from_before,
+    )
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.insertDimension",
+    )
+
+
+def delete_dimension(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+) -> dict:
+    """Delete rows or columns via ``batchUpdate`` (``deleteDimension``).
+
+    Removes the half-open band ``[start_index, end_index)`` of rows
+    (``dimension="ROWS"``) or columns (``dimension="COLUMNS"``), shifting
+    later cells up / left. DESTRUCTIVE, the cells in the band are gone.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id, the ``gid``. The
+            first/default tab is ``0``.
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based inclusive first row/col to delete.
+        end_index: 0-based EXCLUSIVE end; count deleted is
+            ``end_index - start_index``.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, the flat
+        ``batch_update`` envelope (``total_requests`` is 1).
+
+    Raises:
+        ValueError: bad dimension / index (from the builder).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated
+            (e.g. deleting all rows of a sheet, which Sheets rejects).
+
+    Note:
+        Dispatched with ``idempotent=False``: a deleteDimension is not
+        safe to blanket-retry (a replay would delete a DIFFERENT band
+        after the first delete shifted the indices). Matches the
+        destructive-op safety floor.
+    """
+    request = delete_dimension_request(
+        sheet_id,
+        dimension=dimension,
+        start_index=start_index,
+        end_index=end_index,
+    )
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.deleteDimension",
+    )
+
+
+def merge_cells(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    merge_type: str = "MERGE_ALL",
+) -> dict:
+    """Merge a cell range via ``batchUpdate`` (``mergeCells``).
+
+    Combines the cells in a ``GridRange`` into one (``MERGE_ALL``), or
+    merges down each column (``MERGE_COLUMNS``) / across each row
+    (``MERGE_ROWS``). Uses the reusable batch request-builder.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id, the ``gid``. The
+            first/default tab is ``0``.
+        start_row / end_row / start_col / end_col: 0-based, half-open
+            GridRange bounds (``end`` exclusive). A merge needs a real
+            multi-cell rectangle, supply bounds covering 2+ cells.
+        merge_type: ``"MERGE_ALL"`` (default), ``"MERGE_COLUMNS"``, or
+            ``"MERGE_ROWS"``.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, the flat
+        ``batch_update`` envelope (``total_requests`` is 1).
+
+    Raises:
+        ValueError: bad ``merge_type`` or an inverted GridRange, caught
+            by the builders client-side.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated
+            (e.g. a single-cell range Sheets rejects as nothing to merge).
+
+    Note:
+        Dispatched with ``idempotent=True``, merging the same range the
+        same way twice yields the same state (the 2nd call is a no-op),
+        so it is safe to retry on a transient 429/5xx.
+    """
+    grid = grid_range(
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+    )
+    request = merge_cells_request(grid, merge_type=merge_type)
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        idempotent=True,
+        op_name="sheets.spreadsheets.batchUpdate.mergeCells",
+    )
+
+
+def set_data_validation(
+    creds: Credentials,
+    spreadsheet_id: str,
+    sheet_id: int,
+    *,
+    condition_type: str,
+    start_row: int | None = None,
+    end_row: int | None = None,
+    start_col: int | None = None,
+    end_col: int | None = None,
+    values: list[str] | None = None,
+    strict: bool = True,
+    show_custom_ui: bool = True,
+    input_message: str | None = None,
+) -> dict:
+    """Set a data-validation rule on a range via ``batchUpdate``.
+
+    Attaches a ``setDataValidation`` rule to every cell in a
+    ``GridRange``, a dropdown (``condition_type="ONE_OF_LIST"``), a
+    numeric bound (``NUMBER_BETWEEN``), a checkbox (``BOOLEAN``), etc.
+    Reuses the reusable batch request-builder.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        sheet_id: The numeric sheet (tab) id, the ``gid``. The
+            first/default tab is ``0``.
+        condition_type: A Sheets ``ConditionType`` enum value, e.g.
+            ``"ONE_OF_LIST"`` (dropdown), ``"NUMBER_BETWEEN"``,
+            ``"BOOLEAN"`` (checkbox), ``"TEXT_IS_EMAIL"``. Passed through
+            verbatim (an invalid value surfaces Google's own enum error).
+        start_row / end_row / start_col / end_col: 0-based, half-open
+            GridRange bounds (``end`` exclusive). Omit a bound to leave
+            that side unbounded; omit all four to target the whole sheet.
+        values: the condition's value(s) as strings (e.g. the dropdown
+            items for ``ONE_OF_LIST``, ``["1", "10"]`` for
+            ``NUMBER_BETWEEN``). Omit for valueless conditions.
+        strict: ``True`` (default) REJECTS invalid entries; ``False``
+            allows them with a warning flag.
+        show_custom_ui: ``True`` (default) renders the UI affordance
+            (e.g. the dropdown arrow).
+        input_message: optional help text shown when a cell is selected.
+
+    Returns:
+        ``{spreadsheet_id, total_requests, replies}``, the flat
+        ``batch_update`` envelope (``total_requests`` is 1).
+
+    Raises:
+        ValueError: blank ``condition_type`` or an inverted GridRange -
+            caught by the builders client-side.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+
+    Note:
+        Dispatched with ``idempotent=True``, setting the same rule on
+        the same range twice yields the same state, so it is safe to
+        retry on a transient 429/5xx.
+    """
+    grid = grid_range(
+        sheet_id,
+        start_row=start_row,
+        end_row=end_row,
+        start_col=start_col,
+        end_col=end_col,
+    )
+    request = set_data_validation_request(
+        grid,
+        condition_type=condition_type,
+        values=values,
+        strict=strict,
+        show_custom_ui=show_custom_ui,
+        input_message=input_message,
+    )
+    return batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        idempotent=True,
+        op_name="sheets.spreadsheets.batchUpdate.setDataValidation",
+    )
+
+
+def add_chart(
+    creds: Credentials,
+    spreadsheet_id: str,
+    *,
+    chart_type: str,
+    domain_sheet_id: int,
+    domain_start_row: int,
+    domain_end_row: int,
+    domain_start_col: int,
+    domain_end_col: int,
+    series_ranges: list[dict],
+    anchor_sheet_id: int,
+    anchor_row: int,
+    anchor_col: int,
+    title: str | None = None,
+    header_count: int = 1,
+) -> dict:
+    """Add a basic embedded chart via ``batchUpdate`` (``addChart``).
+
+    Builds a basic cartesian chart (bar / line / area / column / scatter
+    / combo / stepped-area) from one domain range (the X axis) plus one
+    or more series ranges (the plotted Y values), anchored as an overlay
+    at a cell. Sheets assigns the new chart a ``chartId`` server-side and
+    echoes it in the reply; this surfaces it for follow-up calls.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        chart_type: A Sheets ``BasicChartType``, ``BAR`` / ``LINE`` /
+            ``AREA`` / ``COLUMN`` / ``SCATTER`` / ``COMBO`` /
+            ``STEPPED_AREA``.
+        domain_sheet_id: gid of the sheet holding the domain data.
+        domain_start_row / domain_end_row / domain_start_col /
+            domain_end_col: 0-based, half-open GridRange bounds of the
+            domain (X axis / categories).
+        series_ranges: list of ``{sheet_id, start_row, end_row,
+            start_col, end_col}`` dicts, each a data series (Y values).
+            At least one required. Each is turned into a GridRange via
+            ``grid_range`` (so each gets the same half-open / index
+            validation).
+        anchor_sheet_id: gid of the sheet the chart overlay is placed on.
+        anchor_row / anchor_col: 0-based cell coordinates of the chart's
+            top-left anchor.
+        title: optional chart title.
+        header_count: leading header rows/cols Sheets labels series from
+            (default 1).
+
+    Returns:
+        ``{spreadsheet_id, chart_id, total_requests, replies}`` -
+        ``chart_id`` is the gid Sheets assigned the new chart (parsed
+        from the reply), plus the flat ``batch_update`` envelope.
+
+    Raises:
+        ValueError: bad ``chart_type``, empty ``series_ranges``, an
+            inverted GridRange, or a negative anchor coordinate, all
+            caught by the builders client-side.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+
+    Note:
+        Dispatched with ``idempotent=False``: ``addChart`` APPENDS a new
+        chart (a fresh chartId each call), so a transient-error replay
+        could create a duplicate chart. Not blanket-retried.
+    """
+    domain_grid = grid_range(
+        domain_sheet_id,
+        start_row=domain_start_row,
+        end_row=domain_end_row,
+        start_col=domain_start_col,
+        end_col=domain_end_col,
+    )
+    series_grids = [
+        grid_range(
+            s["sheet_id"],
+            start_row=s.get("start_row"),
+            end_row=s.get("end_row"),
+            start_col=s.get("start_col"),
+            end_col=s.get("end_col"),
+        )
+        for s in series_ranges
+    ]
+    request = add_chart_request(
+        chart_type=chart_type,
+        title=title,
+        domain_grid=domain_grid,
+        series_grids=series_grids,
+        anchor_sheet_id=anchor_sheet_id,
+        anchor_row=anchor_row,
+        anchor_col=anchor_col,
+        header_count=header_count,
+    )
+    result = batch_update(
+        creds,
+        spreadsheet_id,
+        [request],
+        op_name="sheets.spreadsheets.batchUpdate.addChart",
+    )
+    chart_id = (
+        result.get("replies", [{}])[0]
+        .get("addChart", {})
+        .get("chart", {})
+        .get("chartId")
+    )
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "chart_id": chart_id,
+        "total_requests": result.get("total_requests", 1),
+        "replies": result.get("replies", []),
+    }

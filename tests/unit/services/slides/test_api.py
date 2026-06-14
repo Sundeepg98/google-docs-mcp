@@ -41,7 +41,10 @@ from appscriptly.google_api_client import (
     with_google_api_client,
 )
 from appscriptly.services.slides.api import (
+    _classify_page_element,
+    _extract_slide_notes,
     _extract_slide_text,
+    _list_slide_elements,
     add_slide,
     create_image,
     create_line,
@@ -50,6 +53,7 @@ from appscriptly.services.slides.api import (
     create_table,
     get_outline,
     replace_all_text,
+    set_speaker_notes,
 )
 
 
@@ -205,23 +209,32 @@ def test_get_outline_passes_presentationId_to_slides(stub_slides_for_get):
 def test_get_outline_returns_flat_envelope(stub_slides_for_get):
     """Maps Slides' ``title`` directly + synthesizes the canonical
     presentation URL from the ID. Each per-slide entry has
-    ``object_id`` + ``layout`` + flattened ``text``."""
+    ``object_id`` + 0-based ``index`` + ``layout`` + flattened ``text``
+    + an ``elements`` inventory + speaker ``notes``."""
     result = get_outline(MagicMock(), "DECK-1")
     assert result["presentation_id"] == "DECK-1"
     assert result["title"] == "Q2 Forecast"
     assert result["url"] == "https://docs.google.com/presentation/d/DECK-1/edit"
     assert len(result["slides"]) == 2
-    # First slide: title slide with text
+    # First slide: title slide with text. index 0; one shape element; no
+    # notesPage in the stub -> notes empty string.
     assert result["slides"][0] == {
         "object_id": "SLIDE_001",
+        "index": 0,
         "layout": "LAYOUT_TITLE",
         "text": "Welcome to Q2",
+        "elements": [{"object_id": "", "type": "shape"}],
+        "notes": "",
     }
-    # Second slide: image-only, text is empty string (not None)
+    # Second slide: image-only, text is empty string (not None). index 1;
+    # one image element classified as "image".
     assert result["slides"][1] == {
         "object_id": "SLIDE_002",
+        "index": 1,
         "layout": "LAYOUT_IMAGE",
         "text": "",
+        "elements": [{"object_id": "", "type": "image"}],
+        "notes": "",
     }
 
 
@@ -269,6 +282,13 @@ def test_get_outline_defaults_layout_when_slideProperties_missing(
     result = get_outline(MagicMock(), "DECK-Z")
     assert result["slides"][0]["layout"] == ""
     assert result["slides"][1]["layout"] == ""
+    # Defensive defaults for the enrichment fields too: a slide with no
+    # pageElements / notesPage yields empty elements + empty notes, and
+    # the index reflects position.
+    assert result["slides"][0]["index"] == 0
+    assert result["slides"][0]["elements"] == []
+    assert result["slides"][0]["notes"] == ""
+    assert result["slides"][1]["index"] == 1
 
 
 # ---------------------------------------------------------------------
@@ -1140,3 +1160,283 @@ def test_create_line_twice_on_same_deck_uses_unique_object_ids(
         f"({line_ids[0]!r}) — the 2nd would 400 'object ID already in use'."
     )
     assert all(lid.startswith("appscriptly_line_") for lid in line_ids)
+
+
+# ---------------------------------------------------------------------
+# _classify_page_element — pure helper (element-kind tagged union)
+# ---------------------------------------------------------------------
+
+
+def test_classify_page_element_recognizes_each_kind():
+    """Each discriminating key maps to its snake_case label."""
+    assert _classify_page_element({"shape": {}}) == "shape"
+    assert _classify_page_element({"table": {}}) == "table"
+    assert _classify_page_element({"image": {}}) == "image"
+    assert _classify_page_element({"line": {}}) == "line"
+    assert _classify_page_element({"video": {}}) == "video"
+    assert _classify_page_element({"wordArt": {}}) == "word_art"
+    assert _classify_page_element({"sheetsChart": {}}) == "sheets_chart"
+    assert _classify_page_element({"elementGroup": {}}) == "group"
+
+
+def test_classify_page_element_unknown_kind_returns_unknown():
+    """An element with none of the known discriminators (forward-compat:
+    Slides may add element kinds) is reported as unknown, not dropped."""
+    assert _classify_page_element({"objectId": "X"}) == "unknown"
+    assert _classify_page_element({}) == "unknown"
+
+
+# ---------------------------------------------------------------------
+# _list_slide_elements — pure helper (per-element inventory)
+# ---------------------------------------------------------------------
+
+
+def test_list_slide_elements_empty_for_slide_without_pageElements():
+    """A blank slide (no pageElements) yields an empty list, not None."""
+    assert _list_slide_elements({}) == []
+    assert _list_slide_elements({"pageElements": []}) == []
+    assert _list_slide_elements({"pageElements": None}) == []
+
+
+def test_list_slide_elements_classifies_and_preserves_order():
+    """Walks pageElements in document order, returning {object_id, type}
+    classified per element kind."""
+    slide = {
+        "pageElements": [
+            {"objectId": "SH1", "shape": {}},
+            {"objectId": "IMG1", "image": {}},
+            {"objectId": "TBL1", "table": {}},
+            {"objectId": "LN1", "line": {}},
+        ],
+    }
+    assert _list_slide_elements(slide) == [
+        {"object_id": "SH1", "type": "shape"},
+        {"object_id": "IMG1", "type": "image"},
+        {"object_id": "TBL1", "type": "table"},
+        {"object_id": "LN1", "type": "line"},
+    ]
+
+
+def test_list_slide_elements_defaults_missing_object_id_to_empty():
+    """An element missing objectId (shouldn't happen, but the contract
+    permits) gets object_id empty rather than KeyError."""
+    assert _list_slide_elements({"pageElements": [{"shape": {}}]}) == [
+        {"object_id": "", "type": "shape"},
+    ]
+
+
+# ---------------------------------------------------------------------
+# _extract_slide_notes — pure helper (speaker-notes BODY placeholder)
+# ---------------------------------------------------------------------
+
+
+def test_extract_slide_notes_empty_when_no_notesPage():
+    """No slideProperties / notesPage gives an empty string (not None)."""
+    assert _extract_slide_notes({}) == ""
+    assert _extract_slide_notes({"slideProperties": {}}) == ""
+    assert _extract_slide_notes({"slideProperties": {"notesPage": {}}}) == ""
+
+
+def test_extract_slide_notes_reads_body_placeholder_text():
+    """Notes text comes from the notesPage's BODY placeholder shape."""
+    slide = {
+        "slideProperties": {
+            "notesPage": {
+                "pageElements": [
+                    {
+                        "shape": {
+                            "placeholder": {"type": "BODY"},
+                            "text": {"textElements": [
+                                {"textRun": {"content": "Talk slowly here.\n"}},
+                            ]},
+                        }
+                    },
+                ],
+            }
+        }
+    }
+    assert _extract_slide_notes(slide) == "Talk slowly here."
+
+
+def test_extract_slide_notes_skips_non_body_placeholders():
+    """The slide-number placeholder on the notesPage must NOT leak into
+    the returned notes text — only the BODY placeholder counts."""
+    slide = {
+        "slideProperties": {
+            "notesPage": {
+                "pageElements": [
+                    {
+                        "shape": {
+                            "placeholder": {"type": "SLIDE_NUMBER"},
+                            "text": {"textElements": [
+                                {"textRun": {"content": "12"}},
+                            ]},
+                        }
+                    },
+                    {
+                        "shape": {
+                            "placeholder": {"type": "BODY"},
+                            "text": {"textElements": [
+                                {"textRun": {"content": "Real notes"}},
+                            ]},
+                        }
+                    },
+                ],
+            }
+        }
+    }
+    assert _extract_slide_notes(slide) == "Real notes"
+
+
+def test_get_outline_surfaces_notes_and_elements_end_to_end():
+    """get_outline threads the per-slide elements inventory + notes text
+    through from a presentations.get response."""
+    slides = MagicMock(name="slides-v1-stub-enriched")
+    slides.presentations().get().execute.return_value = {
+        "presentationId": "DECK-E",
+        "title": "Enriched",
+        "slides": [
+            {
+                "objectId": "S1",
+                "slideProperties": {
+                    "layoutObjectId": "L1",
+                    "notesPage": {
+                        "pageElements": [
+                            {
+                                "shape": {
+                                    "placeholder": {"type": "BODY"},
+                                    "text": {"textElements": [
+                                        {"textRun": {"content": "Note 1"}},
+                                    ]},
+                                }
+                            },
+                        ],
+                    },
+                },
+                "pageElements": [
+                    {"objectId": "SH1", "shape": {"text": {"textElements": [
+                        {"textRun": {"content": "Body"}},
+                    ]}}},
+                    {"objectId": "IMG1", "image": {}},
+                ],
+            },
+        ],
+    }
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("slides", "v1"): slides})
+    ):
+        result = get_outline(MagicMock(), "DECK-E")
+    slide = result["slides"][0]
+    assert slide["index"] == 0
+    assert slide["notes"] == "Note 1"
+    assert slide["elements"] == [
+        {"object_id": "SH1", "type": "shape"},
+        {"object_id": "IMG1", "type": "image"},
+    ]
+
+
+# ---------------------------------------------------------------------
+# set_speaker_notes — resolve notes shape + deleteText/insertText batch
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_notes():
+    """A Slides v1 stub whose presentations().get() resolves a slide's
+    speakerNotesObjectId and whose batchUpdate() echoes a reply."""
+    slides = MagicMock(name="slides-v1-stub-notes")
+    slides.presentations().get().execute.return_value = {
+        "presentationId": "DECK-N",
+        "slides": [
+            {
+                "objectId": "SLIDE_N1",
+                "slideProperties": {
+                    "notesPage": {
+                        "notesProperties": {
+                            "speakerNotesObjectId": "NOTES_SHAPE_1",
+                        },
+                    },
+                },
+            },
+        ],
+    }
+    slides.presentations().batchUpdate().execute.return_value = {"replies": []}
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("slides", "v1"): slides})
+    ):
+        yield slides
+
+
+def _last_batch_update_requests(slides: MagicMock) -> list:
+    """The requests list from the most recent batchUpdate(...) call that
+    actually carried a body."""
+    for call in reversed(slides.presentations().batchUpdate.call_args_list):
+        if "body" in call.kwargs:
+            return call.kwargs["body"]["requests"]
+    raise AssertionError("no batchUpdate() call captured a body")
+
+
+def test_set_speaker_notes_resolves_notes_shape_and_replaces_text(
+    stub_slides_for_notes,
+):
+    """A non-empty notes_text emits deleteText(ALL) THEN insertText on
+    the resolved speakerNotesObjectId."""
+    result = set_speaker_notes(
+        MagicMock(), "DECK-N", "SLIDE_N1", "New presenter notes"
+    )
+    requests = _last_batch_update_requests(stub_slides_for_notes)
+    assert requests == [
+        {"deleteText": {
+            "objectId": "NOTES_SHAPE_1",
+            "textRange": {"type": "ALL"},
+        }},
+        {"insertText": {
+            "objectId": "NOTES_SHAPE_1",
+            "insertionIndex": 0,
+            "text": "New presenter notes",
+        }},
+    ]
+    assert result == {
+        "presentation_id": "DECK-N",
+        "slide_object_id": "SLIDE_N1",
+        "speaker_notes_object_id": "NOTES_SHAPE_1",
+        "notes_text": "New presenter notes",
+    }
+
+
+def test_set_speaker_notes_empty_text_clears_notes_with_delete_only(
+    stub_slides_for_notes,
+):
+    """Empty notes_text CLEARS the notes: only deleteText is emitted
+    (insertText rejects an empty string)."""
+    set_speaker_notes(MagicMock(), "DECK-N", "SLIDE_N1", "")
+    requests = _last_batch_update_requests(stub_slides_for_notes)
+    assert requests == [
+        {"deleteText": {
+            "objectId": "NOTES_SHAPE_1",
+            "textRange": {"type": "ALL"},
+        }},
+    ]
+
+
+def test_set_speaker_notes_raises_when_slide_not_found(stub_slides_for_notes):
+    """A slide objectId not present in the deck is a caller bug -> ValueError."""
+    with pytest.raises(ValueError, match="not found in presentation"):
+        set_speaker_notes(MagicMock(), "DECK-N", "MISSING_SLIDE", "x")
+
+
+def test_set_speaker_notes_raises_when_no_notes_shape():
+    """A slide whose notesPage carries no speakerNotesObjectId raises a
+    clear ValueError rather than building a malformed request."""
+    slides = MagicMock(name="slides-v1-stub-no-notes-shape")
+    slides.presentations().get().execute.return_value = {
+        "presentationId": "DECK-NN",
+        "slides": [
+            {"objectId": "S1", "slideProperties": {"notesPage": {}}},
+        ],
+    }
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("slides", "v1"): slides})
+    ):
+        with pytest.raises(ValueError, match="no resolvable speaker-notes"):
+            set_speaker_notes(MagicMock(), "DECK-NN", "S1", "x")

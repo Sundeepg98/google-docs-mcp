@@ -339,33 +339,78 @@ def get_doc_outline(creds: Credentials, doc_id: str) -> dict:
     return {"doc_id": doc_id, "trashed": trashed, "tabs": tabs_out}
 
 
+# Valid ``suggestionsViewMode`` values for ``documents.get``. Controls
+# how tracked-change SUGGESTIONS render in the returned content:
+#   * DEFAULT_FOR_CURRENT_ACCESS - Docs picks per the caller's access
+#     (inline suggestions if the user can edit, accepted preview if not).
+#   * SUGGESTIONS_INLINE         - suggestions returned inline (with
+#     suggestedInsertionIds / suggestedDeletionIds on the runs).
+#   * PREVIEW_SUGGESTIONS_ACCEPTED - content as if all suggestions were
+#     accepted.
+#   * PREVIEW_WITHOUT_SUGGESTIONS - content as if all suggestions were
+#     rejected (the clean current text).
+_SUGGESTIONS_VIEW_MODES = frozenset({
+    "DEFAULT_FOR_CURRENT_ACCESS",
+    "SUGGESTIONS_INLINE",
+    "PREVIEW_SUGGESTIONS_ACCEPTED",
+    "PREVIEW_WITHOUT_SUGGESTIONS",
+})
+
+
+def _check_suggestions_view_mode(mode: str | None) -> None:
+    """Reject an unknown ``suggestions_view_mode`` client-side.
+
+    ``None`` is allowed (the param is omitted from the request, so Docs
+    applies its own default). A non-None typo surfaces a clear message
+    naming the valid modes rather than a generic Google 400.
+    """
+    if mode is not None and mode not in _SUGGESTIONS_VIEW_MODES:
+        raise ValueError(
+            f"suggestions_view_mode must be one of "
+            f"{sorted(_SUGGESTIONS_VIEW_MODES)} (or omitted); got {mode!r}."
+        )
+
+
 def read_tab_content(
     creds: Credentials,
     doc_id: str,
     tab_id: str | None = None,
     tab_title: str | None = None,
+    *,
+    suggestions_view_mode: str | None = None,
 ) -> dict:
     """Read the body content of a single tab.
 
     Identify the tab by ``tab_id`` (exact) or ``tab_title`` (first match,
     pre-order). Returns structural metadata plus a paragraphs list so the
-    caller can verify what actually landed in the tab — useful right
+    caller can verify what actually landed in the tab, useful right
     after ``convert_docx_to_tabbed_doc`` to confirm content moved
     correctly.
 
     Tables are reported as a count + a placeholder line; full table
     cell extraction is deferred to a later iteration. Inline images
     show up as ``[image]`` markers within the paragraph text.
+
+    ``suggestions_view_mode`` (optional) controls how tracked-change
+    suggestions render: ``PREVIEW_WITHOUT_SUGGESTIONS`` reads the clean
+    current text, ``PREVIEW_SUGGESTIONS_ACCEPTED`` reads as if all
+    suggestions were accepted, ``SUGGESTIONS_INLINE`` keeps them inline.
+    Omit to use Docs' default for the caller's access.
     """
     if not tab_id and not tab_title:
         raise ValueError("Provide either tab_id or tab_title")
+    _check_suggestions_view_mode(suggestions_view_mode)
 
     docs = get_service("docs", "v1", credentials=creds)
+    get_kwargs: dict[str, Any] = {
+        "documentId": doc_id,
+        "includeTabsContent": True,
+    }
+    if suggestions_view_mode is not None:
+        get_kwargs["suggestionsViewMode"] = suggestions_view_mode
     # PR-Δ3.5: gdocs_read_doc is readonly=True, idempotent=True.
     fetched = execute_with_retry(
-        lambda: docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute(),
+        lambda: docs.documents().get(**get_kwargs).execute(),
         idempotent=True,
         op_name="docs.documents.get.read_tab",
     )
@@ -564,6 +609,120 @@ def insert_table(
         "columns": columns,
         "index": index,
         "tab_id": tab_id,
+    }
+
+
+# Points-to-EMU is not needed for Docs images: the Docs API sizes inline
+# images in points (PT) via a Dimension, unlike Slides which uses EMU.
+# 1 PT = 1/72 inch. These defaults are intentionally None (let Docs use
+# the image's natural size) unless the caller supplies a size.
+
+
+def insert_image(
+    creds: Credentials,
+    doc_id: str,
+    image_uri: str,
+    *,
+    index: int = 1,
+    tab_id: str | None = None,
+    width_pt: float | None = None,
+    height_pt: float | None = None,
+) -> dict:
+    """Insert an inline image from a URI via ``insertInlineImage``.
+
+    Google Docs fetches the image from ``image_uri`` SERVER-SIDE (the URI
+    must be publicly reachable by Google and the image under Docs' size /
+    format limits: PNG / JPEG / GIF, <= 50 MB / 25 megapixels). Because
+    Docs does the fetch, this needs only the baseline ``documents`` scope
+    (no Drive scope) for both the doc edit and the image retrieval.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline, no extra grant).
+        doc_id: The Google Doc ID.
+        image_uri: A publicly accessible ``http(s)`` URI to the image.
+            Docs fetches it at insert time and stores its own copy; the
+            URI does not need to stay live afterward. Rejected
+            client-side if blank or not http(s).
+        index: Body location index to insert at. Defaults to 1 (the
+            start of the body; index 0 is reserved by Docs). Must be
+            >= 1.
+        tab_id: Optional tab to target (from ``gdocs_get_doc_outline``).
+            ``None`` targets the document's default/first tab.
+        width_pt: Optional image width in points (PT, 1/72 inch). When
+            BOTH width_pt and height_pt are given, the image is sized to
+            that box; when neither is given, Docs uses the image's
+            natural size. Supplying only one is rejected (Docs requires
+            both dimensions together for an objectSize).
+        height_pt: Optional image height in points. See ``width_pt``.
+
+    Returns:
+        ``{doc_id, image_object_id, index, tab_id, uri}``.
+        ``image_object_id`` is the inserted image's stable objectId
+        (parsed from the ``insertInlineImage`` reply; a valid target for
+        a later positioned-object update / delete).
+
+    Raises:
+        ValueError: blank / non-http(s) ``image_uri``, ``index`` < 1,
+            empty ``tab_id``, a non-positive dimension, or exactly one
+            of width_pt / height_pt supplied.
+        HttpError: from the underlying SDK on 4xx / 5xx (e.g. Docs
+            could not fetch / decode the image), propagated.
+    """
+    if not image_uri or not image_uri.strip():
+        raise ValueError("image_uri cannot be empty.")
+    if not image_uri.strip().lower().startswith(("http://", "https://")):
+        raise ValueError(
+            "image_uri must be a public http(s) URL (Google Docs fetches "
+            "the image server-side); got a non-http(s) value."
+        )
+    if index < 1:
+        raise ValueError("index must be >= 1 (index 0 is reserved by Docs).")
+    if (width_pt is None) != (height_pt is None):
+        raise ValueError(
+            "width_pt and height_pt must be supplied together (Docs sizes "
+            "an inline image with both dimensions) or both omitted (to use "
+            "the image's natural size)."
+        )
+    for name, value in (("width_pt", width_pt), ("height_pt", height_pt)):
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} must be > 0 when supplied; got {value}.")
+
+    docs = get_service("docs", "v1", credentials=creds)
+    location: dict[str, Any] = {"index": index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        location["tabId"] = tab_id
+
+    insert_req: dict[str, Any] = {"location": location, "uri": image_uri.strip()}
+    if width_pt is not None and height_pt is not None:
+        insert_req["objectSize"] = {
+            "width": {"magnitude": width_pt, "unit": "PT"},
+            "height": {"magnitude": height_pt, "unit": "PT"},
+        }
+
+    # NOT idempotent: each call inserts ANOTHER image. Same convention as
+    # insert_table / gslides_create_image.
+    resp = execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [{"insertInlineImage": insert_req}]}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.insertInlineImage",
+    )
+    image_object_id = None
+    for reply in resp.get("replies", []) or []:
+        ins = reply.get("insertInlineImage")
+        if ins and ins.get("objectId"):
+            image_object_id = ins["objectId"]
+            break
+    return {
+        "doc_id": doc_id,
+        "image_object_id": image_object_id,
+        "index": index,
+        "tab_id": tab_id,
+        "uri": image_uri.strip(),
     }
 
 
@@ -1181,21 +1340,35 @@ def _table_search_content(document: dict, tab_id: str | None) -> list[dict]:
     return document.get("body", {}).get("content", [])
 
 
-def read_all_tabs(creds: Credentials, doc_id: str) -> dict:
+def read_all_tabs(
+    creds: Credentials,
+    doc_id: str,
+    *,
+    suggestions_view_mode: str | None = None,
+) -> dict:
     """Read body content of every tab in one call.
 
     Bulk version of ``read_tab_content``. Useful when you want a
     whole-document dump (e.g. for offline review or text search).
 
+    ``suggestions_view_mode`` (optional) controls how tracked-change
+    suggestions render (same values + meaning as ``read_tab_content``);
+    omit to use Docs' default for the caller's access.
+
     Returns ``{"doc_id", "tabs": [{tab_id, title, depth, paragraphs:
-    [{style, text}, ...]}, ...]}`` — tabs in pre-order traversal.
+    [{style, text}, ...]}, ...]}`` (tabs in pre-order traversal).
     """
+    _check_suggestions_view_mode(suggestions_view_mode)
     docs = get_service("docs", "v1", credentials=creds)
+    get_kwargs: dict[str, Any] = {
+        "documentId": doc_id,
+        "includeTabsContent": True,
+    }
+    if suggestions_view_mode is not None:
+        get_kwargs["suggestionsViewMode"] = suggestions_view_mode
     # PR-Δ3.5: read_all_tabs supports gdocs_read_doc (readonly=True path).
     fetched = execute_with_retry(
-        lambda: docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute(),
+        lambda: docs.documents().get(**get_kwargs).execute(),
         idempotent=True,
         op_name="docs.documents.get.read_all",
     )
@@ -1449,6 +1622,167 @@ def append_to_tab(
     return {"tab_id": tab_id, "appended_chars": len(content)}
 
 
+# ---------------------------------------------------------------------
+# Comments (Drive v3 comments() / replies()) on app-created docs
+# ---------------------------------------------------------------------
+#
+# Comments live on the DRIVE API, not the Docs API, so these go through
+# get_service("drive", "v3", ...). Under the app's drive.file scope, the
+# comments + replies endpoints only reach files THIS app created or that
+# the user opened with it (owned_by_app); a file the app can't access
+# returns 404/403, which propagates to the tool envelope. No new scope:
+# drive.file (already deployed) covers comment read + write on those
+# files. The Drive comments API REQUIRES a ``fields`` mask on every
+# call, so each request passes an explicit field list.
+
+# The comment/reply fields surfaced back to callers. Drive's comments
+# API mandates a non-empty ``fields`` mask; this pins the useful subset.
+_COMMENT_FIELDS = (
+    "id,content,resolved,createdTime,modifiedTime,"
+    "author(displayName,me),"
+    "replies(id,content,createdTime,modifiedTime,action,author(displayName,me))"
+)
+_COMMENT_LIST_FIELDS = f"comments({_COMMENT_FIELDS}),nextPageToken"
+_REPLY_FIELDS = "id,content,createdTime,modifiedTime,action,author(displayName,me)"
+
+
+def list_comments(
+    creds: Credentials,
+    doc_id: str,
+    *,
+    include_deleted: bool = False,
+    page_size: int = 100,
+) -> dict:
+    """List comments (and their replies) on an app-created doc.
+
+    Uses the Drive v3 ``comments.list`` endpoint. Works only on files
+    this app can access under ``drive.file`` (the ones it created or the
+    user opened with it); other files return 404/403 from Drive.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope
+            (baseline, no extra grant).
+        doc_id: The Google Doc (Drive file) ID.
+        include_deleted: When True, include deleted comments (their
+            content is blanked by Drive but the thread structure
+            remains). Default False.
+        page_size: Max comments to return (Drive caps at 100). This
+            returns the first page only; a follow-up page token is
+            surfaced for callers that need more.
+
+    Returns:
+        ``{doc_id, comments: [...], next_page_token}``. Each comment is
+        the Drive comment resource (id, content, resolved, author,
+        timestamps, nested replies). ``next_page_token`` is None when
+        there are no further pages.
+
+    Raises:
+        HttpError: from the underlying SDK on 4xx / 5xx (e.g. 404 if the
+            app can't access the file), propagated to the tool envelope.
+    """
+    drive = get_service("drive", "v3", credentials=creds)
+    resp = execute_with_retry(
+        lambda: drive.comments().list(
+            fileId=doc_id,
+            includeDeleted=include_deleted,
+            pageSize=page_size,
+            fields=_COMMENT_LIST_FIELDS,
+        ).execute(),
+        idempotent=True,
+        op_name="drive.comments.list",
+    )
+    return {
+        "doc_id": doc_id,
+        "comments": resp.get("comments", []),
+        "next_page_token": resp.get("nextPageToken"),
+    }
+
+
+def create_comment(creds: Credentials, doc_id: str, content: str) -> dict:
+    """Create a top-level (unanchored) comment on an app-created doc.
+
+    Uses the Drive v3 ``comments.create`` endpoint. The comment is
+    document-level (not anchored to a text range); range-anchored
+    comments need a Drive ``anchor`` payload, deferred to a follow-up.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        doc_id: The Google Doc (Drive file) ID.
+        content: The comment text. Rejected client-side if blank.
+
+    Returns:
+        ``{doc_id, comment: {...}}``: the created Drive comment resource
+        (id, content, author, timestamps).
+
+    Raises:
+        ValueError: blank ``content``.
+        HttpError: from the underlying SDK on 4xx / 5xx (e.g. 404 if the
+            app can't access the file), propagated.
+    """
+    if not content or not content.strip():
+        raise ValueError("content cannot be empty (a comment needs text).")
+    drive = get_service("drive", "v3", credentials=creds)
+    # NOT idempotent: each call creates ANOTHER comment.
+    comment = execute_with_retry(
+        lambda: drive.comments().create(
+            fileId=doc_id,
+            body={"content": content},
+            fields=_COMMENT_FIELDS,
+        ).execute(),
+        idempotent=False,
+        op_name="drive.comments.create",
+    )
+    return {"doc_id": doc_id, "comment": comment}
+
+
+def reply_to_comment(
+    creds: Credentials,
+    doc_id: str,
+    comment_id: str,
+    content: str,
+) -> dict:
+    """Reply to an existing comment on an app-created doc.
+
+    Uses the Drive v3 ``replies.create`` endpoint. Adds a reply under an
+    existing comment thread.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        doc_id: The Google Doc (Drive file) ID.
+        comment_id: The id of the comment to reply to (from
+            ``list_comments`` / ``create_comment``).
+        content: The reply text. Rejected client-side if blank.
+
+    Returns:
+        ``{doc_id, comment_id, reply: {...}}``: the created Drive reply
+        resource (id, content, author, timestamps).
+
+    Raises:
+        ValueError: blank ``content`` or ``comment_id``.
+        HttpError: from the underlying SDK on 4xx / 5xx (e.g. 404 if the
+            file/comment isn't app-accessible), propagated.
+    """
+    if not comment_id or not comment_id.strip():
+        raise ValueError("comment_id cannot be empty.")
+    if not content or not content.strip():
+        raise ValueError("content cannot be empty (a reply needs text).")
+    drive = get_service("drive", "v3", credentials=creds)
+    # NOT idempotent: each call creates ANOTHER reply.
+    reply = execute_with_retry(
+        lambda: drive.replies().create(
+            fileId=doc_id,
+            commentId=comment_id,
+            body={"content": content},
+            fields=_REPLY_FIELDS,
+        ).execute(),
+        idempotent=False,
+        op_name="drive.replies.create",
+    )
+    return {"doc_id": doc_id, "comment_id": comment_id, "reply": reply}
+
+
+
+
 __all__ = [
     # Constants
     "CODE_BG_RGB",
@@ -1459,12 +1793,16 @@ __all__ = [
     # REST call sites
     "add_tabs_to_doc",
     "append_to_tab",
+    "create_comment",
     "delete_tab",
     "edit_range",
     "get_doc_outline",
+    "insert_image",
+    "list_comments",
     "make_doc_with_tabs",
     "read_all_tabs",
     "read_tab_content",
+    "reply_to_comment",
     "rename_tab",
     "replace_all_text",
     "set_tab_icons",

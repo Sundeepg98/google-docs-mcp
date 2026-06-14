@@ -758,6 +758,351 @@ def add_protected_range_request(
 
 
 # ---------------------------------------------------------------------
+# Dimension request builders (insert / delete rows & columns)
+# ---------------------------------------------------------------------
+#
+# These operate on a half-open band of ROWS or COLUMNS (a
+# ``DimensionRange``), not a cell GridRange. They are the ``batchUpdate``
+# request types behind ``gsheets_insert_dimension`` /
+# ``gsheets_delete_dimension``.
+
+# The two axes Sheets dimension ops accept. ``ROWS`` / ``COLUMNS`` are
+# the only valid ``DimensionRange.dimension`` values.
+_DIMENSIONS = frozenset({"ROWS", "COLUMNS"})
+
+
+def _dimension_range(
+    sheet_id: int,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+) -> dict[str, Any]:
+    """Build + validate a Sheets ``DimensionRange`` (0-based, half-open).
+
+    Shared by the insert/delete dimension builders. A ``DimensionRange``
+    selects a band of rows or columns: ``{sheetId, dimension,
+    startIndex, endIndex}`` with ``endIndex`` EXCLUSIVE (like a Python
+    slice, ``start_index=0, end_index=2`` is the first two rows/cols).
+
+    Raises:
+        ValueError: ``dimension`` not ROWS/COLUMNS, a negative index, or
+            ``end_index <= start_index`` (an empty/inverted band is a
+            caller bug).
+    """
+    if dimension not in _DIMENSIONS:
+        raise ValueError(
+            f"dimension must be one of {sorted(_DIMENSIONS)}; got "
+            f"{dimension!r}."
+        )
+    if sheet_id < 0:
+        raise ValueError(
+            f"sheet_id must be >= 0 (a sheet gid is non-negative); "
+            f"got {sheet_id}."
+        )
+    for name, value in (
+        ("start_index", start_index),
+        ("end_index", end_index),
+    ):
+        if value < 0:
+            raise ValueError(
+                f"{name} must be >= 0 (dimension indices are 0-based); "
+                f"got {value}."
+            )
+    if end_index <= start_index:
+        raise ValueError(
+            f"end_index ({end_index}) must be > start_index ({start_index}) "
+            "a DimensionRange is half-open, so end is exclusive."
+        )
+    return {
+        "sheetId": sheet_id,
+        "dimension": dimension,
+        "startIndex": start_index,
+        "endIndex": end_index,
+    }
+
+
+def insert_dimension_request(
+    sheet_id: int,
+    *,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+    inherit_from_before: bool = False,
+) -> dict[str, Any]:
+    """Build an ``insertDimension`` request (insert rows or columns).
+
+    Inserts ``end_index - start_index`` empty rows (``dimension="ROWS"``)
+    or columns (``dimension="COLUMNS"``) BEFORE ``start_index``, shifting
+    existing cells down/right.
+
+    Args:
+        sheet_id: The numeric sheet (tab) id, the ``gid``.
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based index to insert before (``0`` inserts at the
+            very top/left).
+        end_index: 0-based EXCLUSIVE end of the inserted band; the count
+            inserted is ``end_index - start_index``.
+        inherit_from_before: When ``True``, the new rows/cols inherit
+            formatting from the row/col BEFORE them; when ``False``
+            (default), from the row/col after. Sheets rejects
+            ``inherit_from_before=True`` with ``start_index=0`` (nothing
+            before to inherit from), that 400 surfaces from the API.
+
+    Returns:
+        A single ``{"insertDimension": {...}}`` request dict.
+
+    Raises:
+        ValueError: bad dimension / index (from ``_dimension_range``).
+    """
+    drange = _dimension_range(sheet_id, dimension, start_index, end_index)
+    return {
+        "insertDimension": {
+            "range": drange,
+            "inheritFromBefore": inherit_from_before,
+        }
+    }
+
+
+def delete_dimension_request(
+    sheet_id: int,
+    *,
+    dimension: str,
+    start_index: int,
+    end_index: int,
+) -> dict[str, Any]:
+    """Build a ``deleteDimension`` request (delete rows or columns).
+
+    Removes the half-open band ``[start_index, end_index)`` of rows
+    (``dimension="ROWS"``) or columns (``dimension="COLUMNS"``), shifting
+    later cells up/left. DESTRUCTIVE, the cells in the band are gone.
+
+    Args:
+        sheet_id: The numeric sheet (tab) id, the ``gid``.
+        dimension: ``"ROWS"`` or ``"COLUMNS"``.
+        start_index: 0-based inclusive first row/col to delete.
+        end_index: 0-based EXCLUSIVE end; count deleted is
+            ``end_index - start_index``.
+
+    Returns:
+        A single ``{"deleteDimension": {...}}`` request dict.
+
+    Raises:
+        ValueError: bad dimension / index (from ``_dimension_range``).
+    """
+    drange = _dimension_range(sheet_id, dimension, start_index, end_index)
+    return {"deleteDimension": {"range": drange}}
+
+
+# ---------------------------------------------------------------------
+# Merge / data-validation / chart request builders
+# ---------------------------------------------------------------------
+
+# Sheets ``mergeCells`` merge types. ``MERGE_ALL`` makes the whole range
+# one cell; ``MERGE_COLUMNS`` merges each column's cells vertically;
+# ``MERGE_ROWS`` merges each row's cells horizontally.
+_MERGE_TYPES = frozenset({"MERGE_ALL", "MERGE_COLUMNS", "MERGE_ROWS"})
+
+
+def merge_cells_request(
+    grid: dict[str, Any],
+    *,
+    merge_type: str = "MERGE_ALL",
+) -> dict[str, Any]:
+    """Build a ``mergeCells`` request that merges a cell range.
+
+    Args:
+        grid: The ``GridRange`` to merge (build with ``grid_range``). A
+            single-cell range is rejected by Sheets server-side (nothing
+            to merge); this builder requires a bounded multi-cell range
+            client-side where it can tell (see below).
+        merge_type: One of ``MERGE_ALL`` (default, one combined cell),
+            ``MERGE_COLUMNS`` (merge down each column), ``MERGE_ROWS``
+            (merge across each row).
+
+    Returns:
+        A single ``{"mergeCells": {...}}`` request dict.
+
+    Raises:
+        ValueError: ``merge_type`` not in the allowed set.
+    """
+    if merge_type not in _MERGE_TYPES:
+        raise ValueError(
+            f"merge_type must be one of {sorted(_MERGE_TYPES)}; got "
+            f"{merge_type!r}."
+        )
+    return {"mergeCells": {"range": grid, "mergeType": merge_type}}
+
+
+def set_data_validation_request(
+    grid: dict[str, Any],
+    *,
+    condition_type: str,
+    values: list[str] | None = None,
+    strict: bool = True,
+    show_custom_ui: bool = True,
+    input_message: str | None = None,
+) -> dict[str, Any]:
+    """Build a ``setDataValidation`` request (a DataValidationRule).
+
+    Attaches a validation rule to every cell in ``grid``, e.g. a
+    dropdown (``ONE_OF_LIST``), a numeric bound (``NUMBER_GREATER``), a
+    checkbox (``BOOLEAN``). Reuses the same ``BooleanCondition`` shape as
+    ``add_conditional_format_rule_request``.
+
+    Args:
+        grid: The ``GridRange`` to apply the rule to (build with
+            ``grid_range``).
+        condition_type: A Sheets ``ConditionType`` enum value, e.g.
+            ``"ONE_OF_LIST"`` (dropdown), ``"NUMBER_BETWEEN"``,
+            ``"BOOLEAN"`` (checkbox), ``"TEXT_IS_EMAIL"``. Passed through
+            verbatim (the enum set is large + Google-versioned, so an
+            invalid value fails at the API with Google's own enum error).
+        values: The condition's value(s) as strings (e.g. the dropdown
+            items for ``ONE_OF_LIST``, ``["1", "10"]`` for
+            ``NUMBER_BETWEEN``). Omit for conditions that take none.
+        strict: When ``True`` (default), invalid entries are REJECTED
+            (``strict`` rule); when ``False``, invalid entries are
+            allowed but flagged with a warning.
+        show_custom_ui: When ``True`` (default), render the UI affordance
+            (e.g. the dropdown arrow for ``ONE_OF_LIST``).
+        input_message: Optional help text shown when the cell is
+            selected.
+
+    Returns:
+        A single ``{"setDataValidation": {...}}`` request dict.
+
+    Raises:
+        ValueError: ``condition_type`` is blank.
+    """
+    if not condition_type or not condition_type.strip():
+        raise ValueError(
+            "condition_type cannot be empty, pass a Sheets ConditionType "
+            "(e.g. 'ONE_OF_LIST', 'NUMBER_BETWEEN', 'BOOLEAN')."
+        )
+
+    condition: dict[str, Any] = {"type": condition_type}
+    if values:
+        condition["values"] = [{"userEnteredValue": v} for v in values]
+
+    rule: dict[str, Any] = {
+        "condition": condition,
+        "strict": strict,
+        "showCustomUi": show_custom_ui,
+    }
+    if input_message is not None:
+        rule["inputMessage"] = input_message
+
+    return {
+        "setDataValidation": {
+            "range": grid,
+            "rule": rule,
+        }
+    }
+
+
+# Sheets ``BasicChartType`` values this builder accepts for a basic
+# (cartesian) chart. The full ChartSpec union (pie, bubble, candlestick,
+# org, treemap, ...) is far larger; this covers the common basic-chart
+# family. An out-of-set value is rejected client-side with a clear list.
+_BASIC_CHART_TYPES = frozenset({
+    "BAR", "LINE", "AREA", "COLUMN", "SCATTER", "COMBO", "STEPPED_AREA",
+})
+
+
+def add_chart_request(
+    *,
+    chart_type: str,
+    title: str | None = None,
+    domain_grid: dict[str, Any],
+    series_grids: list[dict[str, Any]],
+    anchor_sheet_id: int,
+    anchor_row: int,
+    anchor_col: int,
+    header_count: int = 1,
+) -> dict[str, Any]:
+    """Build an ``addChart`` request (a basic ``EmbeddedChartSpec``).
+
+    Composes an ``addChart`` request for a basic cartesian chart: one
+    domain (the X axis / categories) plus one or more data series (the
+    plotted values), anchored as an overlay at a cell on a sheet.
+
+    Args:
+        chart_type: A Sheets ``BasicChartType``, one of
+            ``BAR`` / ``LINE`` / ``AREA`` / ``COLUMN`` / ``SCATTER`` /
+            ``COMBO`` / ``STEPPED_AREA``.
+        title: Optional chart title.
+        domain_grid: The ``GridRange`` for the domain (X axis), e.g. the
+            category-label column. Build with ``grid_range``.
+        series_grids: One or more ``GridRange``s, each a data series (Y
+            values). At least one is required.
+        anchor_sheet_id: The gid of the sheet the chart overlay is placed
+            on.
+        anchor_row / anchor_col: 0-based cell coordinates of the chart's
+            top-left anchor on ``anchor_sheet_id``.
+        header_count: Number of leading rows/cols that are headers (so
+            Sheets labels series from them). Defaults to 1.
+
+    Returns:
+        A single ``{"addChart": {...}}`` request dict carrying an
+        ``EmbeddedChartSpec`` (a ``basicChart`` spec + an
+        ``overlayPosition`` anchor).
+
+    Raises:
+        ValueError: ``chart_type`` not in the basic set, ``series_grids``
+            empty, a negative anchor coordinate, or a negative
+            ``header_count``.
+    """
+    if chart_type not in _BASIC_CHART_TYPES:
+        raise ValueError(
+            f"chart_type must be one of {sorted(_BASIC_CHART_TYPES)}; got "
+            f"{chart_type!r}."
+        )
+    if not series_grids:
+        raise ValueError(
+            "series_grids cannot be empty, a chart needs at least one "
+            "data series (a GridRange of Y values)."
+        )
+    if anchor_row < 0 or anchor_col < 0:
+        raise ValueError(
+            f"anchor_row / anchor_col must be >= 0 (0-based cell "
+            f"coordinates); got row={anchor_row}, col={anchor_col}."
+        )
+    if header_count < 0:
+        raise ValueError(f"header_count must be >= 0; got {header_count}.")
+
+    basic_chart: dict[str, Any] = {
+        "chartType": chart_type,
+        "headerCount": header_count,
+        "domains": [{"domain": {"sourceRange": {"sources": [domain_grid]}}}],
+        "series": [
+            {"series": {"sourceRange": {"sources": [grid]}}}
+            for grid in series_grids
+        ],
+    }
+
+    spec: dict[str, Any] = {"basicChart": basic_chart}
+    if title is not None:
+        spec["title"] = title
+
+    return {
+        "addChart": {
+            "chart": {
+                "spec": spec,
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": anchor_sheet_id,
+                            "rowIndex": anchor_row,
+                            "columnIndex": anchor_col,
+                        },
+                    },
+                },
+            },
+        }
+    }
+
+
+# ---------------------------------------------------------------------
 # Dispatcher (the ONLY function here that calls Google)
 # ---------------------------------------------------------------------
 

@@ -19,4 +19,9 @@ EXPECTED: frozenset[str] = frozenset({
     "gsheets_duplicate_sheet",
     "gsheets_freeze",
     "gsheets_protect_range",
+    "gsheets_insert_dimension",
+    "gsheets_delete_dimension",
+    "gsheets_merge_cells",
+    "gsheets_set_data_validation",
+    "gsheets_add_chart",
 })

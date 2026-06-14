@@ -348,7 +348,7 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # Calendar / Tasks / Contacts their second (automation) lever
 # (as_install_calendar_sync, as_install_task_rollover,
 # as_install_contact_sync — sensitive scope in the GENERATED manifest only).
-_MIN_EXPECTED_TOOL_COUNT = 100
+_MIN_EXPECTED_TOOL_COUNT = 110
 
 _discovery_failures: list[tuple[str, str]] = []
 
