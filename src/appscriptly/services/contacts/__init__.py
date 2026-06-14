@@ -17,11 +17,17 @@ Layout (mirrors services/sheets/ exactly):
     services/contacts/
     ├── __init__.py        — this file
     ├── api.py             — People API v1 REST wrapper (connections.list /
-    │                        searchContacts / get / createContact /
-    │                        updateContact / deleteContact)
+    │                        otherContacts.list / searchContacts / get /
+    │                        createContact / updateContact / deleteContact)
     ├── tools.py           — @workspace_tool decorators (registered via
     │                        server.py's auto-discovery walk)
     └── _expected_tools.py — declared tool surface (decentralized witness)
+
+**CASA-free growth.** A 7th tool ``gcontacts_list_other_contacts``
+(People API ``otherContacts.list``) was added using the dedicated
+read-only scope ``contacts.other.readonly`` (SENSITIVE, not restricted →
+no CASA) — it reads the auto-saved "other contacts" collection, distinct
+from the main address book the other six tools operate on.
 
 **The People API ("people" v1).** Unlike the Docs/Sheets/Slides/Drive
 services (which target a single Drive-resident document by ID), Contacts

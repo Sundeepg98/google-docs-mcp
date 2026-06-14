@@ -34,10 +34,14 @@ _RESTRICTED = {
 # responses, services/forms/), ``calendar`` (read/write,
 # services/calendar/), ``contacts`` (People API read/write,
 # services/contacts/), and ``tasks`` (Google Tasks read/write,
-# services/tasks/). ALL of these are Google-SENSITIVE scopes, NOT in
-# ``_RESTRICTED`` above — so none adds a CASA obligation and the free
-# "sensitive scopes only" verification eligibility is preserved (the
-# no-restricted-scope guard below still holds for all of them).
+# services/tasks/), plus the CASA-free growth four: ``gmail.send``
+# (SENSITIVE, send-only) + ``gmail.labels`` (NON-sensitive, label
+# management) for services/gmail/, ``contacts.other.readonly`` (SENSITIVE,
+# "other contacts" read) for services/contacts/, and ``script.processes``
+# (SENSITIVE, execution-history read) for services/apps_script/. NONE of
+# these is in ``_RESTRICTED`` above — so none adds a CASA obligation and
+# the free "sensitive scopes only" verification eligibility is preserved
+# (the no-restricted-scope guard below still holds for all of them).
 _TARGET_CONNECTOR = {
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -52,6 +56,10 @@ _TARGET_CONNECTOR = {
     "https://www.googleapis.com/auth/script.deployments",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+    "https://www.googleapis.com/auth/script.processes",
 }
 # The stdio set is the connector set minus the identity-only scopes.
 _TARGET_STDIO = _TARGET_CONNECTOR - {

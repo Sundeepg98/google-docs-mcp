@@ -32,6 +32,11 @@ The schema (per `src/appscriptly/user_store.py`):
 ## 2. What we do NOT store
 
 - **Your document content.** Document bodies, images, and metadata transit through the server during tool calls and are sent to / received from Google's APIs. Nothing is persisted server-side after the call returns.
+- **Email you send, your Gmail labels, your contacts, and Apps Script execution history.** The CASA-free scope-growth tools touch these data categories, but — exactly like document content — they only transit during a tool call and are **never persisted** server-side:
+  - **Send email on your behalf** (`gmail.send`, via `gmail_send_message`): the recipient / subject / body you pass are assembled into a message and handed to Gmail's `users.messages.send`. Send-only — the server **cannot read your mailbox** (no `gmail.readonly` / `gmail.modify`); it never sees, stores, or indexes your inbox.
+  - **Manage your Gmail labels** (`gmail.labels`, via `gmail_create_label` / `gmail_list_labels` / `gmail_delete_label`): label **objects** only (names + visibility). This scope cannot read message bodies and cannot relabel messages; label names transit during the call and are not persisted.
+  - **Read your auto-saved "other" contacts** (`contacts.other.readonly`, via `gcontacts_list_other_contacts`): read-only access to the auto-saved contacts list; the returned names/emails/phones transit during the call and are not persisted.
+  - **Read your Apps Script execution history** (`script.processes`, via `as_list_script_processes`): read-only metadata about which of your script projects' functions ran and when; not persisted.
 - **Your Google profile** (name, profile picture, secondary emails, organizational data). The OAuth flow does request the `userinfo.email` scope (needed for the FastMCP JWT's `email` claim during routing), but the email is **not** persisted to `user_state.db` — only the `sub` claim is.
 - **Tool-call history.** There is no per-invocation audit log. Only the row-level `updated_at` field tells you when a row last changed. The `gdocs_admin_audit` tool exposes row-level state to the operator on demand but does not record call traces.
 - **Third-party analytics or telemetry.** No external requests beyond Google's APIs (Drive, Docs, Apps Script) and Anthropic's MCP transport (when running via the claude.ai connector).
@@ -56,7 +61,7 @@ If you treat `sub` as personal data under your jurisdiction's definition (the GD
 
 ## 5. Data sharing and transmission
 
-- **Google's APIs.** Every authorized tool call sends document content + your access token to `*.googleapis.com` and `script.google.com`. Limited to the OAuth scopes you consented to.
+- **Google's APIs.** Every authorized tool call sends the relevant payload + your access token to `*.googleapis.com` and `script.google.com`. Limited to the OAuth scopes you consented to. With the CASA-free scope-growth tools this includes: an outbound email you compose (`gmail.send` → `gmail.googleapis.com`); Gmail label-object create/list/delete (`gmail.labels`); a read of your auto-saved "other" contacts (`contacts.other.readonly` → People API); and a read of your Apps Script execution history (`script.processes`). None of these payloads is persisted server-side (see § 2).
 - **Your own Apps Script Web App.** The server POSTs to your per-user `apps_script_url`, signing each request with your `apps_script_hmac_key` (`X-MCP-Signature` + `X-MCP-Timestamp`). Your deployed `restructure.gs` verifies the signature in `doPost` before acting and rejects anything unsigned/stale/forged (v2.0c — THREAT_MODEL.md §4 row 5 CLOSED). The `/exec` endpoint is therefore authenticated, not protected by URL secrecy alone.
 - **Anthropic's claude.ai infrastructure**, when running via the claude.ai connector. Your tool-call arguments and responses transit Anthropic's MCP transport. Anthropic's own privacy policy applies to that leg.
 - **No other third parties.** No analytics, no error reporting SaaS, no LLM-based logging.

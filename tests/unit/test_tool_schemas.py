@@ -109,6 +109,15 @@ EXPECTED_TOOLS = {
     "gcontacts_create",  # contacts: People API createContact — name/email/phone/org
     "gcontacts_update",  # contacts: People API updateContact — etag read-modify-write
     "gcontacts_delete",  # contacts: People API deleteContact — remove a contact
+    # CASA-free growth: People API otherContacts.list — auto-saved "other"
+    # contacts read (contacts.other.readonly, SENSITIVE → no CASA)
+    "gcontacts_list_other_contacts",
+    # Gmail (services/gmail/) — CASA-free growth. gmail.send (SENSITIVE →
+    # no CASA) for send; gmail.labels (NON-sensitive) for label management.
+    "gmail_send_message",  # gmail: users.messages.send — send mail (RFC822/MIME)
+    "gmail_create_label",  # gmail: users.labels.create — create a user label
+    "gmail_list_labels",  # gmail: users.labels.list — list system + user labels
+    "gmail_delete_label",  # gmail: users.labels.delete — delete a user label (destructive)
     "gtasks_list_tasklists",  # Tasks (services/tasks/): tasklists.list
     "gtasks_create_tasklist",  # Tasks: tasklists.insert
     "gtasks_list_tasks",  # Tasks: tasks.list (show completed/hidden)
@@ -118,6 +127,7 @@ EXPECTED_TOOLS = {
     "gtasks_delete_task",  # Tasks: tasks.delete (destructive)
     "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
+    "as_list_script_processes",  # CASA-free growth: processes.listScriptProcesses — execution-history read (script.processes, SENSITIVE → no CASA)
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
@@ -397,6 +407,11 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
         "server_test_manifest",
         "server_guide",
         "as_install_automation",  # namespace-cleanup canonical installer
+        # Gmail list-labels takes no args (users.labels.list addresses the
+        # authenticated "me" mailbox); the description carries the routing
+        # signal. Same no-arg posture as server_info / gtasks has no no-arg
+        # tool because gtasks_list_tasklists has max_results.
+        "gmail_list_labels",
     }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these

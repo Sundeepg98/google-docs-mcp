@@ -42,12 +42,14 @@ from __future__ import annotations
 from appscriptly.auth import WORKSPACE_SCOPES
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.contacts.api import (
+    DEFAULT_OTHER_CONTACTS_READ_MASK,
     DEFAULT_PERSON_FIELDS,
     DEFAULT_SEARCH_READ_MASK,
     create_contact as _create_contact,
     delete_contact as _delete_contact,
     get_contact as _get_contact,
     list_contacts as _list_contacts,
+    list_other_contacts as _list_other_contacts,
     search_contacts as _search_contacts,
     update_contact as _update_contact,
 )
@@ -55,6 +57,7 @@ from appscriptly.tool_schemas import (
     GCONTACTS_CREATE_OUTPUT_SCHEMA,
     GCONTACTS_DELETE_OUTPUT_SCHEMA,
     GCONTACTS_GET_OUTPUT_SCHEMA,
+    GCONTACTS_LIST_OTHER_CONTACTS_OUTPUT_SCHEMA,
     GCONTACTS_LIST_OUTPUT_SCHEMA,
     GCONTACTS_SEARCH_OUTPUT_SCHEMA,
     GCONTACTS_UPDATE_OUTPUT_SCHEMA,
@@ -82,6 +85,19 @@ assert CONTACTS_SCOPE in WORKSPACE_SCOPES, (
     "contacts scope missing from auth.WORKSPACE_SCOPES — the contacts "
     "service tools declare scopes=[CONTACTS_SCOPE] but the scope isn't "
     "baseline-granted. Add it back to the single-source list."
+)
+
+# The "other contacts" read-only scope (auto-saved contacts). SENSITIVE
+# (not restricted → no CASA). Strictly narrower than CONTACTS_SCOPE; it
+# only serves the read-only gcontacts_list_other_contacts tool. Same
+# baseline-grant + assert-at-import discipline as CONTACTS_SCOPE above.
+CONTACTS_OTHER_READONLY_SCOPE = (
+    "https://www.googleapis.com/auth/contacts.other.readonly"
+)
+assert CONTACTS_OTHER_READONLY_SCOPE in WORKSPACE_SCOPES, (
+    "contacts.other.readonly scope missing from auth.WORKSPACE_SCOPES — "
+    "gcontacts_list_other_contacts declares it but it isn't baseline-"
+    "granted. Add it to the single-source list."
 )
 
 
@@ -148,6 +164,71 @@ def gcontacts_list(
         page_token=page_token,
         person_fields=person_fields,
         sort_order=sort_order,
+    )
+
+
+# ---------------------------------------------------------------------
+# 1b. gcontacts_list_other_contacts — otherContacts.list (pure read, paged)
+#     CASA-free growth: contacts.other.readonly (SENSITIVE, no CASA).
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="contacts",
+    title="List the user's auto-saved 'other' contacts",
+    readonly=True,
+    destructive=False,
+    idempotent=True,
+    external=True,
+    creds=True,
+    scopes=[CONTACTS_OTHER_READONLY_SCOPE],
+    output_schema=GCONTACTS_LIST_OTHER_CONTACTS_OUTPUT_SCHEMA,
+)
+def gcontacts_list_other_contacts(
+    creds,
+    page_size: int = 100,
+    page_token: str | None = None,
+    read_mask: str = DEFAULT_OTHER_CONTACTS_READ_MASK,
+) -> dict:
+    """List the user's "other contacts" (auto-saved, never explicitly added).
+
+    USE WHEN: you need addresses Google auto-saved from the user's
+    interactions — people they emailed/met but never added to their main
+    contacts. This is a SEPARATE collection from gcontacts_list; use this
+    to surface "people I've corresponded with" who aren't saved contacts.
+
+    Backed by People API ``otherContacts.list`` over the dedicated
+    read-only scope ``contacts.other.readonly`` (SENSITIVE, not restricted
+    → no CASA). Returns one page; pass the returned ``next_page_token``
+    back as ``page_token`` to walk subsequent pages.
+
+    Args:
+        page_size: Contacts per page (1-1000; default 100). Out-of-range
+            values are clamped.
+        page_token: Token from a prior call's ``next_page_token`` to fetch
+            the next page. Omit to start at the first page.
+        read_mask: People API field mask (comma-separated). Defaults to a
+            core set valid for "other contacts" (names, emailAddresses,
+            phoneNumbers, metadata). NOTE: ``organizations`` is NOT
+            available for other contacts (it needs a profile source the
+            read-only scope doesn't cover), so ``organization`` comes back
+            null.
+
+    Returns:
+        ``{contacts, next_page_token}`` — ``contacts`` is a list of the
+        same flat ``{resource_name, etag, display_name, emails, phones,
+        organization, raw}`` dicts gcontacts_list returns (``organization``
+        is null here); ``next_page_token`` is null on the last page.
+
+    NOTE: "other contacts" are READ-ONLY via this scope — there is no
+    create/update/delete for them. To promote one to a saved contact, read
+    its fields here and create it with gcontacts_create.
+    """
+    return _list_other_contacts(
+        creds,
+        page_size=page_size,
+        page_token=page_token,
+        read_mask=read_mask,
     )
 
 

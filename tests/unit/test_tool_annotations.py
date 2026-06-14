@@ -94,6 +94,19 @@ READONLY_TOOLS = {
     "gcontacts_list",
     "gcontacts_search",
     "gcontacts_get",
+    # CASA-free growth: People API otherContacts.list — a pure read of the
+    # auto-saved "other contacts" (contacts.other.readonly is read-only by
+    # construction; there is no other-contacts write).
+    "gcontacts_list_other_contacts",
+    # Gmail (services/gmail/): users.labels.list — a pure read of the
+    # mailbox's label objects (no message read, no mutation). Sister tools
+    # gmail_send_message (sends mail) / gmail_create_label (creates a
+    # label) are NOT readonly, and gmail_delete_label is destructive.
+    "gmail_list_labels",
+    # CASA-free growth: Apps Script processes.listScriptProcesses — a pure
+    # read of a script project's execution history (script.processes is
+    # read-only; the tool runs nothing and mutates nothing).
+    "as_list_script_processes",
     # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
     # Sister tools gtasks_create_* / gtasks_update_task /
     # gtasks_complete_task (mutations) and gtasks_delete_task
@@ -154,6 +167,12 @@ DESTRUCTIVE_TOOLS = {
     # (gtasks_complete_task is NOT here — it only flips status, the task
     # persists.)
     "gtasks_delete_task",
+    # Gmail (services/gmail/): users.labels.delete — removes a label
+    # object. Destructive so MCP clients can prompt for confirmation.
+    # (gmail_create_label only adds; gmail_send_message only sends; so
+    # neither is here. Removing a label does NOT delete the messages that
+    # carried it, but the label object itself is gone.)
+    "gmail_delete_label",
     # Sheets batchUpdate (deleteDimension): removes rows/columns and their
     # cell data (and shifts later cells). Destructive so MCP clients can
     # prompt for confirmation. Sister tool gsheets_insert_dimension only

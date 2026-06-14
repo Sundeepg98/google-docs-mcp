@@ -15,6 +15,10 @@ from __future__ import annotations
 EXPECTED: frozenset[str] = frozenset({
     # PR-Δ7 — the generic bound-script generator primitive (tools.py).
     "as_generate_bound_script",
+    # CASA-free growth — execution-history read (processes.py). Read-only
+    # observability over script.processes (SENSITIVE, no CASA); companion
+    # to the create+deploy levers.
+    "as_list_script_processes",
     # PR-Δ8 — doc-menu installer (doc_menu.py).
     "as_install_doc_menu",
     # PR-Δ10 — custom =FUNCTION() installer (custom_function.py).

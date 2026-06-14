@@ -29,9 +29,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 # other, and stdio vs HTTP consent silently diverge).
 #
 # They are now derived from THIS one list:
-#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                 (11)
+#   * ``auth.SCOPES``                = WORKSPACE_SCOPES                 (15)
 #   * ``oauth_google.GOOGLE_API_SCOPES`` = OIDC identity scopes
-#                                          + WORKSPACE_SCOPES           (13)
+#                                          + WORKSPACE_SCOPES           (17)
 # (``oauth_google`` imports ``WORKSPACE_SCOPES`` from here — ``auth`` is a
 # leaf module so there's no import cycle.)
 #
@@ -156,6 +156,48 @@ WORKSPACE_SCOPES = [
     # incremental-consent flow (same pattern as the Sheets/Slides/Apps
     # Script scope additions in earlier PRs); no forced re-consent.
     "https://www.googleapis.com/auth/contacts",
+    # ---- CASA-free scope growth (this PR) — 4 scopes, each with a tool ----
+    # Verified against Google's restricted-scope list: NONE of the four
+    # below is restricted, so they add NO CASA security assessment and keep
+    # the free "sensitive scopes only" verification posture intact. The
+    # goal is a MAXIMAL app in one verification pass. Same incremental-
+    # consent semantics as every prior addition (include_granted_scopes=
+    # true) — existing users pick them up on next token refresh; no forced
+    # re-consent.
+    #
+    # Gmail (new service services/gmail/) — send + label management.
+    #   * gmail.send (SENSITIVE, not restricted → NO CASA). Google's own
+    #     classification: "Send email on your behalf." Send-only; it does
+    #     NOT grant mailbox READ. The full-mailbox / read / modify Gmail
+    #     scopes (mail.google.com, gmail.readonly, gmail.modify,
+    #     gmail.metadata, gmail.insert, gmail.compose, gmail.settings.*)
+    #     ARE restricted and are deliberately NOT requested. Backs
+    #     gmail_send_message (users.messages.send, RFC822/MIME).
+    "https://www.googleapis.com/auth/gmail.send",
+    #   * gmail.labels (NON-sensitive — no verification or CASA at all).
+    #     Google's classification: "See and edit your email labels." This
+    #     manages LABEL OBJECTS only (labels.create / list / delete); it
+    #     does NOT permit reading messages or changing a message's labels
+    #     (that needs gmail.modify, which is RESTRICTED and intentionally
+    #     omitted). Backs gmail_create_label / gmail_list_labels /
+    #     gmail_delete_label.
+    "https://www.googleapis.com/auth/gmail.labels",
+    # Contacts (existing services/contacts/) — "other contacts" read.
+    #   * contacts.other.readonly (SENSITIVE, not restricted → NO CASA).
+    #     Read-only access to the auto-saved "Other contacts" list (people
+    #     the user has interacted with but never explicitly saved). Strictly
+    #     narrower than the full ``contacts`` scope already requested above.
+    #     Backs gcontacts_list_other_contacts (People API otherContacts.list).
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+    # Apps Script (existing services/apps_script/) — execution history read.
+    #   * script.processes (SENSITIVE, not restricted → NO CASA). Google's
+    #     classification: "View Google Apps Script processes." Read-only
+    #     access to a script project's execution history. Backs
+    #     as_list_script_processes (Apps Script API processes.list /
+    #     processes.listScriptProcesses) — the observability companion to
+    #     the existing as_generate_bound_script / as_deploy_web_app
+    #     create+deploy levers (script.projects / script.deployments).
+    "https://www.googleapis.com/auth/script.processes",
 ]
 
 # ``SCOPES`` is the stdio/baseline Workspace consent set. It IS the
