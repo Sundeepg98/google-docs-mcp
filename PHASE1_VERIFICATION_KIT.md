@@ -8,7 +8,9 @@
 **Deployed:** Fly app `sundeepg98-docs-mcp` → `https://sundeepg98-docs-mcp.fly.dev` (new app `appscriptly` reserved, not yet cut over).
 **Tool surface:** **66 tools** (`origin/main` golden = 62 + the 4 sheets tools in open PR #191). All 66 stay within the 8 scopes below — zero verification impact.
 
-## 0. Confirmed final scope set (8 scopes — `drive.readonly` removed in #148, MERGED + deployed + live-verified)
+## 0. Scope set submitted in the FIRST verification round (8 scopes; `drive.readonly` removed in #148, MERGED + deployed + live-verified)
+
+> **Round-1 subset vs current code set (read before cross-referencing the repo).** The 8 scopes below are the set submitted in the FIRST verification round (the consent screen currently under review). Since this kit was first written, the code added four more SENSITIVE (zero restricted, so still no CASA) services to `auth.WORKSPACE_SCOPES`: Forms (`forms.body`, `forms.responses.readonly`), Tasks (`tasks`), Calendar (`calendar`), and Contacts (`contacts`). So the current code set is **13 scopes** (the source of truth is `auth.py:WORKSPACE_SCOPES` + `oauth_google.py:IDENTITY_SCOPES`, pinned by `tests/unit/test_scope_union_single_source.py`). Those four services reach existing users via Google's incremental-consent flow and their live rollout is held by the CI deploy gate (`DEPLOY_ENABLED=false`) until their OWN verification round (this project verifies LAST). This kit's §1 punch-list and the table below intentionally still reflect the Round-1 subset that was actually submitted; do NOT treat 8 as the whole code surface.
 
 | # | Scope | Google class |
 |---|-------|--------------|
@@ -21,7 +23,7 @@
 | 7 | `…/auth/script.projects` | **Sensitive** |
 | 8 | `…/auth/script.deployments` | **Sensitive** |
 
-**Verification class: FREE.** 5 sensitive, **zero restricted**. No CASA / no third-party audit. Needs: verified domain + privacy policy + demo video + per-scope justifications (~3–5 business days).
+**Verification class: FREE.** 5 sensitive, **zero restricted**. No CASA / no third-party audit. Needs: verified domain + privacy policy + demo video + per-scope justifications (~3 to 5 business days). The four later services (Forms / Tasks / Calendar / Contacts) are all sensitive too, so the FREE / no-CASA class holds for their later round as well.
 
 > `script.container.ui` / `script.external` / `script.scriptapp` are **NOT** in appscriptly's OAuth client — they live in the *generated bound script's own manifest* (a separate end-user consent). Do NOT add them to the consent screen.
 

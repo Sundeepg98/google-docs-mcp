@@ -77,7 +77,7 @@ context (HTML, SQL, command, log) to prevent injection.
 | Control | Status | Notes |
 |---|---|---|
 | V4.1.1 — access control enforced server-side | **PASS** | `request.state.signed_url_user_id` is set by middleware after HMAC verify; downstream handler reads ONLY from request.state, never from query params directly. |
-| V4.1.3 — principle of least privilege | **PASS** | OAuth requests `drive.file` (per-file) as primary scope; `drive.readonly` only for explicit-ingestion path. No `drive` (full) scope ever requested. |
+| V4.1.3 — principle of least privilege | **PASS** | OAuth requests `drive.file` (per-file) as the only Drive scope; the broader `drive.readonly` and full `drive` scopes are NOT requested (`drive.readonly` was deliberately dropped from the base tier; see `auth.py:WORKSPACE_SCOPES`). Every requested scope is Google-sensitive; none is restricted. |
 | V4.1.5 — fail-safe defaults | **PASS** | Per-user dispatch in `convert.py` defaults to OPERATOR creds only on bearer-header path (single-tenant by design); cloud-chat path (signed URL) ALWAYS uses per-user creds. |
 | V4.2.1 — sensitive data access controls | **PASS** | `user_store` facade returns only the calling user's row; no `get_state(other_user_id)` path from tool calls. |
 | V4.3.x — admin function access controls | **PARTIAL** | `gdocs_admin_audit` (the only admin-surfaced tool) requires `admin_token` matching `MCP_ADMIN_TOKEN` env var; constant-time compare. Gap: admin token is a single shared secret, not per-operator. |

@@ -21,35 +21,63 @@ The rest of this doc is the narrative version of the above. If you
 already trust the artifacts, skim the **Honest gaps** section and
 stop.
 
-## 1. Identity model — minimal-scope OAuth
+## 1. Identity model: sensitive-scope-only OAuth (no restricted scopes)
 
 google-docs-mcp implements Google's standard OAuth 2.0 authorization
-code flow via `google-auth-oauthlib`. The deployment requests two
-classes of scopes from the user:
+code flow via `google-auth-oauthlib`. The single source of truth for the
+consent set is `auth.py:WORKSPACE_SCOPES` (11 Workspace scopes) plus the
+two OIDC identity scopes in `oauth_google.py:IDENTITY_SCOPES`, unioned as
+`oauth_google.py:GOOGLE_API_SCOPES` (13 scopes total for the HTTP/cloud
+connector; stdio mode is the same minus the two identity scopes).
 
-- **Per-file access (`drive.file`)** — the canonical primary scope.
-  Grants read/write access to the specific files this app creates OR
-  to files the user explicitly hands the app via the Drive picker.
-  This is Google's most-narrow Drive scope.
+**Every requested scope is a Google SENSITIVE scope; NONE is RESTRICTED.**
+This is the load-bearing posture property: only restricted scopes (full
+Gmail, full Drive, `drive.readonly`, Fit, Chat, etc.) trigger a CASA
+security assessment, so a sensitive-only set qualifies for OAuth
+verification without CASA.
 
-- **Read-only ingestion (`drive.readonly`)** — needed for one
-  specific cloud-chat workflow: `gdocs_tab_existing_doc(drive_file_id=…)`,
-  where the user passes an arbitrary Drive ID of a doc the app
-  didn't create and asks for tab conversion. Without `drive.readonly`
-  this call returns "404 not found" because `drive.file` doesn't see
-  files this app didn't author. Mutation is impossible under this
-  scope.
+The Drive access the app holds is the per-file scope only:
 
-Apps Script management scopes (`script.projects`, `script.deployments`)
-are baseline as of v2.3.4 (PR-Δ1) so the user hits ONE consent screen
-on first connection. See PR-Δ1's CHANGELOG entry for the UX rationale.
+- **Per-file access (`drive.file`)**: the canonical Drive scope. Grants
+  read/write access to the specific files this app creates OR to files
+  the user explicitly hands the app via the Drive picker. This is
+  Google's most-narrow Drive scope, and it is SENSITIVE, not restricted.
+
+The remaining scopes are the per-service sensitive scopes for the
+features the app exposes: `documents`, `spreadsheets`, `presentations`,
+`forms.body`, `forms.responses.readonly`, `tasks`, `calendar`,
+`contacts`, plus the Apps Script management scopes (`script.projects`,
+`script.deployments`, baseline as of v2.3.4 / PR-Δ1 so the user hits ONE
+consent screen on first connection; see PR-Δ1's CHANGELOG entry for the
+UX rationale).
+
+`drive.readonly` is **NOT** requested. It is the only RESTRICTED scope
+this app ever carried, and it was deliberately removed from the base
+tier to keep the no-CASA posture; its two former consumers were
+re-plumbed onto Drive-read-free paths (signed-URL upload for `.docx`
+ingestion; signed staging endpoint for the slides-to-video frame
+handoff). See `auth.py:WORKSPACE_SCOPES` for the full removal rationale.
+
+> **Verification posture.** The OAuth verification round currently under
+> review covers the base set (Docs / Drive.file / Sheets / Slides / Apps
+> Script + identity). The additional sensitive services (Calendar, Tasks,
+> Forms, Contacts) reach existing users through Google's incremental-
+> consent flow and their live rollout is held by the CI deploy gate
+> (`DEPLOY_ENABLED=false`) until their own verification round (verify
+> LAST). `WORKSPACE_SCOPES` therefore lists the full target set in code
+> while the consent screen under review shows the already-submitted
+> subset. All of the additional scopes are sensitive, none restricted,
+> so they add no CASA requirement.
 
 **What this means in practice:**
-- The server cannot read arbitrary user docs. Every doc it touches is
-  either (a) one it created, (b) one the user explicitly named, or
-  (c) one the user opened in the Drive picker.
-- The server cannot impersonate the user against other Google services
-  (Gmail, Calendar, etc.) — scopes don't authorize those APIs.
+- The server cannot read arbitrary user docs. Every Drive file it
+  touches is either (a) one it created, (b) one the user explicitly
+  named, or (c) one the user opened in the Drive picker. There is no
+  whole-Drive read scope in the set.
+- The app does request per-service scopes for Calendar, Tasks, Forms,
+  and Contacts (all sensitive); these authorize only those specific
+  Google APIs and only for the signed-in user. It does NOT request any
+  Gmail scope.
 
 ## 2. Token storage and key derivation
 
@@ -175,8 +203,12 @@ The most operationally-significant:
 - **Apps Script HMAC verify-path** (v2.0c closes) — Per-user
   `apps_script_hmac_key` column exists but is unused. URL secrecy
   is the access control today.
-- **`drive.readonly` scope** (not planned to remove) — required for
-  the cloud-chat ingestion UX; mutation impossible under this scope.
+
+(Note: an earlier revision of this section listed `drive.readonly` as a
+retained restricted scope. It has since been DROPPED from the base tier
+to preserve the sensitive-scope-only / no-CASA posture; the cloud-chat
+ingestion path was re-plumbed onto the signed-URL upload flow. See §1 and
+`auth.py:WORKSPACE_SCOPES`. It is no longer an open item.)
 
 If your threat model requires closure of any of these BEFORE
 adoption, please flag it via a private GitHub Security Advisory
