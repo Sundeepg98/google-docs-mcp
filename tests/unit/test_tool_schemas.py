@@ -17,6 +17,15 @@ import pytest
 
 # Tools we expect to exist. If this set changes, the test fails — making
 # additions/removals/renames a deliberate, reviewed change.
+#
+# chore/tool-namespace-cleanup: 18 tools were renamed off the historical
+# ``gdocs_`` prefix to honest domain prefixes (``gdrive_`` Drive,
+# ``server_`` / ``admin_`` / ``account_`` admin/auth, ``as_`` Apps Script
+# installer). Each old ``gdocs_`` name is KEPT as a deprecated alias
+# (dual-registration; planned removal v3.0), so BOTH the canonical name
+# and the old alias appear below — the old gdocs_* entries are retained
+# in their original positions, the new canonical names are grouped at the
+# end under "namespace-cleanup canonical names".
 EXPECTED_TOOLS = {
     "gdocs_add_tabs",
     "gdocs_admin_audit",  # v2.3+: admin-only forensic primitive (R29-B finding)
@@ -132,6 +141,30 @@ EXPECTED_TOOLS = {
     "gforms_delete_item",  # Forms batchUpdate (deleteItem) — by position
     "gforms_list_responses",  # Forms responses.list — paginated read
     "gforms_get_response",  # Forms responses.get — single response read
+    # --- chore/tool-namespace-cleanup canonical names (each old gdocs_*
+    #     name above is kept as a deprecated alias; removal v3.0) ---
+    # Drive (gdrive_*): act on Drive, not Docs.
+    "gdrive_find_doc_by_title",   # was gdocs_find_doc_by_title
+    "gdrive_move_to_folder",      # was gdocs_move_to_folder
+    "gdrive_untrash_file",        # was gdocs_untrash_file
+    "gdrive_trash_file",          # was gdocs_trash_file
+    "gdrive_share_file",          # was gdocs_share_file
+    "gdrive_list_permissions",    # was gdocs_list_permissions
+    "gdrive_create_folder",       # was gdocs_create_folder
+    "gdrive_revoke_permission",   # was gdocs_revoke_permission
+    "gdrive_export_file",         # was gdocs_export_doc
+    "gdrive_find_file",           # was gdocs_find_file
+    "gdrive_get_signed_upload_url",  # was gdocs_get_signed_upload_url (admin folder)
+    # admin / introspection / auth.
+    "server_info",                # was gdocs_server_info
+    "server_test_manifest",       # was gdocs_test_manifest
+    "server_guide",               # was gdocs_guide
+    "server_help",                # was gdocs_help
+    "admin_audit",                # was gdocs_admin_audit
+    "account_reset_authorization",  # was gdocs_reset_authorization
+    # Apps Script installer (3rd name; gdocs_install_automation +
+    # gdocs_setup_apps_script remain as aliases).
+    "as_install_automation",      # was gdocs_install_automation
 }
 
 
@@ -243,7 +276,10 @@ def test_tool_discoverability_via_server_info(all_tools):
 # "without authorization" unqualified — that conflates the
 # Apps-Script-Web-App setup (which only gdocs_tab_existing_doc needs)
 # with the base OAuth grant (which everything needs).
-_DOES_NOT_NEED_OAUTH = {"gdocs_get_signed_upload_url"}
+_DOES_NOT_NEED_OAUTH = {
+    "gdocs_get_signed_upload_url",  # deprecated alias
+    "gdrive_get_signed_upload_url",  # namespace-cleanup canonical name
+}
 
 _MISLEADING_PHRASES = [
     "without setup",
@@ -350,11 +386,17 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
     # no kwargs; the install is parameter-less by design. Both names
     # appear here post-PR-α because both are registered MCP tools.
     no_arg_tools = {
+        # deprecated gdocs_* aliases (kept registered)
         "gdocs_server_info",
         "gdocs_setup_apps_script",  # deprecated alias
-        "gdocs_install_automation",  # PR-α canonical
+        "gdocs_install_automation",  # PR-α name (now a deprecated alias)
         "gdocs_test_manifest",
         "gdocs_guide",  # v1.3.0+: orientation, zero args by design
+        # chore/tool-namespace-cleanup canonical names (same no-arg tools)
+        "server_info",
+        "server_test_manifest",
+        "server_guide",
+        "as_install_automation",  # namespace-cleanup canonical installer
     }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these
