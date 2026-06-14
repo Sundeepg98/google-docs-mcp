@@ -167,15 +167,22 @@ Add the same `mcpServers` entry to `~/.claude.json` (user-scope) or to a project
 
 ### First-run OAuth
 
-First tool call opens the browser. Sign in → grant scopes. Tokens cached after that; no more browser dance. Required scopes (mirror of `auth.py:SCOPES`):
+First tool call opens the browser. Sign in → grant scopes. Tokens cached after that; no more browser dance. Required scopes (mirror of `auth.py:WORKSPACE_SCOPES`, the single source of truth):
 - `https://www.googleapis.com/auth/documents`
 - `https://www.googleapis.com/auth/drive.file`
 - `https://www.googleapis.com/auth/spreadsheets`
 - `https://www.googleapis.com/auth/presentations`
+- `https://www.googleapis.com/auth/forms.body`
+- `https://www.googleapis.com/auth/forms.responses.readonly`
+- `https://www.googleapis.com/auth/tasks`
 - `https://www.googleapis.com/auth/script.projects`
 - `https://www.googleapis.com/auth/script.deployments`
+- `https://www.googleapis.com/auth/calendar`
+- `https://www.googleapis.com/auth/contacts`
 
-(`drive.readonly` was dropped from the base tier — it is Google's only RESTRICTED scope here, and dropping it keeps consent to sensitive-scopes-only. The HTTP/cloud connector flow additionally requests `openid` + `userinfo.email` for identity; see `oauth_google.py:GOOGLE_API_SCOPES`.)
+Every one of these is a Google **sensitive** scope; **none is restricted**, so the app needs sensitive-scope OAuth verification but no CASA security assessment. `drive.readonly` (Google's only RESTRICTED scope this app ever requested) was deliberately dropped from the base tier to preserve that no-CASA posture; it is no longer requested at consent (see `auth.py:WORKSPACE_SCOPES` for the per-scope rationale and the removal note). The HTTP/cloud connector flow additionally requests `openid` + `userinfo.email` for identity, for 13 scopes total; see `oauth_google.py:GOOGLE_API_SCOPES`.
+
+> **Verification posture (why the code lists more scopes than the consent screen currently under review shows).** The live OAuth verification round currently covers the base set (Docs / Drive.file / Sheets / Slides / Apps Script + identity). The additional sensitive services (Calendar, Tasks, Forms, Contacts) reach existing users via Google's incremental-consent flow (`include_granted_scopes=true`), and their live rollout is held back by the CI deploy gate (`DEPLOY_ENABLED` repo variable set to `false`, which halts auto-deploy on push to `main`) until their own verification round (this project verifies LAST, after the surface is complete). So `auth.py:WORKSPACE_SCOPES` legitimately enumerates the full target set in code while the consent screen currently under review shows the subset already submitted. None of the additional scopes is restricted, so they add no CASA requirement.
 
 ## Apps Script setup (required for converting existing docs)
 

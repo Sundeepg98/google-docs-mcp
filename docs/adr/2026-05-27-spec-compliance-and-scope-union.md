@@ -1,9 +1,25 @@
 # ADR 2026-05-27 — Spec compliance (RFC 9728) + scope union (Apps Script in baseline)
 
-**Status**: Accepted
+**Status**: Accepted, with one sub-decision later SUPERSEDED (see banner below)
 **Date**: 2026-05-27
 **PR**: PR-Δ1
 **Builds on**: PR-α reframe (`gdocs_install_automation` rename + alias)
+
+> **SUPERSEDED (partial): the `drive.readonly` sub-decision was reversed.**
+> The "What's NOT in this ADR" section below records a decision to KEEP
+> `drive.readonly` in the baseline scope set. That sub-decision was later
+> reversed: `drive.readonly` (the only Google RESTRICTED scope the app
+> requested) was DROPPED from the base tier to keep the consent set
+> sensitive-scope-only (no CASA assessment, no Testing-mode 7-day
+> refresh-token cap), and its two consumers were re-plumbed onto
+> Drive-read-free paths (signed-URL `.docx` upload; signed staging
+> endpoint for the slides-to-video frame handoff). The authoritative
+> current record is the CHANGELOG `[Unreleased]` "base-tier
+> `drive.readonly` drop" entry plus the removal note in
+> `auth.py:WORKSPACE_SCOPES`. The rest of this ADR (RFC 9728 endpoint
+> plus Apps Script scopes in baseline) still stands. The original text
+> below is left intact as the historical record of the PR-Δ1 decision;
+> it is NOT rewritten.
 
 ## Context
 
@@ -135,6 +151,11 @@ for the next reader.
   deployment, and the future-CASA-if-Marketplace concern is
   hypothetical rather than a present blocker. Re-evaluate if/when
   Marketplace listing becomes a near-term goal.
+  > **SUPERSEDED:** this sub-decision was later reversed. `drive.readonly`
+  > WAS removed from the base tier (sensitive-scope-only, no-CASA
+  > posture). See the banner at the top of this ADR, the CHANGELOG
+  > `[Unreleased]` base-tier `drive.readonly` drop entry, and
+  > `auth.py:WORKSPACE_SCOPES`.
 
 - **`docx_drive_file_id` path stays.** Removing it was bundled with
   the `drive.readonly` removal in earlier drafts; both decisions
