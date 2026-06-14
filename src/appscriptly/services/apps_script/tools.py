@@ -78,6 +78,7 @@ def as_generate_bound_script(
     manifest: dict | None = None,
     container_kind: str | None = None,
     name: str | None = None,
+    allow_restricted_scopes: bool = False,
 ) -> dict:
     """Generate + deploy a *bound* Apps Script inside a Doc / Sheet / Slides.
 
@@ -143,6 +144,15 @@ def as_generate_bound_script(
             detection round-trip when you already know the kind.
         name: OPTIONAL title for the new Apps Script project. Defaults to
             a generated name derived from the container kind.
+        allow_restricted_scopes: OPTIONAL safety opt-in. By default, if
+            ``manifest["oauth_scopes"]`` includes a Google RESTRICTED scope
+            (full Gmail / broad Drive), the call is REJECTED — the generic
+            generator won't silently arm an automation with restricted
+            authority. Pass ``True`` only after telling the user the
+            consequences (the automation gains that restricted access, and
+            it triggers Google's restricted-scope / CASA verification). The
+            built-in ``as_install_*`` tools never need this; it's an escape
+            hatch for an explicit, user-acknowledged restricted use case.
 
     Returns:
         ``{script_id, deployment_id, container_id, container_kind,
@@ -170,8 +180,12 @@ def as_generate_bound_script(
     # 2. Default the project name from the kind when not supplied.
     project_name = name or f"appscriptly bound automation ({kind})"
 
-    # 3. Build the manifest from the high-level description (pure).
-    manifest_dict = _build_manifest(manifest)
+    # 3. Build the manifest from the high-level description (pure). The
+    # restricted-scope guard lives in _build_manifest; we pass the opt-in
+    # through so a caller-acknowledged restricted use case can proceed.
+    manifest_dict = _build_manifest(
+        manifest, allow_restricted_scopes=allow_restricted_scopes
+    )
 
     # 4. Create the bound project (binds via parentId=container_id).
     project = _create_bound_project(creds, container_id, project_name)

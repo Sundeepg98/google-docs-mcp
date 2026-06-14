@@ -19,9 +19,47 @@
  *  4. After all copies are recorded, remove the moved children from the
  *     source body. Bodies must keep >=1 child, so we leave a final blank
  *     paragraph if everything was moved.
+ *
+ * REQUEST AUTHENTICATION (v2.0c — HMAC verify-path).
+ * The Web App is deployed access=ANYONE_ANONYMOUS (the MCP server posts to
+ * /exec with no Google sign-in), so URL secrecy alone is NOT the access
+ * control any more: doPost authenticates every request with a per-user
+ * HMAC-SHA256 signature before touching any document. The setup pipeline
+ * (setup_apps_script.py) generates a 64-hex-char per-user key, persists it
+ * (user_store / local config), and templates it into the placeholder below
+ * before pushing this source to Apps Script. The MCP server signs each POST
+ * with the SAME key (docx_import._call_webapp), sending X-MCP-Signature +
+ * X-MCP-Timestamp. A request with a missing / stale / mismatched signature
+ * is rejected with {success:false, stage:'auth'} and never mutates a doc.
+ *
+ * The two sentinels below are REPLACED at deploy time by setup_apps_script.py
+ * (string substitution on this file's text). If the substitution did not run
+ * (key empty / template marker intact), HMAC is treated as NOT configured and
+ * doPost FAILS CLOSED — see _verifyHmac. The markers are intentionally exact
+ * literals so the Python side can find-and-replace them deterministically.
  */
 
+// Replaced at deploy time with the per-user 64-hex-char HMAC key.
+var MCP_HMAC_KEY = '__MCP_HMAC_KEY__';
+// Replaced at deploy time with 'true' once a key is provisioned. Left as the
+// literal marker otherwise — _verifyHmac treats anything but 'true' as
+// "not configured" and fails closed.
+var MCP_HMAC_REQUIRED = '__MCP_HMAC_REQUIRED__';
+// Reject requests whose X-MCP-Timestamp is more than this many seconds away
+// from the script's clock (replay / stale-capture window). 300s = 5 min,
+// generous enough for clock skew + a slow network without leaving a wide
+// replay window.
+var MCP_HMAC_MAX_SKEW_SECONDS = 300;
+
 function doPost(e) {
+  // 1. Authenticate BEFORE parsing/acting. A failed check returns stage:'auth'
+  //    and never reaches restructureToTabs, so an unsigned/forged request
+  //    cannot mutate any document.
+  var auth = _verifyHmac(e);
+  if (!auth.ok) {
+    return _json({success: false, stage: 'auth', error: auth.error});
+  }
+
   var payload;
   try {
     payload = JSON.parse(e.postData.contents);
@@ -36,6 +74,100 @@ function doPost(e) {
     return _json({success: false, stage: err.stage || 'unknown',
                   error: err.message || String(err), trace: err.stack || ''});
   }
+}
+
+/**
+ * Verify the per-request HMAC signature.
+ *
+ * Scheme (must match docx_import._call_webapp exactly):
+ *   signature = lowercase_hex( HMAC_SHA256(key, timestamp + "." + rawBody) )
+ * sent in header X-MCP-Signature, with the unix-seconds timestamp in
+ * X-MCP-Timestamp. Signing the timestamp TOGETHER with the body binds the
+ * two so a captured (body, signature) pair can't be replayed with a fresh
+ * timestamp, and a stale timestamp is rejected by the skew window.
+ *
+ * FAILS CLOSED: if no key was templated in (deploy-time substitution didn't
+ * run), every request is rejected — we never silently accept unsigned
+ * traffic. Returns {ok:true} or {ok:false, error:<reason>}.
+ */
+function _verifyHmac(e) {
+  // Not configured → fail closed. (MCP_HMAC_REQUIRED stays as its literal
+  // marker, or the key is empty / still the template marker, when the deploy
+  // substitution didn't run.)
+  if (MCP_HMAC_REQUIRED !== 'true' ||
+      !MCP_HMAC_KEY || MCP_HMAC_KEY === ('__MCP_HMAC' + '_KEY__')) {
+    return {ok: false, error: 'server HMAC key not configured (re-run install/setup)'};
+  }
+
+  var headers = (e && e.headers) || {};
+  var sig = _headerLookup(headers, 'X-MCP-Signature');
+  var tsRaw = _headerLookup(headers, 'X-MCP-Timestamp');
+  if (!sig || !tsRaw) {
+    return {ok: false, error: 'missing X-MCP-Signature / X-MCP-Timestamp header'};
+  }
+
+  var ts = parseInt(tsRaw, 10);
+  if (isNaN(ts)) {
+    return {ok: false, error: 'malformed X-MCP-Timestamp'};
+  }
+  var now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > MCP_HMAC_MAX_SKEW_SECONDS) {
+    return {ok: false, error: 'stale or future timestamp (replay window exceeded)'};
+  }
+
+  var body = (e && e.postData && e.postData.contents) || '';
+  var expected = _computeHmacHex(MCP_HMAC_KEY, tsRaw + '.' + body);
+  if (!_constantTimeEquals(expected, String(sig).toLowerCase())) {
+    return {ok: false, error: 'signature mismatch'};
+  }
+  return {ok: true};
+}
+
+/** Compute lowercase-hex HMAC-SHA256 over ``message`` with ``key``. */
+function _computeHmacHex(key, message) {
+  var raw = Utilities.computeHmacSha256Signature(message, key);
+  var hex = '';
+  for (var i = 0; i < raw.length; i++) {
+    // Bytes are signed in Apps Script (-128..127); mask to 0..255.
+    var b = (raw[i] + 256) % 256;
+    var h = b.toString(16);
+    if (h.length === 1) h = '0' + h;
+    hex += h;
+  }
+  return hex;
+}
+
+/**
+ * Constant-time string compare. Avoids the early-exit timing leak of ``===``
+ * so an attacker can't recover the expected signature byte-by-byte from
+ * response timing. Length is compared via accumulation too (the lengths are
+ * both fixed 64-hex here, but stay defensive).
+ */
+function _constantTimeEquals(a, b) {
+  a = String(a);
+  b = String(b);
+  var diff = a.length ^ b.length;
+  var max = Math.max(a.length, b.length);
+  for (var i = 0; i < max; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+/**
+ * Case-insensitive header lookup. Apps Script's ``e.headers`` keys are not
+ * guaranteed to preserve the exact casing the client sent, so match by
+ * lowercased name.
+ */
+function _headerLookup(headers, name) {
+  var target = name.toLowerCase();
+  for (var k in headers) {
+    if (Object.prototype.hasOwnProperty.call(headers, k) &&
+        k.toLowerCase() === target) {
+      return headers[k];
+    }
+  }
+  return null;
 }
 
 function doGet() {

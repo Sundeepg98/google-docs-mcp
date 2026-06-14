@@ -47,6 +47,10 @@ from typing import Callable
 from google.auth.credentials import Credentials
 
 from . import config, setup_state, user_store
+from .apps_script_hmac import (
+    generate_hmac_key,
+    inject_hmac_into_source,
+)
 from .auth import (
     default_data_dir,
     load_credentials,
@@ -61,6 +65,24 @@ log = logging.getLogger("appscriptly.setup_apps_script")
 # the wheel by hatchling). Reading from __file__'s dir means it works
 # whether installed via pipx, pip -e, or inside a Docker image.
 RESTRUCTURE_GS_PATH = Path(__file__).parent / "restructure.gs"
+
+
+def _build_files(hmac_key: str) -> dict[str, str]:
+    """Read ``restructure.gs`` and template the per-user HMAC key into it.
+
+    Returns the ``{filename: source}`` mapping pushed to Apps Script. The
+    key is baked into the deployed script (``MCP_HMAC_KEY`` / the
+    ``MCP_HMAC_REQUIRED`` flag) so ``doPost`` can authenticate every request
+    — see ``apps_script_hmac.inject_hmac_into_source``.
+
+    Centralized so BOTH the content-hash computation and the actual push use
+    the SAME injected source. The hash MUST be computed over the injected
+    text (not the raw template) so it is stable across re-runs for a user
+    whose key is unchanged, and so a key ROTATION correctly changes the hash
+    and triggers a fresh deploy of the script carrying the new key.
+    """
+    raw = RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")
+    return {SCRIPT_FILENAME: inject_hmac_into_source(raw, hmac_key)}
 
 PROJECT_TITLE = "appscriptly / restructure"
 # PR-Δ5.5 (2026-05-27): renamed from ``"google-docs-mcp / restructure"``.
@@ -84,12 +106,13 @@ _BASE_MANIFEST = {
         # USER_DEPLOYING: the script runs as the OAuth user who deployed
         # it (the chat user in cloud mode, the operator in stdio mode) —
         # so it can only touch docs THAT USER owns. ANYONE_ANONYMOUS:
-        # required so our server (which calls _call_webapp with no auth
-        # headers) can actually reach the /exec endpoint. The "anyone"
-        # surface area is bounded by the script's logic — it only acts
-        # on doc IDs passed in the request, and only on docs the
-        # deployer owns. v1.2 plan: add HMAC token validation in the
-        # script for defense in depth.
+        # required so our server can reach the /exec endpoint (the server
+        # POSTs with no Google sign-in). The "anyone" surface is no longer
+        # gated by URL secrecy alone: as of v2.0c every request is
+        # authenticated by a per-user HMAC signature verified in
+        # restructure.gs::doPost (provisioned + templated in below; signed
+        # by docx_import._call_webapp). See apps_script_hmac.py and
+        # THREAT_MODEL.md §4 row 5.
         "executeAs": "USER_DEPLOYING",
         "access": "ANYONE_ANONYMOUS",
     },
@@ -338,7 +361,16 @@ def setup_apps_script_auto(
     else:
         creds = load_credentials(data_dir, extra_scopes=GAS_DEPLOY_SCOPES)
 
-    files = {SCRIPT_FILENAME: RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")}
+    # v2.0c: provision (read-or-generate) the HMAC key for THIS local
+    # deployment before building the files / content hash, then template it
+    # into the deployed script so doPost can authenticate requests. Reusing
+    # the persisted key keeps re-runs idempotent; a key rotation changes the
+    # content_hash and triggers a fresh deploy carrying the new key.
+    hmac_key = config.load().get("apps_script_hmac_key")
+    if not hmac_key:
+        hmac_key = generate_hmac_key()
+        config.save({"apps_script_hmac_key": hmac_key})
+    files = _build_files(hmac_key)
     # PR-Δ5: manifest resolved at call time so the optional
     # GCP_PROJECT_NUMBER env var participates in the content_hash. If
     # the operator flips GCP linking on/off between runs, the hash
@@ -396,7 +428,34 @@ _USER_STORE_FIELD_MAP = {
     "url": "apps_script_url",
     # "impersonate" intentionally absent — cloud users authenticate as
     # themselves (their own OAuth tokens); no Workspace-admin DWD path.
+    # NB: apps_script_hmac_key is deliberately NOT in this map. It must
+    # SURVIVE a ledger clear (hash mismatch / manual script delete) so a
+    # user keeps one stable key across re-deploys — the key is provisioned
+    # separately in setup_apps_script_for_user (read-or-generate) and
+    # cleared only by clear_state(user_id) at consent revocation.
 }
+
+
+def _resolve_or_create_user_hmac_key(user_id: str) -> str:
+    """Return the user's stable HMAC key, generating + persisting if absent.
+
+    Read-or-create: an existing valid ``apps_script_hmac_key`` is reused (so
+    re-running setup is idempotent — same key → same script content → same
+    content_hash → no needless re-deploy). A user with no key yet (brand new,
+    or a legacy row not covered by the migration backfill) gets a fresh
+    ``secrets.token_hex(32)`` persisted via the normal validated
+    ``user_store.save_state`` path.
+
+    NB: ``user_store.get_state`` drops a persisted key that fails the
+    ``_valid_apps_script_hmac_key`` validator (tampering / pre-validator
+    install), so a tampered key is transparently re-minted here.
+    """
+    existing = user_store.get_state(user_id).get("apps_script_hmac_key")
+    if existing:
+        return existing
+    new_key = generate_hmac_key()
+    user_store.save_state(user_id, {"apps_script_hmac_key": new_key})
+    return new_key
 
 
 def setup_apps_script_for_user(
@@ -425,7 +484,15 @@ def setup_apps_script_for_user(
     google.auth.exceptions.RefreshError for revoked creds — though
     the caller's credentials resolver should catch that first).
     """
-    files = {SCRIPT_FILENAME: RESTRUCTURE_GS_PATH.read_text(encoding="utf-8")}
+    # v2.0c: provision (read-or-generate) the per-user HMAC key BEFORE
+    # building the files / content hash. The key is baked into the deployed
+    # script so doPost can authenticate requests. Reusing the persisted key
+    # on re-runs keeps the content_hash stable (idempotent deploy); a brand-
+    # new user gets a fresh key persisted now. The key intentionally lives
+    # OUTSIDE the ledger fields (see _USER_STORE_FIELD_MAP) so a ledger
+    # reset doesn't rotate it.
+    hmac_key = _resolve_or_create_user_hmac_key(user_id)
+    files = _build_files(hmac_key)
     # PR-Δ5: manifest resolved at call time so the optional
     # GCP_PROJECT_NUMBER env var participates in the content_hash. If
     # the operator flips GCP linking on/off between runs, the hash

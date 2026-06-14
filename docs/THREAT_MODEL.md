@@ -7,12 +7,13 @@
 > **Document layout.** §§ 1-6 are the original v1.3.1 surface-table threat model.
 > §§ 7-9 (added in PR-Δ2 / v2.3.5) supplement with: a per-component STRIDE pass,
 > a bounded-blast-radius architectural callout, and an honest "what we currently
-> don't defend against" section. Surface-by-surface mitigation deltas since
-> v1.3.1 (HKDF strict-flip in v2.0b, Apps Script HMAC verify-path in v2.0c,
-> per-user signed-URL multi-tenancy in v2.1, health-exempt TrustedHost in v2.3.3,
-> RFC 9728 metadata in PR-Δ1) are NOT yet folded into the §4 table — bringing
-> that table up to date is a separate hygiene PR. The §§ 7-9 supplement is
-> independently true and useful as-is.
+> don't defend against" section. The Apps Script HMAC verify-path (v2.0c) IS now
+> folded into the §4 table (row 5, CLOSED) and §§ 7-9. Other surface-by-surface
+> mitigation deltas since v1.3.1 (HKDF strict-flip in v2.0b, per-user signed-URL
+> multi-tenancy in v2.1, health-exempt TrustedHost in v2.3.3, RFC 9728 metadata
+> in PR-Δ1) are NOT yet folded into the §4 table — bringing the rest up to date
+> is a separate hygiene PR. The §§ 7-9 supplement is independently true and
+> useful as-is.
 
 ## 1. Scope and trust boundaries
 
@@ -61,7 +62,7 @@ Each row: surface → primary threat → mitigation → residual risk → test t
 | 2 | `/api/convert` upload | Body-size DoS via chunked encoding (no Content-Length) | None today — middleware only checks declared length. v1.4 ships `request.form(max_part_size=...)` for full coverage | Open until v1.4 ships | (no test today) |
 | 3 | `/oauth/google/api/callback` | State replay / CSRF via swapped `state` param | HMAC-signed state (key from `keys.get_key("oauth_state")`) + single-use `NonceStore` + 10-min TTL | 10-min window if URL captured pre-redeem; first-redeem-wins | `test_signed_state_single_use`, `test_state_expired_rejected` |
 | 4 | `apps_script_url` outbound | SSRF / data exfil to attacker URL | Host validation `endswith(".google.com")` AND path `startswith("/macros/s/")` at user_store save + load boundaries (v1.4.0a) | DB write would need a separate vuln; validation is prophylactic | `test_apps_script_url_validation_at_save` (v1.4.0a) |
-| 5 | Apps Script Web App `/exec` | Anonymous POST → mutate victim docs they own | **None today** (`access: ANYONE_ANONYMOUS`). Per-user `apps_script_hmac_key` schema landed v2.0a but **verification path NOT YET WIRED** (no `Utilities.computeHmacSha256Signature` in `restructure.gs`, no signing in `_call_webapp`). Tracked: v2.0c. | OPEN — anyone with the user's `/exec` URL can POST any payload and mutate any doc the user owns. Mitigation today: URL secrecy. | (no test today; pending v2.0c) |
+| 5 | Apps Script Web App `/exec` | Anonymous POST → mutate victim docs they own | **CLOSED (v2.0c).** Every POST is authenticated by a per-user HMAC-SHA256 signature: `restructure.gs::doPost` calls `Utilities.computeHmacSha256Signature` over `"<timestamp>.<body>"`, constant-time-compares it to the `X-MCP-Signature` header (with a 5-min `X-MCP-Timestamp` skew window), and FAILS CLOSED with `stage:'auth'` on any missing/stale/mismatched signature. The server signs with the per-user `apps_script_hmac_key` in `_call_webapp`; the key is provisioned at setup and baked into the deployed script. `access` stays `ANYONE_ANONYMOUS` because the server posts with no Google sign-in, but URL secrecy is NO LONGER the access control. | LOW — forging a request needs the per-user 256-bit (64-hex-char) key, which is never logged/echoed and lives only in the user's row + their own deployed script. Residual: operator-read of `user_state.db` (inside-trust, §3). | `test_restructure_gs_has_hmac_validation`, `test_call_webapp_signs_requests` |
 | 6 | Bearer token header | Brute-force on `/api/*` | 32-char minimum on master (`keys.get_key()` raises if shorter); HMAC equality via `hmac.compare_digest` | Operator chooses master entropy; if `MCP_BEARER_TOKEN` < 32 chars, server refuses to start | `test_keys_short_master_fails_loud` |
 | 7 | TrustedHostMiddleware | Host-header injection / SSRF via Host | Allowlist from `derive_trusted_hosts()` reading `FLY_APP_NAME` + `localhost` + `*.fly.dev`. Fail-closed boot assertion if `FLY_REGION` set without `FLY_APP_NAME` | Empty `FLY_APP_NAME` outside Fly opens to `["*"]` with WARNING (dev fail-open) | `test_derive_trusted_hosts_fly_app_name` |
 | 8 | Container runtime | Container breakout → `/data` SQLite | `app` non-root user; base image `python:3.13-slim` SHA-pinned via Dockerfile digest | `/data` is writable by `app` (required for SQLite); a breakout landing as `app` reads ALL user rows | `test_docker_user_is_not_root` (CI smoke) |
@@ -78,7 +79,7 @@ As of v1.3.1, three logical keys are derived from one master:
 
 **`_BACK_COMPAT_RAW_MASTER` shim (v1.3.1 through v1.5):** all three purposes return the raw `MCP_BEARER_TOKEN` unless their dedicated env override is set. Rationale: in-flight signed URLs and OAuth states minted under v1.3.0 (which used the raw master directly) continue to verify cleanly under v1.3.1. The v2.0 strict-flip removes the shim — at that point, unset overrides switch to HKDF-derived values and ALL pre-existing in-flight tokens invalidate.
 
-**Per-user keys (v2.0a schema, runtime DEFERRED):** `apps_script_hmac_key` (64-char hex) column exists in `user_state` and is provisioned by the v2.0a migration script. **It is currently stored but unused** — neither `restructure.gs` nor `_call_webapp` consume it. The verify-path is planned for v2.0c. Until then this key has no runtime effect.
+**Per-user keys (v2.0c — wired):** `apps_script_hmac_key` (64-char hex) is provisioned per user at setup (`setup_apps_script`), baked into that user's deployed `restructure.gs`, and consumed at runtime on BOTH sides: `_call_webapp` signs every `/exec` POST with it, and `restructure.gs::doPost` verifies the signature before acting. The migration script backfills legacy rows. This key now has full runtime effect — it is the authentication for the `/exec` surface (§4 row 5). The signing scheme lives in `apps_script_hmac.py` (single source of truth for both sides).
 
 **Rotation procedures** live in `docs/RUNBOOK.md` § 3.4.
 
@@ -107,7 +108,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | `user_store` (SQLite at `/data/user_state.db`) | rows keyed by Google `sub` claim; no cross-row reads at the facade | `save_credentials_json` enforces stripping operator secrets; `save_state` schema validates known columns only | WAL mode preserves crash-recovery audit trail | operator has read access to all rows (inside-trust) — explicitly out of scope per § 3 | per-row write contention bounded by per-user `threading.Lock` | facade methods are the only public API; no path to read another user's row from a tool call |
 | `keys.get_key(purpose)` | each purpose returns bytes via HKDF-SHA256 (post v2.0b strict-flip); short master refused at startup | shim-active hit counters surface unexpected derivation drift via `/info` | purpose-keyed access logged with first-call-age telemetry | each purpose's bytes never logged — only counters | call-counter is process-local; aggregates across replicas at read time | per-purpose isolation: leaking the `api_bearer` derived bytes does NOT enable signing fresh `signed_url` tokens |
 | `TrustedHostMiddleware` (wrapped) | host allowlist from `derive_trusted_hosts()`; fails closed on Fly without `FLY_APP_NAME` | header is request-scope; never persisted | rejected requests logged with the rejected Host | rejected requests return generic 400 — no allowlist leakage | cheap O(1) header check at request entry; pre-body | `/health` bypassed (`HealthExemptTrustedHostMiddleware`, v2.3.3) to satisfy Fly internal probes; every other route still gated |
-| Apps Script Web App (`/exec`) | `access: ANYONE_ANONYMOUS`; URL secrecy is the only access control; per-user HMAC verify-path planned v2.0c | request body validation in `restructure.gs` (whitelist of action types) | Apps Script execution log preserved by Google for 7 days | URL leak = anyone can POST and mutate docs the deploying user owns | Google's rate limits per script execution context apply | script always runs as `USER_DEPLOYING` (the user who deployed it); cannot escalate to another user's account |
+| Apps Script Web App (`/exec`) | `access: ANYONE_ANONYMOUS`, but every POST is authenticated by a per-user HMAC signature verified in `doPost` (v2.0c) — fails closed on missing/stale/mismatch | request body validation in `restructure.gs` + HMAC binds `"<timestamp>.<body>"` so a tampered body invalidates the signature | Apps Script execution log preserved by Google for 7 days | URL leak alone no longer suffices — an attacker also needs the per-user 256-bit key (never logged/echoed) to forge a request | timestamp + skew window (5 min) blocks replay of a captured (body, signature) pair; Google's per-script rate limits also apply | script always runs as `USER_DEPLOYING` (the user who deployed it); cannot escalate to another user's account |
 
 The cells above mostly RESTATE controls already pinned by tests in §§ 4
 and elsewhere; this view is for reviewers who want a STRIDE checklist
@@ -138,9 +139,9 @@ The reasoning, layer by layer:
 3. **Per-user Apps Script Web App.** Each user deploys their own
    `/exec` URL under their own Google account. The script runs as
    `USER_DEPLOYING` (i.e. as that user) and acts only on docs that
-   user owns. URL secrecy is the access control (documented gap in
-   § 4 row 5; verify-path planned v2.0c) — but even on URL leak, the
-   blast radius is the leaking user's docs only.
+   user owns. Access is gated by a per-user HMAC signature verified in
+   `doPost` (§ 4 row 5, closed in v2.0c) — and even if both the URL and
+   the key leaked, the blast radius is the leaking user's docs only.
 
 4. **Per-purpose key derivation (v2.0b strict-flip).** The three
    logical keys (`api_bearer`, `oauth_state`, `signed_url`) are
@@ -174,7 +175,7 @@ posture matches their threat model.
 
 | # | Gap | Why open | Compensating control today | Planned closure |
 |---|---|---|---|---|
-| 1 | **Apps Script Web App `/exec` is `ANYONE_ANONYMOUS`** | The Apps Script HMAC verify-path was specced in v2.0a (per-user `apps_script_hmac_key` column added) but the actual `Utilities.computeHmacSha256Signature` call in `restructure.gs` + the matching `X-MCP-Signature` header on `_call_webapp` were NOT wired in v2.0a/b/c yet | URL secrecy: the per-user `/exec` URL is treated as a credential; never logged, never echoed to claude.ai prompts. Apps Script execution log preserves a 7-day audit trail | v2.0c (tracked; see § 4 row 5) |
+| ~~1~~ | ~~**Apps Script Web App `/exec` is `ANYONE_ANONYMOUS`**~~ **RESOLVED (v2.0c)** | Was open while the HMAC verify-path was schema-only. Now wired: `restructure.gs::doPost` verifies a per-user `Utilities.computeHmacSha256Signature` over `"<timestamp>.<body>"` against the `X-MCP-Signature` header (fail-closed), and `_call_webapp` signs every POST. See § 4 row 5. | n/a — closed | DONE (v2.0c) |
 | 2 | **No request-rate limit on `/api/convert`, `/info`, or `/oauth/google/api/callback`** | All three endpoints rely on per-request CPU/memory bounds (body size, multipart parser caps) rather than a rate limit. A coordinated attacker can hit any of them at full network speed | `BodySizeLimitMiddleware` 10 MB declared-length cap + Fly's per-machine 512 MB ceiling bound a single request's damage. Fly's edge proxy applies its own per-IP rate limit (~ free-tier defaults; not under our control) | PR-Δ3 — adds an in-process token-bucket per `(endpoint, principal)` |
 | 3 | **No full decompressed-size cap on .docx uploads** | `BodySizeLimitMiddleware` only checks `Content-Length`; a 10 MB .docx with quadratic-blowup XML can still degrade the converter | Output-size cap by Drive (50 MB conversion ceiling) + bounded by Fly VM (512 MB); python-docx parsing failure raises before the conversion call | v1.4 (carry-forward from § 4 row 2) |
 | 4 | **`user_state.db` is plaintext SQLite** | Disk encryption on Fly's volumes is platform-level; we don't add an application-layer encryption (would require key management we don't have) | The Fly volume is private to the machine; operator SSH is the only path to read it. Inside-trust per § 3 | Not planned (correct trade-off for the current threat model) |
@@ -183,9 +184,7 @@ posture matches their threat model.
 | 7 | **No nation-state / supply-chain threat coverage** | Out of scope per § 3 — would require Anthropic / Google / Fly compromise, all outside our control | SHA-pinned base image; SHA-pinned third-party GitHub Actions (PR #51); dependabot-tracked lockfile; CodeQL static analysis | Sigstore-signed release artifacts (PR-Δ2) raise the supply-chain bar for downstream consumers |
 | 8 | **`drive.readonly` (the only RESTRICTED scope) has been DROPPED; base tier is sensitive-scope-only** | This row formerly listed `drive.readonly` as a retained restricted scope for the cloud-chat `gdocs_tab_existing_doc(drive_file_id=…)` ingestion path. It was subsequently removed from the base tier: the two consumers were re-plumbed onto Drive-read-free paths (signed-URL `.docx` upload; signed staging endpoint for the slides-to-video frame handoff) | No restricted scope is requested at all, so no CASA security assessment is triggered. The cloud-chat ingestion UX uses the signed-URL upload path (`gdocs_get_signed_upload_url`, POST to `/api/convert`), which stages bytes server-side with no Drive read | RESOLVED: `drive.readonly` removed; see `auth.py:WORKSPACE_SCOPES`. A future "read ANY Drive file" feature would reintroduce it on a SEPARATE restricted tier |
 
-Honest assessment: the most operationally-significant open item is
-**#2 (rate limiting)**, since DoS via repeated `/api/convert` POSTs
-is the most reachable attack today. **#1 (Apps Script HMAC)** is
-higher in cryptographic-correctness terms but lower in exploit
-practicality (URL secrecy holds reasonably well in practice); the
-HMAC verify-path is pending v2.0c. PR-Δ3 will close #2.
+Honest assessment: with the Apps Script HMAC verify-path now landed
+(former #1, RESOLVED in v2.0c), the most operationally-significant open
+item is **#2 (rate limiting)**, since DoS via repeated `/api/convert`
+POSTs is the most reachable attack today. PR-Δ3 will close #2.

@@ -2,42 +2,45 @@
 
 Rationale
 ---------
-v2.0a's ``apps_script_hmac_key`` schema column landed without the runtime
-verify-path that some docs claimed for it. The R23/R26 audit and the C4
-hedge PR (#53) corrected 8 doc sites; this test stops the fiction from
-regrowing in either direction:
+v2.0a's ``apps_script_hmac_key`` schema column landed WITHOUT the runtime
+verify-path. While that gap was open, security docs had to HEDGE every HMAC
+claim ("NOT YET WIRED" / "deferred to v2.0c"). **v2.0c wired the verify-path
+end-to-end** (``restructure.gs::doPost`` verifies the signature;
+``_call_webapp`` signs), so the situation INVERTED: those deferral hedges are
+now FALSE statements, and the affirmative claim ("HMAC authenticates /exec")
+is the truth. This test stops the fiction from regrowing in either
+direction:
 
-1. ``test_hmac_claims_paired_with_status_qualifier`` — any aspirational
-   HMAC claim in a security/migration doc must include a status hedge in
-   the **same atomic unit** (markdown table row OR paragraph). A
-   paragraph-bounded check is intentionally tighter than the original
-   500-char byte window from #53: a 500-char window let a future edit
-   relocate the hedge >500 chars from the claim — or rely on a different
-   nearby paragraph's hedge to cover an unrelated claim — without
-   triggering the test. Atomic-unit coupling defeats both.
+1. ``test_no_stale_hmac_deferral_hedges`` — the security/migration docs must
+   NOT carry the now-false "HMAC verify-path is deferred / schema-only / not
+   consumed at runtime" hedges next to an Apps Script mention. (This is the
+   INVERSE of the pre-v2.0c rule, which REQUIRED such a hedge.) Same
+   atomic-unit granularity so a stale hedge can't hide in a paragraph
+   adjacent to an affirmative one.
 
-2. ``test_restructure_gs_has_no_hmac_validation`` — reality-check that
-   ``restructure.gs`` still has no HMAC validation. When it does land
-   (planned v2.0c) this test flips red on purpose, forcing the hedges
-   to be removed at the same time.
+2. ``test_restructure_gs_has_hmac_validation`` — reality-check that
+   ``restructure.gs`` NOW HAS the HMAC verify-path (landed v2.0c): the real
+   ``computeHmacSha256Signature`` call + the doPost ``stage:'auth'``
+   rejection + the ``MCP_HMAC_REQUIRED`` fail-closed gate are present.
+
+3. ``test_call_webapp_signs_requests`` — the server side of the pair:
+   ``docx_import`` attaches ``X-MCP-Signature`` and computes the signature.
+
+If HMAC is ever ripped out, (2)/(3) flip red on purpose — and the docs would
+then need their hedges back, which (1) would (correctly) start allowing
+again only after the code regressed.
 
 Design notes
 ------------
 - ``_atomic_units`` splits markdown into table rows (one ``|...|`` line
   each) and prose paragraphs (``\\n\\n``-separated). Headings are their
-  own units. This is a deliberate over-split: false-positive risk is
-  "a hedge in paragraph N doesn't cover a claim in paragraph N+1" which
-  is exactly what we want to flag.
-- Claim detection is permissive: explicit patterns from the C4 audit
-  PLUS a HMAC+AppsScript co-occurrence catch-all (any unit mentioning
-  both within 100 chars triggers the hedge requirement). The
-  catch-all defeats future rewordings like "shipping HMAC", "baked-in
-  secret", "per-request validation" that wouldn't match a literal
-  pattern.
-- ``docs/PRIVACY.md`` is in the scan list unconditionally. It does
-  not exist today (lands via PR #44). ``_read`` returns ``""`` on
-  ``FileNotFoundError`` so the test passes today AND auto-activates
-  coverage the moment #44 merges.
+  own units. This is a deliberate over-split.
+- A "stale hedge" is detected as a unit that mentions Apps Script (or
+  ``restructure.gs`` / ``_call_webapp`` / ``apps_script_hmac_key``) AND a
+  now-false deferral phrase. Rollback-context lines (v1.5.x "ignores the
+  column") are NOT flagged — they're true statements about OLD code.
+- ``docs/PRIVACY.md`` is scanned if present; ``_read`` returns ``""`` for an
+  absent file so the test is robust to doc set changes.
 """
 from __future__ import annotations
 
@@ -61,43 +64,42 @@ def _read(rel: str) -> str:
         return ""
 
 
-# Explicit aspirational-claim patterns (case-insensitive). Augmented per
-# R28 with the future-reword variants design-external flagged.
-_CLAIM_PATTERNS: tuple[str, ...] = (
-    r"v2\.0 ships HMAC",
-    r"Authenticates POSTs from",
-    r"baked into deployed `restructure\.gs`",
-    r"baked[- ]in secret",
-    r"closing THREAT_MODEL .* row 5",
-    r"shipping HMAC",
-    r"HMAC per-request",
-    r"per-request validation",
-)
-
-# Hedge keywords (case-insensitive). Any one of these in the same atomic
-# unit as a claim signal satisfies the test.
-_HEDGE_PATTERNS: tuple[str, ...] = (
-    r"schema only",
-    r"schema-only",
-    r"NOT YET WIRED",
+# Now-FALSE deferral hedges (case-insensitive). Post-v2.0c, an HMAC unit
+# carrying any of these is a stale claim that contradicts the wired code.
+# ``forward-compatible`` / ``ignores .* column`` are intentionally NOT here:
+# they describe a v1.5.x ROLLBACK reading the column (a true statement about
+# OLD code), not the current runtime.
+# These match only FORWARD-DEFERRAL / not-yet phrasings — the claims that
+# became false when v2.0c shipped. They deliberately do NOT match affirmative
+# mentions that happen to name v2.0c ("verify-path is WIRED as of v2.0c",
+# "WAS schema-only; now wired"): those describe the closed state and must be
+# allowed. Past-tense ("was ... only") and "now wired" are not flagged.
+_STALE_HEDGE_PATTERNS: tuple[str, ...] = (
+    r"\bNOT YET WIRED\b",
     r"runtime DEFERRED",
-    r"verify-path .* v2\.0c",
+    r"verify[- ]path is planned",
+    r"verify[- ]path .{0,30}\b(?:deferred|pending|planned)\b",
+    r"\bdeferred to v2\.0c\b",
+    r"\bplanned for v2\.0c\b",
+    r"\bpending v2\.0c\b",
+    r"verify[- ]path lands? in v2\.0c",
     r"stored but unused",
-    r"not yet consumed",
-    r"pending v2\.0c",
-    r"forward-compatible",  # line-118-style "schema landed, runtime ignores"
-    r"ignores .* column",
-    r"deferred to v2\.0c",
+    r"stored,? (?:but )?not (?:yet )?consumed",
+    r"\bnot yet consumed\b",
+    # NB: bare "schema-only" is intentionally NOT a stale signal — a
+    # historical "was schema-only; now wired" description is legitimate. The
+    # forward-deferral phrases above are what flag a genuinely false claim.
 )
 
-# Catch-all signal: any unit mentioning HMAC + Apps Script within 100
-# chars of each other is treated as an HMAC claim and must be hedged.
-# ``apps[_ ]?script`` covers both ``Apps Script`` (prose) and
-# ``apps_script`` (identifier form) without forcing every test author to
-# remember the underscore.
+# A unit is "about the Apps Script HMAC surface" if it mentions HMAC near an
+# Apps-Script-surface token. ``apps[_ ]?script`` covers ``Apps Script`` and
+# the ``apps_script`` identifier; restructure.gs / _call_webapp are the two
+# code sites the hedges named.
 _HMAC_RE = re.compile(r"\bhmac\b", re.IGNORECASE)
-_APPSSCRIPT_RE = re.compile(r"apps[_ ]?script", re.IGNORECASE)
-_CO_OCCURRENCE_WINDOW = 100  # chars between HMAC and Apps Script mention
+_APPSSCRIPT_RE = re.compile(
+    r"apps[_ ]?script|restructure\.gs|_call_webapp", re.IGNORECASE
+)
+_CO_OCCURRENCE_WINDOW = 160  # chars between HMAC and the Apps-Script token
 
 
 def _atomic_units(text: str) -> list[tuple[int, str]]:
@@ -144,18 +146,14 @@ def _atomic_units(text: str) -> list[tuple[int, str]]:
     return units
 
 
-def _unit_has_hmac_claim(unit_text: str) -> tuple[bool, str | None]:
-    """Return (is_claim, matched_signal) for a unit.
+def _unit_is_about_hmac_surface(unit_text: str) -> tuple[bool, str | None]:
+    """Return (is_about_surface, matched_token) for a unit.
 
-    A unit is a claim if it matches any explicit ``_CLAIM_PATTERNS``
-    entry OR if it contains ``HMAC`` and ``Apps Script`` within
-    ``_CO_OCCURRENCE_WINDOW`` chars of each other.
+    True if the unit mentions ``HMAC`` within ``_CO_OCCURRENCE_WINDOW`` chars
+    of an Apps-Script-surface token (Apps Script / restructure.gs /
+    _call_webapp). That's the population a stale deferral hedge could falsely
+    describe.
     """
-    for pat in _CLAIM_PATTERNS:
-        m = re.search(pat, unit_text, re.IGNORECASE)
-        if m:
-            return True, m.group(0)
-
     hmac_matches = [m.start() for m in _HMAC_RE.finditer(unit_text)]
     apps_matches = [m.start() for m in _APPSSCRIPT_RE.finditer(unit_text)]
     if not hmac_matches or not apps_matches:
@@ -168,51 +166,89 @@ def _unit_has_hmac_claim(unit_text: str) -> tuple[bool, str | None]:
     return False, None
 
 
-def _unit_has_hedge(unit_text: str) -> bool:
-    return any(re.search(p, unit_text, re.IGNORECASE) for p in _HEDGE_PATTERNS)
+def _unit_has_stale_hedge(unit_text: str) -> str | None:
+    """Return the matched stale-deferral phrase, or None."""
+    for p in _STALE_HEDGE_PATTERNS:
+        m = re.search(p, unit_text, re.IGNORECASE)
+        if m:
+            return m.group(0)
+    return None
 
 
-def test_hmac_claims_paired_with_status_qualifier():
-    """Every doc claim about Apps Script HMAC must carry a status hedge
-    in the SAME atomic unit (table row or prose paragraph).
-
-    See module docstring for why same-unit coupling beats the 500-char
-    byte window we shipped originally.
+def test_no_stale_hmac_deferral_hedges():
+    """Post-v2.0c, security/migration docs must NOT carry the now-false
+    "HMAC verify-path deferred / schema-only / not consumed" hedges next to
+    an Apps Script HMAC mention. The verify-path IS wired (see
+    test_restructure_gs_has_hmac_validation), so such a hedge is a false
+    claim. This is the INVERSE of the pre-v2.0c rule.
     """
     docs_to_scan = [
         "docs/THREAT_MODEL.md",
         "docs/MIGRATION_v1_to_v2.md",
         "docs/TOOL_CONTRACT.md",
-        # PRIVACY.md lands via in-flight PR #44; _read returns "" until then.
         "docs/PRIVACY.md",
     ]
     violations: list[str] = []
     for doc_path in docs_to_scan:
         text = _read(doc_path)
         if not text:
-            continue  # absent doc (e.g. PRIVACY.md pre-#44-merge)
+            continue
         for line, unit in _atomic_units(text):
-            is_claim, signal = _unit_has_hmac_claim(unit)
-            if is_claim and not _unit_has_hedge(unit):
-                preview = unit if len(unit) < 200 else unit[:197] + "..."
+            is_surface, _signal = _unit_is_about_hmac_surface(unit)
+            if not is_surface:
+                continue
+            stale = _unit_has_stale_hedge(unit)
+            if stale:
+                preview = unit if len(unit) < 220 else unit[:217] + "..."
                 violations.append(
-                    f"{doc_path}:{line} unhedged HMAC claim "
-                    f"(signal: {signal!r}) — unit: {preview!r}"
+                    f"{doc_path}:{line} STALE HMAC deferral hedge "
+                    f"(matched: {stale!r}) — the verify-path is wired as of "
+                    f"v2.0c; update the claim. Unit: {preview!r}"
                 )
 
     assert not violations, (
-        "Aspirational HMAC claims must include a status qualifier in the "
-        "SAME table row / prose paragraph:\n  " + "\n  ".join(violations)
+        "Found now-FALSE 'HMAC not wired / deferred to v2.0c' hedges. The "
+        "verify-path shipped; these must be rewritten as affirmative:\n  "
+        + "\n  ".join(violations)
     )
 
 
-def test_restructure_gs_has_no_hmac_validation():
-    """Reality-check: if this test starts failing, restructure.gs gained
-    HMAC validation — update the docs AND remove the hedges."""
+def test_restructure_gs_has_hmac_validation():
+    """Reality-check (v2.0c): restructure.gs MUST verify a per-request HMAC.
+
+    This is the FLIPPED form of the old ``..._has_no_hmac_validation`` test.
+    The verify-path is now wired, so we assert the real crypto call + the
+    fail-closed auth rejection are present. If this starts failing, the HMAC
+    verify-path was removed and the ``/exec`` surface is unauthenticated
+    again — a security regression, NOT a docs-hedge problem.
+    """
     gs_text = _read("src/appscriptly/restructure.gs")
-    assert "computeHmacSha256Signature" not in gs_text, (
-        "restructure.gs now has HMAC validation! Time to remove the "
-        "'NOT YET WIRED' / 'planned for v2.0c' hedges in THREAT_MODEL.md, "
-        "MIGRATION_v1_to_v2.md, TOOL_CONTRACT.md, PRIVACY.md, and "
-        "scripts/migrate_existing_users.py."
+    assert "computeHmacSha256Signature" in gs_text, (
+        "restructure.gs lost its HMAC verify call (Utilities."
+        "computeHmacSha256Signature) — the ANYONE_ANONYMOUS /exec Web App "
+        "would be unauthenticated again (THREAT_MODEL §4 row 5 regressed)."
+    )
+    # The doPost path must reject failed auth with stage:'auth' before acting.
+    assert "stage: 'auth'" in gs_text or 'stage: "auth"' in gs_text, (
+        "restructure.gs no longer returns stage:'auth' on a bad signature — "
+        "the fail-closed rejection path was removed."
+    )
+    # The script must enforce (require) the signature, not just define a
+    # helper. The MCP_HMAC_REQUIRED gate is the fail-closed switch.
+    assert "MCP_HMAC_REQUIRED" in gs_text, (
+        "restructure.gs dropped the MCP_HMAC_REQUIRED fail-closed gate."
+    )
+
+
+def test_call_webapp_signs_requests():
+    """The server side of the HMAC pair: docx_import._call_webapp must SIGN
+    every request (X-MCP-Signature + X-MCP-Timestamp) so restructure.gs's
+    verify-path actually receives a signature to check."""
+    src = _read("src/appscriptly/docx_import.py")
+    assert "X-MCP-Signature" in src or "SIGNATURE_HEADER" in src, (
+        "docx_import._call_webapp no longer attaches the HMAC signature "
+        "header — signed-request path regressed."
+    )
+    assert "compute_signature" in src, (
+        "docx_import no longer computes the HMAC signature."
     )
