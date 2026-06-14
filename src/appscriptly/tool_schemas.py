@@ -1209,6 +1209,11 @@ AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA = _object(
         "execute_as": {"type": "string"},
         "access": {"type": "string"},
         "project_url": {"type": "string", "format": "uri"},
+        # Present only for an ANYONE_ANONYMOUS deploy: the per-deploy HMAC
+        # signing key auto-injected into the public endpoint's doPost guard,
+        # plus the header scheme the caller must use. (v2.0c.)
+        "hmac_key": {"type": "string"},
+        "hmac_instructions": {"type": "string"},
     },
     required=["script_id", "deployment_id", "version", "exec_url"],
 )

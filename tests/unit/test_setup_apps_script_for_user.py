@@ -167,9 +167,13 @@ def test_content_change_resets_user_ledger_starts_fresh(mock_setup, tmp_path):
     setup_apps_script_for_user(_fake_creds(), "user-1")
     assert mock_setup.create_project.call_count == 1
 
-    # Simulate operator edit by pointing the source at a different file.
+    # Simulate operator edit by pointing the source at a different file. The
+    # fake source must still carry the HMAC key sentinel (every real
+    # restructure.gs does) so the v2.0c key-injection step accepts it.
     fake_path = tmp_path / "edited_restructure.gs"
-    fake_path.write_text("// totally different content")
+    fake_path.write_text(
+        "// totally different content\nvar MCP_HMAC_KEY = '__MCP_HMAC_KEY__';"
+    )
     with patch(
         "appscriptly.setup_apps_script.RESTRUCTURE_GS_PATH", fake_path,
     ):

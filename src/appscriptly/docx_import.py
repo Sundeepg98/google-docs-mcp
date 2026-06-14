@@ -16,6 +16,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Literal, TypedDict
 from urllib import error as urlerror
@@ -25,7 +26,12 @@ from google.oauth2.credentials import Credentials
 from appscriptly.google_clients import get_service
 
 from . import user_store
-from .config import get_webapp_url
+from .apps_script_hmac import (
+    SIGNATURE_HEADER,
+    TIMESTAMP_HEADER,
+    compute_signature,
+)
+from .config import get_webapp_hmac_key, get_webapp_url
 from .credentials import current_user_id_or_none
 from .services.docs.api import (
     MAX_NESTING_DEPTH,
@@ -215,11 +221,16 @@ def convert_docx_to_tabbed_doc(
     add_tabs_to_doc(creds, doc_id, shell_specs)
 
     # 5. Apps Script moves content into the shells with full fidelity.
+    # v2.0c: sign the request with the per-user HMAC key so the deployed
+    # /exec Web App (access=ANYONE_ANONYMOUS) authenticates it. The key is
+    # resolved the same way the URL is (per-user from user_store, or local
+    # config in stdio mode) — both were provisioned together at setup.
     payload = {
         "docId": doc_id,
         "splitTree": _splits_to_json(splits),
     }
-    response = _call_webapp(webapp_url, payload)
+    hmac_key = _resolve_webapp_hmac_key(user_id=user_id)
+    response = _call_webapp(webapp_url, payload, hmac_key=hmac_key)
 
     if not response.get("success", False):
         raise RuntimeError(
@@ -354,6 +365,27 @@ def _resolve_webapp_url(*, user_id: str | None = None) -> str | None:
     return get_webapp_url()
 
 
+def _resolve_webapp_hmac_key(*, user_id: str | None = None) -> str | None:
+    """Resolve the per-user (or local) Apps Script HMAC key.
+
+    Mirrors ``_resolve_webapp_url`` exactly so the key and URL come from the
+    SAME source (they're provisioned together at setup):
+      1. explicit ``user_id`` → that user's ``apps_script_hmac_key`` row;
+      2. MCP auth-context user (HTTP mode) → same, via
+         ``current_user_id_or_none()``;
+      3. stdio / operator-bearer → local ``config.get_webapp_hmac_key()``.
+
+    Returns ``None`` if no key is provisioned. ``_call_webapp`` then raises a
+    clear "re-run setup" error rather than sending an unsigned request the
+    Web App will reject with ``stage:'auth'`` — fail with the actionable
+    message, not the opaque one.
+    """
+    effective_user_id = user_id or current_user_id_or_none()
+    if effective_user_id is not None:
+        return user_store.get_state(effective_user_id).get("apps_script_hmac_key")
+    return get_webapp_hmac_key()
+
+
 def _detect_splits(
     body_content: list[dict], split_by: SplitBy
 ) -> tuple[list[_SplitPoint], str]:
@@ -467,7 +499,7 @@ def _splits_to_json(splits: list[_SplitPoint]) -> list[dict]:
     ]
 
 
-def _call_webapp(url: str, payload: dict) -> dict:
+def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
     """POST JSON to the Apps Script Web App and parse the JSON reply.
 
     SSRF posture (reviewed): ``url`` is NOT attacker-influenceable to an
@@ -485,12 +517,39 @@ def _call_webapp(url: str, payload: dict) -> dict:
     defeating the storage-layer validator). If a future change ever lets a
     raw, unvalidated URL reach this function, add an SSRF guard at that new
     entry point.
+
+    REQUEST AUTHENTICATION (v2.0c): the deployed Web App is
+    ``access=ANYONE_ANONYMOUS``, so every request is signed with the per-user
+    HMAC key (``hmac_key``). We compute ``HMAC-SHA256(key, "<ts>.<body>")``
+    over the EXACT body bytes sent and attach ``X-MCP-Signature`` +
+    ``X-MCP-Timestamp``; ``restructure.gs::doPost`` recomputes and
+    constant-time-compares before acting. ``hmac_key`` is required — a
+    missing key means setup never provisioned one (or a tampered value was
+    dropped on read), so we fail with an actionable message instead of
+    sending an unsigned request the script would reject with ``stage:'auth'``.
     """
-    data = json.dumps(payload).encode("utf-8")
+    if not hmac_key:
+        raise RuntimeError(
+            "Apps Script Web App HMAC key not provisioned for this account. "
+            "Re-run the gdocs_install_automation tool (cloud) or "
+            "`google-docs-mcp setup-apps-script` (stdio) to provision the "
+            "per-user signing key — the /exec Web App rejects unsigned "
+            "requests."
+        )
+    # Sign over the EXACT bytes we transmit. json.dumps once, reuse for both
+    # the signature and the wire body so the server signs an identical string.
+    body_str = json.dumps(payload)
+    data = body_str.encode("utf-8")
+    timestamp = str(int(time.time()))
+    signature = compute_signature(hmac_key, timestamp=timestamp, body=body_str)
     req = urlrequest.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            SIGNATURE_HEADER: signature,
+            TIMESTAMP_HEADER: timestamp,
+        },
         method="POST",
     )
     try:

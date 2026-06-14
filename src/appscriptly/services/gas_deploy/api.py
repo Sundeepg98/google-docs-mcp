@@ -13,6 +13,7 @@ API reference:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +39,134 @@ _WEBAPP_EXECUTE_AS = frozenset({"USER_DEPLOYING", "USER_ACCESSING"})
 #   DOMAIN           — anyone in the deployer's Workspace domain.
 #   MYSELF           — only the deploying user.
 _WEBAPP_ACCESS = frozenset({"ANYONE_ANONYMOUS", "ANYONE", "DOMAIN", "MYSELF"})
+
+# Matches a top-level ``function doPost(...)`` declaration so we can rename
+# the caller's handler and wrap it with an HMAC guard. Captures the param
+# list so the renamed function keeps the caller's signature.
+_DOPOST_DECL_RE = re.compile(r"\bfunction\s+doPost\s*\(([^)]*)\)")
+
+# The HMAC-verify preamble injected ahead of a caller's ``doPost`` when an
+# ANYONE_ANONYMOUS web app is deployed. ``{key}`` is the baked per-deployment
+# 64-hex key. The caller's original ``doPost`` is renamed to
+# ``__mcpUserDoPost`` and a new ``doPost`` verifies the signature first,
+# returning a JSON 401-shaped body on failure WITHOUT calling user code.
+# Mirrors restructure.gs::_verifyHmac (same scheme: hex HMAC-SHA256 over
+# "<timestamp>.<rawBody>", X-MCP-Signature + X-MCP-Timestamp headers,
+# constant-time compare, 5-min skew window).
+_WEBAPP_HMAC_GUARD_TEMPLATE = """\
+// === appscriptly: auto-injected HMAC request guard (ANYONE_ANONYMOUS) ===
+// This web app is world-reachable, so every POST is authenticated with a
+// shared HMAC-SHA256 signature before your handler runs. The signing key was
+// generated at deploy time and returned to you as ``hmac_key`` — have the
+// caller send, per request:
+//   X-MCP-Timestamp: <unix seconds>
+//   X-MCP-Signature: lowercase_hex(HMAC_SHA256(key, timestamp + "." + body))
+// A missing/stale/mismatched signature is rejected with stage:'auth' and
+// your code is never invoked.
+var MCP_WEBAPP_HMAC_KEY = '{key}';
+var MCP_WEBAPP_HMAC_MAX_SKEW_SECONDS = 300;
+
+function doPost(e) {{
+  var __auth = __mcpVerifyWebappHmac(e);
+  if (!__auth.ok) {{
+    return ContentService
+      .createTextOutput(JSON.stringify({{success: false, stage: 'auth', error: __auth.error}}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }}
+  return __mcpUserDoPost(e);
+}}
+
+function __mcpVerifyWebappHmac(e) {{
+  if (!MCP_WEBAPP_HMAC_KEY) {{
+    return {{ok: false, error: 'server HMAC key not configured'}};
+  }}
+  var headers = (e && e.headers) || {{}};
+  var sig = null, tsRaw = null;
+  for (var k in headers) {{
+    if (!Object.prototype.hasOwnProperty.call(headers, k)) continue;
+    var lk = k.toLowerCase();
+    if (lk === 'x-mcp-signature') sig = headers[k];
+    else if (lk === 'x-mcp-timestamp') tsRaw = headers[k];
+  }}
+  if (!sig || !tsRaw) {{
+    return {{ok: false, error: 'missing X-MCP-Signature / X-MCP-Timestamp header'}};
+  }}
+  var ts = parseInt(tsRaw, 10);
+  if (isNaN(ts)) return {{ok: false, error: 'malformed X-MCP-Timestamp'}};
+  var now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > MCP_WEBAPP_HMAC_MAX_SKEW_SECONDS) {{
+    return {{ok: false, error: 'stale or future timestamp'}};
+  }}
+  var body = (e && e.postData && e.postData.contents) || '';
+  var raw = Utilities.computeHmacSha256Signature(tsRaw + '.' + body, MCP_WEBAPP_HMAC_KEY);
+  var hex = '';
+  for (var i = 0; i < raw.length; i++) {{
+    var b = (raw[i] + 256) % 256;
+    var h = b.toString(16);
+    if (h.length === 1) h = '0' + h;
+    hex += h;
+  }}
+  var got = String(sig).toLowerCase();
+  var diff = hex.length ^ got.length;
+  var max = Math.max(hex.length, got.length);
+  for (var j = 0; j < max; j++) {{
+    diff |= (hex.charCodeAt(j) || 0) ^ (got.charCodeAt(j) || 0);
+  }}
+  if (diff !== 0) return {{ok: false, error: 'signature mismatch'}};
+  return {{ok: true}};
+}}
+// === end appscriptly HMAC guard ===
+
+"""
+
+
+def inject_webapp_hmac_guard(script_body: str, key: str) -> str:
+    """Wrap a caller's ``doPost`` with an HMAC-verify guard for a public app.
+
+    For an ``ANYONE_ANONYMOUS`` web app, the ``/exec`` URL is world-reachable,
+    so we don't ship the caller's ``doPost`` unguarded. This:
+
+      1. renames the caller's ``function doPost(<params>)`` to
+         ``function __mcpUserDoPost(<params>)``;
+      2. prepends a new ``doPost`` that verifies an ``X-MCP-Signature`` /
+         ``X-MCP-Timestamp`` HMAC (key baked in) and only then delegates to
+         ``__mcpUserDoPost`` — rejecting unsigned/forged/stale requests with
+         ``{{success:false, stage:'auth'}}`` before any user code runs.
+
+    Pure function (returns new source). The same scheme as
+    ``restructure.gs`` so one signing implementation
+    (``apps_script_hmac.compute_signature``) covers both surfaces.
+
+    Args:
+        script_body: the caller-supplied ``.gs`` source. MUST contain a
+            top-level ``function doPost(...)`` declaration.
+        key: the 64-hex per-deployment HMAC key to bake in.
+
+    Raises:
+        ValueError: ``key`` is empty, or ``script_body`` has no recognizable
+            top-level ``doPost`` declaration to guard (we refuse to deploy a
+            public web app we couldn't actually protect, rather than silently
+            shipping it unguarded).
+    """
+    if not key:
+        raise ValueError("Refusing to inject an empty HMAC key.")
+    if not _DOPOST_DECL_RE.search(script_body):
+        raise ValueError(
+            "Cannot auto-inject the HMAC guard: no top-level "
+            "'function doPost(...)' declaration found in script_body. An "
+            "ANYONE_ANONYMOUS web app must have a guardable POST handler — "
+            "define doPost(e) as a top-level function, or deploy with a "
+            "non-public access mode (DOMAIN / MYSELF)."
+        )
+    # Rename only the FIRST doPost declaration (the entry point). A second
+    # textual "doPost" inside a comment/string is left alone — the regex
+    # targets the ``function doPost(`` declaration form specifically.
+    renamed = _DOPOST_DECL_RE.sub(
+        lambda m: f"function __mcpUserDoPost({m.group(1)})",
+        script_body,
+        count=1,
+    )
+    return _WEBAPP_HMAC_GUARD_TEMPLATE.format(key=key) + renamed
 
 
 @dataclass(frozen=True)

@@ -84,6 +84,50 @@ _MIMETYPE_TO_KIND: dict[str, str] = {
 _UI_SCOPE = "https://www.googleapis.com/auth/script.container.ui"
 _TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
 
+# Google's RESTRICTED OAuth scopes that this generic generator REFUSES to
+# bake into a manifest unless the caller explicitly opts in. Restricted
+# scopes (full Gmail + broad Drive) trigger Google's CASA security
+# assessment, the 7-day Testing-mode refresh-token cap, and a far larger
+# blast radius if the generated automation is ever abused. The shipped
+# minimal-scope ``as_install_*`` tools never request these; the open door
+# is the generic ``as_generate_bound_script`` / ``as_deploy_web_app``
+# passthroughs that accept caller-supplied ``oauth_scopes``.
+#
+# This is the COMPLETE Google restricted set for the products this MCP can
+# touch (NOT the incomplete mirror in tests/unit/test_base_tier_scopes.py).
+# Source: https://developers.google.com/identity/protocols/oauth2/
+#         production-readiness/restricted-scope-verification
+_RESTRICTED_SCOPES: frozenset[str] = frozenset({
+    # --- Gmail (full mailbox + every per-action restricted scope) ---
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.metadata",
+    "https://www.googleapis.com/auth/gmail.insert",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
+    # --- Drive (broad / full-content + metadata + activity + scripts) ---
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.metadata",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive.activity",
+    "https://www.googleapis.com/auth/drive.activity.readonly",
+    "https://www.googleapis.com/auth/drive.scripts",
+})
+
+
+def is_restricted_scope(scope: str) -> bool:
+    """True if ``scope`` is one of Google's RESTRICTED OAuth scopes.
+
+    Single read-point for the restricted-set membership so callers
+    (``build_manifest`` here, the web-app deploy guard) share one
+    definition. Exposed (no underscore) so tests + the gas_deploy guard
+    import the SAME source of truth rather than re-listing scopes.
+    """
+    return scope in _RESTRICTED_SCOPES
+
 
 def auto_detect_container_kind(creds: Credentials, container_id: str) -> str:
     """Resolve a Drive file ID to its bound-script container kind.
@@ -141,6 +185,8 @@ def auto_detect_container_kind(creds: Credentials, container_id: str) -> str:
 def build_manifest(
     manifest_dict: dict[str, Any] | None,
     timezone: str = "Etc/UTC",
+    *,
+    allow_restricted_scopes: bool = False,
 ) -> dict[str, Any]:
     """Translate an operator-friendly manifest dict into ``appsscript.json``.
 
@@ -174,6 +220,15 @@ def build_manifest(
             for a bare manifest (V8 + timeZone, no extra scopes).
         timezone: the script's ``timeZone`` (a TZ database ZoneId, e.g.
             ``"America/New_York"``). Defaults to ``"Etc/UTC"``.
+        allow_restricted_scopes: opt-in to permit Google RESTRICTED scopes
+            (full Gmail / broad Drive — see ``_RESTRICTED_SCOPES``) in
+            ``oauth_scopes``. Defaults to ``False``: a restricted scope is
+            REJECTED with a ``ValueError`` so the generic generator can't
+            silently mint an automation with full-mailbox / full-Drive
+            authority. Set ``True`` ONLY after surfacing the consequences to
+            the user (CASA assessment, 7-day Testing refresh-token cap,
+            larger blast radius). The shipped minimal-scope ``as_install_*``
+            tools never need this.
 
     Returns:
         A dict ready to ``json.dumps`` as ``appsscript.json``. Always
@@ -189,8 +244,10 @@ def build_manifest(
     Raises:
         ValueError: a ``menu`` / ``triggers`` entry is malformed (e.g.
             a menu item missing ``name`` or ``function_name``; a trigger
-            with an unknown ``type``). Cheap client-side rejection with a
-            message that names the bad entry.
+            with an unknown ``type``); ``oauth_scopes`` is not a list of
+            strings; or — unless ``allow_restricted_scopes=True`` — any
+            entry in ``oauth_scopes`` is a Google RESTRICTED scope. Cheap
+            client-side rejection with a message that names the bad entry.
     """
     src = dict(manifest_dict or {})
 
@@ -219,6 +276,26 @@ def build_manifest(
         raise ValueError(
             "oauth_scopes must be a list of scope-URL strings."
         )
+
+    # RESTRICTED-scope guard. By default a generic generator must NOT bake
+    # a full-Gmail / broad-Drive scope into the manifest — that would arm
+    # the generated automation with restricted authority (and pull the whole
+    # OAuth app into CASA + the 7-day Testing refresh cap). Reject unless the
+    # caller explicitly opted in after surfacing the consequences.
+    if not allow_restricted_scopes:
+        restricted = [s for s in explicit_scopes if is_restricted_scope(s)]
+        if restricted:
+            raise ValueError(
+                "oauth_scopes contains Google RESTRICTED scope(s): "
+                f"{sorted(set(restricted))}. Restricted scopes (full Gmail / "
+                "broad Drive) require Google's CASA security assessment, cap "
+                "refresh tokens at 7 days in Testing mode, and greatly widen "
+                "the blast radius of the generated automation. They are "
+                "refused by default. If the user genuinely needs one, re-call "
+                "with allow_restricted_scopes=True AFTER telling them: this "
+                "automation will be able to access that restricted data, and "
+                "granting it triggers Google's restricted-scope verification."
+            )
 
     # Order-stable de-dup: derived first (predictable), then explicit.
     oauth_scopes = _dedup_preserve_order([*derived_scopes, *explicit_scopes])
