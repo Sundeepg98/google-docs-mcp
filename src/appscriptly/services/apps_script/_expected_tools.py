@@ -45,4 +45,18 @@ EXPECTED: frozenset[str] = frozenset({
     # compute (encode_video.py); the only apps_script tool that is
     # NOT a bound-script generator.
     "as_encode_video",
+    # GAS service-parity — Calendar: time-driven Sheet→Calendar event
+    # sync (calendar_sync.py); CalendarApp on a time trigger, full
+    # calendar scope in the GENERATED manifest only (not appscriptly's
+    # own consent).
+    "as_install_calendar_sync",
+    # GAS service-parity — Tasks: time-driven Tasks orchestration
+    # (task_rollover.py) via the Tasks ADVANCED service; full tasks scope
+    # + the advanced-service dependency in the GENERATED manifest only.
+    "as_install_task_rollover",
+    # GAS service-parity — Contacts: reactive onFormSubmit contact
+    # create/sync (contact_sync.py); ContactsApp, full contacts scope in
+    # the GENERATED manifest only; binds directly to a Form (lifts the
+    # Forms rejection, same as form_handler).
+    "as_install_contact_sync",
 })

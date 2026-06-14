@@ -431,6 +431,15 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_encode_video": (
         "appscriptly.services.apps_script.encode_video"
     ),
+    "as_install_calendar_sync": (
+        "appscriptly.services.apps_script.calendar_sync"
+    ),
+    "as_install_task_rollover": (
+        "appscriptly.services.apps_script.task_rollover"
+    ),
+    "as_install_contact_sync": (
+        "appscriptly.services.apps_script.contact_sync"
+    ),
 }
 
 
