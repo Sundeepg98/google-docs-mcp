@@ -2,7 +2,7 @@
 
 > **Generated 2026-06-13.** Companion to `PHASE1_VERIFICATION_KIT.md` (strategy/why) — this doc is the **exact-values** sheet for the Google Cloud Console OAuth consent screen + the OAuth Verification Center, refreshed for the **final 66-tool surface**.
 >
-> **Target app:** `appscriptly` · **Live server:** `https://sundeepg98-docs-mcp.fly.dev` (Fly app `sundeepg98-docs-mcp`) · **Repo:** `Sundeepg98/google-docs-mcp` (module `src/appscriptly/`).
+> **Target app:** `appscriptly` · **Live server:** `https://mcp.appscriptly.com/mcp` (custom-domain serving URL since the 2026-06-14 cutover, backed by the Fly app `sundeepg98-docs-mcp` at `https://sundeepg98-docs-mcp.fly.dev`) · **Repo:** `Sundeepg98/google-docs-mcp` (module `src/appscriptly/`).
 
 ---
 
@@ -18,7 +18,9 @@ Per `START_HERE.md` (frozen 2026-06-01) and the project memory, **the verificati
 - `GET https://sundeepg98-docs-mcp.fly.dev/health` → `{"ok":true,"service":"appscriptly"}` ✅
 - `GET …/.well-known/oauth-protected-resource` advertises **exactly the 8 scopes** below (5 sensitive, 0 restricted) ✅
 - `https://appscriptly.com/` → 200 ✅ · `https://appscriptly.com/privacy` → 200 ✅ · `https://appscriptly.com/terms` → 200 ✅
-- Demo video `https://youtu.be/hBuuDemD8Js` resolves (303 redirect, normal for `youtu.be`) ✅
+- Demo video (CURRENT) `https://youtu.be/r7ZB1YeT3SE` resolves ✅ — supersedes the REJECTED `https://youtu.be/hBuuDemD8Js` (chat-only / insufficient); T&S reply with the new link sent 2026-06-14, awaiting re-review.
+
+> **Serving-URL cutover (2026-06-14):** the live serving URL is now the custom domain **`https://mcp.appscriptly.com/mcp`** (TLS cert + Cloudflare DNS + redirect URIs + 13 scopes on the consent screen + `TRUSTED_HOSTS` secret), still backed by the Fly app `sundeepg98-docs-mcp` (the `…fly.dev` host above remains the backing origin and the `fly`-command handle). The 2026-06-13 probes above were taken against the Fly host before the cutover and still reflect the backing origin.
 
 ---
 
@@ -35,7 +37,7 @@ Per `START_HERE.md` (frozen 2026-06-01) and the project memory, **the verificati
 | **Authorized domains** | `appscriptly.com` (primary). Optionally also `fly.dev` **only if** keeping the Fly URL as a serving/redirect host during the transition. | kit §1.3 |
 | **Developer contact email** | ⚠️ **OPERATOR** — the developer/admin email (typically `sundeepg8@gmail.com`). Google uses this to contact you about the app; **must be monitored**. | FLAG |
 
-> The public brand is anchored to **appscriptly.com**, which is why the Fly app name (`sundeepg98-docs-mcp`) and repo name (`google-docs-mcp`) don't need to match the brand for verification. **Do NOT use `appscriptly.com` as the serving/redirect URL** — it's a Cloudflare Pages landing site only; the live MCP is the Fly URL.
+> The public brand is anchored to **appscriptly.com**, which is why the Fly app name (`sundeepg98-docs-mcp`) and repo name (`google-docs-mcp`) don't need to match the brand for verification. **Serving-URL note (post 2026-06-14 cutover):** the live MCP is now served at the **`mcp.appscriptly.com`** subdomain (`https://mcp.appscriptly.com/mcp`), backed by the Fly app. The **apex `appscriptly.com`** is still a Cloudflare Pages landing/branding site only (home + `/privacy` + `/terms`) — do NOT point the MCP serving/redirect URL at the apex; use the `mcp.` subdomain (or the backing `…fly.dev` host).
 
 ## 2. OAuth client — Web application (exact values)
 
@@ -92,9 +94,9 @@ Paste one justification per scope in the Verification Center. Each is tied to th
 
 ## 5. Demo-video script (shot-by-shot, against the LIVE 66-tool app)
 
-Record unlisted on YouTube, English narration, against prod `https://sundeepg98-docs-mcp.fly.dev` (already serving the final 8-scope set). Target 3–5 min. **Every sensitive scope must be shown being used by a real tool**, plus the consent screen with the app name + client_id.
+Record unlisted on YouTube, English narration, against prod `https://mcp.appscriptly.com/mcp` (the custom-domain serving URL since the 2026-06-14 cutover, backed by the Fly app). Target 3–5 min. **Every sensitive scope must be shown being used by a real tool**, plus the consent screen with the app name + client_id.
 
-> **An existing demo (`https://youtu.be/hBuuDemD8Js`) was already submitted.** It was recorded against the earlier ~41-tool surface. **The 8 SCOPES are unchanged** since then, so the existing video almost certainly still satisfies Google (Google checks scope-usage, not tool count). **Re-record ONLY if** Google's reviewer explicitly asks, or if you want the demo to showcase the newer tools. The script below is the canonical shotlist if a re-record is needed.
+> **CURRENT demo: `https://youtu.be/r7ZB1YeT3SE`** (unlisted, on `sundeepg8@` / channel "Sundeep G"), re-recorded to exercise the deployed scopes end-to-end. **It supersedes the prior `https://youtu.be/hBuuDemD8Js`, which Google REJECTED as chat-only / insufficient — do not resubmit that one.** The T&S verification reply carrying the new link was **sent 2026-06-14 and is awaiting Google re-review.** The script below is the canonical shotlist if a further re-record is ever needed.
 
 | # | Duration | Action | Scope demonstrated |
 |---|---|---|---|
@@ -172,7 +174,7 @@ Honest classification of the remaining Console/Verification-Center work (per the
 | **User-support email** | ⚠️ Needs confirmation | Confirm the exact address selected in the Console (account-bound; kit's `support@appscriptly.com` is for the privacy-policy text, not necessarily the Console dropdown value). |
 | **Developer-contact email** | ⚠️ Needs confirmation | Confirm it's a monitored address (likely `sundeepg8@gmail.com`); Google contacts you here. |
 | **Privacy-policy contact email** | ⚠️ Minor | The live `appscriptly.com/privacy` should show a real support email, not the kit draft's `support@appscriptly.com *(replace)*` placeholder. Spot-check the live page. |
-| **Demo video currency** | ℹ️ Informational | Existing video is on the ~41-tool surface; scopes unchanged so likely fine. Re-record only if Google asks (§5). |
+| **Demo video** | ✅ Done (redo submitted) | Current demo `https://youtu.be/r7ZB1YeT3SE` (supersedes the REJECTED `hBuuDemD8Js`); T&S reply with the new link sent 2026-06-14, awaiting Google re-review (§5). |
 | **`fly.dev` as authorized domain** | ℹ️ Decision | Include `fly.dev` only if keeping the Fly URL during transition; drop after Migration #4 cutover. |
 
 Everything else (app name, home/privacy/terms URLs, the 8 scopes, both redirect URIs, per-scope justifications) is **known and verified** above.
