@@ -48,7 +48,7 @@ Deploy (Fly) — normally automatic: push to `main` runs `.github/workflows/depl
 
 - **FastMCP server**, constructed in `src/appscriptly/server.py` as `FastMCP("appscriptly", …, on_duplicate="error")`.
 - **Auto-discovery registration (#144):** a `pkgutil.walk_packages` loop imports every leaf module under `services/` (skipping `_`-prefixed modules + the `{api, scopes}` denylist). Tools register as a side effect of import; **no central registry edit** to add one.
-- **Boot guards (fail loud before serving):** (1) any discovery import error → `RuntimeError` at module load; (2) `on_duplicate="error"` turns a duplicate tool name into a boot crash; (3) `_MIN_EXPECTED_TOOL_COUNT` floor (currently 57) catches a silent surface drop.
+- **Boot guards (fail loud before serving):** (1) any discovery import error → `RuntimeError` at module load; (2) `on_duplicate="error"` turns a duplicate tool name into a boot crash; (3) `_MIN_EXPECTED_TOOL_COUNT` floor (a moving floor that tracks the shipped surface — currently 110) catches a silent surface drop.
 - **Services:** `services/{docs,sheets,slides,drive,apps_script,gas_deploy,admin}/`. Each defines tools via the **`@workspace_tool(service=…, scopes=[…], creds=…)`** decorator (in `_tool_helpers.py`) and declares its surface in **`_expected_tools.py::EXPECTED`**.
 - **Tool-surface witnesses (3, must agree):** live `mcp.list_tools()` == union of every `_expected_tools.py::EXPECTED` == `tests/golden/tool_surface.json`. Enforced by `tests/unit/services/test_tool_registration.py`.
 - **OAuth:** FastMCP `GoogleProvider`/`OAuthProxy` handles the connector auth; a **second Google-API grant** (`oauth_google.py`, routes under `/oauth/google/api/*`) obtains the usable Workspace tokens for tool calls. HTTP startup calls `configure_auth_for_http(mcp)`.
@@ -70,6 +70,7 @@ Do **not** rely on prose here for volatile state — read the planning docs in t
 
 - **`ROADMAP.md`** — feature / hardening / architecture roadmap (synthesized; pending a verified code audit).
 - **`PHASE1_VERIFICATION_KIT.md`** — Google OAuth verification + dedicated-client plan and operator punch-list.
+- **`SCOPE_EXPANSION_PLAN.md`** — the 13-scope deploy-staging package (the 5 new sensitive scopes, GCP-API + consent-screen + privacy + demo deltas, verify-LAST deploy sequence) for the Calendar/Tasks/Forms/Contacts services already built on main.
 - **`MIGRATION_READINESS.md`** — the rename/migration surface (remaining identity moves: GitHub repo transfer + Fly app cutover) and sequencing.
 
 Project ADRs live in `docs/adr/`. Repo URLs / GitHub org and the Fly app name may move per `MIGRATION_READINESS.md`.
