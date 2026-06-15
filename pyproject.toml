@@ -72,7 +72,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.0",
     "pytest-json-report>=1.5",  # emits test-results.json baked into Docker image
     # === v1.4.0b: integration test extras ===
     # Kept lean — chaos harness + integration tests use stdlib threading
