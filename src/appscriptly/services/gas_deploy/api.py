@@ -51,16 +51,20 @@ _DOPOST_DECL_RE = re.compile(r"\bfunction\s+doPost\s*\(([^)]*)\)")
 # ``__mcpUserDoPost`` and a new ``doPost`` verifies the signature first,
 # returning a JSON 401-shaped body on failure WITHOUT calling user code.
 # Mirrors restructure.gs::_verifyHmac (same scheme: hex HMAC-SHA256 over
-# "<timestamp>.<rawBody>", X-MCP-Signature + X-MCP-Timestamp headers,
-# constant-time compare, 5-min skew window).
+# "<timestamp>.<rawBody>", mcp_ts + mcp_sig QUERY PARAMS, constant-time
+# compare, 5-min skew window). Query params, not headers: the Apps Script
+# runtime never delivers HTTP request headers to doPost(e), so a
+# header-based guard would reject every request and brick the webhook.
 _WEBAPP_HMAC_GUARD_TEMPLATE = """\
 // === appscriptly: auto-injected HMAC request guard (ANYONE_ANONYMOUS) ===
 // This web app is world-reachable, so every POST is authenticated with a
 // shared HMAC-SHA256 signature before your handler runs. The signing key was
-// generated at deploy time and returned to you as ``hmac_key`` — have the
-// caller send, per request:
-//   X-MCP-Timestamp: <unix seconds>
-//   X-MCP-Signature: lowercase_hex(HMAC_SHA256(key, timestamp + "." + body))
+// generated at deploy time and returned to you as ``hmac_key``. Have the
+// caller send, per request, QUERY PARAMS on the /exec URL:
+//   POST <exec_url>?mcp_ts=<unix seconds>&mcp_sig=<signature>
+//   where mcp_sig = lowercase_hex(HMAC_SHA256(key, timestamp + "." + body))
+// Query params are required because Apps Script never exposes HTTP request
+// headers to a web app (doPost only receives e.parameter / e.postData).
 // A missing/stale/mismatched signature is rejected with stage:'auth' and
 // your code is never invoked.
 var MCP_WEBAPP_HMAC_KEY = '{key}';
@@ -80,19 +84,14 @@ function __mcpVerifyWebappHmac(e) {{
   if (!MCP_WEBAPP_HMAC_KEY) {{
     return {{ok: false, error: 'server HMAC key not configured'}};
   }}
-  var headers = (e && e.headers) || {{}};
-  var sig = null, tsRaw = null;
-  for (var k in headers) {{
-    if (!Object.prototype.hasOwnProperty.call(headers, k)) continue;
-    var lk = k.toLowerCase();
-    if (lk === 'x-mcp-signature') sig = headers[k];
-    else if (lk === 'x-mcp-timestamp') tsRaw = headers[k];
-  }}
+  var params = (e && e.parameter) || {{}};
+  var sig = params.mcp_sig;
+  var tsRaw = params.mcp_ts;
   if (!sig || !tsRaw) {{
-    return {{ok: false, error: 'missing X-MCP-Signature / X-MCP-Timestamp header'}};
+    return {{ok: false, error: 'missing mcp_sig / mcp_ts query parameter'}};
   }}
   var ts = parseInt(tsRaw, 10);
-  if (isNaN(ts)) return {{ok: false, error: 'malformed X-MCP-Timestamp'}};
+  if (isNaN(ts)) return {{ok: false, error: 'malformed mcp_ts'}};
   var now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - ts) > MCP_WEBAPP_HMAC_MAX_SKEW_SECONDS) {{
     return {{ok: false, error: 'stale or future timestamp'}};
@@ -128,10 +127,12 @@ def inject_webapp_hmac_guard(script_body: str, key: str) -> str:
 
       1. renames the caller's ``function doPost(<params>)`` to
          ``function __mcpUserDoPost(<params>)``;
-      2. prepends a new ``doPost`` that verifies an ``X-MCP-Signature`` /
-         ``X-MCP-Timestamp`` HMAC (key baked in) and only then delegates to
-         ``__mcpUserDoPost`` — rejecting unsigned/forged/stale requests with
-         ``{{success:false, stage:'auth'}}`` before any user code runs.
+      2. prepends a new ``doPost`` that verifies an ``mcp_sig`` /
+         ``mcp_ts`` query-param HMAC (key baked in) and only then delegates
+         to ``__mcpUserDoPost``, rejecting unsigned/forged/stale requests
+         with ``{{success:false, stage:'auth'}}`` before any user code runs.
+         The signature travels in the query string because the Apps Script
+         runtime never delivers HTTP request headers to ``doPost``.
 
     Pure function (returns new source). The same scheme as
     ``restructure.gs`` so one signing implementation

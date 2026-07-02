@@ -440,16 +440,19 @@ def as_deploy_web_app(
     reachable. Because Apps Script can't put auth in front of an anonymous
     Web App, this tool now AUTO-INJECTS an HMAC request guard into the
     deployed code for the anonymous case: it wraps your ``doPost`` so every
-    request must carry a valid ``X-MCP-Signature`` /  ``X-MCP-Timestamp``
-    (HMAC-SHA256 over ``"<timestamp>.<body>"`` with a freshly generated
-    per-deploy key) before your handler runs; unsigned/forged/stale requests
-    are rejected with ``stage:'auth'``. The generated key is returned as
-    ``hmac_key`` (shown ONCE) along with ``hmac_instructions`` describing the
-    header scheme — give them to whoever calls the webhook. If a guard can't
-    be injected (no top-level ``doPost``), the deploy is refused rather than
-    shipped unprotected; deploy with ``DOMAIN`` / ``MYSELF`` for a non-
-    public endpoint instead, or for a public GET-only/unauthenticated webhook
-    do your own in-handler check and use ``access="ANYONE"``.
+    request must carry valid ``mcp_ts`` / ``mcp_sig`` QUERY PARAMS on the
+    ``/exec`` URL (``mcp_sig`` = HMAC-SHA256 over ``"<timestamp>.<body>"``
+    with a freshly generated per-deploy key) before your handler runs;
+    unsigned/forged/stale requests are rejected with ``stage:'auth'``. The
+    signature travels in the query string because the Apps Script runtime
+    never delivers HTTP request headers to ``doPost``. The generated key is
+    returned as ``hmac_key`` (shown ONCE) along with ``hmac_instructions``
+    describing the query-param scheme; give them to whoever calls the
+    webhook. If a guard can't be injected (no top-level ``doPost``), the
+    deploy is refused rather than shipped unprotected; deploy with
+    ``DOMAIN`` / ``MYSELF`` for a non-public endpoint instead, or for a
+    public GET-only/unauthenticated webhook do your own in-handler check and
+    use ``access="ANYONE"``.
     """
     hmac_key: str | None = None
     effective_body = script_body
@@ -483,11 +486,13 @@ def as_deploy_web_app(
         result["hmac_key"] = hmac_key
         result["hmac_instructions"] = (
             "This endpoint is public, so it is protected by an HMAC request "
-            "guard. Each request must include headers: "
-            "X-MCP-Timestamp: <current unix seconds>, and "
-            "X-MCP-Signature: lowercase hex of "
-            "HMAC_SHA256(hmac_key, timestamp + '.' + raw_request_body). "
-            "Requests without a valid, fresh (within 5 minutes) signature are "
-            "rejected. Store hmac_key as a secret; it is shown only once."
+            "guard. Each request must carry two QUERY PARAMS on the /exec "
+            "URL: mcp_ts=<current unix seconds> and mcp_sig=<lowercase hex "
+            "of HMAC_SHA256(hmac_key, timestamp + '.' + raw_request_body)>, "
+            "i.e. POST to <exec_url>?mcp_ts=...&mcp_sig=... Query params "
+            "are required because Apps Script does not deliver HTTP request "
+            "headers to web apps. Requests without a valid, fresh (within 5 "
+            "minutes) signature are rejected. Store hmac_key as a secret; "
+            "it is shown only once."
         )
     return result

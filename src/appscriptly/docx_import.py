@@ -21,14 +21,15 @@ from pathlib import Path
 from typing import Literal, TypedDict
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlencode
 
 from google.oauth2.credentials import Credentials
 from appscriptly.google_clients import get_service
 
 from . import user_store
 from .apps_script_hmac import (
-    SIGNATURE_HEADER,
-    TIMESTAMP_HEADER,
+    SIGNATURE_PARAM,
+    TIMESTAMP_PARAM,
     compute_signature,
 )
 from .config import get_webapp_hmac_key, get_webapp_url
@@ -518,12 +519,18 @@ def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
     raw, unvalidated URL reach this function, add an SSRF guard at that new
     entry point.
 
-    REQUEST AUTHENTICATION (v2.0c): the deployed Web App is
+    REQUEST AUTHENTICATION (query-param transport): the deployed Web App is
     ``access=ANYONE_ANONYMOUS``, so every request is signed with the per-user
     HMAC key (``hmac_key``). We compute ``HMAC-SHA256(key, "<ts>.<body>")``
-    over the EXACT body bytes sent and attach ``X-MCP-Signature`` +
-    ``X-MCP-Timestamp``; ``restructure.gs::doPost`` recomputes and
-    constant-time-compares before acting. ``hmac_key`` is required — a
+    over the EXACT body bytes sent and attach it to the ``/exec`` URL as
+    ``?mcp_ts=<unix seconds>&mcp_sig=<hex>``; ``restructure.gs::doPost``
+    reads both from ``e.parameter``, recomputes and constant-time-compares
+    before acting. Query params are the ONLY transport the script can see:
+    the Apps Script runtime never delivers HTTP request headers to
+    ``doPost(e)``, so a header-borne signature would be stripped in flight
+    and the fail-closed verify would reject every request. The signature is
+    time-bound (5-minute skew window on the script side) and body-bound,
+    which caps the replay value of a logged URL. ``hmac_key`` is required: a
     missing key means setup never provisioned one (or a tampered value was
     dropped on read), so we fail with an actionable message instead of
     sending an unsigned request the script would reject with ``stage:'auth'``.
@@ -533,7 +540,7 @@ def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
             "Apps Script Web App HMAC key not provisioned for this account. "
             "Re-run the gdocs_install_automation tool (cloud) or "
             "`google-docs-mcp setup-apps-script` (stdio) to provision the "
-            "per-user signing key — the /exec Web App rejects unsigned "
+            "per-user signing key. The /exec Web App rejects unsigned "
             "requests."
         )
     # Sign over the EXACT bytes we transmit. json.dumps once, reuse for both
@@ -542,14 +549,17 @@ def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
     data = body_str.encode("utf-8")
     timestamp = str(int(time.time()))
     signature = compute_signature(hmac_key, timestamp=timestamp, body=body_str)
+    # Signature + timestamp travel as QUERY PARAMS: Apps Script surfaces the
+    # query string to doPost as e.parameter but never the HTTP headers. The
+    # validated /macros/s/<id>/(exec|dev) URL carries no query string of its
+    # own, but stay robust to one.
+    signed_url = url + ("&" if "?" in url else "?") + urlencode(
+        {TIMESTAMP_PARAM: timestamp, SIGNATURE_PARAM: signature}
+    )
     req = urlrequest.Request(
-        url,
+        signed_url,
         data=data,
-        headers={
-            "Content-Type": "application/json",
-            SIGNATURE_HEADER: signature,
-            TIMESTAMP_HEADER: timestamp,
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
