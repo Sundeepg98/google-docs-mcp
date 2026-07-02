@@ -25,9 +25,9 @@ stop.
 
 google-docs-mcp implements Google's standard OAuth 2.0 authorization
 code flow via `google-auth-oauthlib`. The single source of truth for the
-consent set is `auth.py:WORKSPACE_SCOPES` (11 Workspace scopes) plus the
+consent set is `auth.py:WORKSPACE_SCOPES` (15 Workspace scopes) plus the
 two OIDC identity scopes in `oauth_google.py:IDENTITY_SCOPES`, unioned as
-`oauth_google.py:GOOGLE_API_SCOPES` (13 scopes total for the HTTP/cloud
+`oauth_google.py:GOOGLE_API_SCOPES` (17 scopes total for the HTTP/cloud
 connector; stdio mode is the same minus the two identity scopes).
 
 **Every requested scope is a Google SENSITIVE scope; NONE is RESTRICTED.**

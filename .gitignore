@@ -36,3 +36,10 @@ audit_*.json
 _full.txt
 out.txt
 *.log
+
+# Local session/agent artifacts (never commit: _audit holds verification-thread
+# message IDs + reply addresses; repo is public)
+_audit/
+.playwright-mcp/
+.claude/
+gcp-verification-center-*.png
