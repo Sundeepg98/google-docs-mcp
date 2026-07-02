@@ -63,7 +63,6 @@ import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -293,7 +292,7 @@ def run_checks(expect_commit: str | None) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "prod-drift monitor").splitlines()[0])
     parser.add_argument(
         "--report",
         type=Path,
