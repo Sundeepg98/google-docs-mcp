@@ -12,6 +12,26 @@ name: deploy
 #     gh variable set DEPLOY_ENABLED --body false -R Sundeepg98/google-docs-mcp
 #   To resume:  gh variable set DEPLOY_ENABLED --body true   (or: gh variable delete DEPLOY_ENABLED)
 #
+# TOGGLE POLICY (deploy-standard hardening, 2026-07-02):
+#   * DEPLOY_ENABLED=false is an emergency brake measured in HOURS, not
+#     weeks. The standing invariant is main == prod; for a real freeze
+#     window prefer NOT merging to main (queue the PRs) over
+#     merging-without-deploying. A 19-day silent freeze once hid an
+#     undeployed security fix (see the 2026-06-29 internal audit).
+#   * A skipped deploy is LOUD, not silent: the `deploy-status` job below
+#     emits a warning annotation + "DEPLOY SKIPPED - prod NOT updated" in
+#     the run and step summary, and the scheduled prod-drift.yml monitor
+#     fails (and files an issue) when live prod drifts from main.
+#   * Resume ritual: setting the toggle back to true is IMMEDIATELY
+#     followed by one manual workflow_dispatch of this workflow plus the
+#     verification block in docs/runbooks/deploy-rollback.md - never left
+#     for "the next push".
+#   * NO out-of-band `flyctl deploy` for code (it bypasses the unit +
+#     mutation gates and produces ULID image tags with no commit
+#     provenance). workflow_dispatch is the only sanctioned manual deploy
+#     path; local flyctl is for rollback/ops only
+#     (docs/runbooks/deploy-rollback.md).
+#
 # Required repository secret:
 #   FLY_API_TOKEN — generated via:
 #     flyctl tokens create deploy -a sundeepg98-docs-mcp -j | jq -r .token | gh secret set FLY_API_TOKEN
@@ -245,3 +265,71 @@ jobs:
           done
           echo "❌ health check failed after 5 retries"
           exit 1
+
+  # -------------------------------------------------------------------
+  # deploy-standard hardening (2026-07-02): make a SKIPPED deploy loud.
+  #
+  # Before this job existed, DEPLOY_ENABLED=false rendered a push run as
+  # green with the deploy job silently `skipped` - "merge = deploy"
+  # became "merge = nothing" with no surface saying so (19 days of
+  # prod-vs-main drift, including an undeployed security fix, went
+  # unnoticed). This job always() runs and, when the gates were green
+  # but the deploy was toggled off, emits a warning annotation plus a
+  # step-summary block reading "DEPLOY SKIPPED - prod NOT updated".
+  # The run stays green (the toggle is a sanctioned brake); it just can
+  # no longer pretend prod was updated. The scheduled prod-drift.yml
+  # monitor is the companion backstop that eventually FAILS while prod
+  # and main diverge.
+  # -------------------------------------------------------------------
+  deploy-status:
+    name: deploy status (loud when skipped)
+    needs: [unit, mutation, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: report deploy outcome
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        run: |
+          echo "unit=${UNIT_RESULT} mutation=${MUTATION_RESULT} deploy=${DEPLOY_RESULT}"
+
+          if [ "$DEPLOY_RESULT" = "success" ]; then
+            echo "deploy ran and succeeded - prod updated to ${GITHUB_SHA}."
+            {
+              echo "## Deploy: prod updated to \`${GITHUB_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$UNIT_RESULT" != "success" ] || [ "$MUTATION_RESULT" != "success" ]; then
+            # A gate job failed/cancelled, so the deploy job was skipped by
+            # its `needs` chain - the run is already red; no extra warning.
+            echo "deploy did not run because a gate job did not succeed (unit=${UNIT_RESULT}, mutation=${MUTATION_RESULT})."
+            exit 0
+          fi
+
+          if [ "$DEPLOY_RESULT" = "skipped" ]; then
+            # Gates were green; the deploy was withheld by DEPLOY_ENABLED=false.
+            echo "DEPLOY SKIPPED - prod NOT updated"
+            echo "::warning title=DEPLOY SKIPPED - prod NOT updated::DEPLOY_ENABLED=false withheld this deploy; main is now ahead of prod. Resume: gh variable set DEPLOY_ENABLED --body true, then dispatch deploy.yml and run the verification block in docs/runbooks/deploy-rollback.md. Toggle policy: hours, not weeks."
+            {
+              echo "## DEPLOY SKIPPED - prod NOT updated"
+              echo ""
+              echo "The unit + mutation gates passed but \`DEPLOY_ENABLED=false\` withheld the deploy."
+              echo "Commit \`${GITHUB_SHA}\` is on main and NOT live: main is ahead of prod."
+              echo ""
+              echo "- Resume: \`gh variable set DEPLOY_ENABLED --body true -R ${GITHUB_REPOSITORY}\`, then manually dispatch deploy.yml (dispatch ignores the toggle) and verify per docs/runbooks/deploy-rollback.md."
+              echo "- Toggle policy: the brake is measured in HOURS, not weeks. The scheduled prod-drift monitor will start failing while prod and main diverge."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Deploy ran and failed (or was cancelled) - the deploy job itself
+          # already marks the run red; annotate for the notification email.
+          echo "::warning title=Deploy did not complete::deploy job result: ${DEPLOY_RESULT} - prod NOT updated to ${GITHUB_SHA}. See the deploy job log (Fly billing 403s surface there) and docs/runbooks/deploy-rollback.md."
+          {
+            echo "## Deploy did not complete (result: ${DEPLOY_RESULT}) - prod NOT updated"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
