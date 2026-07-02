@@ -19,7 +19,22 @@ async def health(_request: Request) -> JSONResponse:
     # field; the rename moves the canonical identifier forward
     # without affecting Fly's health-probe contract (which only
     # cares about the HTTP 200 + JSON-parseable body).
-    return JSONResponse({"ok": True, "service": "appscriptly"})
+    #
+    # Deploy-standard hardening (2026-07-02): ``git_commit`` stamps the
+    # deployed short SHA into the PUBLIC health payload so "what commit
+    # is prod serving" is answerable with an unauthenticated curl (the
+    # bearer-authed /info endpoint already exposed it, but the drift
+    # monitor and the deploy smoke check need a public read). Provenance
+    # chain: deploy.yml passes GIT_COMMIT as a --build-arg, the
+    # Dockerfile bakes it via ARG GIT_COMMIT=unknown + ENV GIT_COMMIT,
+    # and this handler reads the env at request time (same sourcing as
+    # /info). A local run without the env reports "unknown". A short SHA
+    # of a public repo leaks nothing.
+    return JSONResponse({
+        "ok": True,
+        "service": "appscriptly",
+        "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+    })
 
 
 # RFC 9116 §2.3 recommends an expiry no more than 1 year out. We hardcode

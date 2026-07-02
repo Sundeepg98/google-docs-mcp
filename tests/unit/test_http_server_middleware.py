@@ -325,11 +325,14 @@ def test_oauth_pages_csp_allows_inline_style():
 def _build_app_with_health_exempt(allowed_hosts):
     """A minimal Starlette app wired only with the new health-exempt
     TrustedHost middleware, plus a /health route and an /other route
-    so we can prove the exemption is route-scoped."""
-    from appscriptly.http_server import HealthExemptTrustedHostMiddleware
+    so we can prove the exemption is route-scoped.
 
-    async def health(_request):
-        return JSONResponse({"ok": True, "service": "appscriptly"})
+    Uses the REAL /health handler (deploy-standard hardening,
+    2026-07-02) instead of a local stub, so these tests also prove the
+    exemption composes with the production payload (which now carries
+    ``git_commit`` - contract pinned in test_health_endpoint.py)."""
+    from appscriptly.http_server import HealthExemptTrustedHostMiddleware
+    from appscriptly.http_server.routes.observability import health
 
     async def other(_request):
         return JSONResponse({"other": True})
@@ -364,7 +367,12 @@ def test_health_accepts_fly_internal_probe_with_raw_ip_host():
         f"Fly probe would still be rejected: {resp.status_code} "
         f"{resp.text[:200]!r}"
     )
-    assert resp.json() == {"ok": True, "service": "appscriptly"}
+    # Shape check on the real handler (git_commit value is env-dependent
+    # here; its sourcing contract is pinned in test_health_endpoint.py).
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["service"] == "appscriptly"
+    assert "git_commit" in body
 
 
 def test_health_accepts_any_raw_ip_host_header():
@@ -412,7 +420,10 @@ def test_health_accepts_canonical_host_too():
     client = TestClient(app)
     resp = client.get("/health", headers={"Host": "my-app.fly.dev"})
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "service": "appscriptly"}
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["service"] == "appscriptly"
+    assert "git_commit" in body
 
 
 def test_health_exempt_middleware_passes_lifespan_through():

@@ -1,0 +1,112 @@
+name: prod-drift
+
+# Scheduled live-prod vs main drift monitor (deploy-standard hardening,
+# 2026-07-02). DEPLOY_ENABLED=false makes a skipped deploy render as a
+# GREEN run, which once hid 18+ days of prod-vs-main drift (including an
+# undeployed security fix) until a manual audit found it. This workflow
+# is the machine backstop: every 6 hours it
+#
+#   1. derives the EXPECTED OAuth scope surface from source
+#      (src/appscriptly/auth.py WORKSPACE_SCOPES +
+#      src/appscriptly/oauth_google.py IDENTITY_SCOPES - computed, never
+#      hardcoded),
+#   2. curls https://mcp.appscriptly.com/.well-known/oauth-protected-resource
+#      and FAILS the run when the live scope set/count does not match,
+#   3. curls /health on BOTH hostnames and FAILS on anything but HTTP 200
+#      (an unreachable /health is the billing-suspension outage class),
+#   4. warns (never fails) when the live /health git_commit differs from
+#      main's short SHA - main legitimately races deploys by minutes.
+#
+# A failing scheduled run generates the GitHub notification email AND a
+# step below files (or updates) a `prod-drift`-labeled issue so the
+# condition has a durable, assignable surface. A green run auto-closes
+# any open prod-drift issue.
+#
+# All checks live in scripts/check_live_drift.py (a FILE, per the repo
+# guardrail: never `python -c`). Stdlib-only: no dependency install.
+
+on:
+  schedule:
+    # Every 6 hours. Offset from :00 because GitHub delays/skips
+    # top-of-hour crons under load.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write  # create/update/close the prod-drift alert issue
+
+concurrency:
+  group: prod-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: live scope surface + /health vs main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: setup Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: check live drift (scope set + /health, both hostnames)
+        run: |
+          python scripts/check_live_drift.py \
+              --report drift-report.md \
+              --expect-commit "$(git rev-parse --short HEAD)"
+
+      - name: create or update prod-drift issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            echo "Automated alert from the scheduled prod-drift monitor."
+            echo ""
+            echo "Run: ${RUN_URL}"
+            echo ""
+            if [ -s drift-report.md ]; then
+              cat drift-report.md
+            else
+              echo "(drift-report.md missing - the check crashed before writing a report; read the run log)"
+            fi
+            echo ""
+            echo "Triage: docs/runbooks/deploy-rollback.md (dispatch deploy.yml to converge prod onto main, or roll back)."
+          } > issue-body.md
+          # Ensure the label exists (idempotent; --force updates in place).
+          gh label create prod-drift \
+              --description "Live prod drifted from main (auto-filed by prod-drift.yml)" \
+              --color D93F0B --force -R "$GITHUB_REPOSITORY" || true
+          EXISTING="$(gh issue list -R "$GITHUB_REPOSITORY" --label prod-drift \
+              --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            echo "updating existing prod-drift issue #$EXISTING"
+            gh issue comment "$EXISTING" -R "$GITHUB_REPOSITORY" --body-file issue-body.md
+          else
+            echo "creating new prod-drift issue"
+            gh issue create -R "$GITHUB_REPOSITORY" \
+                --title "prod drift: live server does not match main (scopes/health)" \
+                --label prod-drift \
+                --body-file issue-body.md
+          fi
+
+      - name: close prod-drift issue on recovery
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          EXISTING="$(gh issue list -R "$GITHUB_REPOSITORY" --label prod-drift \
+              --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            gh issue close "$EXISTING" -R "$GITHUB_REPOSITORY" \
+                --comment "prod-drift monitor is green again (run: ${RUN_URL}); auto-closing."
+          else
+            echo "no open prod-drift issue - nothing to close"
+          fi
