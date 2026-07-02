@@ -11,14 +11,25 @@ scheme that closes that gap (THREAT_MODEL §4 row 5 / §9 row 1):
     ``setup_apps_script`` persists it per user and templates it into the
     deployed ``restructure.gs`` via ``inject_hmac_into_source``.
   * **SIGN** — ``compute_signature`` produces the lowercase-hex
-    ``HMAC-SHA256(key, "<timestamp>.<body>")`` the server sends as
-    ``X-MCP-Signature`` alongside ``X-MCP-Timestamp`` (``docx_import``).
+    ``HMAC-SHA256(key, "<timestamp>.<body>")`` the server sends as the
+    ``mcp_sig`` query param alongside ``mcp_ts`` on the ``/exec`` URL
+    (``docx_import``).
   * **VERIFY** — ``restructure.gs::_verifyHmac`` recomputes the same value
     with ``Utilities.computeHmacSha256Signature`` and constant-time-compares.
 
+TRANSPORT: query-string params, NOT HTTP headers. The Apps Script runtime
+never exposes request headers to ``doPost(e)``; the event carries only
+``parameter`` / ``parameters`` / ``postData`` / ``queryString``. A
+header-borne signature is silently stripped before the script sees it, so a
+header transport would make the fail-closed verify reject every request
+(feature bricked, not secured). Query params are surfaced as
+``e.parameter``, which is the channel the verify reads.
+
 Signing the timestamp TOGETHER with the body binds them: a captured
 ``(body, signature)`` pair can't be replayed under a fresh timestamp, and a
-stale timestamp is rejected by the Apps Script side's skew window.
+stale timestamp is rejected by the Apps Script side's skew window. The
+signature is therefore time-bound and body-bound, which also caps the
+replay value of the signed URL if it is ever logged.
 
 The two sentinels here MUST match the literals declared in
 ``restructure.gs`` (``MCP_HMAC_KEY`` / ``MCP_HMAC_REQUIRED``); the fencing
@@ -37,9 +48,11 @@ import secrets
 _KEY_PLACEHOLDER = "__MCP_HMAC_KEY__"
 _REQUIRED_PLACEHOLDER = "__MCP_HMAC_REQUIRED__"
 
-# Header names the server sends and restructure.gs reads (case-insensitively).
-SIGNATURE_HEADER = "X-MCP-Signature"
-TIMESTAMP_HEADER = "X-MCP-Timestamp"
+# Query-param names the server appends to the /exec URL and restructure.gs
+# reads from e.parameter. Params, not headers: Apps Script never delivers
+# HTTP request headers to a web app's doPost event.
+SIGNATURE_PARAM = "mcp_sig"
+TIMESTAMP_PARAM = "mcp_ts"
 
 
 def generate_hmac_key() -> str:
@@ -60,14 +73,14 @@ def compute_signature(key: str, *, timestamp: str, body: str) -> str:
 
     Message construction MUST match ``restructure.gs::_verifyHmac`` exactly:
     ``timestamp + "." + body``. ``timestamp`` is the unix-seconds string sent
-    in ``X-MCP-Timestamp``; ``body`` is the raw request body (the exact bytes
-    POSTed, decoded as UTF-8 by the caller before hand-off here).
+    as the ``mcp_ts`` query param; ``body`` is the raw request body (the
+    exact bytes POSTed, decoded as UTF-8 by the caller before hand-off here).
 
     Args:
         key: the per-user 64-hex-char key (as stored / as templated into
             the script).
         timestamp: unix-epoch-seconds as a string (the value of the
-            ``X-MCP-Timestamp`` header — signed as-is so the Apps Script
+            ``mcp_ts`` query param, signed as-is so the Apps Script
             side can re-sign the identical string).
         body: the raw JSON request body as a ``str``.
 

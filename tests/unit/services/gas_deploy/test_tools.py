@@ -508,18 +508,27 @@ def test_as_deploy_web_app_anonymous_injects_hmac_guard(monkeypatch):
     assert result["script_id"] == "SID-9"
     assert result["exec_url"] == "https://script.google.com/macros/s/z/exec"
     assert result["access"] == "ANYONE_ANONYMOUS"
-    # New: a 64-hex HMAC key + instructions are returned.
+    # New: a 64-hex HMAC key + instructions are returned. The instructions
+    # must describe the QUERY-PARAM transport (mcp_ts / mcp_sig): Apps
+    # Script never delivers HTTP request headers to doPost, so telling the
+    # caller to send headers would brick their webhook.
     key = result["hmac_key"]
     assert len(key) == 64 and all(c in "0123456789abcdef" for c in key)
-    assert "X-MCP-Signature" in result["hmac_instructions"]
+    assert "mcp_sig" in result["hmac_instructions"]
+    assert "mcp_ts" in result["hmac_instructions"]
+    assert "X-MCP-Signature" not in result["hmac_instructions"]
 
     # The deployed source carries the guard, bakes the SAME key, renames the
-    # caller's handler, and gates with a new doPost.
+    # caller's handler, and gates with a new doPost. The guard must read the
+    # signature from e.parameter (query string), never e.headers (which the
+    # Apps Script runtime does not populate).
     pushed = _captured_pushed_source(svc)
     assert key in pushed
     assert "function __mcpUserDoPost(e)" in pushed
     assert "function doPost(e)" in pushed
     assert "computeHmacSha256Signature" in pushed
+    assert "e.parameter" in pushed
+    assert "e.headers" not in pushed
     # compute_signature is the server-side counterpart used by docx_import;
     # its presence here is a cross-check that the scheme name is stable.
     assert compute_signature(key, timestamp="0", body="{}")  # no raise

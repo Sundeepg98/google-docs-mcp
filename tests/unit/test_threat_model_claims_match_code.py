@@ -23,8 +23,13 @@ direction:
    ``computeHmacSha256Signature`` call + the doPost ``stage:'auth'``
    rejection + the ``MCP_HMAC_REQUIRED`` fail-closed gate are present.
 
-3. ``test_call_webapp_signs_requests`` — the server side of the pair:
-   ``docx_import`` attaches ``X-MCP-Signature`` and computes the signature.
+3. ``test_call_webapp_signs_requests`` covers the server side of the pair,
+   asserted BEHAVIORALLY: calling ``docx_import._call_webapp`` must emit a
+   request whose ``/exec`` URL query string carries ``mcp_ts`` + ``mcp_sig``
+   and whose signature verifies over the exact transmitted body. Query
+   params are the only viable transport: Apps Script never delivers HTTP
+   request headers to ``doPost(e)``, so a header-borne signature would be
+   dropped by the runtime and every request would fail closed.
 
 If HMAC is ever ripped out, (2)/(3) flip red on purpose — and the docs would
 then need their hedges back, which (1) would (correctly) start allowing
@@ -238,17 +243,72 @@ def test_restructure_gs_has_hmac_validation():
     assert "MCP_HMAC_REQUIRED" in gs_text, (
         "restructure.gs dropped the MCP_HMAC_REQUIRED fail-closed gate."
     )
-
-
-def test_call_webapp_signs_requests():
-    """The server side of the HMAC pair: docx_import._call_webapp must SIGN
-    every request (X-MCP-Signature + X-MCP-Timestamp) so restructure.gs's
-    verify-path actually receives a signature to check."""
-    src = _read("src/appscriptly/docx_import.py")
-    assert "X-MCP-Signature" in src or "SIGNATURE_HEADER" in src, (
-        "docx_import._call_webapp no longer attaches the HMAC signature "
-        "header — signed-request path regressed."
+    # The signature must be read from the QUERY STRING (e.parameter). The
+    # Apps Script runtime never populates e.headers on the doPost event, so
+    # a header-based verify rejects every request the moment a key is
+    # provisioned: fail-closed degenerates to fail-always and the feature
+    # is bricked while looking 'secured'.
+    assert "e.parameter" in gs_text, (
+        "restructure.gs no longer reads the signature from e.parameter "
+        "(query string), the only transport Apps Script delivers to doPost."
     )
-    assert "compute_signature" in src, (
-        "docx_import no longer computes the HMAC signature."
+    assert "e.headers" not in gs_text, (
+        "restructure.gs reads e.headers, which the Apps Script runtime "
+        "never populates on doPost: with a key provisioned, EVERY signed "
+        "request would be rejected (feature bricked, not secured)."
+    )
+
+
+def test_call_webapp_signs_requests(monkeypatch):
+    """The server side of the HMAC pair, asserted BEHAVIORALLY: calling
+    ``_call_webapp`` must emit a request whose ``/exec`` URL carries a fresh
+    ``mcp_ts`` and an ``mcp_sig`` that verifies over the EXACT transmitted
+    body with the per-user key (the same recompute
+    ``restructure.gs::_verifyHmac`` performs). It must NOT rely on request
+    headers: Apps Script strips HTTP headers before ``doPost`` sees the
+    event, so a header-borne signature authenticates nothing."""
+    import json as _json
+    from urllib.parse import parse_qsl, urlsplit
+
+    from appscriptly import docx_import
+    from appscriptly.apps_script_hmac import compute_signature
+
+    captured: dict = {}
+
+    class _Resp:
+        def read(self):
+            return _json.dumps({"success": True, "stage": "complete"}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        captured["req"] = req
+        return _Resp()
+
+    monkeypatch.setattr(docx_import.urlrequest, "urlopen", _fake_urlopen)
+
+    key = "ab" * 32
+    docx_import._call_webapp(
+        "https://script.google.com/macros/s/SID/exec",
+        {"docId": "D", "splitTree": []},
+        hmac_key=key,
+    )
+    req = captured["req"]
+    q = dict(parse_qsl(urlsplit(req.full_url).query))
+    body = req.data.decode("utf-8")
+    assert q.get("mcp_sig") == compute_signature(
+        key, timestamp=q.get("mcp_ts", ""), body=body
+    ), (
+        "docx_import._call_webapp no longer signs the /exec request via "
+        "mcp_ts/mcp_sig query params: the signed-request path regressed "
+        "(Apps Script cannot read any other transport)."
+    )
+    assert not any(k.lower().startswith("x-mcp-") for k in req.headers), (
+        "signature sent as X-MCP-* HTTP headers: Apps Script strips request "
+        "headers before doPost sees the event, so this transport cannot "
+        "authenticate and the deployed verify would reject every request."
     )

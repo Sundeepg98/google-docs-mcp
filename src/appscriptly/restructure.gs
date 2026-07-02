@@ -20,7 +20,7 @@
  *     source body. Bodies must keep >=1 child, so we leave a final blank
  *     paragraph if everything was moved.
  *
- * REQUEST AUTHENTICATION (v2.0c — HMAC verify-path).
+ * REQUEST AUTHENTICATION (HMAC verify-path, query-param transport).
  * The Web App is deployed access=ANYONE_ANONYMOUS (the MCP server posts to
  * /exec with no Google sign-in), so URL secrecy alone is NOT the access
  * control any more: doPost authenticates every request with a per-user
@@ -28,14 +28,18 @@
  * (setup_apps_script.py) generates a 64-hex-char per-user key, persists it
  * (user_store / local config), and templates it into the placeholder below
  * before pushing this source to Apps Script. The MCP server signs each POST
- * with the SAME key (docx_import._call_webapp), sending X-MCP-Signature +
- * X-MCP-Timestamp. A request with a missing / stale / mismatched signature
- * is rejected with {success:false, stage:'auth'} and never mutates a doc.
+ * with the SAME key (docx_import._call_webapp), sending the signature as
+ * query params on the /exec URL: ?mcp_ts=<unix seconds>&mcp_sig=<hex>.
+ * Query params are the ONLY transport available: the Apps Script runtime
+ * never delivers HTTP request headers to doPost(e); the event carries only
+ * e.parameter / e.parameters / e.postData / e.queryString. A request with a
+ * missing / stale / mismatched signature is rejected with
+ * {success:false, stage:'auth'} and never mutates a doc.
  *
  * The two sentinels below are REPLACED at deploy time by setup_apps_script.py
  * (string substitution on this file's text). If the substitution did not run
  * (key empty / template marker intact), HMAC is treated as NOT configured and
- * doPost FAILS CLOSED — see _verifyHmac. The markers are intentionally exact
+ * doPost FAILS CLOSED (see _verifyHmac). The markers are intentionally exact
  * literals so the Python side can find-and-replace them deterministically.
  */
 
@@ -45,7 +49,7 @@ var MCP_HMAC_KEY = '__MCP_HMAC_KEY__';
 // literal marker otherwise — _verifyHmac treats anything but 'true' as
 // "not configured" and fails closed.
 var MCP_HMAC_REQUIRED = '__MCP_HMAC_REQUIRED__';
-// Reject requests whose X-MCP-Timestamp is more than this many seconds away
+// Reject requests whose mcp_ts is more than this many seconds away
 // from the script's clock (replay / stale-capture window). 300s = 5 min,
 // generous enough for clock skew + a slow network without leaving a wide
 // replay window.
@@ -81,17 +85,21 @@ function doPost(e) {
  *
  * Scheme (must match docx_import._call_webapp exactly):
  *   signature = lowercase_hex( HMAC_SHA256(key, timestamp + "." + rawBody) )
- * sent in header X-MCP-Signature, with the unix-seconds timestamp in
- * X-MCP-Timestamp. Signing the timestamp TOGETHER with the body binds the
- * two so a captured (body, signature) pair can't be replayed with a fresh
- * timestamp, and a stale timestamp is rejected by the skew window.
+ * sent as query params on the /exec URL: mcp_sig carries the signature,
+ * mcp_ts the unix-seconds timestamp. The Apps Script runtime surfaces the
+ * query string to doPost as e.parameter and NEVER delivers HTTP request
+ * headers, so the query string is the only channel this verify can read.
+ * Signing the timestamp TOGETHER with the body binds the two so a captured
+ * (body, signature) pair can't be replayed with a fresh timestamp, and a
+ * stale timestamp is rejected by the skew window; the signature is both
+ * time-bound and body-bound, which caps the replay value of a logged URL.
  *
  * FAILS CLOSED: if no key was templated in (deploy-time substitution didn't
- * run), every request is rejected — we never silently accept unsigned
+ * run), every request is rejected. We never silently accept unsigned
  * traffic. Returns {ok:true} or {ok:false, error:<reason>}.
  */
 function _verifyHmac(e) {
-  // Not configured → fail closed. (MCP_HMAC_REQUIRED stays as its literal
+  // Not configured: fail closed. (MCP_HMAC_REQUIRED stays as its literal
   // marker, or the key is empty / still the template marker, when the deploy
   // substitution didn't run.)
   if (MCP_HMAC_REQUIRED !== 'true' ||
@@ -99,16 +107,16 @@ function _verifyHmac(e) {
     return {ok: false, error: 'server HMAC key not configured (re-run install/setup)'};
   }
 
-  var headers = (e && e.headers) || {};
-  var sig = _headerLookup(headers, 'X-MCP-Signature');
-  var tsRaw = _headerLookup(headers, 'X-MCP-Timestamp');
+  var params = (e && e.parameter) || {};
+  var sig = params.mcp_sig;
+  var tsRaw = params.mcp_ts;
   if (!sig || !tsRaw) {
-    return {ok: false, error: 'missing X-MCP-Signature / X-MCP-Timestamp header'};
+    return {ok: false, error: 'missing mcp_sig / mcp_ts query parameter'};
   }
 
   var ts = parseInt(tsRaw, 10);
   if (isNaN(ts)) {
-    return {ok: false, error: 'malformed X-MCP-Timestamp'};
+    return {ok: false, error: 'malformed mcp_ts'};
   }
   var now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - ts) > MCP_HMAC_MAX_SKEW_SECONDS) {
@@ -152,22 +160,6 @@ function _constantTimeEquals(a, b) {
     diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   }
   return diff === 0;
-}
-
-/**
- * Case-insensitive header lookup. Apps Script's ``e.headers`` keys are not
- * guaranteed to preserve the exact casing the client sent, so match by
- * lowercased name.
- */
-function _headerLookup(headers, name) {
-  var target = name.toLowerCase();
-  for (var k in headers) {
-    if (Object.prototype.hasOwnProperty.call(headers, k) &&
-        k.toLowerCase() === target) {
-      return headers[k];
-    }
-  }
-  return null;
 }
 
 function doGet() {
