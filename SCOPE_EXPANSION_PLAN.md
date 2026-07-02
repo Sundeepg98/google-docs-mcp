@@ -1,5 +1,7 @@
 # appscriptly Scope Expansion: Deploy-Staging Package
 
+> **SUPERSEDED (2026-06-29): historical wave-1 staging record.** This document plans the wave-1 (13-scope) deploy and frames a "code at 13 vs review at 8" tension that no longer applies. The scope set has since grown to the full 17 (15 workspace + openid + userinfo.email), the GCP consent screen and the served privacy page are raised to 17, and THIS verification round submits all 17. For current state use `VERIFICATION_SUBMISSION.md`, `PHASE1_VERIFICATION_KIT.md`, and the go-live runbook. The 8-scope and 13-scope counts below are preserved as the original wave-1 record; do not treat them as current.
+
 The Calendar, Tasks, Forms, and Contacts REST services and their OAuth scopes are
 BUILT and merged to main. What remains is the operator-gated, verify-LAST DEPLOY,
 not a build. This document is the staging package for that deploy.
