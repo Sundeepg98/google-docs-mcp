@@ -736,3 +736,58 @@ def test_reply_to_comment_rejects_blank_comment_id():
 def test_reply_to_comment_rejects_blank_content():
     with pytest.raises(ValueError, match="content cannot be empty"):
         reply_to_comment(MagicMock(), "DOC1", "c1", "   ")
+
+
+# ---------------------------------------------------------------------
+# add_tabs_to_doc return shape - the gdocs_add_tabs false-error fix
+# ---------------------------------------------------------------------
+#
+# GDOCS_ADD_TABS_OUTPUT_SCHEMA requires doc_id + url + tabs, but
+# add_tabs_to_doc used to return only {"tabs": ...}. FastMCP output
+# validation therefore failed EVERY gdocs_add_tabs call AFTER both
+# mutating batchUpdates had landed, and a client retrying the "failed"
+# call duplicated the tabs (observed live in the 2026-07-02 demo run).
+# These tests pin the schema-required keys on BOTH return paths.
+
+
+def _stub_docs_for_add_tabs() -> MagicMock:
+    docs_stub = MagicMock(name="docs-v1-stub")
+    docs_stub.documents().batchUpdate.return_value.execute.return_value = {}
+    docs_stub.documents().get.return_value.execute.return_value = {
+        "tabs": [
+            {"tabProperties": {"tabId": "t.0", "title": "Tab 1"}},
+            {"tabProperties": {"tabId": "t.new", "title": "Added"}},
+        ]
+    }
+    return docs_stub
+
+
+def test_add_tabs_to_doc_returns_schema_required_envelope():
+    from appscriptly.services.docs.api import add_tabs_to_doc
+    from appscriptly.tool_schemas import GDOCS_ADD_TABS_OUTPUT_SCHEMA
+
+    with with_google_api_client(
+        InMemoryGoogleAPIClient({("docs", "v1"): _stub_docs_for_add_tabs()})
+    ):
+        result = add_tabs_to_doc(
+            MagicMock(), "DOC-ADD", [{"title": "Added", "content": ""}]
+        )
+
+    for key in GDOCS_ADD_TABS_OUTPUT_SCHEMA["required"]:
+        assert key in result, f"schema-required key {key!r} missing"
+    assert result["doc_id"] == "DOC-ADD"
+    assert result["url"] == "https://docs.google.com/document/d/DOC-ADD/edit"
+    assert result["tabs"][0]["tab_id"] == "t.new"
+
+
+def test_add_tabs_to_doc_empty_input_still_returns_required_keys():
+    """The early-return (nothing to add) path must satisfy the same
+    schema: a naive {"tabs": []} would fail output validation exactly
+    like the main path used to."""
+    from appscriptly.services.docs.api import add_tabs_to_doc
+    from appscriptly.tool_schemas import GDOCS_ADD_TABS_OUTPUT_SCHEMA
+
+    result = add_tabs_to_doc(MagicMock(), "DOC-EMPTY", [])
+    for key in GDOCS_ADD_TABS_OUTPUT_SCHEMA["required"]:
+        assert key in result, f"schema-required key {key!r} missing"
+    assert result["tabs"] == []

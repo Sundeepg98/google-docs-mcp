@@ -1,8 +1,8 @@
 """Tests for ``docx_import.py`` pure parsing helpers.
 
 The docx-import pipeline (``convert_docx_to_tabbed_doc``) glues together
-Drive uploads, REST tab-shell creation, and Apps Script restructuring.
-Mocking that whole orchestration is integration-test territory.
+Drive uploads, REST tab-shell creation, and the REST content transplant.
+The orchestration itself is covered in ``test_docx_import_pipeline.py``.
 
 This file covers the **pure helpers** that decide *where* the splits
 go — the parsing logic that walks Google's body-content shape and
@@ -14,8 +14,12 @@ Helpers covered:
   _extract_paragraph_text    — concat ``textRun.content`` across elements
   _max_depth                 — recursive depth of a SplitPoint forest
   _split_to_tabspec          — convert _SplitPoint → TabSpec for shells
-  _splits_to_json            — JSON-serialize splits for Apps Script
+  _docapp_children           - the sectionBreak filter (range index space)
+  _flatten_splits            - pre-order forest flatten (tab alignment)
   _detect_splits             — the big one; walks body, emits splits
+
+(``_splits_to_json``, the Apps Script POST payload serializer, was
+deleted with the /exec step; its tests went with it.)
 
 Round 1 test architect (R14 #8): "docx_import.py at 19% on 182
 statements is a real gap. Hypothesis would close this exactly the way
@@ -31,10 +35,11 @@ from hypothesis import strategies as st
 from appscriptly.docx_import import (
     _SplitPoint,
     _detect_splits,
+    _docapp_children,
     _extract_paragraph_text,
+    _flatten_splits,
     _max_depth,
     _split_to_tabspec,
-    _splits_to_json,
 )
 
 # ---------------------------------------------------------------------
@@ -142,33 +147,37 @@ def test_split_to_tabspec_recurses_into_children():
     assert spec.get("children") == [{"title": "leaf", "content": ""}]
 
 
-# _splits_to_json ------------------------------------------------------
+# _docapp_children / _flatten_splits -----------------------------------
 
 
-def test_splits_to_json_empty_list_returns_empty_list():
-    assert _splits_to_json([]) == []
+def test_docapp_children_filters_only_section_breaks():
+    body = [
+        {"sectionBreak": {}},
+        {"paragraph": {"elements": []}},
+        {"table": {"tableRows": []}},
+        {"sectionBreak": {}},
+    ]
+    filtered = _docapp_children(body)
+    assert len(filtered) == 2
+    # Same object identity: elements keep their startIndex/endIndex, so
+    # split ranges can slice this list and still address the live doc.
+    assert filtered[0] is body[1]
+    assert filtered[1] is body[2]
 
 
-def test_splits_to_json_serializes_keys_for_apps_script():
-    split: _SplitPoint = {
-        "title": "T", "icon_emoji": None,
-        "ranges": [(0, 3), (5, 7)], "children": [],
+def test_flatten_splits_is_preorder():
+    leaf: _SplitPoint = {
+        "title": "leaf", "icon_emoji": None, "ranges": [(2, 2)], "children": [],
     }
-    out = _splits_to_json([split])
-    # Note JS-style keys: iconEmoji (camelCase) — Apps Script consumer.
-    assert out == [{
-        "title": "T", "iconEmoji": "", "ranges": [[0, 3], [5, 7]],
-        "children": [],
-    }]
-
-
-def test_splits_to_json_serializes_icon_when_present():
-    split: _SplitPoint = {
-        "title": "T", "icon_emoji": "\U0001f4d1",
-        "ranges": [(0, 0)], "children": [],
+    parent: _SplitPoint = {
+        "title": "parent", "icon_emoji": None, "ranges": [(0, 0)],
+        "children": [leaf],
     }
-    out = _splits_to_json([split])
-    assert out[0]["iconEmoji"] == "\U0001f4d1"
+    sibling: _SplitPoint = {
+        "title": "sibling", "icon_emoji": None, "ranges": [(3, 3)], "children": [],
+    }
+    flat = _flatten_splits([parent, sibling])
+    assert [s["title"] for s in flat] == ["parent", "leaf", "sibling"]
 
 
 # _detect_splits — unit examples ---------------------------------------
@@ -489,7 +498,7 @@ def test_property_detect_splits_strategy_echo_matches_input(body):
 
 
 # ---------------------------------------------------------------------
-# Hypothesis property tests — _max_depth & _splits_to_json roundtrip
+# Hypothesis property tests - _max_depth & _flatten_splits
 # ---------------------------------------------------------------------
 
 # Recursive SplitPoint strategy: title + optional icon + bounded ranges
@@ -548,38 +557,25 @@ def test_property_max_depth_matches_independent_recursion(splits):
 
 @given(splits=st.lists(_split_strategy, max_size=4))
 @settings(max_examples=50)
-def test_property_splits_to_json_preserves_node_count(splits):
-    """Property: ``_splits_to_json`` produces a JSON tree with the same
-    node count as the input forest (no nodes added / dropped).
-
-    Catches: a regression that drops empty-children lists or that
-    accidentally flattens nested children into siblings.
+def test_property_flatten_splits_preserves_node_count_and_parents_first(splits):
+    """Property: ``_flatten_splits`` emits every node exactly once, and
+    every parent appears before each of its children (pre-order). The
+    transplant zips this flat list against ``add_tabs_to_doc``'s created
+    tabs, so an ordering drift here would transplant sections into the
+    WRONG tabs.
     """
     def count(forest: list) -> int:
         return sum(1 + count(s["children"]) for s in forest)
 
-    def count_json(forest: list[dict]) -> int:
-        return sum(1 + count_json(s["children"]) for s in forest)
+    flat = _flatten_splits(splits)
+    assert len(flat) == count(splits)
 
-    out = _splits_to_json(splits)
-    assert count_json(out) == count(splits)
+    positions = {id(s): i for i, s in enumerate(flat)}
 
-
-@given(splits=st.lists(_split_strategy, max_size=4))
-@settings(max_examples=50)
-def test_property_splits_to_json_camelcase_icon_key(splits):
-    """Property: every JSON node uses ``iconEmoji`` (camelCase), never
-    ``icon_emoji`` (snake_case). The Apps Script consumer reads the
-    camelCase form; a key drift would silently produce un-iconed tabs.
-    """
-    def walk(forest: list[dict]):
+    def check_parents_first(forest: list) -> None:
         for node in forest:
-            assert "iconEmoji" in node, (
-                f"node missing 'iconEmoji' key: {node!r}"
-            )
-            assert "icon_emoji" not in node, (
-                f"node has unexpected snake_case 'icon_emoji': {node!r}"
-            )
-            walk(node["children"])
+            for child in node["children"]:
+                assert positions[id(node)] < positions[id(child)]
+            check_parents_first(node["children"])
 
-    walk(_splits_to_json(splits))
+    check_parents_first(splits)

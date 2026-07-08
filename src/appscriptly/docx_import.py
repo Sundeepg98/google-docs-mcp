@@ -1,39 +1,41 @@
-"""Wave E: lossless .docx → native-tabbed Google Doc.
+"""Wave E: .docx / Google Doc → native-tabbed Google Doc (pure REST).
 
 Pipeline:
   1. Drive uploads + converts .docx (preserves tables, shading, borders,
-     images, equations — full Word fidelity, Drive's converter handles it)
+     images - Drive's converter handles the Word side losslessly), or
+     copies an existing Google Doc.
   2. We identify split points by walking the converted doc's paragraph
-     stream looking for the configured heading style
-  3. REST API creates empty nested tab shells (addDocumentTab with
-     parentTabId) — one per split point, deeply nested per ``children``
-  4. We POST the split spec to the user's deployed Apps Script Web App,
-     which uses ``Element.copy()`` + ``Body.appendXxx(copy)`` to move
-     content from the primary tab into the new shells — the only path
-     that preserves drawings, equations, tables, and cell shading
-     because no REST request type can re-emit those losslessly.
+     stream looking for the configured heading style.
+  3. REST creates empty tab shells (addDocumentTab) - one per split
+     point, nested per ``children``.
+  4. The content transplant re-emits each split range into its shell
+     via ``documents.batchUpdate`` (``services/docs/content_transplant``):
+     read shape → write shape, table sync-points, explicit tabId on
+     every request. High-fidelity with a detected-and-warned loss tail
+     (equations, drawings, floating objects - see ``DROPPED_KINDS``).
+  5. Only after every new tab is built AND verified does the source
+     content leave the primary tab (tab delete, or range carve for the
+     rename/keep placeholder policies). A failed transplant rolls the
+     new shells back and trashes the working copy - the source document
+     is never left half-converted.
+
+History: steps 4-5 used to POST the split spec to a per-user Apps
+Script web app (``Element.copy()`` moves). That path never worked for
+cloud users: an API-deployed script holding a sensitive scope has no
+per-script consent grant, so Google 403s anonymous /exec requests
+before ``doPost`` runs. The REST transplant needs no script project,
+no deployment, and no consent beyond the product's own OAuth grant.
+Decision record: ``_audit/2026-07-08-tabs-architecture-decision.md``;
+root-cause spike: ``_audit/2026-07-08-exec-scope-auth-spike.md``.
 """
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
 from typing import Literal, TypedDict
-from urllib import error as urlerror
-from urllib import request as urlrequest
-from urllib.parse import urlencode
 
 from google.oauth2.credentials import Credentials
 from appscriptly.google_clients import get_service
 
-from . import user_store
-from .apps_script_hmac import (
-    SIGNATURE_PARAM,
-    TIMESTAMP_PARAM,
-    compute_signature,
-)
-from .config import get_webapp_hmac_key, get_webapp_url
-from .credentials import current_user_id_or_none
 from .services.docs.api import (
     MAX_NESTING_DEPTH,
     TabSpec,
@@ -42,6 +44,14 @@ from .services.docs.api import (
     get_doc_outline,
     rename_tab,
     set_tab_icons,
+)
+from .services.docs.content_transplant import (
+    FidelityReport,
+    TabTransplantPlan,
+    carve_source_ranges,
+    execute_tab_transplant,
+    plan_tab_transplant,
+    verify_tab_transplant,
 )
 
 PlaceholderBehavior = Literal["delete", "rename", "keep"]
@@ -92,16 +102,16 @@ def convert_docx_to_tabbed_doc(
 ) -> dict:
     """Convert a .docx OR a Google Doc into a Google Doc with native nested tabs.
 
-    Three input modes — pick the one that matches your environment:
+    Three input modes - pick the one that matches your environment:
 
     - ``docx_path``: absolute path to a local ``.docx`` on the machine
       the MCP server runs on. Works for local stdio MCP (Claude Code /
-      Claude Desktop). DOES NOT work from claude.ai cloud chat — the
+      Claude Desktop). DOES NOT work from claude.ai cloud chat - the
       remote server can't see the chat sandbox's filesystem.
     - ``drive_file_id``: Drive file ID of an already-uploaded .docx OR
       Google Doc. Use this when the document already lives on Drive.
       Note that programmatically-uploaded .docx blobs can fail Drive
-      conversion with 400 conversionUnsupportedConversionPath — if
+      conversion with 400 conversionUnsupportedConversionPath - if
       that happens from cloud chat, switch to the signed-URL flow.
     - **Signed-URL flow** (NOT a parameter here): from cloud chat,
       call ``get_signed_upload_url`` then POST the .docx bytes to
@@ -114,40 +124,19 @@ def convert_docx_to_tabbed_doc(
     remaining tabs get no icon. To set icons later (or by title
     match instead of order), use ``set_tab_icons``.
 
+    ``user_id`` is accepted for REST-route compatibility (the
+    ``/api/convert`` endpoint forwards the signed-URL caller's uid).
+    The conversion derives identity from ``creds`` alone now that the
+    per-user web-app step (which needed a per-user URL lookup) is gone.
+
     Returns ``{"doc_id", "url", "tabs", "split_strategy_used", ...}``.
     """
-    # Backward-compat: accept the old name drive_file_id as an alias.
-    if drive_file_id is not None and drive_file_id is None:
-        drive_file_id = drive_file_id
+    del user_id  # accepted for the REST route's signature; unused here
 
     if (docx_path is None) == (drive_file_id is None):
         raise ValueError(
             "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
-        )
-
-    webapp_url = _resolve_webapp_url(user_id=user_id)
-    if not webapp_url:
-        # Mode-specific guidance — telling a cloud chat user to "run the
-        # CLI" is useless, and telling a stdio user to "run the MCP tool"
-        # is the wrong setup path. Three modes:
-        #   (a) explicit user_id (REST /api/convert signed-URL caller),
-        #   (b) MCP context user (cloud chat MCP tool caller), and
-        #   (c) no user_id at all (stdio / operator-bearer REST caller).
-        # (a) and (b) both want the MCP tool guidance.
-        if user_id is not None or current_user_id_or_none() is not None:
-            raise RuntimeError(
-                "Workspace automation runtime not yet installed for your "
-                "account. Run the gdocs_install_automation tool first; "
-                "it provisions the runtime in your Workspace so Claude "
-                "can build persistent workflows (including the lossless "
-                "retrofit path this conversion needs)."
-            )
-        raise RuntimeError(
-            "Apps Script Web App URL not configured. "
-            "Run `google-docs-mcp setup-apps-script` for setup instructions, "
-            "then save the deployment URL with "
-            "`google-docs-mcp configure-webapp <URL>`."
         )
 
     # 1. Get the source content into a Google Doc we own.
@@ -183,7 +172,8 @@ def convert_docx_to_tabbed_doc(
     fetched = docs.documents().get(
         documentId=doc_id, includeTabsContent=True
     ).execute()
-    body_content = fetched["tabs"][0]["documentTab"]["body"]["content"]
+    source_tab = fetched["tabs"][0]["documentTab"]
+    body_content = source_tab["body"]["content"]
 
     splits, strategy_used = _detect_splits(body_content, split_by)
     if not splits:
@@ -205,7 +195,7 @@ def convert_docx_to_tabbed_doc(
             if i < len(tab_icons) and tab_icons[i]:
                 split["icon_emoji"] = tab_icons[i]
 
-    # 3. Cap nesting depth defensively — _detect_splits won't currently
+    # 3. Cap nesting depth defensively - _detect_splits won't currently
     # produce nested splits, but a future strategy might.
     max_depth = _max_depth(splits)
     if max_depth >= MAX_NESTING_DEPTH:
@@ -214,38 +204,82 @@ def convert_docx_to_tabbed_doc(
             f"Google Docs UI allows at most {MAX_NESTING_DEPTH}."
         )
 
-    # 4. REST creates the empty tab shells at root level — siblings of
+    # 4. REST creates the empty tab shells at root level - siblings of
     # the placeholder primary tab, not children of it. Gives the user a
     # sidebar of top-level section tabs instead of one collapsed root.
     primary_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
     shell_specs = [_split_to_tabspec(s) for s in splits]
-    add_tabs_to_doc(creds, doc_id, shell_specs)
+    created_tabs = add_tabs_to_doc(creds, doc_id, shell_specs)["tabs"]
 
-    # 5. Apps Script moves content into the shells with full fidelity.
-    # v2.0c: sign the request with the per-user HMAC key so the deployed
-    # /exec Web App (access=ANYONE_ANONYMOUS) authenticates it. The key is
-    # resolved the same way the URL is (per-user from user_store, or local
-    # config in stdio mode) — both were provisioned together at setup.
-    payload = {
-        "docId": doc_id,
-        "splitTree": _splits_to_json(splits),
-    }
-    hmac_key = _resolve_webapp_hmac_key(user_id=user_id)
-    response = _call_webapp(webapp_url, payload, hmac_key=hmac_key)
-
-    if not response.get("success", False):
+    # 5. Content transplant: plan every tab first (pure - planning IS
+    # the fidelity preflight, so the warning list is complete before
+    # any write), then execute, then VERIFY. Split ranges are
+    # DocApp-child indices, so they slice the same sectionBreak-
+    # filtered list _detect_splits walked.
+    docapp_children = _docapp_children(body_content)
+    flat_splits = _flatten_splits(splits)
+    if len(flat_splits) != len(created_tabs):
         raise RuntimeError(
-            f"Apps Script restructure failed at stage "
-            f"'{response.get('stage', 'unknown')}': "
-            f"{response.get('error', 'no error message returned')}"
+            f"shell creation returned {len(created_tabs)} tabs for "
+            f"{len(flat_splits)} split points"
         )
 
-    # 6. Apply post-restructure icons by title match. MUST run BEFORE
-    # the placeholder delete — Google returns 500 on the icon-apply
+    report = FidelityReport()
+    if sum(1 for e in body_content if "sectionBreak" in e) > 1:
+        report.count("multi_section")
+
+    plans: list[tuple[dict, TabTransplantPlan]] = []
+    for split, tab in zip(flat_splits, created_tabs):
+        elements = [
+            element
+            for lo, hi in split["ranges"]
+            for element in docapp_children[lo : hi + 1]
+        ]
+        plan = plan_tab_transplant(
+            elements,
+            lists=source_tab.get("lists") or {},
+            inline_objects=source_tab.get("inlineObjects") or {},
+            dest_tab_id=tab["tab_id"],
+            named_styles=source_tab.get("namedStyles"),
+            document_style=source_tab.get("documentStyle"),
+            report=report,
+        )
+        plans.append((tab, plan))
+
+    moved_blocks = 0
+    try:
+        # One fetch covers every shell's starting state: each tab has
+        # its own index space, so writing into one tab does not move
+        # another tab's insertion point (table sync-points inside the
+        # executor re-fetch on their own).
+        shells_doc = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+        for tab, plan in plans:
+            moved_blocks += execute_tab_transplant(
+                docs, doc_id, tab["tab_id"], plan, document=shells_doc
+            )
+        verify_doc = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+        for tab, plan in plans:
+            verify_tab_transplant(verify_doc, tab["tab_id"], plan)
+    except Exception as e:
+        _rollback_failed_transplant(
+            creds, docs, doc_id, [t["tab_id"] for t, _ in plans]
+        )
+        raise RuntimeError(
+            f"Tab transplant failed while converting {source_label}: {e}. "
+            "The partially-built tabs were removed and the working copy "
+            "was trashed; the source document is untouched."
+        ) from e
+
+    # 6. Apply post-transplant icons by title match. MUST run BEFORE
+    # the placeholder delete - Google returns 500 on the icon-apply
     # batchUpdate if we delete a tab and then immediately submit
     # another tab-touching batch in the same logical sequence (server
     # state hasn't settled). Race confirmed empirically on 14-section
-    # converts. Order is: Apps Script → set_tab_icons → delete/rename.
+    # converts. Order is: transplant → set_tab_icons → delete/rename.
     icons_result: dict | None = None
     if icons_by_title:
         try:
@@ -253,51 +287,57 @@ def convert_docx_to_tabbed_doc(
         except Exception as e:  # noqa: BLE001
             icons_result = {"error": str(e)}
 
-    # 7. Apply the user's chosen placeholder-tab policy:
-    #    delete: remove the now-empty placeholder so the sidebar shows
-    #            only section tabs (default; cleanest)
-    #    rename: keep it but rename to placeholder_title with an icon
-    #            (useful if you want a landing/intro tab)
-    #    keep:   leave as "Tab 1", do nothing (caller will edit manually)
+    # 7. Apply the user's chosen placeholder-tab policy. The source
+    # content leaves the primary tab only HERE, after the verify pass
+    # (the transactional contract):
+    #    delete: remove the whole placeholder tab, content goes with
+    #            it, so the sidebar shows only section tabs (default)
+    #    rename: carve the transplanted ranges out, then rename to
+    #            placeholder_title with an icon (landing/intro tab)
+    #    keep:   carve the transplanted ranges out, leave it as "Tab 1"
     placeholder_warning: str | None = None
     if placeholder_behavior == "delete":
         try:
             delete_tab(creds, doc_id, primary_tab_id)
         except Exception as e:  # noqa: BLE001
             placeholder_warning = f"could not delete placeholder tab: {e}"
-    elif placeholder_behavior == "rename":
+    else:
         try:
-            rename_tab(
-                creds,
+            carve_source_ranges(
+                docs,
                 doc_id,
                 primary_tab_id,
-                title=placeholder_title,
-                icon_emoji=placeholder_icon,
+                docapp_children,
+                [r for s in flat_splits for r in s["ranges"]],
             )
         except Exception as e:  # noqa: BLE001
-            placeholder_warning = f"could not rename placeholder tab: {e}"
+            placeholder_warning = (
+                f"could not carve moved content out of the placeholder tab: {e}"
+            )
+        if placeholder_behavior == "rename":
+            try:
+                rename_tab(
+                    creds,
+                    doc_id,
+                    primary_tab_id,
+                    title=placeholder_title,
+                    icon_emoji=placeholder_icon,
+                )
+            except Exception as e:  # noqa: BLE001
+                placeholder_warning = f"could not rename placeholder tab: {e}"
 
-    # Split the Apps Script warnings into real warnings (problems the
-    # caller should act on) vs info notes (cosmetic things the API
-    # forces on us). The "remove_failed:N:...Can't remove the last
-    # paragraph in a document section." warning is structural —
-    # Google Docs requires at least one paragraph per section, so the
-    # script can't fully empty the placeholder tab. Always fires; never
-    # actionable. Moving it to ``info`` keeps ``warnings`` meaningful.
-    raw_warnings = list(response.get("warnings", []))
-    info: list[str] = []
-    warnings: list[str] = []
-    for w in raw_warnings:
-        if "Can't remove the last paragraph" in w:
-            info.append(w)
-        else:
-            warnings.append(w)
+    # Fidelity split: DROPPED content (equations, drawings, ...) goes
+    # in warnings - the caller should surface it. Visible-but-carried
+    # degradations (horizontal-rule borders, numbering restarts) are
+    # info notes.
+    warnings: list[str] = list(report.warnings)
+    info: list[str] = list(report.notes)
     if placeholder_warning:
         warnings.append(placeholder_warning)
 
     # 8. Optional idempotency: trash the prior version so iterating on
     # a doc doesn't leave a trail of orphaned copies in Drive. Failures
-    # here are non-fatal — surface as info, not warning.
+    # here are non-fatal - surface as info, not warning.
     replaced_note: str | None = None
     if replace_doc_id:
         try:
@@ -310,21 +350,19 @@ def convert_docx_to_tabbed_doc(
             info.append(f"could not trash replace_doc_id {replace_doc_id}: {e}")
 
     # 9. Refresh tabs from the live doc so the response reflects FINAL
-    # state — including renamed placeholder, applied icons, and any
-    # tab IDs assigned by Google. The Apps Script returns a snapshot
-    # taken BEFORE steps 6 (icons) and 7 (placeholder rename/delete)
-    # ran, so its titles + missing icon_emoji are stale.
+    # state - including renamed placeholder, applied icons, and any
+    # tab IDs assigned by Google.
     try:
         outline = get_doc_outline(creds, doc_id)
-        # Keep ``id`` as alias for ``tab_id`` so callers that already
-        # use the Apps-Script-snapshot shape don't break.
+        # Keep ``id`` as alias for ``tab_id`` so callers that predate
+        # the REST transplant (Apps-Script-snapshot shape) don't break.
         for t in outline["tabs"]:
             t["id"] = t["tab_id"]
         final_tabs: list[dict] = outline["tabs"]
     except Exception:  # noqa: BLE001
-        # Fallback: keep the pre-finalization snapshot if the refresh
-        # fails. Better stale data than no response.
-        final_tabs = response.get("tabs", [])
+        # Fallback: report the tabs we created if the refresh fails.
+        # Better slightly-stale data than no response.
+        final_tabs = [{**t, "id": t["tab_id"]} for t in created_tabs]
 
     result = {
         "doc_id": doc_id,
@@ -334,7 +372,7 @@ def convert_docx_to_tabbed_doc(
         # the caller can verify the lifecycle from the payload alone).
         "action": "replaced" if replace_doc_id else "created",
         "tabs": final_tabs,
-        "moved_children": response.get("movedChildren", 0),
+        "moved_children": moved_blocks,
         "warnings": warnings,
         "info": info,
         "split_strategy_used": strategy_used,
@@ -346,45 +384,54 @@ def convert_docx_to_tabbed_doc(
     return result
 
 
-def _resolve_webapp_url(*, user_id: str | None = None) -> str | None:
-    """HTTP mode: per-user URL from user_store. Stdio mode: local config.
+def _rollback_failed_transplant(
+    creds: Credentials, docs, doc_id: str, shell_tab_ids: list[str]
+) -> None:
+    """Best-effort cleanup after a mid-transplant failure.
 
-    Resolution order:
-      1. Explicit ``user_id`` argument — v2.1 REST signed-URL callers
-         pass this in (extracted from the validated ``uid`` query param).
-         Closes the v1.x deferral where REST always landed on the
-         operator's URL.
-      2. ``current_user_id_or_none()`` — MCP tool callers in HTTP mode
-         have a FastMCP auth context; pull the Google ``sub`` from there.
-      3. Fall through to ``get_webapp_url()`` — operator's local config,
-         used by stdio MCP and by REST bearer-header callers (intentional;
-         see ``convert_endpoint`` for the dispatch rationale).
+    Order matters for the failure story: deleting the shells first
+    restores the working copy to a plain single-tab conversion (so
+    even if the trash step fails, nothing shell-riddled survives),
+    then the copy itself is trashed (it was created by this call; the
+    user's original file was never touched). Every step swallows its
+    own errors - the caller re-raises the original failure.
     """
-    effective_user_id = user_id or current_user_id_or_none()
-    if effective_user_id is not None:
-        return user_store.get_state(effective_user_id).get("apps_script_url")
-    return get_webapp_url()
+    for tab_id in shell_tab_ids:
+        try:
+            docs.documents().batchUpdate(
+                documentId=doc_id,
+                body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
+            ).execute()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        trash_drive_file(creds, doc_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
-def _resolve_webapp_hmac_key(*, user_id: str | None = None) -> str | None:
-    """Resolve the per-user (or local) Apps Script HMAC key.
+def _docapp_children(body_content: list[dict]) -> list[dict]:
+    """Body children in the DocApp index space (the coordinate system
+    split ranges use): every element except ``sectionBreak``, a
+    REST-only structural record that Apps Script's ``Body.getChild``
+    never counted. ``_detect_splits`` applies the SAME filter - the two
+    must stay in lockstep or range indices drift."""
+    return [elem for elem in body_content if "sectionBreak" not in elem]
 
-    Mirrors ``_resolve_webapp_url`` exactly so the key and URL come from the
-    SAME source (they're provisioned together at setup):
-      1. explicit ``user_id`` → that user's ``apps_script_hmac_key`` row;
-      2. MCP auth-context user (HTTP mode) → same, via
-         ``current_user_id_or_none()``;
-      3. stdio / operator-bearer → local ``config.get_webapp_hmac_key()``.
 
-    Returns ``None`` if no key is provisioned. ``_call_webapp`` then raises a
-    clear "re-run setup" error rather than sending an unsigned request the
-    Web App will reject with ``stage:'auth'`` — fail with the actionable
-    message, not the opaque one.
-    """
-    effective_user_id = user_id or current_user_id_or_none()
-    if effective_user_id is not None:
-        return user_store.get_state(effective_user_id).get("apps_script_hmac_key")
-    return get_webapp_hmac_key()
+def _flatten_splits(splits: list[_SplitPoint]) -> list[_SplitPoint]:
+    """Pre-order flatten of the split forest - the same traversal order
+    ``_flatten_tab_tree`` applies to the shell TabSpecs, so position i
+    here corresponds to created tab i."""
+    out: list[_SplitPoint] = []
+
+    def walk(nodes: list[_SplitPoint]) -> None:
+        for node in nodes:
+            out.append(node)
+            walk(node["children"])
+
+    walk(splits)
+    return out
 
 
 def _detect_splits(
@@ -402,14 +449,11 @@ def _detect_splits(
                 return splits, strategy
         return [], "auto"
 
-    # Filter to elements that DocumentApp.Body.getChild() exposes.
-    # ``sectionBreak`` is a REST-only structural element (it describes the
-    # section's page properties) and Apps Script does NOT count it as a
-    # body child. If we leave it in, our indices run one ahead of what
-    # Apps Script sees and the last range gets rejected as out-of-bounds.
-    docapp_children = [
-        elem for elem in body_content if "sectionBreak" not in elem
-    ]
+    # Filter to elements that DocumentApp.Body.getChild() exposes -
+    # see _docapp_children. Keeping the range index space aligned with
+    # that filtered list is what lets the transplant slice
+    # docapp_children directly.
+    docapp_children = _docapp_children(body_content)
 
     splits: list[_SplitPoint] = []
     target_style = _STYLE_FOR_SPLIT.get(split_by)
@@ -477,7 +521,7 @@ def _max_depth(splits: list[_SplitPoint]) -> int:
 def _split_to_tabspec(split: _SplitPoint) -> TabSpec:
     """Convert a split point into a TabSpec for tab-shell creation.
 
-    Tab shells are created empty — content moves in via Apps Script.
+    Tab shells are created empty - content moves in via the transplant.
     """
     spec: TabSpec = {"title": split["title"], "content": ""}
     if split["icon_emoji"]:
@@ -485,133 +529,3 @@ def _split_to_tabspec(split: _SplitPoint) -> TabSpec:
     if split["children"]:
         spec["children"] = [_split_to_tabspec(c) for c in split["children"]]
     return spec
-
-
-def _splits_to_json(splits: list[_SplitPoint]) -> list[dict]:
-    """Serialize splits for the Apps Script payload — JSON-friendly keys."""
-    return [
-        {
-            "title": s["title"],
-            "iconEmoji": s["icon_emoji"] or "",
-            "ranges": [[lo, hi] for lo, hi in s["ranges"]],
-            "children": _splits_to_json(s["children"]),
-        }
-        for s in splits
-    ]
-
-
-def _body_is_json(text: str) -> bool:
-    """True if ``text`` parses as JSON (any JSON value).
-
-    Used to tell a Google HTML door page apart from an actual script
-    reply when classifying an HTTP 403 from the ``/exec`` endpoint.
-    """
-    try:
-        json.loads(text)
-    except ValueError:
-        return False
-    return True
-
-
-def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
-    """POST JSON to the Apps Script Web App and parse the JSON reply.
-
-    SSRF posture (reviewed): ``url`` is NOT attacker-influenceable to an
-    arbitrary/internal host. It comes from ``_resolve_webapp_url`` which is
-    either (a) per-user ``apps_script_url`` from ``user_store`` — gated by
-    ``user_store._valid_gas_url`` on BOTH write (save_state raises) and read
-    (get_state drops tampered values), which pins ``scheme=https`` +
-    ``host=script.google.com`` + the ``/macros/s/<id>/(exec|dev)`` path — or
-    (b) the operator's local ``config.get_webapp_url`` (single-tenant). A
-    user therefore cannot steer this POST at ``169.254.169.254``,
-    ``localhost``, a private range, or a foreign host: the only reachable
-    target is ``script.google.com``. So no private-IP / redirect / scheme
-    guard is added here — it would be redundant against a host-pinned value
-    (adding one would also not be reachable by any test without first
-    defeating the storage-layer validator). If a future change ever lets a
-    raw, unvalidated URL reach this function, add an SSRF guard at that new
-    entry point.
-
-    REQUEST AUTHENTICATION (query-param transport): the deployed Web App is
-    ``access=ANYONE_ANONYMOUS``, so every request is signed with the per-user
-    HMAC key (``hmac_key``). We compute ``HMAC-SHA256(key, "<ts>.<body>")``
-    over the EXACT body bytes sent and attach it to the ``/exec`` URL as
-    ``?mcp_ts=<unix seconds>&mcp_sig=<hex>``; ``restructure.gs::doPost``
-    reads both from ``e.parameter``, recomputes and constant-time-compares
-    before acting. Query params are the ONLY transport the script can see:
-    the Apps Script runtime never delivers HTTP request headers to
-    ``doPost(e)``, so a header-borne signature would be stripped in flight
-    and the fail-closed verify would reject every request. The signature is
-    time-bound (5-minute skew window on the script side) and body-bound,
-    which caps the replay value of a logged URL. ``hmac_key`` is required: a
-    missing key means setup never provisioned one (or a tampered value was
-    dropped on read), so we fail with an actionable message instead of
-    sending an unsigned request the script would reject with ``stage:'auth'``.
-    """
-    if not hmac_key:
-        raise RuntimeError(
-            "Apps Script Web App HMAC key not provisioned for this account. "
-            "Re-run the gdocs_install_automation tool (cloud) or "
-            "`google-docs-mcp setup-apps-script` (stdio) to provision the "
-            "per-user signing key. The /exec Web App rejects unsigned "
-            "requests."
-        )
-    # Sign over the EXACT bytes we transmit. json.dumps once, reuse for both
-    # the signature and the wire body so the server signs an identical string.
-    body_str = json.dumps(payload)
-    data = body_str.encode("utf-8")
-    timestamp = str(int(time.time()))
-    signature = compute_signature(hmac_key, timestamp=timestamp, body=body_str)
-    # Signature + timestamp travel as QUERY PARAMS: Apps Script surfaces the
-    # query string to doPost as e.parameter but never the HTTP headers. The
-    # validated /macros/s/<id>/(exec|dev) URL carries no query string of its
-    # own, but stay robust to one.
-    signed_url = url + ("&" if "?" in url else "?") + urlencode(
-        {TIMESTAMP_PARAM: timestamp, SIGNATURE_PARAM: signature}
-    )
-    req = urlrequest.Request(
-        signed_url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=300) as resp:
-            body = resp.read().decode("utf-8")
-    except urlerror.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        if e.code == 403 and not _body_is_json(body):
-            # Google's access-denied door page, not a script reply: the
-            # request never reached doPost. A deployment DECAYS into this
-            # state when its authorization is severed (observed live
-            # after the deploying user revokes then re-grants OAuth
-            # consent) — the setup pipeline detects and repairs it via
-            # ``setup_apps_script.probe_webapp_health``, so point the
-            # user at a re-install instead of dumping the HTML.
-            raise RuntimeError(
-                "The Apps Script Web App deployment is not serving; "
-                "Google returned an access page instead of running the "
-                "script (HTTP 403). The deployment's authorization has "
-                "likely decayed (this happens after revoking and "
-                "re-granting Google consent). Re-run the "
-                "as_install_automation tool (cloud) or `google-docs-mcp "
-                "setup-apps-script` (stdio) to repair the deployment."
-            ) from e
-        raise RuntimeError(
-            f"Apps Script Web App returned HTTP {e.code}: {body[:500]}"
-        ) from e
-    except urlerror.URLError as e:
-        raise RuntimeError(
-            f"Could not reach Apps Script Web App at {url}: {e.reason}"
-        ) from e
-
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            "Apps Script Web App did not return JSON. "
-            "Common cause: the script throws an uncaught error before "
-            "the JSON response is built, so Google returns an HTML "
-            "error page. First 500 chars of response:\n"
-            f"{body[:500]}"
-        ) from e

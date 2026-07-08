@@ -54,6 +54,10 @@ from .tab_tree import (
 MAX_NESTING_DEPTH = 3  # Google Docs UI hard limit: root + 2 child levels
 
 
+def _doc_url(doc_id: str) -> str:
+    return f"https://docs.google.com/document/d/{doc_id}/edit"
+
+
 def make_doc_with_tabs(
     creds: Credentials, title: str, tabs: list[TabSpec]
 ) -> dict:
@@ -99,7 +103,7 @@ def make_doc_with_tabs(
 
     return {
         "doc_id": doc_id,
-        "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        "url": _doc_url(doc_id),
         "tabs": [
             {
                 "title": spec["title"],
@@ -187,10 +191,18 @@ def add_tabs_to_doc(
     Same nesting rules apply (max 3 levels). When ``parent_tab_id`` is
     given, the new tabs become its children; otherwise they become
     root-level siblings of existing root tabs.
+
+    Returns ``{"doc_id", "url", "tabs"}`` - the same envelope as
+    ``make_doc_with_tabs``, which is also what
+    ``GDOCS_ADD_TABS_OUTPUT_SCHEMA`` requires. Returning only ``tabs``
+    made FastMCP output validation fail EVERY ``gdocs_add_tabs`` call
+    AFTER both mutating batchUpdates had landed, so a client retrying
+    the "failed" call duplicated the tabs (found live, 2026-07-02
+    demo).
     """
     flat = _flatten_tab_tree(tabs)
     if not flat:
-        return {"tabs": []}
+        return {"doc_id": doc_id, "url": _doc_url(doc_id), "tabs": []}
 
     max_depth = max((d for d, _, _ in flat), default=0)
 
@@ -274,6 +286,8 @@ def add_tabs_to_doc(
         ).execute()
 
     return {
+        "doc_id": doc_id,
+        "url": _doc_url(doc_id),
         "tabs": [
             {
                 "title": spec["title"],
