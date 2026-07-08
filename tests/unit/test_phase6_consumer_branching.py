@@ -1,17 +1,18 @@
 """Phase 6 mode-branching tests.
 
 server._get_credentials() (re-exported from _tool_helpers.py since
-M3 Phase C / v2.1.5) and docx_import._resolve_webapp_url() must
-branch correctly on transport mode:
+M3 Phase C / v2.1.5) must branch correctly on transport mode:
 
 - HTTP / multi-tenant (current_user_id_or_none() returns sub):
-  per-user resolver, per-user URL from user_store.
-- Stdio / single-tenant (returns None): operator's cached creds,
-  operator's URL from local config.
+  per-user resolver.
+- Stdio / single-tenant (returns None): operator's cached creds.
 
-Without these guards a multi-tenant Fly deploy would route every
-cloud chat user's API calls through the operator's Google identity
-and Apps Script Web App — i.e. exactly the v1.0 broken state.
+Without this guard a multi-tenant Fly deploy would route every cloud
+chat user's API calls through the operator's Google identity, exactly
+the v1.0 broken state. (The sibling docx_import._resolve_webapp_url
+branching tests died with that resolver: the tabs pipeline is pure
+REST now and has no per-user web-app URL to route. See
+_audit/2026-07-08-tabs-architecture-decision.md.)
 
 **M3 Phase C note:** ``_get_credentials`` moved to
 ``appscriptly._tool_helpers`` (the 3-consumer extraction trigger:
@@ -133,77 +134,3 @@ def test_get_credentials_http_mode_NeedsReauth_raises_ToolError_with_url(
     assert "[Click here to authorize]" in str(exc.value)
 
 
-# ---------------------------------------------------------------
-# docx_import._resolve_webapp_url() mode branching
-# ---------------------------------------------------------------
-
-
-def test_resolve_webapp_url_stdio_mode_returns_local_config_value(isolated_state):
-    """No auth context → operator's local config URL (stdio behavior)."""
-    from appscriptly import config, docx_import
-
-    config.save({"apps_script_webapp_url": "https://operator.example/exec"})
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none", return_value=None,
-    ):
-        url = docx_import._resolve_webapp_url()
-
-    assert url == "https://operator.example/exec"
-
-
-def test_resolve_webapp_url_http_mode_returns_per_user_value(isolated_state):
-    """Auth context present + per-user URL in user_store → that URL."""
-    from appscriptly import docx_import, user_store
-
-    user_store.save_state(
-        "user-alice",
-        {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"},
-    )
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none",
-        return_value="user-alice",
-    ):
-        url = docx_import._resolve_webapp_url()
-
-    assert url == "https://script.google.com/macros/s/ALICE/exec"
-
-
-def test_resolve_webapp_url_http_mode_returns_None_when_user_has_no_setup(
-    isolated_state,
-):
-    """User authorized but never ran gdocs_setup_apps_script — URL absent.
-    Returns None so the caller raises the HTTP-specific 'run setup' error."""
-    from appscriptly import docx_import
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none",
-        return_value="user-new",
-    ):
-        url = docx_import._resolve_webapp_url()
-
-    assert url is None
-
-
-def test_http_mode_isolation_alice_cannot_see_bobs_url(isolated_state):
-    """Cross-user isolation guard: alice's webapp URL lookup must NEVER
-    return bob's URL. Without this, a multi-tenant deploy would route
-    cross-user."""
-    from appscriptly import docx_import, user_store
-
-    user_store.save_state("alice", {"apps_script_url": "https://script.google.com/macros/s/ALICE/exec"})
-    user_store.save_state("bob", {"apps_script_url": "https://script.google.com/macros/s/BOB/exec"})
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none", return_value="alice",
-    ):
-        alice_url = docx_import._resolve_webapp_url()
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none", return_value="bob",
-    ):
-        bob_url = docx_import._resolve_webapp_url()
-
-    assert alice_url == "https://script.google.com/macros/s/ALICE/exec"
-    assert bob_url == "https://script.google.com/macros/s/BOB/exec"
-    assert alice_url != bob_url

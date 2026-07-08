@@ -276,8 +276,9 @@ def test_convert_endpoint_uses_per_user_creds_for_signed_url_caller():
     assert captured["per_user_called_with"] == "user-A"
     assert "operator_called" not in captured
     assert captured["convert_creds"] == "per-user-creds-sentinel"
-    # And the user_id is plumbed all the way into _convert_docx so
-    # _resolve_webapp_url can pick the right tenant's Apps Script URL.
+    # And the user_id is plumbed all the way into _convert_docx (kept
+    # for route-signature stability; the pipeline itself is identified
+    # by the per-user creds).
     assert captured["convert_user_id"] == "user-A"
 
 
@@ -354,74 +355,8 @@ def test_convert_endpoint_bearer_header_still_uses_operator_creds():
     assert resp.status_code == 200, resp.text
     assert captured.get("operator_called") is True
     assert captured["convert_creds"] == "operator-creds-sentinel"
-    # Bearer-header callers pass user_id=None — _resolve_webapp_url
-    # then falls through to operator config (intended).
+    # Bearer-header callers pass user_id=None (operator path).
     assert captured["convert_user_id"] is None
-
-
-# ---------------------------------------------------------------------
-# _resolve_webapp_url tenant routing (was R3 finding A4)
-# ---------------------------------------------------------------------
-
-
-def test_resolve_webapp_url_routes_to_explicit_user_id():
-    """When called with explicit user_id (REST path), pick that user's
-    apps_script_url from user_store — NOT current_user_id_or_none()'s
-    answer and NOT the operator's local config."""
-    from appscriptly import user_store
-    from appscriptly.docx_import import _resolve_webapp_url
-
-    user_store.save_state(
-        "user-A",
-        {"apps_script_url": "https://script.google.com/macros/s/USER_A_DEPLOY/exec"},
-    )
-    user_store.save_state(
-        "user-B",
-        {"apps_script_url": "https://script.google.com/macros/s/USER_B_DEPLOY/exec"},
-    )
-
-    # Explicit user_id wins over current_user_id_or_none.
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none",
-        return_value="user-B",
-    ):
-        resolved = _resolve_webapp_url(user_id="user-A")
-    assert "USER_A_DEPLOY" in resolved
-
-
-def test_resolve_webapp_url_falls_back_to_mcp_context_when_no_user_id():
-    """Without explicit user_id, use current_user_id_or_none — the MCP
-    tool path (HTTP mode)."""
-    from appscriptly import user_store
-    from appscriptly.docx_import import _resolve_webapp_url
-
-    user_store.save_state(
-        "user-B",
-        {"apps_script_url": "https://script.google.com/macros/s/USER_B_DEPLOY/exec"},
-    )
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none",
-        return_value="user-B",
-    ):
-        resolved = _resolve_webapp_url(user_id=None)
-    assert "USER_B_DEPLOY" in resolved
-
-
-def test_resolve_webapp_url_falls_back_to_operator_config_outside_auth():
-    """No explicit user_id AND no MCP auth context — fall through to
-    operator's local config (stdio mode)."""
-    from appscriptly.docx_import import _resolve_webapp_url
-
-    with patch(
-        "appscriptly.docx_import.current_user_id_or_none",
-        return_value=None,
-    ), patch(
-        "appscriptly.docx_import.get_webapp_url",
-        return_value="https://script.google.com/macros/s/OPERATOR_DEPLOY/exec",
-    ):
-        resolved = _resolve_webapp_url()
-    assert "OPERATOR_DEPLOY" in resolved
 
 
 # ---------------------------------------------------------------------

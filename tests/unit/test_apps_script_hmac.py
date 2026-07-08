@@ -1,20 +1,21 @@
 """Tests for the Apps Script /exec HMAC verify-path (v2.0c).
 
-Covers the three legs of the HMAC fix end-to-end:
+Covers the surviving legs of the HMAC surface:
 
   * PROVISION — ``apps_script_hmac.generate_hmac_key`` shape +
     ``inject_hmac_into_source`` round-trip and its fail-loud guard; the
     setup-time read-or-create persistence (stdio config + cloud user_store).
-  * SIGN — ``compute_signature`` determinism + the exact wire scheme;
-    ``docx_import._call_webapp`` signs the ``/exec`` URL query string
-    (``mcp_ts`` + ``mcp_sig``) and refuses to send unsigned. Query params
-    are the ONLY viable transport: the Apps Script runtime never exposes
-    HTTP request headers to ``doPost(e)`` (the event has ``parameter`` /
-    ``parameters`` / ``postData`` / ``queryString``, no ``headers``), so a
-    header-borne signature is silently dropped before the script sees it.
+  * SIGN: ``compute_signature`` determinism + the exact wire scheme.
   * VERIFY (parity) — the signing message the Python side builds is the
     same one ``restructure.gs::_verifyHmac`` recomputes (``"<ts>.<body>"``),
     asserted structurally so the two implementations can't silently drift.
+
+The tabs pipeline no longer POSTs to /exec at all (the REST content
+transplant replaced ``docx_import._call_webapp``; see
+``_audit/2026-07-08-tabs-architecture-decision.md``), so the
+_call_webapp transport tests were removed with that function. The
+signing scheme itself stays pinned here while ``restructure.gs`` and
+the setup path survive (their removal is the follow-up teardown PR).
 
 The Apps Script side is JavaScript; scheme parity is pinned structurally
 here and its BEHAVIOR is executed for real under Node by
@@ -24,10 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac as _hmac
-import json
-import time
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 
@@ -167,104 +165,6 @@ def test_restructure_gs_fails_closed_when_unconfigured():
     accept unsigned traffic."""
     gs = _RESTRUCTURE_GS.read_text(encoding="utf-8")
     assert "MCP_HMAC_REQUIRED !== 'true'" in gs
-
-
-# ---------------------------------------------------------------------
-# _call_webapp transport behavior: sign the query string, never headers
-# ---------------------------------------------------------------------
-
-
-class _CapturedResponse:
-    """Minimal stand-in for the urlopen context-manager response."""
-
-    def __init__(self, payload: dict):
-        self._body = json.dumps(payload).encode("utf-8")
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
-def _capture_webapp_request(monkeypatch):
-    """Patch urlopen inside docx_import; return (module, captured-dict)."""
-    from appscriptly import docx_import
-
-    captured: dict = {}
-
-    def _fake_urlopen(req, timeout=None):
-        captured["req"] = req
-        return _CapturedResponse({"success": True, "stage": "complete"})
-
-    monkeypatch.setattr(docx_import.urlrequest, "urlopen", _fake_urlopen)
-    return docx_import, captured
-
-
-def test_call_webapp_signs_via_query_params(monkeypatch):
-    """Apps Script exposes NO request headers to ``doPost`` (the event has
-    no ``headers`` field), so the ONLY transport the deployed verify can
-    read is the query string. ``_call_webapp`` must put a fresh unix
-    timestamp (``mcp_ts``) and the HMAC signature (``mcp_sig``) on the
-    ``/exec`` URL, and the signature must verify over the EXACT body bytes
-    transmitted (the same recompute ``restructure.gs::_verifyHmac`` does).
-    """
-    docx_import, captured = _capture_webapp_request(monkeypatch)
-    key = "ab" * 32
-    out = docx_import._call_webapp(
-        "https://script.google.com/macros/s/XYZ/exec",
-        {"docId": "D", "splitTree": []},
-        hmac_key=key,
-    )
-    assert out == {"success": True, "stage": "complete"}
-
-    req = captured["req"]
-    split = urlsplit(req.full_url)
-    q = dict(parse_qsl(split.query))
-    assert "mcp_ts" in q and "mcp_sig" in q, (
-        f"signature/timestamp query params missing from signed URL: "
-        f"{req.full_url!r} (Apps Script cannot read any other transport)."
-    )
-    body = req.data.decode("utf-8")
-    assert q["mcp_sig"] == H.compute_signature(
-        key, timestamp=q["mcp_ts"], body=body
-    )
-    # Timestamp is fresh unix seconds (well inside the script's 5-min skew).
-    assert abs(int(q["mcp_ts"]) - time.time()) < 60
-    # The signed URL still targets the untouched /exec endpoint.
-    assert split.scheme == "https"
-    assert split.netloc == "script.google.com"
-    assert split.path == "/macros/s/XYZ/exec"
-
-
-def test_call_webapp_does_not_send_signature_headers(monkeypatch):
-    """The header transport is dead: Apps Script strips HTTP headers before
-    ``doPost`` sees the event, so an X-MCP-* header would silently
-    un-authenticate every request. Only Content-Type remains a header."""
-    docx_import, captured = _capture_webapp_request(monkeypatch)
-    docx_import._call_webapp(
-        "https://script.google.com/macros/s/XYZ/exec",
-        {"docId": "D", "splitTree": []},
-        hmac_key="ab" * 32,
-    )
-    header_names = {k.lower() for k in captured["req"].headers}
-    assert "x-mcp-signature" not in header_names
-    assert "x-mcp-timestamp" not in header_names
-
-
-def test_call_webapp_still_refuses_to_send_unsigned(monkeypatch):
-    """No provisioned key = no request at all (fail loud, nothing sent)."""
-    docx_import, captured = _capture_webapp_request(monkeypatch)
-    with pytest.raises(RuntimeError, match="HMAC key not provisioned"):
-        docx_import._call_webapp(
-            "https://script.google.com/macros/s/XYZ/exec",
-            {"docId": "D"},
-            hmac_key=None,
-        )
-    assert "req" not in captured  # nothing went out on the wire
 
 
 # ---------------------------------------------------------------------

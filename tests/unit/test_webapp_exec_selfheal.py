@@ -19,7 +19,12 @@ Coverage here:
    HEALTHY reuse / DEAD full re-provision / UNKNOWN no-thrash /
    still-DEAD-after-recut raises / cold start never probes.
 3. Ledger wiring — local path (``setup_apps_script_auto``) mirror.
-4. ``_call_webapp``'s actionable 403-door-page error.
+
+(The former section 4, ``_call_webapp``'s 403-door classifier, was
+removed with ``_call_webapp`` itself: the tabs pipeline no longer
+POSTs to /exec. The setup/probe machinery above survives until the
+post-review teardown PR; see
+_audit/2026-07-08-tabs-architecture-decision.md.)
 """
 from __future__ import annotations
 
@@ -429,65 +434,8 @@ def test_local_dead_cached_deployment_triggers_full_reprovision(
     assert mock_local_setup["cfg_store"]["apps_script_hmac_key"] == key_before
 
 
-# ---------------------------------------------------------------
-# 4. _call_webapp — actionable error on the 403 door page
-# ---------------------------------------------------------------
-
-
-def _patch_call_webapp_transport(monkeypatch, exc: Exception):
-    from appscriptly import docx_import
-
-    def _fake_urlopen(req, timeout=None):
-        raise exc
-
-    monkeypatch.setattr(docx_import.urlrequest, "urlopen", _fake_urlopen)
-    return docx_import
-
-
-def test_call_webapp_403_door_page_raises_actionable_error(monkeypatch):
-    """A 403 with a non-JSON (HTML) body is the decay door page: the
-    error must say the deployment is not serving and point at the
-    install tool — not dump opaque HTML."""
-    docx_import = _patch_call_webapp_transport(
-        monkeypatch, _http_error(403, DOOR_PAGE_HTML.encode("utf-8"))
-    )
-    with pytest.raises(RuntimeError) as excinfo:
-        docx_import._call_webapp(
-            EXEC_URL, {"docId": "D"}, hmac_key="ab" * 32
-        )
-    msg = str(excinfo.value)
-    assert "not serving" in msg
-    assert "install_automation" in msg
-    assert "<html" not in msg.lower(), (
-        f"door-page HTML leaked into the error message: {msg[:200]!r}"
-    )
-
-
-def test_call_webapp_403_with_json_body_keeps_generic_error(monkeypatch):
-    """A 403 carrying JSON is NOT the door page (some proxy or future
-    script behavior) — keep the raw passthrough so real payloads stay
-    visible for debugging."""
-    docx_import = _patch_call_webapp_transport(
-        monkeypatch, _http_error(403, b'{"error": "quota"}')
-    )
-    with pytest.raises(RuntimeError, match="HTTP 403"):
-        docx_import._call_webapp(
-            EXEC_URL, {"docId": "D"}, hmac_key="ab" * 32
-        )
-
-
-def test_call_webapp_non_403_keeps_generic_error(monkeypatch):
-    docx_import = _patch_call_webapp_transport(
-        monkeypatch, _http_error(500, b"boom")
-    )
-    with pytest.raises(RuntimeError, match="HTTP 500"):
-        docx_import._call_webapp(
-            EXEC_URL, {"docId": "D"}, hmac_key="ab" * 32
-        )
-
-
 def test_door_page_fixture_is_not_json():
     """Meta-guard: the HTML fixture used across this file must actually
-    be non-JSON, or the 403 classification tests prove nothing."""
+    be non-JSON, or the probe's 403 classification tests prove nothing."""
     with pytest.raises(json.JSONDecodeError):
         json.loads(DOOR_PAGE_HTML)
