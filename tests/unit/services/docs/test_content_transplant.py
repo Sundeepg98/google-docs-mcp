@@ -578,6 +578,10 @@ def test_named_styles_reemitted_onto_dest_tab():
     req = named_reqs[0]
     assert req["tabId"] == TAB
     assert req["namedStyle"]["namedStyleType"] == "HEADING_1"
+    # The mask MUST lead with namedStyleType: the live API rejects an
+    # updateNamedStyle whose fields mask omits it ("Named style type is
+    # required" - hit on first live contact, 2026-07-08).
+    assert req["fields"].split(",")[0] == "namedStyleType"
     assert "textStyle.bold" in req["fields"]
     assert "paragraphStyle.spaceAbove" in req["fields"]
 

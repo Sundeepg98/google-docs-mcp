@@ -712,11 +712,17 @@ def _named_style_requests(named_styles: dict | None, tab_id: str) -> list[dict]:
         text_style = _filtered_style(style.get("textStyle") or {}, _TEXT_STYLE_FIELDS)
         para_style = _writable_paragraph_style(style.get("paragraphStyle") or {})
         para_style.pop("namedStyleType", None)
-        fields = [f"textStyle.{k}" for k in sorted(text_style)] + [
+        style_fields = [f"textStyle.{k}" for k in sorted(text_style)] + [
             f"paragraphStyle.{k}" for k in sorted(para_style)
         ]
-        if not fields:
+        if not style_fields:
             continue
+        # The UpdateNamedStyleRequest fields mask MUST include
+        # namedStyleType (it is the row selector, not an updated value);
+        # the API rejects the request with "Named style type is
+        # required" when the mask carries only textStyle/paragraphStyle
+        # paths.
+        fields = ["namedStyleType"] + style_fields
         requests.append(
             {
                 "updateNamedStyle": {
