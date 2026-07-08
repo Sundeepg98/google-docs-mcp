@@ -47,7 +47,7 @@ dependencies = [
     "markdown-it-py>=4.2.0",
     "python-docx>=1.2.0",  # used by preview_tab_split + retrofit_existing_docx
     "typing-extensions>=4.15.0",  # NotRequired + TypedDict for Python 3.10/3.11
-    "starlette>=1.0.1,<1.1",  # v1.3.1: pin upper bound — FastMCP transitive can drift; v2.1.6: floor 1.0.1 (PYSEC-2026-161)
+    "starlette>=1.3.1,<1.4",  # v1.3.1: pin upper bound — FastMCP transitive can drift; v2.1.6: floor 1.0.1 (PYSEC-2026-161); 2026-07-08: floor 1.3.1 (CVE-2026-48817/-48818 fixed 1.1.0, PYSEC-2026-248 fixed 1.3.0, PYSEC-2026-249 fixed 1.3.1)
     # === v1.3.1 security floor — pinned to CVE-fixed minimums ===
     # Re-audit these on every minor release. Bump floors when new CVEs land.
     # After modifying any line below, regenerate uv.lock via `uv sync`
@@ -66,6 +66,13 @@ dependencies = [
     "pyjwt>=2.13.0,<3",          # CVE-2026-32597 + PYSEC-2026-175/177/178/179 (transitive via mcp[crypto])
     "urllib3>=2.7.0,<3",         # CVE-2026-44431, -44432
     "requests>=2.34.2,<3",       # CVE-2026-25645
+    # 2026-07-08 pip-audit sweep (e2e security-audit job red since 2026-06-22):
+    # three transitive deps of fastmcp/mcp had no floor here, so the locked
+    # resolution sat on CVE-affected versions. Floors below = the fixed
+    # minimums pip-audit reports.
+    "joserfc>=1.6.8,<2",             # CVE-2026-48990 (fixed 1.6.7), CVE-2026-49852 (fixed 1.6.8); transitive via fastmcp server auth
+    "pydantic-settings>=2.14.2,<3",  # GHSA-4xgf-cpjx-pc3j; transitive via mcp + fastmcp
+    "python-multipart>=0.0.31,<1",   # CVE-2026-53538/-53539 (fixed 0.0.30), CVE-2026-53540 (fixed 0.0.31); transitive via mcp form parsing
     "tenacity>=9.1.4",
     "sentry-sdk>=2.62.0",
 ]
