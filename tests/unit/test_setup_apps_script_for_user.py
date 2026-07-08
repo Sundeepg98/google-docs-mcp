@@ -26,6 +26,22 @@ def isolated_user_store(tmp_path, monkeypatch):
     yield db_file
 
 
+@pytest.fixture(autouse=True)
+def healthy_webapp_probe(monkeypatch):
+    """The deployment-decay self-heal probes the cached /exec URL during
+    setup. Unit tests must never touch the real network: default every
+    probe in this file to HEALTHY — the exact pre-probe behavioral
+    baseline (cached state is trusted). Decay behavior itself is covered
+    in test_webapp_exec_selfheal.py."""
+    from appscriptly import setup_apps_script
+
+    monkeypatch.setattr(
+        setup_apps_script,
+        "probe_webapp_health",
+        lambda url, **kwargs: setup_apps_script.WebAppHealth.HEALTHY,
+    )
+
+
 @pytest.fixture
 def mock_setup():
     """Mock AppsScriptClient with sensible cold-start return values."""

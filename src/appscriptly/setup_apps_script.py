@@ -39,10 +39,15 @@ workflow + verification steps.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+from enum import Enum
+from http.client import HTTPException
 from pathlib import Path
 from typing import Callable
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from google.auth.credentials import Credentials
 
@@ -211,6 +216,87 @@ def _current_manifest() -> dict:
 _MANIFEST = _current_manifest()
 
 
+class WebAppHealth(Enum):
+    """Classified liveness of a deployed ``/exec`` Web App endpoint.
+
+    Deliberately three-way, NOT a bool: a transient network failure
+    (``UNKNOWN``) must never be conflated with a deployment that
+    definitively does not serve (``DEAD``), or a flaky network would
+    make setup thrash working deployments.
+    """
+
+    HEALTHY = "healthy"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
+
+
+# Health-probe GET budget. A live doGet answers in single-digit seconds
+# (including the /exec 302 hop); anything slower is treated as a
+# transient network problem (UNKNOWN), never as deployment death.
+_PROBE_TIMEOUT_SECONDS = 10.0
+# A healthy doGet reply is ~100 bytes of JSON; Google's access page is
+# tens of KB of HTML. Cap the read so classification never slurps an
+# unbounded body.
+_PROBE_MAX_BODY_BYTES = 65536
+
+
+def probe_webapp_health(
+    url: str, *, timeout: float = _PROBE_TIMEOUT_SECONDS
+) -> WebAppHealth:
+    """GET a deployment's ``/exec`` URL and classify what answered.
+
+    A LIVE deployment answers ``doGet`` with a small JSON payload —
+    ``restructure.gs::doGet`` returns ``{ok: true, ...}`` exactly so the
+    URL can be health-checked. A DECAYED deployment never reaches the
+    script: Google itself answers with an HTML access-denied page (HTTP
+    403). Observed live in prod (2026-07): after the deploying user
+    revokes then re-grants OAuth consent, the OLD deployment's
+    authorization is severed — its ``/exec`` serves the 403 door page —
+    while a brand-new project deployed under the current grant serves
+    fine (same account, same ``ANYONE_ANONYMOUS`` access, same minute).
+
+    Classification:
+
+    - ``HEALTHY`` — HTTP 200 and the body parses as JSON (the script ran).
+    - ``DEAD`` — a definitive 4xx (the 403 door page, a 404 for a
+      deleted deployment) or a 200 whose body is HTML/non-JSON (a Google
+      interstitial, not ``doGet``). Will not recover on its own.
+    - ``UNKNOWN`` — transport trouble (timeout, DNS/connection failure)
+      or a retryable server-side status (5xx / 429). Says nothing about
+      the deployment; callers must treat it as "reuse the cache."
+
+    Stdlib-only (urllib) so it works identically in the slim container
+    and the local stdio install. Redirects are followed (urllib's
+    default) — a live ``/exec`` GET 302-hops to
+    ``script.googleusercontent.com`` before serving the JSON.
+    """
+    req = urlrequest.Request(url, method="GET")
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(_PROBE_MAX_BODY_BYTES).decode(
+                "utf-8", errors="replace"
+            )
+    except urlerror.HTTPError as e:
+        # 5xx / 429 are server-side or throttling blips — retryable, so
+        # not proof the deployment is gone. Any other 4xx (401/403/404)
+        # is Google definitively refusing the URL: the door page.
+        if e.code >= 500 or e.code == 429:
+            return WebAppHealth.UNKNOWN
+        return WebAppHealth.DEAD
+    except (OSError, HTTPException):
+        # URLError (DNS, refused connection) and socket timeouts are
+        # OSError subclasses; HTTPException covers protocol-level
+        # garbage (e.g. BadStatusLine) urlopen can leak through.
+        return WebAppHealth.UNKNOWN
+    try:
+        json.loads(body)
+    except ValueError:
+        # 200 but not JSON: the request terminated at a Google HTML
+        # page (sign-in / error interstitial), not at doGet.
+        return WebAppHealth.DEAD
+    return WebAppHealth.HEALTHY
+
+
 def _execute_setup_with_ledger(
     *,
     creds: Credentials,
@@ -235,6 +321,11 @@ def _execute_setup_with_ledger(
       target. If not, clear and start fresh.
     - Cached script_id must still exist in Drive. If user manually
       deleted it, clear and start fresh.
+    - Cached deployment URL must still SERVE (``probe_webapp_health``).
+      A DEAD ``/exec`` — deployment decay — clears and re-provisions a
+      fresh project; the replacement is verified with ONE re-probe
+      (raises if still dead, no retry loop). A probe that can't reach
+      the network (UNKNOWN) reuses the cache, never re-cuts.
 
     On success, every step's result is persisted before the next
     starts — so a mid-pipeline crash leaves a resumable ledger
@@ -244,6 +335,9 @@ def _execute_setup_with_ledger(
     state = get_state()
 
     # --- Reset checks ---
+    # Set when the cached deployment probed DEAD and we re-provision;
+    # the freshly cut deployment then gets one verification re-probe.
+    recut_after_dead_probe = False
     if not _state_matches_target(state, content_hash, impersonate):
         clear_state()
         save_state_partial({"content_hash": content_hash, "impersonate": impersonate})
@@ -252,6 +346,19 @@ def _execute_setup_with_ledger(
         clear_state()
         save_state_partial({"content_hash": content_hash, "impersonate": impersonate})
         state = {"content_hash": content_hash, "impersonate": impersonate}
+    elif "url" in state and probe_webapp_health(state["url"]) is WebAppHealth.DEAD:
+        # Deployment decay: the ledger says "deployed" but /exec answers
+        # Google's 403 access page, so requests never reach doPost and
+        # reconstructing from cache would report "ready" for a dead
+        # endpoint. Full re-provision — a fresh project + deployment is
+        # the PROVEN-healthy repair (re-deploying on the possibly severed
+        # old script is not). clear_state() keeps the HMAC key by design
+        # in both ledger backends (it lives outside the ledger fields),
+        # so the re-cut script carries the user's same stable key.
+        clear_state()
+        save_state_partial({"content_hash": content_hash, "impersonate": impersonate})
+        state = {"content_hash": content_hash, "impersonate": impersonate}
+        recut_after_dead_probe = True
 
     # --- Step 1: projects.create ---
     if "script_id" not in state:
@@ -289,6 +396,27 @@ def _execute_setup_with_ledger(
             "deployment_id": deployment.deployment_id,
             "url": deployment.url,
         })
+        if (
+            recut_after_dead_probe
+            and probe_webapp_health(deployment.url) is WebAppHealth.DEAD
+        ):
+            # ONE verification probe on the replacement, no retry loop.
+            # UNKNOWN is accepted (a network blip must not fail an
+            # otherwise complete install). The fresh ledger stays
+            # persisted, so the next run re-probes and can repair again.
+            raise RuntimeError(
+                "Apps Script Web App is still not serving after a full "
+                f"re-provision: GET {deployment.url} does not answer "
+                "with the script's JSON health response. The previous "
+                "deployment had decayed (Google returned its access "
+                "page instead of running the script), so a brand new "
+                "project and deployment were cut, but the replacement "
+                "is unreachable too. This points at an account-level "
+                "problem, for example the Apps Script API being "
+                "disabled for the account or a stale Google grant. "
+                "Re-authorize Google access and re-run the "
+                "as_install_automation tool."
+            )
         return deployment
 
     # All steps already done in a prior run — reconstruct from cache.

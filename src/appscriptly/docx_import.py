@@ -500,6 +500,19 @@ def _splits_to_json(splits: list[_SplitPoint]) -> list[dict]:
     ]
 
 
+def _body_is_json(text: str) -> bool:
+    """True if ``text`` parses as JSON (any JSON value).
+
+    Used to tell a Google HTML door page apart from an actual script
+    reply when classifying an HTTP 403 from the ``/exec`` endpoint.
+    """
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
     """POST JSON to the Apps Script Web App and parse the JSON reply.
 
@@ -567,6 +580,23 @@ def _call_webapp(url: str, payload: dict, *, hmac_key: str | None) -> dict:
             body = resp.read().decode("utf-8")
     except urlerror.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        if e.code == 403 and not _body_is_json(body):
+            # Google's access-denied door page, not a script reply: the
+            # request never reached doPost. A deployment DECAYS into this
+            # state when its authorization is severed (observed live
+            # after the deploying user revokes then re-grants OAuth
+            # consent) — the setup pipeline detects and repairs it via
+            # ``setup_apps_script.probe_webapp_health``, so point the
+            # user at a re-install instead of dumping the HTML.
+            raise RuntimeError(
+                "The Apps Script Web App deployment is not serving; "
+                "Google returned an access page instead of running the "
+                "script (HTTP 403). The deployment's authorization has "
+                "likely decayed (this happens after revoking and "
+                "re-granting Google consent). Re-run the "
+                "as_install_automation tool (cloud) or `google-docs-mcp "
+                "setup-apps-script` (stdio) to repair the deployment."
+            ) from e
         raise RuntimeError(
             f"Apps Script Web App returned HTTP {e.code}: {body[:500]}"
         ) from e
