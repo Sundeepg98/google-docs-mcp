@@ -783,6 +783,54 @@ def test_on_conflict_replace_trashes_prior_only_after_success(pipeline):
     assert result["replaced_doc_id"] == "PRIOR"
 
 
+def test_on_conflict_replace_trashes_all_same_title_priors(pipeline):
+    """N5 (2026-07-10 retest): with N>1 same-title priors, replace used
+    to trash only the newest and leave the older duplicates lingering.
+    Every app-visible prior goes; the response lists them all
+    (newest-first) and keeps the singular field as the newest."""
+    pipeline["title_matches"] = [
+        {"file_id": "PRIOR_NEW", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+        {"file_id": "PRIOR_OLD", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+    ]
+    result = _convert(on_conflict="replace")
+
+    events = pipeline["events"]
+    assert ("trash", "PRIOR_NEW") in events
+    assert ("trash", "PRIOR_OLD") in events
+    assert result["on_conflict_action"] == "replaced"
+    assert result["replaced_doc_ids"] == ["PRIOR_NEW", "PRIOR_OLD"]
+    assert result["replaced_doc_id"] == "PRIOR_NEW"
+
+
+def test_on_conflict_replace_partial_trash_failure_reports_what_happened(
+    pipeline, monkeypatch
+):
+    """One prior trashed + one trash failure: action says replaced (a
+    prior WAS replaced) and replaced_doc_ids lists only the doc that
+    actually went to trash; the failure lands in info."""
+    pipeline["title_matches"] = [
+        {"file_id": "PRIOR_NEW", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+        {"file_id": "PRIOR_STUCK", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+    ]
+    real_trash = docx_import.trash_drive_file
+
+    def selective_trash(creds, file_id):
+        if file_id == "PRIOR_STUCK":
+            raise RuntimeError("Drive 500")
+        return real_trash(creds, file_id)
+
+    monkeypatch.setattr(docx_import, "trash_drive_file", selective_trash)
+    result = _convert(on_conflict="replace")
+
+    assert result["on_conflict_action"] == "replaced"
+    assert result["replaced_doc_ids"] == ["PRIOR_NEW"]
+    assert any("PRIOR_STUCK" in line for line in result["info"])
+
+
 def test_on_conflict_replace_ignores_docx_and_self_matches(pipeline):
     """The lookup must never trash a lingering .docx SOURCE (mimeType
     filter) nor the just-created doc itself (id exclusion)."""

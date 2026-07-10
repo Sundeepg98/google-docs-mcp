@@ -284,6 +284,28 @@ async def _run_job(
                 job_id, http_status, payload.get("error"),
             )
             return ("error", http_status, payload)
+        # N3 (2026-07-10 retest): a converter that RETURNED a kept-doc
+        # recovery envelope carrying ``error`` (the S2.5 partial-failure
+        # contract) is a FAILED job, and the row must say so - a poller
+        # reading status=="done" must be able to trust it as success
+        # (machine consumers were treating partial failures as wins).
+        # The FULL envelope (doc_id, completion manifest, warnings) is
+        # persisted as the error payload with the sync path's 500, so
+        # the status endpoint still hands the poller every byte of
+        # recovery data the sync caller would have received.
+        if isinstance(result, dict) and result.get("error"):
+            try:
+                job_store.finish_error(job_id, 500, result)
+            except Exception as store_exc:  # noqa: BLE001
+                log.error(
+                    "convert job %s finish_error write failed: %s",
+                    job_id, store_exc,
+                )
+            log.warning(
+                "convert job %s failed (partial-failure envelope): %s",
+                job_id, result.get("error"),
+            )
+            return ("error", 500, result)
         try:
             job_store.finish_done(job_id, result)
         except Exception as store_exc:  # noqa: BLE001

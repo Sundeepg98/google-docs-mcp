@@ -215,10 +215,13 @@ def convert_docx_to_tabbed_doc(
 
     - ``"new"`` (default): always create a new doc; never look.
     - ``"replace"``: build the new doc fully; after a fully successful
-      build, trash the newest prior same-title doc (recoverable from
-      Drive trash for 30 days). If the build fails or finds no split
-      points, the prior doc is left untouched. An explicit
-      ``replace_doc_id`` takes precedence over the title lookup.
+      build, trash EVERY prior same-title doc (recoverable from Drive
+      trash for 30 days) - the response lists them newest-first in
+      ``replaced_doc_ids``, with ``replaced_doc_id`` kept as the newest
+      for pre-N5 callers. If the build fails or finds no split points,
+      the prior docs are left untouched. An explicit
+      ``replace_doc_id`` takes precedence over the title lookup (and
+      trashes only that doc).
     - ``"skip"``: if a same-title doc already exists, perform NO
       conversion and return that doc's info with ``action="skipped"``.
 
@@ -590,13 +593,20 @@ def convert_docx_to_tabbed_doc(
     # explicit replace_doc_id wins over the on_conflict=replace title
     # lookup. Failures are non-fatal (info, not warning);
     # ``on_conflict_action`` reports what actually happened, so a
-    # failed trash reads "created", not "replaced".
+    # wholly-failed trash reads "created", not "replaced".
+    #
+    # N5 (2026-07-10 retest): on_conflict=replace trashes EVERY
+    # app-visible same-title prior, not just the newest - iterating on
+    # a doc used to accumulate older duplicates that "replace" silently
+    # skipped. ``replaced_doc_ids`` lists all of them (newest first);
+    # ``replaced_doc_id`` stays the newest for callers of the singular
+    # pre-N5 field.
     on_conflict_action = "created"
-    replaced_doc_id: str | None = None
+    replaced_doc_ids: list[str] = []
     if replace_doc_id:
         try:
             trash_drive_file(creds, replace_doc_id)
-            replaced_doc_id = replace_doc_id
+            replaced_doc_ids.append(replace_doc_id)
             on_conflict_action = "replaced"
             info.append(
                 f"trashed prior version {replace_doc_id} "
@@ -605,19 +615,19 @@ def convert_docx_to_tabbed_doc(
         except Exception as e:  # noqa: BLE001
             info.append(f"could not trash replace_doc_id {replace_doc_id}: {e}")
     elif on_conflict == "replace":
-        prior = _newest_same_title_doc(
+        priors = _same_title_docs(
             creds,
             converted.get("title")
             or _expected_final_title(creds, docx_path, drive_file_id, title),
             exclude_ids=frozenset(x for x in (doc_id, drive_file_id) if x),
         )
-        if prior is not None:
-            # _newest_same_title_doc only returns matches with a
-            # non-empty file_id.
+        for prior in priors:
+            # _same_title_docs only returns matches with a non-empty
+            # file_id.
             prior_id = prior["file_id"]
             try:
                 trash_drive_file(creds, prior_id)
-                replaced_doc_id = prior_id
+                replaced_doc_ids.append(prior_id)
                 on_conflict_action = "replaced"
                 info.append(
                     f"trashed prior same-title doc {prior_id} "
@@ -667,8 +677,11 @@ def convert_docx_to_tabbed_doc(
     }
     if icons_result is not None:
         result["icons"] = icons_result
-    if replaced_doc_id:
-        result["replaced_doc_id"] = replaced_doc_id
+    if replaced_doc_ids:
+        # Newest-first; the singular field predates N5 and keeps
+        # pointing at the newest prior for existing callers.
+        result["replaced_doc_id"] = replaced_doc_ids[0]
+        result["replaced_doc_ids"] = replaced_doc_ids
     return result
 
 
@@ -845,24 +858,34 @@ def _expected_final_title(
     return title or name
 
 
+def _same_title_docs(
+    creds: Credentials, final_title: str, exclude_ids: frozenset[str]
+) -> list[dict]:
+    """ALL app-visible Google Docs whose title exactly matches, newest
+    first (the find_doc_by_title ordering). Runs under the
+    ``drive.file`` scope, so ONLY files this app created or was
+    explicitly granted are considered - a same-title doc the app has
+    never touched is invisible here (documented limitation of the
+    on_conflict lookups)."""
+    if not final_title:
+        return []
+    found = find_doc_by_title(creds, final_title, exact=True)
+    return [
+        match
+        for match in (found.get("matches") or [])
+        # A lingering .docx source is not a prior OUTPUT.
+        if match.get("mimeType") == GDOC_MIME
+        and match.get("file_id")
+        and match["file_id"] not in exclude_ids
+    ]
+
+
 def _newest_same_title_doc(
     creds: Credentials, final_title: str, exclude_ids: frozenset[str]
 ) -> dict | None:
-    """Newest app-visible Google Doc whose title exactly matches, or
-    None. Runs under the ``drive.file`` scope, so ONLY files this app
-    created or was explicitly granted are considered - a same-title doc
-    the app has never touched is invisible here (documented limitation
-    of the on_conflict lookups)."""
-    if not final_title:
-        return None
-    found = find_doc_by_title(creds, final_title, exact=True)
-    for match in found.get("matches") or []:
-        if match.get("mimeType") != GDOC_MIME:
-            continue  # a lingering .docx source is not a prior OUTPUT
-        if not match.get("file_id") or match["file_id"] in exclude_ids:
-            continue
-        return match
-    return None
+    """Newest matching prior, or None (see ``_same_title_docs``)."""
+    matches = _same_title_docs(creds, final_title, exclude_ids)
+    return matches[0] if matches else None
 
 
 def _skipped_result(creds: Credentials, existing: dict) -> dict:

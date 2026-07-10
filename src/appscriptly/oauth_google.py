@@ -32,6 +32,7 @@ import json
 import os
 from pathlib import Path
 
+import httpx
 from google_auth_oauthlib.flow import Flow
 
 from .auth import WORKSPACE_SCOPES
@@ -87,6 +88,36 @@ GOOGLE_API_SCOPES = [*IDENTITY_SCOPES, *WORKSPACE_SCOPES]
 
 CALLBACK_PATH = "/oauth/google/api/callback"
 START_PATH = "/oauth/google/api/start"
+
+# Google's token-introspection endpoint. Accepts the access token as a
+# GET query param OR a POST form field; the response is identical. The
+# POST form is the one that keeps the token out of URL-based logging.
+_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+class _TokenInfoBodyClient(httpx.AsyncClient):
+    """httpx client that keeps bearer tokens out of request URLs (N4).
+
+    FastMCP's ``GoogleTokenVerifier`` validates every MCP call with
+    ``GET {tokeninfo}?access_token=<live token>``; httpx INFO-logs the
+    full URL of every request, so the operator's log stream carried
+    usable bearer tokens. Injected into ``GoogleProvider`` via its
+    public ``http_client`` parameter, this client rewrites exactly that
+    call shape into ``POST {tokeninfo}`` with the token in the form
+    body (Google documents both forms; identical response), leaving a
+    token-free URL for httpx to log. Every other request (e.g. the
+    verifier's userinfo GET, which authenticates via header) passes
+    through untouched.
+    """
+
+    async def get(self, url, **kwargs):  # type: ignore[override]
+        params = kwargs.get("params")
+        if str(url) == _TOKENINFO_URL and params and "access_token" in dict(params):
+            post_kwargs = {
+                k: v for k, v in kwargs.items() if k not in ("params",)
+            }
+            return await self.post(url, data=dict(params), **post_kwargs)
+        return await super().get(url, **kwargs)
 
 
 def configure_auth_for_http(mcp) -> None:
@@ -207,6 +238,19 @@ def configure_auth_for_http(mcp) -> None:
         base_url=cfg["base_url"],
         required_scopes=IDENTITY_SCOPES,
         valid_scopes=full_scope_union,
+        # N4 (2026-07-10 retest, SECURITY): GoogleTokenVerifier validates
+        # every MCP call by hitting oauth2.googleapis.com/tokeninfo with
+        # the LIVE bearer token as a GET query parameter, and httpx
+        # INFO-logs the full request URL - cleartext access tokens in
+        # the Fly logs. This client rewrites exactly that call into a
+        # POST with the token in the body (tokeninfo accepts both;
+        # response is identical), so the logged URL is token-free. The
+        # client is process-lifetime (the verifier docs make injected
+        # clients the caller's lifecycle) and doubles as connection
+        # pooling. Defense in depth lives in http_server's
+        # SensitiveQueryScrubFilter, which redacts token-bearing query
+        # strings from every log record regardless of source.
+        http_client=_TokenInfoBodyClient(timeout=10),
     )
 
     # Post-init scope bundling — taylorwilsdon's core/server.py:524-537.

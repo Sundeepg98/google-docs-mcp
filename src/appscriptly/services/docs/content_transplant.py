@@ -49,18 +49,75 @@ exported for reuse by any future channel that closes the tail.
 """
 from __future__ import annotations
 
+import logging
+import random
+import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from googleapiclient.errors import HttpError
 
 from appscriptly.google_api_client import execute_with_retry
 
 from .tab_tree import _find_tab_by_id
+
+_log = logging.getLogger("appscriptly.docs.transplant")
 
 # Docs batchUpdate accepts large request lists but degrades on huge
 # payloads; chunking keeps each POST well under the practical limit.
 # Chunk boundaries are safe anywhere because request order is preserved
 # across sequential batchUpdate calls.
 _MAX_REQUESTS_PER_BATCH = 400
+
+# ---------------------------------------------------------------------
+# 429 backoff for the transplant WRITE path (N2, 2026-07-10 retest)
+#
+# Concurrent convert jobs can trip the per-user Docs write quota
+# (WriteRequestsPerMinutePerUser = 60); Google answers HTTP 429
+# RATE_LIMIT_EXCEEDED. A 429 is issued by the rate limiter AT THE DOOR,
+# BEFORE the batchUpdate executes, so retrying a write is safe - unlike
+# a 5xx, where the mutation may have partially applied and a blind
+# replay risks duplicate inserts (which is exactly why _batch_update
+# passes idempotent=False to the chokepoint and why this handler
+# retries 429 and ONLY 429).
+#
+# The wait budget is shared across ONE public entry (one tab transplant
+# or one carve): bounded exponential backoff + full jitter until the
+# budget is spent, then the HttpError propagates into the existing
+# keep-the-doc + completion-manifest failure path.
+# ---------------------------------------------------------------------
+
+_RATE_LIMIT_WAIT_BUDGET_SECONDS = 75.0
+_RATE_LIMIT_BASE_WAIT_SECONDS = 2.0
+_RATE_LIMIT_MAX_WAIT_SECONDS = 32.0
+
+
+class _RateLimitBudget:
+    """Total-sleep allowance for one transplant/carve execution."""
+
+    def __init__(self, seconds: float = _RATE_LIMIT_WAIT_BUDGET_SECONDS) -> None:
+        self.remaining = seconds
+        self.attempt = 0
+
+    def next_wait(self) -> float | None:
+        """The next backoff sleep, or None when the budget is spent."""
+        self.attempt += 1
+        base = min(
+            _RATE_LIMIT_BASE_WAIT_SECONDS * (2 ** (self.attempt - 1)),
+            _RATE_LIMIT_MAX_WAIT_SECONDS,
+        )
+        wait = base + random.uniform(0.0, base / 2.0)
+        if wait > self.remaining:
+            return None
+        self.remaining -= wait
+        return wait
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, HttpError)
+        and getattr(exc, "status_code", None) == 429
+    )
 
 # ---------------------------------------------------------------------
 # Fidelity registry - the honest non-representable tail
@@ -910,19 +967,50 @@ def _get_document(docs: Any, doc_id: str) -> dict:
     )
 
 
-def _batch_update(docs: Any, doc_id: str, requests: list[dict]) -> None:
-    # Content writes are single-shot: replaying a partially-applied
-    # mutation risks duplicate inserts (same convention as
-    # make_doc_with_tabs / insert_markdown_table).
+def _batch_update(
+    docs: Any,
+    doc_id: str,
+    requests: list[dict],
+    budget: _RateLimitBudget | None = None,
+) -> None:
+    # Content writes are single-shot for everything EXCEPT 429:
+    # replaying a partially-applied mutation risks duplicate inserts
+    # (same convention as make_doc_with_tabs / insert_markdown_table),
+    # but a 429 was rejected before execution, so backing off and
+    # re-sending the SAME chunk is safe (see the N2 block up top).
+    if budget is None:
+        budget = _RateLimitBudget()
     for start in range(0, len(requests), _MAX_REQUESTS_PER_BATCH):
         chunk = requests[start : start + _MAX_REQUESTS_PER_BATCH]
-        execute_with_retry(
-            lambda chunk=chunk: docs.documents().batchUpdate(
-                documentId=doc_id, body={"requests": chunk}
-            ).execute(),
-            idempotent=False,
-            op_name="docs.documents.batchUpdate.transplant",
-        )
+        while True:
+            try:
+                execute_with_retry(
+                    lambda chunk=chunk: docs.documents().batchUpdate(
+                        documentId=doc_id, body={"requests": chunk}
+                    ).execute(),
+                    idempotent=False,
+                    op_name="docs.documents.batchUpdate.transplant",
+                )
+                break
+            except HttpError as e:
+                if not _is_rate_limit_error(e):
+                    raise
+                wait = budget.next_wait()
+                if wait is None:
+                    # Budget spent: fail into the existing keep-the-doc
+                    # + completion-manifest path with the real error.
+                    _log.warning(
+                        "docs write rate limit persisted past the %ss "
+                        "backoff budget for doc %s; giving up",
+                        _RATE_LIMIT_WAIT_BUDGET_SECONDS, doc_id,
+                    )
+                    raise
+                _log.info(
+                    "docs write rate-limited (429) for doc %s; backing "
+                    "off %.1fs (attempt %d, %.1fs budget left)",
+                    doc_id, wait, budget.attempt, budget.remaining,
+                )
+                time.sleep(wait)
 
 
 def _tab_body_content(document: dict, tab_id: str) -> list[dict]:
@@ -1046,7 +1134,12 @@ def _table_style_requests(phase: TablePhase, table_start: int) -> list[dict]:
 
 
 def _execute_table_phase(
-    docs: Any, doc_id: str, tab_id: str, phase: TablePhase, base: int
+    docs: Any,
+    doc_id: str,
+    tab_id: str,
+    phase: TablePhase,
+    base: int,
+    budget: _RateLimitBudget | None = None,
 ) -> int:
     """Create, fill, and style one table at ``base``; return the index
     just after the finished table (the next append position)."""
@@ -1064,6 +1157,7 @@ def _execute_table_phase(
                 }
             }
         ],
+        budget=budget,
     )
     # Sync-point: cell indices are server-assigned, so re-fetch and
     # locate the just-created table (first table at/after base).
@@ -1084,11 +1178,14 @@ def _execute_table_phase(
                 f"planned cell {key} missing from created {phase.rows}x"
                 f"{phase.columns} table in tab {tab_id}"
             )
-        _execute_phases(docs, doc_id, tab_id, phase.cell_plans[key].phases, starts[key])
+        _execute_phases(
+            docs, doc_id, tab_id, phase.cell_plans[key].phases, starts[key],
+            budget=budget,
+        )
 
     style_requests = _table_style_requests(phase, table_element["startIndex"])
     if style_requests:
-        _batch_update(docs, doc_id, style_requests)
+        _batch_update(docs, doc_id, style_requests, budget=budget)
 
     # Fills and merges moved the table's end; re-anchor from the live
     # document rather than trusting arithmetic.
@@ -1107,14 +1204,20 @@ def _execute_phases(
     tab_id: str,
     phases: list[SegmentPhase | TablePhase],
     base: int,
+    budget: _RateLimitBudget | None = None,
 ) -> int:
     for phase in phases:
         if isinstance(phase, SegmentPhase):
             if phase.requests:
-                _batch_update(docs, doc_id, _rebase_requests(phase.requests, base))
+                _batch_update(
+                    docs, doc_id, _rebase_requests(phase.requests, base),
+                    budget=budget,
+                )
             base += phase.length
         else:
-            base = _execute_table_phase(docs, doc_id, tab_id, phase, base)
+            base = _execute_table_phase(
+                docs, doc_id, tab_id, phase, base, budget=budget
+            )
     return base
 
 
@@ -1132,11 +1235,16 @@ def execute_tab_transplant(
     (with tabs content) to spare the initial round-trip; table phases
     always re-fetch at their sync-points regardless. Returns the number
     of structural blocks written (the plan's ``block_count``).
+
+    Writes hitting the per-user Docs rate limit (HTTP 429) back off and
+    retry against a shared per-call budget (N2); exhaustion propagates
+    the 429 into the caller's keep-the-doc failure handling.
     """
     if document is None:
         document = _get_document(docs, doc_id)
     base = _append_base(document, dest_tab_id)
-    _execute_phases(docs, doc_id, dest_tab_id, plan.phases, base)
+    budget = _RateLimitBudget()
+    _execute_phases(docs, doc_id, dest_tab_id, plan.phases, base, budget=budget)
     return plan.block_count
 
 
@@ -1192,4 +1300,7 @@ def carve_source_ranges(
         for start, end in sorted(spans, reverse=True)
     ]
     if requests:
-        _batch_update(docs, doc_id, requests)
+        # Own 429 budget: the carve is one bounded write burst and its
+        # failure path (placeholder warnings / keep semantics) is the
+        # caller's, so it should not drain a transplant's allowance.
+        _batch_update(docs, doc_id, requests, budget=_RateLimitBudget())

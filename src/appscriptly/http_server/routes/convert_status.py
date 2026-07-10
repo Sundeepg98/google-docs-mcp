@@ -21,6 +21,14 @@ deploy). A stalled job resumes under the SAME job_id when the client
 re-POSTs the identical convert request within 15 minutes of the job's
 creation (fingerprint attach); this URL keeps working across that
 re-arm.
+
+Poller contract (N3, 2026-07-10 retest): ``done`` MEANS SUCCESS. Every
+failure - a raised converter exception AND the S2.5 partial-failure
+recovery envelope (kept doc + completion manifest + ``error``) - is
+terminal ``status="error"``, with the full payload under ``error`` and
+the sync path's HTTP status under ``error_http_status``. A machine
+consumer may branch on ``status`` alone. Failed jobs are not attach
+targets (N1): re-POST with a fresh signed URL to try again.
 """
 from __future__ import annotations
 
@@ -56,7 +64,13 @@ def build_status_url(request: Request, job_id: str) -> dict[str, Any]:
 
 
 def job_status_view(row: dict[str, Any]) -> dict[str, Any]:
-    """The public JSON shape for one job row (status derivation applied)."""
+    """The public JSON shape for one job row (status derivation applied).
+
+    ``done`` carries the success result; ``error`` carries the FULL
+    failure payload (for S2.5 partial failures that is the whole
+    kept-doc recovery envelope: doc_id, completion manifest, warnings)
+    plus the HTTP status a synchronous caller would have received.
+    """
     derived = job_store.derive_status(row)
     view: dict[str, Any] = {
         "job_id": row["job_id"],
@@ -73,6 +87,11 @@ def job_status_view(row: dict[str, Any]) -> dict[str, Any]:
         # The status this job WOULD have answered synchronously - lets a
         # polling client apply the same handling as a sync caller.
         view["error_http_status"] = err.get("http_status")
+        view["note"] = (
+            "Failed attempts are not deduplicated: re-POST the convert "
+            "request (with a fresh signed upload URL if the previous one "
+            "was consumed) to run a new conversion."
+        )
     elif derived == "stalled":
         view["note"] = (
             "The server restarted while this job was in flight. Re-POST "

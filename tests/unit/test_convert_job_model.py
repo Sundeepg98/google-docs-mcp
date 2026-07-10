@@ -388,10 +388,13 @@ def test_burned_nonce_different_payload_is_rejected():
         assert "already used" in different.json()["error"]
 
 
-def test_error_outcome_replays_on_attach():
-    """A failed job's outcome is the fingerprint's truth for the attach
-    window: the identical retry gets the SAME mapped error (with the
-    attach marker), not a silent second attempt."""
+def test_failed_job_does_not_capture_retries():
+    """N1 (2026-07-10 retest): a FAILED job must not poison the 15-min
+    fingerprint window. Pre-N1 the identical retry ATTACHED to the
+    failure and replayed the cached corpse; the recovery advice
+    ("re-run the conversion") could not work. Now a fresh signed URL
+    re-runs the conversion for real, and the burned original URL gets
+    the honest 401 pointing at a fresh mint."""
     app = _build_app_under_test()
     calls = []
 
@@ -409,10 +412,66 @@ def test_error_outcome_replays_on_attach():
         assert first.status_code == 500
         assert first.json()["error"] == "pipeline exploded"
 
-        retry = client.post(f"/api/convert?{qs}", files=_docx_form())
+        # Same burned URL: no attachable job (failures are excluded),
+        # so this is a create on a consumed nonce -> honest 401 with
+        # the mint-a-fresh-URL instruction. No conversion ran.
+        burned = client.post(f"/api/convert?{qs}", files=_docx_form())
+        assert burned.status_code == 401
+        assert "fresh signed upload URL" in burned.json()["error"]
+        assert len(calls) == 1
+
+        # Fresh URL + identical payload: a genuinely NEW job runs the
+        # conversion again instead of replaying the recorded failure.
+        retry = client.post(f"/api/convert?{_mint_qs()}", files=_docx_form())
         assert retry.status_code == 500
+        assert "attached_to_existing_job" not in retry.json()
+    assert len(calls) == 2, "the retry must actually re-run the conversion"
+
+
+def test_succeeded_job_still_attaches_after_n1():
+    """N1 boundary: only FAILED jobs lost attach eligibility. Success
+    dedup (the T1.1 disconnect-retry contract) is unchanged; the
+    stalled re-arm path is pinned by
+    test_stalled_status_and_rearm_on_identical_retry."""
+    app = _build_app_under_test()
+    calls = []
+
+    def fake_convert(creds, **kwargs):
+        calls.append(1)
+        return {"doc_id": "STILL-DEDUPED", "url": "https://x", "tabs": []}
+
+    qs = _mint_qs()
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), TestClient(app) as client:
+        first = client.post(f"/api/convert?{qs}", files=_docx_form())
+        assert first.status_code == 200
+
+        retry = client.post(f"/api/convert?{qs}", files=_docx_form())
+        assert retry.status_code == 200
         assert retry.json()["attached_to_existing_job"] is True
     assert len(calls) == 1
+
+
+def test_plan_input_treats_legacy_done_with_error_row_as_failed():
+    """Rows persisted by a pre-N3 build could be status=done with the
+    partial-failure envelope in result_json. _plan_input must treat
+    those as FAILED (create a new job), not as attachable successes."""
+    from appscriptly.http_server.routes.convert import _plan_input
+
+    job_id = job_store.create_job("user-A", "fp-legacy")
+    job_store.finish_done(job_id, {"doc_id": "KEPT", "error": "partial"})
+
+    plan = _plan_input("x.docx", "fp-legacy", lambda: {}, "user-A")
+    assert plan.kind == "create"
+
+    # And a clean done row still attaches.
+    clean_id = job_store.create_job("user-A", "fp-legacy-clean")
+    job_store.finish_done(clean_id, {"doc_id": "OK", "tabs": []})
+    plan = _plan_input("x.docx", "fp-legacy-clean", lambda: {}, "user-A")
+    assert plan.kind == "attach_done" and plan.job_id == clean_id
 
 
 def test_async_retry_attaches_with_same_job_id():
@@ -860,11 +919,13 @@ def test_nest_by_and_on_conflict_validation():
 
 
 def test_partial_failure_envelope_maps_to_500_with_body():
-    """S2.5 (post-#229): a pipeline that died after content started
-    moving RETURNS its kept-doc envelope with an ``error`` field; the
-    sync path signals 500 while keeping the recovery data, exactly like
-    the pre-job-model endpoint, and the status endpoint still carries
-    the full envelope as the job result."""
+    """S2.5 x N3: a pipeline that died after content started moving
+    RETURNS its kept-doc envelope with an ``error`` field. The sync
+    path signals 500 while keeping the recovery data (byte-identical to
+    the pre-job-model endpoint); the STATUS endpoint reports it as a
+    terminal ``status="error"`` (N3: done means success - the retest
+    caught machine consumers reading a partial failure as a win) with
+    the FULL envelope attached for recovery."""
     app = _build_app_under_test()
     envelope = {
         "doc_id": "KEPT", "url": "https://x", "tabs": [],
@@ -883,6 +944,7 @@ def test_partial_failure_envelope_maps_to_500_with_body():
         sync = client.post(f"/api/convert?{_mint_qs()}", files=_docx_form())
         assert sync.status_code == 500, sync.text
         assert sync.json()["completion"]["pending_sections"] == ["B"]
+        assert sync.json()["doc_id"] == "KEPT"
 
         run = client.post(
             f"/api/convert?{_mint_qs('user-B')}",
@@ -891,8 +953,36 @@ def test_partial_failure_envelope_maps_to_500_with_body():
         )
         assert run.status_code == 202
         final = _poll_until_terminal(client, _status_path(run.json()))
-        # The converter RETURNED (recovery contract fulfilled), so the
-        # job is done and the envelope IS the result; the error field
-        # travels inside it for the poller to inspect.
+        # N3: the quota-death/partial-failure job polls as ERROR - a
+        # poller may trust status=="done" as success - and the whole
+        # recovery envelope (kept doc id, completion manifest) rides
+        # under ``error`` with the sync path's HTTP status beside it.
+        assert final["status"] == "error"
+        assert final["error"]["error"].startswith("transplant died")
+        assert final["error"]["doc_id"] == "KEPT"
+        assert final["error"]["completion"]["pending_sections"] == ["B"]
+        assert final["error_http_status"] == 500
+        assert "not deduplicated" in final["note"]
+
+
+def test_happy_path_still_polls_done():
+    """N3 boundary: success is still ``done`` + result."""
+    app = _build_app_under_test()
+
+    def fake_convert(creds, **kwargs):
+        return {"doc_id": "CLEAN", "url": "https://x", "tabs": [],
+                "warnings": [], "completion": {"steps_completed": ["import"]}}
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), TestClient(app) as client:
+        run = client.post(
+            f"/api/convert?{_mint_qs()}", files=_docx_form(), data={"async": "1"},
+        )
+        assert run.status_code == 202
+        final = _poll_until_terminal(client, _status_path(run.json()))
         assert final["status"] == "done"
-        assert final["result"]["error"].startswith("transplant died")
+        assert final["result"]["doc_id"] == "CLEAN"
+        assert "error" not in final
