@@ -1354,3 +1354,106 @@ def test_nest_by_invalid_value_rejected(pipeline):
         _convert(nest_by="heading_3")
     assert pipeline["docs"].batches == []
     assert pipeline["events"] == []
+
+
+# ---------------------------------------------------------------------
+# A2 (retest 3): write governor keying + rate-limit envelope flag
+# ---------------------------------------------------------------------
+
+
+def test_transplant_writes_use_the_callers_user_governor(pipeline, monkeypatch):
+    """docx_import keys the per-user write governor by the route's
+    user_id, so every concurrent job of one user paces against the same
+    quota bucket."""
+    from appscriptly.services.docs import content_transplant as ct
+
+    seen_keys: list = []
+    real = ct._governor_for
+    monkeypatch.setattr(
+        ct, "_governor_for",
+        lambda key: (seen_keys.append(key), real(key))[1],
+    )
+    _convert(user_id="user-G")
+    assert seen_keys, "the transplant must resolve a governor"
+    assert set(seen_keys) == {"user-G"}
+
+
+def test_transplant_writes_fall_back_to_the_operator_governor(
+    pipeline, monkeypatch
+):
+    """No user identity (stdio / bearer callers) = the operator bucket
+    (content_transplant maps None to it)."""
+    from appscriptly.services.docs import content_transplant as ct
+
+    seen_keys: list = []
+    real = ct._governor_for
+    monkeypatch.setattr(
+        ct, "_governor_for",
+        lambda key: (seen_keys.append(key), real(key))[1],
+    )
+    _convert()
+    assert seen_keys and set(seen_keys) == {None}
+
+
+def test_partial_failure_envelope_flags_a_rate_limit_cause(
+    pipeline, monkeypatch
+):
+    """A 429 that survives the backoff budget mid-transplant produces
+    the kept-doc envelope WITH rate_limited=True - the signal the job
+    runner requeues on. Non-429 partial failures (pinned by the S2.5
+    death test) carry no flag."""
+    from googleapiclient.errors import HttpError
+
+    from appscriptly.services.docs import content_transplant as ct
+
+    # The persistent 429 must exhaust the N2 backoff budget without
+    # really sleeping through it.
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ct.random, "uniform", lambda a, b: 0.0)
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+    calls = {"n": 0}
+
+    def raise_429_on_second_batch(requests):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise HttpError(resp=_Resp(), content=b"rate limit")
+        return False
+
+    pipeline["fail_when"] = raise_429_on_second_batch
+    result = _convert()
+
+    assert result["error"], "partial failure expected"
+    assert result["rate_limited"] is True
+    # (The harness's static verify doc classifies both sections as
+    # moved, so pending_sections is not meaningful here; the flag +
+    # kept-doc envelope are the properties under test.)
+    assert "completion" in result
+
+
+def test_is_rate_limit_cause_walks_the_wrap_chain():
+    """The pre-transplant path wraps the HttpError in a RuntimeError
+    (raise ... from); the detector must see through it. Plain failures
+    stay False."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+    err = HttpError(resp=_Resp(), content=b"x")
+    assert docx_import._is_rate_limit_cause(err) is True
+
+    try:
+        try:
+            raise err
+        except HttpError as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as wrapped:
+        assert docx_import._is_rate_limit_cause(wrapped) is True
+
+    assert docx_import._is_rate_limit_cause(RuntimeError("plain")) is False
+    assert docx_import._is_rate_limit_cause(None) is False

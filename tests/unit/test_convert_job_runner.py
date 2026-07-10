@@ -43,7 +43,7 @@ def test_client_disconnect_does_not_kill_the_job():
     job_id = job_store.create_job("user-A", "fp-disconnect")
     started = []
 
-    def slow_convert():
+    def slow_convert(_prior=None):
         started.append(True)
         time.sleep(0.3)
         return {"doc_id": "SURVIVED", "tabs": []}
@@ -78,7 +78,7 @@ def test_error_outcome_is_classified_and_persisted():
     + payload the pre-job-model sync handler would have returned."""
     job_id = job_store.create_job("user-A", "fp-error")
 
-    def failing_convert():
+    def failing_convert(_prior=None):
         raise ValueError("bad docx")
 
     async def scenario():
@@ -108,7 +108,7 @@ def test_returned_error_envelope_finishes_as_error_row():
     }
 
     async def scenario():
-        return await jobs.start_job(job_id, lambda: envelope)
+        return await jobs.start_job(job_id, lambda _prior=None: envelope)
 
     outcome = asyncio.run(scenario())
     assert outcome == ("error", 500, envelope)
@@ -142,7 +142,7 @@ def test_heartbeat_fires_while_converter_runs(monkeypatch):
     job_id = job_store.create_job("user-A", "fp-heartbeat")
 
     async def scenario():
-        return await jobs.start_job(job_id, lambda: time.sleep(0.3) or {"ok": 1})
+        return await jobs.start_job(job_id, lambda _prior=None: time.sleep(0.3) or {"ok": 1})
 
     asyncio.run(scenario())
     # 0.3s of work at a 0.05s interval: at least 3 touches even with
@@ -155,7 +155,7 @@ def test_task_registry_holds_then_releases():
     job_id = job_store.create_job("user-A", "fp-registry")
 
     async def scenario():
-        task = jobs.start_job(job_id, lambda: {"ok": 1})
+        task = jobs.start_job(job_id, lambda _prior=None: {"ok": 1})
         assert jobs.get_task(job_id) is task
         await task
         # Done-callbacks run soon after; yield once to let them fire.
@@ -194,7 +194,7 @@ def test_concurrency_cap_two_running_rest_honestly_queued(monkeypatch):
     concurrent = []
     lock = threading.Lock()
 
-    def gated_convert():
+    def gated_convert(_prior=None):
         with lock:
             concurrent.append(1)
             high_water = len(concurrent)
@@ -239,13 +239,13 @@ def test_concurrency_cap_env_tunable_and_released_on_error(monkeypatch):
     j1 = job_store.create_job("user-A", "fp-serial-1")
     j2 = job_store.create_job("user-A", "fp-serial-2")
 
-    def failing():
+    def failing(_prior=None):
         time.sleep(0.15)
         raise RuntimeError("first job dies holding the slot")
 
     async def scenario():
         t1 = jobs.start_job(j1, failing)
-        t2 = jobs.start_job(j2, lambda: {"ok": 2})
+        t2 = jobs.start_job(j2, lambda _prior=None: {"ok": 2})
         await asyncio.sleep(0.05)
         # Cap 1: the second job must be waiting, honestly queued.
         assert _statuses([j2]) == ["queued"]
@@ -255,3 +255,202 @@ def test_concurrency_cap_env_tunable_and_released_on_error(monkeypatch):
     assert o1[0] == "error" and o1[1] == 500
     assert o2 == ("done", {"ok": 2}, None)
     assert _statuses([j1, j2]) == ["error", "done"]
+
+
+# ---------------------------------------------------------------------
+# A2 (retest 3): rate-limit deaths requeue instead of going terminal
+# ---------------------------------------------------------------------
+
+
+def _rl_envelope(doc_id: str = "KEPT-PARTIAL") -> dict:
+    """A rate-limit-caused S2.5 partial-failure envelope, as
+    docx_import builds it (rate_limited=True is the runner's signal)."""
+    return {
+        "doc_id": doc_id, "url": "https://x", "tabs": [],
+        "error": "quota exhausted past the backoff budget",
+        "rate_limited": True,
+        "completion": {"steps_completed": ["import", "shells"],
+                       "moved_sections": [], "pending_sections": ["A"]},
+    }
+
+
+@pytest.fixture
+def fast_requeue(monkeypatch):
+    monkeypatch.setattr(jobs, "HEARTBEAT_INTERVAL", 0.05)
+    monkeypatch.setenv("CONVERT_JOB_REQUEUE_DELAY_SECONDS", "0.05")
+    monkeypatch.delenv("CONVERT_JOB_MAX_REQUEUES", raising=False)
+
+
+def test_rate_limited_envelope_requeues_once_then_succeeds(
+    fast_requeue, monkeypatch
+):
+    """The A2 safety net end to end: a rate-limit partial failure does
+    NOT go terminal - the row re-arms (honest queued), the runner waits
+    the quota window, re-runs the work with the PRIOR envelope handed
+    over, and the retry's success is the job's outcome."""
+    rearms: list[str] = []
+    real_rearm = job_store.rearm_job
+    monkeypatch.setattr(
+        job_store, "rearm_job",
+        lambda jid: (rearms.append(jid), real_rearm(jid))[1],
+    )
+
+    job_id = job_store.create_job("user-A", "fp-requeue")
+    calls: list[dict | None] = []
+
+    def work(prior=None):
+        calls.append(prior)
+        if len(calls) == 1:
+            return _rl_envelope()
+        return {"doc_id": "SECOND-TRY", "url": "https://x", "tabs": []}
+
+    async def scenario():
+        return await jobs.start_job(job_id, work)
+
+    outcome = asyncio.run(scenario())
+    assert outcome == (
+        "done", {"doc_id": "SECOND-TRY", "url": "https://x", "tabs": []}, None,
+    )
+    assert rearms == [job_id], "the row must re-arm exactly once"
+    assert calls[0] is None
+    assert calls[1] is not None and calls[1]["doc_id"] == "KEPT-PARTIAL", (
+        "the retry must receive the prior attempt's envelope"
+    )
+    row = job_store.get_job(job_id)
+    assert row is not None and row["status"] == "done"
+
+
+def test_rate_limited_twice_goes_terminal_with_requeue_count(fast_requeue):
+    """Bounded: after CONVERT_JOB_MAX_REQUEUES (default 1) the failure
+    is terminal, carrying the LAST envelope + the requeue count."""
+    job_id = job_store.create_job("user-A", "fp-requeue-2")
+    calls: list[dict | None] = []
+
+    def work(prior=None):
+        calls.append(prior)
+        return _rl_envelope(doc_id=f"KEPT-{len(calls)}")
+
+    async def scenario():
+        return await jobs.start_job(job_id, work)
+
+    kind, status, payload = asyncio.run(scenario())
+    assert (kind, status) == ("error", 500)
+    assert payload["doc_id"] == "KEPT-2", "the LAST attempt's envelope wins"
+    assert payload["requeue_attempts"] == 1
+    assert len(calls) == 2
+    row = job_store.get_job(job_id)
+    assert row is not None and row["status"] == "error"
+    stored = job_store.error_dict(row)
+    assert stored is not None
+    assert stored["payload"]["requeue_attempts"] == 1
+
+
+def test_raised_429_also_requeues(fast_requeue):
+    """A pre-transplant 429 RAISES (no envelope; staging was cleaned).
+    The runner requeues it the same way, with no prior envelope."""
+    from googleapiclient.errors import HttpError as _HttpError
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+    job_id = job_store.create_job("user-A", "fp-requeue-raise")
+    calls: list[dict | None] = []
+
+    def work(prior=None):
+        calls.append(prior)
+        if len(calls) == 1:
+            raise _HttpError(resp=_Resp(), content=b"rate limited")
+        return {"ok": 1}
+
+    async def scenario():
+        return await jobs.start_job(job_id, work)
+
+    outcome = asyncio.run(scenario())
+    assert outcome == ("done", {"ok": 1}, None)
+    assert calls == [None, None], "raised-429 retries carry no envelope"
+
+
+def test_non_rate_limit_failures_never_requeue(fast_requeue):
+    """N1/N3 terminal semantics are untouched for ordinary failures."""
+    job_id = job_store.create_job("user-A", "fp-no-requeue")
+    calls: list[dict | None] = []
+
+    def work(prior=None):
+        calls.append(prior)
+        raise ValueError("corrupt docx")
+
+    async def scenario():
+        return await jobs.start_job(job_id, work)
+
+    kind, status, payload = asyncio.run(scenario())
+    assert (kind, status) == ("error", 400)
+    assert "requeue_attempts" not in payload
+    assert len(calls) == 1, "ordinary failures must not re-run"
+
+
+def test_requeue_releases_the_slot_during_its_delay(monkeypatch):
+    """The requeue delay must not squat on a concurrency slot: with cap
+    1, job B runs to completion WHILE job A waits out its quota window."""
+    monkeypatch.setattr(jobs, "HEARTBEAT_INTERVAL", 0.05)
+    monkeypatch.setenv("CONVERT_JOB_MAX_CONCURRENCY", "1")
+    monkeypatch.setenv("CONVERT_JOB_REQUEUE_DELAY_SECONDS", "0.5")
+
+    ja = job_store.create_job("user-A", "fp-slot-a")
+    jb = job_store.create_job("user-A", "fp-slot-b")
+    finish_order: list[str] = []
+
+    calls_a: list[dict | None] = []
+
+    def work_a(prior=None):
+        calls_a.append(prior)
+        if len(calls_a) == 1:
+            return _rl_envelope()
+        finish_order.append("A")
+        return {"ok": "A"}
+
+    def work_b(prior=None):
+        finish_order.append("B")
+        return {"ok": "B"}
+
+    async def scenario():
+        ta = jobs.start_job(ja, work_a)
+        tb = jobs.start_job(jb, work_b)
+        return await asyncio.gather(ta, tb)
+
+    oa, ob = asyncio.run(scenario())
+    assert oa[0] == "done" and ob[0] == "done"
+    assert finish_order == ["B", "A"], (
+        "B must complete during A's requeue delay (slot released)"
+    )
+    assert _statuses([ja, jb]) == ["done", "done"]
+
+
+def test_storm_completes_fully_with_requeues(fast_requeue, monkeypatch):
+    """The tester's acceptance criterion, unit-shaped: an 8-job storm
+    where several jobs hit the rate limit once still completes 8/8 with
+    zero manual steps (requeue + retry), truthful terminal rows."""
+    monkeypatch.delenv("CONVERT_JOB_MAX_CONCURRENCY", raising=False)
+
+    job_ids = [
+        job_store.create_job("user-A", f"fp-storm-{i}") for i in range(8)
+    ]
+    rate_limited_once = {job_ids[1], job_ids[4], job_ids[6]}
+    attempts: dict[str, int] = {}
+
+    def make_work(jid):
+        def work(prior=None):
+            attempts[jid] = attempts.get(jid, 0) + 1
+            if jid in rate_limited_once and attempts[jid] == 1:
+                return _rl_envelope(doc_id=f"KEPT-{jid[:8]}")
+            return {"doc_id": f"OK-{jid[:8]}", "url": "u", "tabs": []}
+        return work
+
+    async def scenario():
+        tasks = [jobs.start_job(jid, make_work(jid)) for jid in job_ids]
+        return await asyncio.gather(*tasks)
+
+    outcomes = asyncio.run(scenario())
+    assert all(kind == "done" for kind, _, _ in outcomes), outcomes
+    assert _statuses(job_ids) == ["done"] * 8
+    assert sum(attempts.values()) == 8 + len(rate_limited_once)

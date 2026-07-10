@@ -40,6 +40,18 @@ worker thread via ``asyncio.to_thread``:
   1-vCPU / 512MB machine), and one batch could run 5 genuinely
   concurrent multi-minute converts - the OOM class #226 fixed.
 
+- **Rate-limit deaths requeue instead of going terminal (A2).** A
+  failure whose root cause is the per-user Docs write quota (HTTP 429
+  past the backoff budget) re-arms the row - honestly ``queued``,
+  heartbeating, concurrency slot RELEASED - waits out the quota window
+  (``CONVERT_JOB_REQUEUE_DELAY_SECONDS``, default 65s), then re-runs
+  the work, up to ``CONVERT_JOB_MAX_REQUEUES`` (default 1) times. The
+  retry gets the prior attempt's recovery envelope so the convert
+  closure trashes the superseded partial doc before rebuilding from
+  the intact source. The per-user write GOVERNOR in
+  ``services/docs/content_transplant.py`` is the root fix that makes
+  this net rarely needed.
+
 The module keeps a strong reference to every live task (asyncio holds
 only weak refs; an unreferenced task can be garbage-collected mid-run)
 plus a job_id -> Task map so the sync response path and fingerprint
@@ -166,15 +178,18 @@ async def wait_for_outcome(
 
 
 def start_job(
-    job_id: str, work: Callable[[], dict[str, Any]]
+    job_id: str, work: Callable[[dict[str, Any] | None], dict[str, Any]]
 ) -> "asyncio.Task[tuple[str, Any, Any]]":
     """Spawn the detached runner task for ``work`` and register it.
 
-    ``work`` is a zero-arg BLOCKING callable (the converter closure,
-    owning its temp-file cleanup); it runs on a worker thread. Await
-    the returned task ONLY via ``wait_for_outcome`` - a bare ``await``
-    would propagate the awaiter's cancellation into the job (see
-    ``wait_for_outcome``).
+    ``work`` is a one-arg BLOCKING callable (the converter closure,
+    owning its temp-file cleanup); it runs on a worker thread. The
+    argument is the PREVIOUS attempt's failure envelope when the runner
+    requeues a rate-limited job (A2), or None on the first attempt -
+    the closure uses it to trash the superseded partial doc before
+    re-running. Await the returned task ONLY via ``wait_for_outcome`` -
+    a bare ``await`` would propagate the awaiter's cancellation into
+    the job (see ``wait_for_outcome``).
 
     Note on log correlation: ``asyncio.create_task`` copies the current
     contextvars, so log lines emitted by the runner carry the
@@ -208,28 +223,80 @@ def _touch_heartbeat_safely(job_id: str) -> None:
         log.warning("convert job %s heartbeat write failed: %s", job_id, exc)
 
 
-async def _run_job(
-    job_id: str, work: Callable[[], dict[str, Any]]
-) -> tuple[str, Any, Any]:
-    """Drive one job to completion: slot wait + heartbeats + converter.
+def _max_requeues() -> int:
+    """CONVERT_JOB_MAX_REQUEUES, default 1, floor 0.
 
-    Phases:
-      1. Acquire a concurrency slot. The row stays honestly ``queued``
-         while waiting (mark_running only runs AFTER acquisition - a
-         queued job must never claim to be running), heartbeating so a
-         long wait behind slow converts never derives stalled.
-      2. Run the converter on a worker thread, heartbeating.
-      3. Record the outcome exactly once.
+    How many times a rate-limit-exhausted job re-runs before its
+    failure becomes terminal. One is enough once the write governor
+    paces the storm; the env var exists for operators, not tuning
+    enthusiasm."""
+    raw = os.environ.get("CONVERT_JOB_MAX_REQUEUES", "")
+    try:
+        value = int(raw) if raw else 1
+    except ValueError:
+        log.warning("invalid CONVERT_JOB_MAX_REQUEUES=%r; using 1", raw)
+        value = 1
+    return max(0, value)
 
-    Never raises on converter failure (the outcome tuple + row carry
-    it). CancelledError (uvicorn shutdown / event-loop teardown) is
-    deliberately NOT caught: the row simply stops heartbeating and
-    derives ``stalled``, which is the documented deploy-kill semantics.
-    The already-running converter thread cannot be interrupted; if it
-    completes against Google after the loop died, the row still reads
-    stalled - see job_store's module docstring for that honest limit.
-    Store writes inside the loop are best-effort (a transient DB error
-    must not kill the runner and orphan the converter thread).
+
+def _requeue_delay_seconds() -> float:
+    """CONVERT_JOB_REQUEUE_DELAY_SECONDS, default 65 (the write quota
+    refills per minute; 65s guarantees a fresh window), floor 0."""
+    raw = os.environ.get("CONVERT_JOB_REQUEUE_DELAY_SECONDS", "")
+    try:
+        value = float(raw) if raw else 65.0
+    except ValueError:
+        log.warning(
+            "invalid CONVERT_JOB_REQUEUE_DELAY_SECONDS=%r; using 65", raw
+        )
+        value = 65.0
+    return max(0.0, value)
+
+
+def _is_rate_limited_failure(exc: BaseException) -> bool:
+    """True when a RAISED converter failure is a Docs 429 underneath.
+
+    Covers the raw HttpError (transplant budget exhaustion), the
+    docx_import pre-transplant RuntimeError wrap (``rate_limited``
+    attribute + ``__cause__`` chain), and anything else that carries
+    the marker."""
+    if getattr(exc, "rate_limited", False):
+        return True
+    seen: BaseException | None = exc
+    while seen is not None:
+        if (
+            isinstance(seen, HttpError)
+            and getattr(seen, "status_code", None) == 429
+        ):
+            return True
+        seen = seen.__cause__
+    return False
+
+
+async def _sleep_with_heartbeat(job_id: str, seconds: float) -> None:
+    """Requeue delay that keeps the row's heartbeat fresh throughout,
+    so a waiting-to-retry job polls as honestly ``queued``, never
+    ``stalled``."""
+    remaining = seconds
+    while remaining > 0:
+        chunk = min(remaining, HEARTBEAT_INTERVAL)
+        await asyncio.sleep(chunk)
+        remaining -= chunk
+        _touch_heartbeat_safely(job_id)
+
+
+async def _run_attempt(
+    job_id: str,
+    work: Callable[[dict[str, Any] | None], dict[str, Any]],
+    prior_envelope: dict[str, Any] | None,
+) -> tuple[str, Any]:
+    """One converter attempt: slot wait + heartbeats + worker thread.
+
+    Returns ``("result", converter_dict)`` or ``("exception", exc)``;
+    terminal row writes are the CALLER's job (so a requeue decision can
+    be made before anything terminal is recorded). The concurrency slot
+    is held only for the duration of THIS attempt - a requeued job
+    releases it during its delay so other queued jobs can run.
     """
     sem = _concurrency_semaphore()
     acquired = False
@@ -257,7 +324,9 @@ async def _run_job(
                 "convert job %s mark_running write failed: %s", job_id, exc
             )
         log.info("convert job %s started", job_id)
-        thread_task = asyncio.create_task(asyncio.to_thread(work))
+        thread_task = asyncio.create_task(
+            asyncio.to_thread(work, prior_envelope)
+        )
         while True:
             done, _pending = await asyncio.wait(
                 {thread_task}, timeout=HEARTBEAT_INTERVAL
@@ -268,9 +337,68 @@ async def _run_job(
             if done:
                 break
         try:
-            result = thread_task.result()
-        except Exception as exc:  # noqa: BLE001 - classified + persisted, never swallowed
+            return ("result", thread_task.result())
+        except Exception as exc:  # noqa: BLE001 - the caller classifies/persists
+            return ("exception", exc)
+    finally:
+        if acquired:
+            sem.release()
+        else:
+            # Cancelled (or failed) before holding a slot: make sure the
+            # pending acquire cannot consume a permit with nobody left
+            # to release it. If it ALREADY resolved between the last
+            # check and this cancel, hand the permit straight back.
+            slot_waiter.cancel()
+            if slot_waiter.done() and not slot_waiter.cancelled():
+                try:
+                    if slot_waiter.result():
+                        sem.release()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+async def _run_job(
+    job_id: str, work: Callable[[dict[str, Any] | None], dict[str, Any]]
+) -> tuple[str, Any, Any]:
+    """Drive one job to completion, requeuing rate-limit deaths (A2).
+
+    Each attempt runs via ``_run_attempt`` (slot + heartbeats + worker
+    thread). A failure whose root cause is the Docs write quota (HTTP
+    429) is TRANSIENT by definition - the quota refills every minute -
+    so instead of recording it terminally the runner re-arms the row
+    (status honestly back to ``queued``, heartbeating through the
+    delay) and re-runs the work after ``CONVERT_JOB_REQUEUE_DELAY_
+    SECONDS``, up to ``CONVERT_JOB_MAX_REQUEUES`` times. The retry
+    receives the prior attempt's envelope so the convert closure can
+    trash the superseded partial doc before rebuilding from the intact
+    source. Every other failure keeps the N1/N3 terminal semantics
+    exactly.
+
+    Never raises on converter failure (the outcome tuple + row carry
+    it). CancelledError (uvicorn shutdown / event-loop teardown) is
+    deliberately NOT caught: the row simply stops heartbeating and
+    derives ``stalled``, which is the documented deploy-kill semantics.
+    The already-running converter thread cannot be interrupted; if it
+    completes against Google after the loop died, the row still reads
+    stalled - see job_store's module docstring for that honest limit.
+    Store writes are best-effort (a transient DB error must not kill
+    the runner and orphan the converter thread).
+    """
+    attempt = 0
+    prior_envelope: dict[str, Any] | None = None
+    while True:
+        signal, value = await _run_attempt(job_id, work, prior_envelope)
+
+        if signal == "exception":
+            exc = value
+            if _is_rate_limited_failure(exc) and attempt < _max_requeues():
+                attempt += 1
+                prior_envelope = None  # pre-transplant death: no doc kept
+                await _requeue(job_id, attempt, cause=str(exc))
+                continue
             http_status, payload = classify_convert_error(exc)
+            if attempt:
+                payload = {**payload, "requeue_attempts": attempt}
             try:
                 job_store.finish_error(job_id, http_status, payload)
             except Exception as store_exc:  # noqa: BLE001
@@ -284,18 +412,28 @@ async def _run_job(
                 job_id, http_status, payload.get("error"),
             )
             return ("error", http_status, payload)
+
+        result = value
         # N3 (2026-07-10 retest): a converter that RETURNED a kept-doc
         # recovery envelope carrying ``error`` (the S2.5 partial-failure
         # contract) is a FAILED job, and the row must say so - a poller
-        # reading status=="done" must be able to trust it as success
-        # (machine consumers were treating partial failures as wins).
-        # The FULL envelope (doc_id, completion manifest, warnings) is
-        # persisted as the error payload with the sync path's 500, so
-        # the status endpoint still hands the poller every byte of
-        # recovery data the sync caller would have received.
+        # reading status=="done" must be able to trust it as success.
+        # A2 refinement: when that envelope is rate-limit-caused it is
+        # requeued instead (the source is intact; the retry closure
+        # trashes the superseded partial doc).
         if isinstance(result, dict) and result.get("error"):
+            if result.get("rate_limited") and attempt < _max_requeues():
+                attempt += 1
+                prior_envelope = result
+                await _requeue(
+                    job_id, attempt, cause=str(result.get("error"))[:200]
+                )
+                continue
+            payload = (
+                {**result, "requeue_attempts": attempt} if attempt else result
+            )
             try:
-                job_store.finish_error(job_id, 500, result)
+                job_store.finish_error(job_id, 500, payload)
             except Exception as store_exc:  # noqa: BLE001
                 log.error(
                     "convert job %s finish_error write failed: %s",
@@ -305,7 +443,8 @@ async def _run_job(
                 "convert job %s failed (partial-failure envelope): %s",
                 job_id, result.get("error"),
             )
-            return ("error", 500, result)
+            return ("error", 500, payload)
+
         try:
             job_store.finish_done(job_id, result)
         except Exception as store_exc:  # noqa: BLE001
@@ -324,18 +463,27 @@ async def _run_job(
                 pass  # stalled derivation + fingerprint re-arm recover
         log.info("convert job %s done", job_id)
         return ("done", result, None)
-    finally:
-        if acquired:
-            sem.release()
-        else:
-            # Cancelled (or failed) before holding a slot: make sure the
-            # pending acquire cannot consume a permit with nobody left
-            # to release it. If it ALREADY resolved between the last
-            # check and this cancel, hand the permit straight back.
-            slot_waiter.cancel()
-            if slot_waiter.done() and not slot_waiter.cancelled():
-                try:
-                    if slot_waiter.result():
-                        sem.release()
-                except Exception:  # noqa: BLE001
-                    pass
+
+
+async def _requeue(job_id: str, attempt: int, *, cause: str) -> None:
+    """Re-arm the row and wait out the quota window before retrying.
+
+    Status honesty: the row reads ``queued`` (never a lying done or a
+    premature error) and heartbeats through the whole delay. Keeps the
+    N2 budget-countdown logging style."""
+    delay = _requeue_delay_seconds()
+    log.warning(
+        "convert job %s hit the write rate limit; requeue %d/%d after "
+        "%.0fs (cause: %s)",
+        job_id, attempt, _max_requeues(), delay, cause,
+    )
+    try:
+        job_store.rearm_job(job_id)
+    except Exception as store_exc:  # noqa: BLE001
+        # Non-fatal: the retry still runs; the row just over-reports
+        # running for the delay (heartbeats keep it un-stalled).
+        log.warning(
+            "convert job %s requeue rearm write failed: %s",
+            job_id, store_exc,
+        )
+    await _sleep_with_heartbeat(job_id, delay)

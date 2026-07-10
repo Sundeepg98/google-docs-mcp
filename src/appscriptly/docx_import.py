@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
 from appscriptly.google_clients import get_service
 
 from .services.docs.api import (
@@ -240,7 +241,11 @@ def convert_docx_to_tabbed_doc(
     on partial-failure returns; a section listed there exists ONLY in
     the placeholder tab - deleting that tab destroys it.
     """
-    del user_id  # accepted for the REST route's signature; unused here
+    # user_id keys the per-user cross-job WRITE GOVERNOR (A2): every
+    # Docs write of this conversion is paced against the same user's
+    # quota bucket shared with any concurrently running jobs. None
+    # (stdio / bearer callers) maps to the operator bucket.
+    governor_key = user_id
 
     if (docx_path is None) == (drive_file_id is None):
         raise ValueError(
@@ -458,7 +463,8 @@ def convert_docx_to_tabbed_doc(
         for tab, plan in plans:
             transplant_write_attempted = True
             moved_blocks += execute_tab_transplant(
-                docs, doc_id, tab["tab_id"], plan, document=shells_doc
+                docs, doc_id, tab["tab_id"], plan, document=shells_doc,
+                governor_key=governor_key,
             )
             executed_count += 1
         verify_doc = docs.documents().get(
@@ -499,12 +505,19 @@ def convert_docx_to_tabbed_doc(
         _cleanup_failed_staging_copy(
             creds, doc_id, [t["tab_id"] for t in reversed(created_tabs)]
         )
-        raise RuntimeError(
+        wrapped = RuntimeError(
             f"Conversion of {source_label} failed before any content "
             f"moved: {e}. The staging copy {doc_id} was moved to Drive "
             "trash (recoverable there for 30 days); the original source "
             "was not modified."
-        ) from e
+        )
+        # A2: keep the 429 signal readable through the wrap (the raise
+        # ... from below sets __cause__, which _is_rate_limit_cause
+        # walks; the attribute is belt-and-suspenders for handlers that
+        # only see the exception object).
+        if _is_rate_limit_cause(e):
+            wrapped.rate_limited = True  # type: ignore[attr-defined]
+        raise wrapped from e
 
     # 6. Carve the transplanted ranges out of the primary tab - for
     # EVERY placeholder policy, strictly after verify-all. For
@@ -517,7 +530,8 @@ def convert_docx_to_tabbed_doc(
     carve_ok = True
     try:
         carve_source_ranges(
-            docs, doc_id, primary_tab_id, docapp_children, all_ranges
+            docs, doc_id, primary_tab_id, docapp_children, all_ranges,
+            governor_key=governor_key,
         )
     except Exception as e:  # noqa: BLE001
         carve_ok = False
@@ -791,7 +805,7 @@ def _partial_failure_result(
         else:
             pending_sections.append(tab["title"])
 
-    return {
+    result = {
         "doc_id": doc_id,
         "url": url,
         "action": "created",
@@ -824,6 +838,31 @@ def _partial_failure_result(
             "pending_sections": pending_sections,
         },
     }
+    if _is_rate_limit_cause(error):
+        # A2 safety net: a 429-budget-exhaustion partial failure is
+        # RETRYABLE by re-running from the source (which still exists in
+        # full); the job runner requeues instead of dying terminally.
+        result["rate_limited"] = True
+    return result
+
+
+def _is_rate_limit_cause(error: BaseException | None) -> bool:
+    """True when the failure chain bottoms out in a Docs HTTP 429.
+
+    The runner's requeue decision (A2): a rate-limit death is transient
+    by definition (the quota refills every minute), so the job may
+    safely re-run from its still-intact source instead of reporting a
+    terminal error. Walks ``__cause__`` because the pre-transplant path
+    wraps the HttpError in a RuntimeError."""
+    seen: BaseException | None = error
+    while seen is not None:
+        if (
+            isinstance(seen, HttpError)
+            and getattr(seen, "status_code", None) == 429
+        ):
+            return True
+        seen = seen.__cause__
+    return False
 
 
 def _refresh_tabs(

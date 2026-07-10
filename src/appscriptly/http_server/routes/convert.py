@@ -60,6 +60,7 @@ from appscriptly.http_server._helpers import (
 )
 from appscriptly.http_server.routes.convert_status import build_status_url
 from appscriptly.retrofit import retrofit_existing_docx as _retrofit_docx
+from appscriptly.services.drive.api import trash_drive_file as _trash_drive_file
 
 
 # PR-Δ3 (2026-05-27): structured audit logger for upload sessions.
@@ -70,6 +71,9 @@ from appscriptly.retrofit import retrofit_existing_docx as _retrofit_docx
 # per-session line is the smallest forensic primitive: who uploaded
 # what (by hash, never by content), when, in which session.
 _audit_log = logging.getLogger("appscriptly.audit.upload")
+
+# Operational (non-audit) lines from the convert route + its closures.
+_log = logging.getLogger("appscriptly.http.convert")
 
 # Upper bound on inputs per request (multipart ``file`` parts or
 # ``drive_file_ids`` entries). Each input becomes its own job + worker
@@ -188,7 +192,7 @@ class _PlannedJob:
     label: str
     fingerprint: str
     kind: str
-    work: Callable[[], dict[str, Any]] | None = None
+    work: Callable[[dict[str, Any] | None], dict[str, Any]] | None = None
     job_id: str | None = None
     row: dict[str, Any] | None = None
     task: "asyncio.Task[tuple[str, Any, Any]] | None" = None
@@ -228,7 +232,7 @@ def _fingerprint(user_key: str, content_key: str, fp_params: dict[str, Any]) -> 
 def _plan_input(
     label: str,
     fingerprint: str,
-    work: Callable[[], dict[str, Any]],
+    work: Callable[[dict[str, Any] | None], dict[str, Any]],
     user_key: str,
 ) -> _PlannedJob:
     """Decide create / re-arm / attach for one input.
@@ -302,12 +306,42 @@ def _plan_input(
     return _PlannedJob(label=label, fingerprint=fingerprint, kind="create", work=work)
 
 
+def _trash_superseded_partial(
+    creds: Any, prior_envelope: dict[str, Any] | None
+) -> None:
+    """Best-effort cleanup before a requeue retry (A2).
+
+    ``prior_envelope`` is the previous attempt's kept-doc recovery
+    envelope. The retry rebuilds EVERYTHING from the still-intact
+    source (the upload bytes held by the closure, or the Drive file),
+    so the partial doc is superseded derived data - trashing it
+    (recoverable from Drive trash for 30 days) keeps automatic retries
+    from accumulating litter. A failed trash is logged and ignored:
+    the retry matters more than the tidy-up.
+    """
+    if not prior_envelope:
+        return
+    doc_id = prior_envelope.get("doc_id")
+    if not doc_id:
+        return
+    try:
+        _trash_drive_file(creds, doc_id)
+        _log.info(
+            "requeue retry trashed superseded partial doc %s", doc_id
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup must never block the retry
+        _log.warning(
+            "requeue retry could not trash superseded partial doc %s: %s",
+            doc_id, exc,
+        )
+
+
 def _make_file_work(
     creds: Any,
     contents: bytes,
     params: dict[str, Any],
     signed_uid: str | None,
-) -> Callable[[], dict[str, Any]]:
+) -> Callable[[dict[str, Any] | None], dict[str, Any]]:
     """Blocking converter closure for an uploaded .docx.
 
     The temp file is created INSIDE the closure (on the worker thread)
@@ -315,8 +349,13 @@ def _make_file_work(
     unlinked when the conversion ends however it ends. If the process
     dies mid-run the orphan lives in the container's /tmp, which does
     not survive a Fly deploy.
+
+    ``prior_envelope`` is non-None only on a runner requeue retry (A2):
+    the previous attempt's partial doc gets trashed before this full
+    re-run from the retained upload bytes.
     """
-    def work() -> dict[str, Any]:
+    def work(prior_envelope: dict[str, Any] | None = None) -> dict[str, Any]:
+        _trash_superseded_partial(creds, prior_envelope)
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
             tmp.write(contents)
             tmp_path = Path(tmp.name)
@@ -361,13 +400,16 @@ def _make_drive_work(
     drive_file_id: str,
     params: dict[str, Any],
     signed_uid: str | None,
-) -> Callable[[], dict[str, Any]]:
+) -> Callable[[dict[str, Any] | None], dict[str, Any]]:
     """Blocking converter closure for an existing Drive file (T3.3
     convert-from-Drive): same pipeline, ``drive_file_id`` input mode,
     reusing the converter's existing Drive entry (fetch+convert for a
     .docx, copy for a native Google Doc). ``drive.file`` visibility
-    applies: the file must be app-accessible."""
-    def work() -> dict[str, Any]:
+    applies: the file must be app-accessible. ``prior_envelope`` as in
+    ``_make_file_work`` (requeue retries trash the superseded partial
+    doc; the Drive source itself is never touched)."""
+    def work(prior_envelope: dict[str, Any] | None = None) -> dict[str, Any]:
+        _trash_superseded_partial(creds, prior_envelope)
         if params["markers"] is not None:
             return _retrofit_docx(
                 creds,

@@ -1049,3 +1049,52 @@ def test_happy_path_still_polls_done():
         assert final["status"] == "done"
         assert final["result"]["doc_id"] == "CLEAN"
         assert "error" not in final
+
+
+# ---------------------------------------------------------------------
+# A2 (retest 3): requeue rides through the endpoint end to end
+# ---------------------------------------------------------------------
+
+
+def test_sync_request_survives_a_rate_limit_requeue(monkeypatch):
+    """The full A2 loop through the production route: attempt 1 returns
+    the rate-limited partial envelope, the runner requeues (row honestly
+    queued through the delay), the retry closure trashes the superseded
+    partial doc and re-runs, and the SYNC caller - who has just been
+    waiting - receives the retry's clean 200. Zero manual steps."""
+    monkeypatch.setenv("CONVERT_JOB_REQUEUE_DELAY_SECONDS", "0.05")
+    monkeypatch.setattr(jobs, "HEARTBEAT_INTERVAL", 0.05)
+    app = _build_app_under_test()
+
+    envelope = {
+        "doc_id": "PARTIAL-1", "url": "https://x", "tabs": [],
+        "error": "quota exhausted past the backoff budget",
+        "rate_limited": True,
+        "completion": {"steps_completed": ["import", "shells"],
+                       "moved_sections": [], "pending_sections": ["A"]},
+    }
+    responses = [
+        envelope,
+        {"doc_id": "CLEAN-RETRY", "url": "https://x", "tabs": []},
+    ]
+    trashed: list[str] = []
+
+    def fake_convert(creds, **kwargs):
+        return responses.pop(0)
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), patch(
+        "appscriptly.http_server.routes.convert._trash_drive_file",
+        side_effect=lambda creds, doc_id: trashed.append(doc_id),
+    ), TestClient(app) as client:
+        resp = client.post(f"/api/convert?{_mint_qs()}", files=_docx_form())
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["doc_id"] == "CLEAN-RETRY"
+    assert trashed == ["PARTIAL-1"], (
+        "the retry must trash the superseded partial doc"
+    )
+    assert responses == [], "both attempts must have run"
