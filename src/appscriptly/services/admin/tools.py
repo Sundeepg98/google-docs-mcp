@@ -1221,7 +1221,7 @@ def server_health() -> dict:
       round-trip right now ("ok" | "unauthorized" | "error", with
       ``google_api_detail`` explaining any non-ok).
     - ``automation_runtime``: the per-user Apps Script web app that
-      powers ``as_*`` automations - ``{installed, exec,
+      powers ``as_*`` automations - ``{installed, exec, gates,
       remediation_url, detail}`` where ``exec`` is one of:
 
       - ``"serving"``: the /exec endpoint answered like a live script.
@@ -1239,6 +1239,14 @@ def server_health() -> dict:
       - ``"unknown"``: the liveness probe hit transport trouble
         (timeout / DNS); says nothing about the deployment - retry.
 
+    SCOPE OF IMPACT (R3, 2026-07-10 retest 2): the automation runtime
+    gates the ``as_*`` automation family ONLY. Conversions
+    (/api/convert, gdocs_tab_existing_doc, gdocs_make_tabbed_doc) and
+    every gdocs/gdrive/gsheets/gslides tool run on plain Google REST
+    APIs and work fine while ``exec`` reads ``needs_activation`` or
+    ``api_disabled`` - do NOT abort a convert on those readings. The
+    ``gates`` field in the payload states this machine-readably.
+
     Read-only: one Drive ``about.get``, at most one Apps Script
     ``projects.get``, and one anonymous GET of the /exec URL. Never
     triggers a consent flow and never raises for auth problems - it
@@ -1247,8 +1255,8 @@ def server_health() -> dict:
     Returns:
         ``{"server": "ok", "google_api": "ok"|"unauthorized"|"error",
         "google_api_detail": str|null, "automation_runtime":
-        {"installed": bool, "exec": str, "remediation_url": str|null,
-        "detail": str|null}}``.
+        {"installed": bool, "exec": str, "gates": str,
+        "remediation_url": str|null, "detail": str|null}}``.
 
     Choreography: run before / after ``as_install_automation`` to
     verify runtime state, or first thing when an ``as_*`` tool or
@@ -1258,7 +1266,17 @@ def server_health() -> dict:
     if creds is not None:
         api_status, api_detail = _probe_google_api(creds)
 
-    runtime: dict = {}
+    # R3: every runtime state carries WHAT it gates, so a caller seeing
+    # needs_activation does not false-abort a convert (retest 2 proved
+    # 7/7 converts succeed while the runtime needs activation - the
+    # convert path is pure REST since #222).
+    runtime: dict = {
+        "gates": (
+            "as_* automation tools only; convert (/api/convert, "
+            "gdocs_tab_existing_doc, gdocs_make_tabbed_doc) and all "
+            "gdocs/gdrive/gsheets/gslides tools are unaffected"
+        ),
+    }
     try:
         script_id, exec_url = _read_runtime_state()
     except Exception as e:  # noqa: BLE001 - report, never raise, in a health probe
@@ -1360,7 +1378,9 @@ def server_health() -> dict:
             "activation: open the remediation URL as the installing "
             "user, run any function once (e.g. doGet), and click "
             "Allow on the consent prompt. Requests serve normally "
-            "after that."
+            "after that. This gates as_* automation tools ONLY - "
+            "document conversion and the gdocs/gdrive/gsheets/gslides "
+            "tools do not use this runtime and keep working."
         )
     else:
         runtime["exec"] = "unknown"

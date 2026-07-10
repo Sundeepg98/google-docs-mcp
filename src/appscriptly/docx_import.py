@@ -554,10 +554,19 @@ def convert_docx_to_tabbed_doc(
     #    rename: rename to placeholder_title with an icon.
     #    keep:   leave it as "Tab 1".
     placeholder_outcome = "kept"
+    placeholder_veto: str | None = None
     placeholder_done = False
     if placeholder_behavior == "delete":
         unmoved = _unmoved_visible_count(docapp_children, all_ranges)
         if unmoved:
+            # R1 (retest 2) surfaced how easily this veto reads as "the
+            # delete default was not applied" - drive-sourced Google
+            # Docs commonly carry visible content before the first
+            # Heading 1 (a title line, an intro paragraph), which the
+            # split never moves, so the sole-copy guard keeps the tab.
+            # The ``placeholder_veto`` response field makes the refusal
+            # machine-distinguishable from a keep POLICY.
+            placeholder_veto = "unmoved_content"
             warnings.append(
                 f"placeholder tab kept instead of deleted: {unmoved} content "
                 "block(s) before the first split point were never moved into "
@@ -675,6 +684,8 @@ def convert_docx_to_tabbed_doc(
             "pending_sections": [],
         },
     }
+    if placeholder_veto:
+        result["placeholder_veto"] = placeholder_veto
     if icons_result is not None:
         result["icons"] = icons_result
     if replaced_doc_ids:

@@ -655,6 +655,9 @@ def test_drive_file_id_single_sync_reuses_converter_entry():
         assert resp.json()["doc_id"] == "FROMDRIVE"
     assert captured["drive_file_id"] == "DRIVE123"
     assert "docx_path" not in captured
+    # R1 (retest 2): the HTTP drive mode shares the endpoint's
+    # placeholder default (delete) - same as the upload and batch modes.
+    assert captured["placeholder_behavior"] == "delete"
 
 
 def test_drive_file_ids_batch():

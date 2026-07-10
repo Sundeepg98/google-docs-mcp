@@ -904,15 +904,31 @@ def gdocs_delete_tab(
     #                 (applies even to an EMPTY first tab, and rides
     #                 along inside the refusal so a caller deciding
     #                 whether to force sees the full cost up front).
-    first_tab_note = (
-        "this is the document's FIRST tab, and a known Google Docs "
-        "API defect makes every later tab rename / icon change "
-        "(updateDocumentTabProperties) on the document fail with a "
-        "permanent 500 once it is deleted. Adding tabs afterwards "
-        "does not clear that state. Set titles and icons BEFORE "
-        "deleting a first tab; new tabs can still carry icon_emoji "
-        "at creation. (first_tab_deleted_500)"
-    )
+    #
+    # R2 (retest 2): the advisory's tense must match reality. When the
+    # document's ORIGINAL first tab ("t.0") is still present, deleting
+    # the current first tab is what TRIGGERS the defect (future tense);
+    # when t.0 is already gone, the document is ALREADY affected and
+    # this delete changes nothing about it.
+    if info.get("original_first_tab_present", True):
+        first_tab_note = (
+            "this is the document's FIRST tab, and a known Google Docs "
+            "API defect makes every later tab rename / icon change "
+            "(updateDocumentTabProperties) on the document fail with a "
+            "permanent 500 once it is deleted. Adding tabs afterwards "
+            "does not clear that state. Set titles and icons BEFORE "
+            "deleting a first tab; new tabs can still carry icon_emoji "
+            "at creation. (first_tab_deleted_500)"
+        )
+    else:
+        first_tab_note = (
+            "this document is ALREADY affected by the known Google Docs "
+            "API defect: its original first tab was deleted earlier, so "
+            "tab renames / icon changes (updateDocumentTabProperties) "
+            "already fail with a permanent 500. Deleting this tab does "
+            "not change that state. New tabs can still carry icon_emoji "
+            "at creation. (first_tab_deleted_500)"
+        )
     counts = info["counts"]
     if info["non_empty_elements"] > 0 and not force:
         child_note = (
@@ -941,9 +957,27 @@ def gdocs_delete_tab(
     if force and info["non_empty_elements"] > 0:
         result["forced"] = True
     if info["is_first_root_tab"]:
-        result["warnings"] = [
-            f"You deleted this document's first tab - {first_tab_note}"
-        ]
+        # Post-delete, the tense flips again: a just-deleted original
+        # first tab means the defect is active NOW; an already-affected
+        # document stays already-affected (R2).
+        if info.get("original_first_tab_present", True):
+            result["warnings"] = [
+                "You deleted this document's original first tab - due to "
+                "a known Google Docs API defect, tab renames / icon "
+                "changes (updateDocumentTabProperties) on this document "
+                "will now fail with a permanent 500. Adding tabs later "
+                "does not clear that state; new tabs can still carry "
+                "icon_emoji at creation. (first_tab_deleted_500)"
+            ]
+        else:
+            result["warnings"] = [
+                "Note: this document was ALREADY affected by the known "
+                "first-tab defect (its original first tab was deleted "
+                "earlier), so tab renames / icon changes were failing "
+                "before this delete and keep failing after it. New tabs "
+                "can still carry icon_emoji at creation. "
+                "(first_tab_deleted_500)"
+            ]
     return result
 
 

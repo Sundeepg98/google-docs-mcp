@@ -110,6 +110,47 @@ def test_healthy_end_to_end_reports_serving(monkeypatch, google_stubs):
     assert probe_calls == [_EXEC_URL]
 
 
+def test_every_payload_states_what_the_runtime_gates(monkeypatch, google_stubs):
+    """R3 (retest 2): needs_activation was read as convert-blocking (it
+    is not - the convert path is pure REST since #222, proven by 7/7
+    converts succeeding while the runtime needed activation). Every
+    automation_runtime payload carries a ``gates`` field naming the
+    as_*-only blast radius."""
+    result, _ = _run_health(
+        monkeypatch, creds=MagicMock(name="creds"), stubs=google_stubs
+    )
+    gates = result["automation_runtime"]["gates"]
+    assert "as_*" in gates
+    assert "unaffected" in gates
+
+    # The not_installed early return carries it too.
+    result, _ = _run_health(
+        monkeypatch,
+        creds=None,
+        peek_status="unauthorized",
+        peek_detail="no token",
+        state=(None, None),
+    )
+    assert "as_*" in result["automation_runtime"]["gates"]
+
+
+def test_needs_activation_detail_says_convert_keeps_working(
+    monkeypatch, google_stubs
+):
+    """R3: the needs_activation detail itself must prevent the
+    false-abort ("do NOT abort a convert on this reading")."""
+    result, _ = _run_health(
+        monkeypatch,
+        creds=MagicMock(name="creds"),
+        stubs=google_stubs,
+        probe=WebAppHealth.DEAD,
+    )
+    rt = result["automation_runtime"]
+    assert rt["exec"] == "needs_activation"
+    assert "as_*" in rt["detail"]
+    assert "keep working" in rt["detail"]
+
+
 def test_not_installed_short_circuits_before_any_probe(monkeypatch):
     result, probe_calls = _run_health(
         monkeypatch,
