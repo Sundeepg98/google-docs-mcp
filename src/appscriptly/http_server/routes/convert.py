@@ -199,6 +199,17 @@ async def convert_endpoint(request: Request) -> JSONResponse:
 
     title_raw = form.get("title")
     title: str | None = title_raw if isinstance(title_raw, str) and title_raw else None
+    # BUG 2a (2026-07-09): the pipeline names the Google Doc at
+    # files.create time from ``docx_path.stem`` — and ``docx_path``
+    # here is a NamedTemporaryFile, so a caller that omitted ``title``
+    # got a doc permanently named like "tmpjgehtmo2". Default the title
+    # to the UPLOADED file's real stem instead, so the doc carries its
+    # final title from the moment it exists in Drive — even if the
+    # process dies mid-pipeline, what survives is recognizable.
+    if title is None:
+        original_stem = Path(filename).stem.strip()
+        if original_stem:
+            title = original_stem
 
     placeholder_behavior_raw = form.get("placeholder_behavior") or "delete"
     if (

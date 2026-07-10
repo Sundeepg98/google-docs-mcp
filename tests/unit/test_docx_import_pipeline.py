@@ -15,10 +15,13 @@ The load-bearing contracts pinned here:
    delete; icons precede the placeholder delete (the empirically
    confirmed 500-race order); the source tab is only carved/deleted
    after the verify pass.
-3. FAILURE path - a mid-transplant error must never leave a
-   shell-riddled half-converted doc: the new shells are deleted, the
-   working copy is trashed, the placeholder tab and replace_doc_id are
-   left untouched, and the error says so.
+3. FAILURE path - phase-aware cleanup (BUG 1d, 2026-07-10). BEFORE any
+   transplant write the staging copy holds nothing unique: shells are
+   deleted, the copy is trashed, no Drive orphan survives. AT or AFTER
+   the first transplant write the copy may hold moved content (and a
+   batch whose response was lost may have landed server-side): the copy
+   is KEPT and the error carries doc_id plus a completed/pending tab
+   manifest. replace_doc_id is never trashed on any failure path.
 """
 from __future__ import annotations
 
@@ -311,35 +314,96 @@ def test_replace_doc_id_trashed_only_after_success(pipeline):
 # ---------------------------------------------------------------------
 
 
-def test_failed_transplant_rolls_back_shells_and_trashes_copy(pipeline):
+def test_failure_before_any_transplant_write_trashes_staging_copy(
+    pipeline, monkeypatch
+):
+    """Shell creation dies: nothing has moved, so the staging copy is
+    removed - failed conversions must not orphan tmp docs in Drive."""
+
+    def boom(creds, doc_id, tabs, parent_tab_id=None):
+        raise RuntimeError("synthetic shell-creation failure")
+
+    monkeypatch.setattr(docx_import, "add_tabs_to_doc", boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _convert(replace_doc_id="OLD_DOC")
+
+    msg = str(excinfo.value)
+    assert "source document is untouched" in msg
+    assert "staging copy was removed" in msg
+
+    events = pipeline["events"]
+    assert ("trash", DOC_ID) in events
+    assert ("trash", "OLD_DOC") not in events
+    assert all(e[0] not in ("icons", "delete_tab", "rename_tab") for e in events)
+
+
+def test_failed_transplant_keeps_copy_and_reports_manifest(pipeline):
+    """The FIRST content batch dies: a write was attempted, so its
+    server-side outcome is unknowable - the copy must be KEPT (never
+    trashed, shells never deleted) and the error must carry the doc id
+    plus the full pending manifest."""
     pipeline["fail_when"] = lambda reqs: any("insertText" in r for r in reqs)
 
     with pytest.raises(RuntimeError) as excinfo:
         _convert(icons_by_title={"Intro": "x"}, replace_doc_id="OLD_DOC")
 
     msg = str(excinfo.value)
-    assert "source document is untouched" in msg
+    assert "KEPT" in msg
+    assert DOC_ID in msg
+    assert "first tab still holds the complete source content" in msg
+    assert "Tabs fully transplanted: none" in msg
+    assert "Intro, Methods" in msg  # both pending
 
     events = pipeline["events"]
-    # The new shells were deleted (rollback runs even though the
-    # content batches failed).
-    rollback_deletes = [
-        r["deleteTab"]["tabId"]
-        for batch in pipeline["docs"].batches
-        for r in batch
-        if "deleteTab" in r
-    ]
-    assert set(rollback_deletes) == {"t.1", "t.2"}
-    # The working copy was trashed; the doc being replaced was NOT.
-    assert ("trash", DOC_ID) in events
+    # KEEP means keep: no trash of the working copy, no shell deletes.
+    assert ("trash", DOC_ID) not in events
+    assert not any(
+        "deleteTab" in r for batch in pipeline["docs"].batches for r in batch
+    )
+    # The doc being replaced was NOT trashed either (replace happens
+    # only after success).
     assert ("trash", "OLD_DOC") not in events
     # Nothing downstream of the failure ran.
     assert all(e[0] not in ("icons", "delete_tab", "rename_tab") for e in events)
 
 
-def test_failed_verify_also_rolls_back(pipeline):
-    # Content lands, but the verify fetch shows an empty destination
-    # tab (e.g. a silently mistargeted batch): same rollback contract.
+def test_partial_transplant_manifest_names_completed_and_pending(pipeline):
+    """Tab 1 lands, tab 2 dies: the manifest must attribute each tab to
+    the right bucket so an operator (or stream-2's structured manifest)
+    can refuse unsafe placeholder deletion."""
+
+    def fail_second_tab(reqs):
+        def targets_t2(value):
+            if isinstance(value, dict):
+                return any(
+                    (k in ("location", "range") and isinstance(v, dict)
+                     and v.get("tabId") == "t.2")
+                    or targets_t2(v)
+                    for k, v in value.items()
+                )
+            if isinstance(value, list):
+                return any(targets_t2(v) for v in value)
+            return False
+
+        return targets_t2(reqs)
+
+    pipeline["fail_when"] = fail_second_tab
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _convert()
+
+    msg = str(excinfo.value)
+    assert "KEPT" in msg
+    assert "Tabs fully transplanted: Intro" in msg
+    assert "pending or possibly partial: Methods" in msg
+    assert ("trash", DOC_ID) not in pipeline["events"]
+
+
+def test_failed_verify_keeps_copy_with_all_tabs_completed(pipeline):
+    """Content landed everywhere but verification failed: definitely
+    keep (the copy provably holds moved content); every tab shows as
+    transplanted, none pending."""
     pipeline["docs"]._gets = [
         _source_doc(),
         _shells_doc(),
@@ -351,6 +415,11 @@ def test_failed_verify_also_rolls_back(pipeline):
             ]
         },
     ]
-    with pytest.raises(RuntimeError, match="untouched"):
+    with pytest.raises(RuntimeError) as excinfo:
         _convert()
-    assert ("trash", DOC_ID) in pipeline["events"]
+
+    msg = str(excinfo.value)
+    assert "KEPT" in msg
+    assert "Tabs fully transplanted: Intro, Methods" in msg
+    assert "pending or possibly partial: none" in msg
+    assert ("trash", DOC_ID) not in pipeline["events"]

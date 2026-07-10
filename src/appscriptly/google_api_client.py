@@ -14,6 +14,10 @@ proper Port + Adapters shape, matching M1a's ``key_provider.py`` design:
   that need exponential-backoff + jitter on Google's routine 429/5xx
   responses (PR-Δ3 / 2026-05-27, closes the Hex specialist finding that
   zero retry code existed anywhere in the codebase).
+- ``CachingGoogleApiClientAdapter`` — composing adapter; bounded LRU of
+  built Resources keyed ``(service, version, credential identity)``
+  (BUG 1b / 2026-07-10 — kills the per-call discovery parse that OOMed
+  the 512MB machine; thread-safety rationale on the class).
 - Facade + injection ergonomics matching ``StorageBackend`` and
   ``KeyProvider``: ``set_google_api_client(client)`` + ``with_google_api_client(client)``.
 
@@ -45,16 +49,19 @@ sweep; with it, a single ``set_google_api_client(adapter)``.
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import math
 import os
 import socket
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator, Protocol, TypeVar, runtime_checkable
 
 from googleapiclient.discovery import Resource, build
-from googleapiclient.errors import HttpError
+from googleapiclient.errors import HttpError, UnknownApiNameOrVersion
+from googleapiclient.http import HttpRequest
 from tenacity import (
     RetryError,
     Retrying,
@@ -208,6 +215,48 @@ def _build_authorized_http(credentials: Credentials) -> object:
     return google_auth_httplib2.AuthorizedHttp(credentials, http=base_http)
 
 
+def _make_request_builder(credentials: Credentials) -> type[HttpRequest]:
+    """Return a ``requestBuilder`` that binds each request to a FRESH transport.
+
+    This is the thread-safety keystone that makes a built ``Resource``
+    safe to SHARE across threads (and therefore safe to cache — see
+    ``CachingGoogleApiClientAdapter``):
+
+    - ``httplib2.Http`` is NOT thread-safe. googleapiclient's own
+      thread-safety guide says each thread must use its own instance,
+      and its prescribed pattern is exactly this: a custom
+      ``requestBuilder`` that ignores the Resource's shared ``_http``
+      and constructs every ``HttpRequest`` around a fresh
+      ``AuthorizedHttp(credentials, http=httplib2.Http())``.
+    - The ``credentials`` object IS shared across those fresh
+      transports — that sharing is part of the documented pattern.
+      Two threads may race to refresh an expired token; both refreshes
+      succeed independently and last-write-wins on the in-memory
+      token. Benign: Google honors concurrent refresh grants.
+    - Trade-off: a fresh ``Http`` per request forfeits intra-call
+      connection reuse (one TLS handshake per API call). Accepted
+      deliberately — it is the price of making Resources cacheable,
+      and the cache removes the per-call discovery-document parse
+      that was the actual OOM driver (BUG 1, 2026-07-09).
+
+    The fresh transport carries the same socket deadline as the
+    baseline one (Hardening-P1) via ``_build_authorized_http``.
+    """
+
+    def build_request(_http: object, *args: object, **kwargs: object) -> HttpRequest:
+        # ``_http`` is the Resource's shared transport — deliberately
+        # ignored (sharing it across threads is the httplib2 hazard).
+        return HttpRequest(_build_authorized_http(credentials), *args, **kwargs)  # type: ignore[arg-type]
+
+    # The SDK stub types ``requestBuilder`` as ``type[HttpRequest]``,
+    # but the runtime only ever CALLS it, and googleapiclient's own
+    # thread-safety guide passes a plain function exactly like this
+    # one. The cast bridges the over-narrow stub without weakening the
+    # runtime contract.
+    from typing import cast
+    return cast("type[HttpRequest]", build_request)
+
+
 # ---------------------------------------------------------------------
 # Port
 # ---------------------------------------------------------------------
@@ -248,15 +297,27 @@ class GoogleAPIClient(Protocol):
 class GoogleApiClientAdapter:
     """Production adapter: wraps ``googleapiclient.discovery.build``.
 
-    Behavior is byte-equivalent to pre-v2.1.2 ``google_clients.get_service``
-    with ONE deliberate hardening (ROADMAP Hardening-P1): the underlying
-    HTTP transport now carries a connect+read **socket timeout** so a
-    stalled connection fails fast (and retryably) instead of hanging
-    ``.execute()`` forever. No caching — that's still deferred behind
-    this port for a future ``CachingGoogleApiClientAdapter``.
+    Two deliberate hardenings on top of a plain ``build()`` call:
+
+    - ROADMAP Hardening-P1: the underlying HTTP transport carries a
+      connect+read **socket timeout** so a stalled connection fails
+      fast (and retryably) instead of hanging ``.execute()`` forever.
+    - BUG 1a (2026-07-10): discovery is pinned to the library's
+      BUNDLED static documents (``static_discovery=True``) and every
+      request gets its own transport via ``_make_request_builder`` so
+      the returned Resource is safe to share across threads (which is
+      what lets ``CachingGoogleApiClientAdapter`` cache it). At the
+      pinned google-api-python-client version, static discovery is
+      already the effective default when no ``discoveryServiceUrl``
+      is supplied — passing it explicitly protects against the
+      library default drifting and documents the dependency on the
+      bundled documents. ``cache_discovery=False`` skips the dead
+      oauth2client-era file cache probe (and its per-build
+      "file_cache is only supported with oauth2client<4.0.0" log
+      spam).
 
     Stateless — safe to share a single instance process-wide
-    (the module-level ``_active_client`` is one).
+    (the module-level ``_active_client`` composes one).
     """
 
     def get_service(
@@ -270,7 +331,8 @@ class GoogleApiClientAdapter:
         # would construct internally, except the wrapped ``httplib2.Http``
         # carries a socket deadline. We pass ``http=`` (NOT ``credentials=``
         # — passing both raises) so the deadline reaches every request,
-        # including the discovery-document fetch build() performs.
+        # including a dynamic discovery-document fetch on the fallback
+        # path below.
         #
         # IMPORTANT (auth-path isolation, per the timeout-PR gate): this
         # does NOT touch credential resolution. ``AuthorizedHttp`` is the
@@ -279,7 +341,37 @@ class GoogleApiClientAdapter:
         # set ``timeout`` on the transport socket. Token refresh, scopes,
         # and the per-user credential plumbing are entirely unaffected.
         authorized_http = _build_authorized_http(credentials)
-        return build(service, version, http=authorized_http)
+        request_builder = _make_request_builder(credentials)
+        try:
+            return build(
+                service,
+                version,
+                http=authorized_http,
+                requestBuilder=request_builder,
+                static_discovery=True,
+                cache_discovery=False,
+            )
+        except UnknownApiNameOrVersion:
+            # Safety valve: a (service, version) with no bundled static
+            # document. Every service this codebase builds ships in the
+            # bundle (pinned by test_static_discovery_covers_every_service),
+            # so this path only fires for a FUTURE service added without
+            # updating the bundle expectations — degrade to a network
+            # discovery fetch instead of failing the tool call.
+            _log.warning(
+                "no bundled static discovery document for %s %s; "
+                "falling back to dynamic (network) discovery",
+                service,
+                version,
+            )
+            return build(
+                service,
+                version,
+                http=authorized_http,
+                requestBuilder=request_builder,
+                static_discovery=False,
+                cache_discovery=False,
+            )
 
 
 # ---------------------------------------------------------------------
@@ -590,23 +682,190 @@ _ = RetryError
 
 
 # ---------------------------------------------------------------------
+# Adapter 4: CachingGoogleApiClientAdapter — bounded per-identity cache
+# ---------------------------------------------------------------------
+#
+# BUG 1b (2026-07-09 OOM): every tool call re-ran ``build()`` — a
+# multi-hundred-KB discovery-document read + json parse + Resource
+# construction PER CALL. A single /api/convert issues dozens of
+# ``get_service`` calls, and the repeated parse garbage on a 512MB
+# machine at ~390MB baseline RSS was the kill driver. Caching the
+# built Resource makes ``build()`` a once-per-(service, version, user)
+# cost instead of a per-call cost.
+
+# Bound on cached Resources. ~10 (service, version) pairs exist in the
+# codebase, so 32 comfortably covers several concurrently-active users
+# while capping worst-case memory (a parsed Resource is single-digit
+# MB for the heaviest services). LRU eviction handles overflow; an
+# evicted Resource is just garbage-collected — in-flight requests hold
+# their own per-request transport (see ``_make_request_builder``), so
+# eviction can never yank a socket out from under a running call.
+_DEFAULT_SERVICE_CACHE_MAX_ENTRIES = 32
+_SERVICE_CACHE_MAX_ENTRIES_ENV = "GOOGLE_API_SERVICE_CACHE_MAX_ENTRIES"
+
+
+def _resolve_service_cache_max_entries() -> int:
+    """Return the cache bound. ``<= 0`` disables caching entirely.
+
+    Mirrors ``_resolve_http_timeout_seconds``: a malformed value falls
+    back to the default (with a warning) rather than silently changing
+    behavior; an explicit ``0`` (or negative) is the operator kill
+    switch that turns the caching adapter into a passthrough.
+    """
+    raw = os.environ.get(_SERVICE_CACHE_MAX_ENTRIES_ENV)
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_SERVICE_CACHE_MAX_ENTRIES
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        _log.warning(
+            "ignoring non-integer %s=%r; using default %d",
+            _SERVICE_CACHE_MAX_ENTRIES_ENV,
+            raw,
+            _DEFAULT_SERVICE_CACHE_MAX_ENTRIES,
+        )
+        return _DEFAULT_SERVICE_CACHE_MAX_ENTRIES
+
+
+def _credential_cache_identity(credentials: Credentials) -> str | None:
+    """Derive a stable, per-user cache-key component from ``credentials``.
+
+    Returns ``None`` when no trustworthy identity can be derived — the
+    caching adapter then BYPASSES the cache for that call (fail open to
+    the pre-cache build-per-call behavior, which is always correct).
+
+    Identity source, in order:
+
+    - ``refresh_token``: stable for the lifetime of a grant, unique per
+      user, and REPLACED when the user revokes + re-authorizes — so a
+      re-granted user can never hit a Resource bound to their revoked
+      credentials.
+    - ``token`` (access token): unique per user but rotates ~hourly;
+      each rotation is a cache miss + rebuild, and the stale entries
+      age out via LRU. Only used when no refresh token is present.
+
+    Cross-tenant safety: two distinct users can never share a key
+    because both token kinds are per-user secrets (the mutation guard
+    is ``test_distinct_credentials_get_distinct_resources``). The
+    sha256 keeps raw token material out of cache keys so a debugger /
+    log dump of the cache never exposes a secret. The cached VALUE is
+    a Resource; the credentials object it carries is the same one the
+    caller passed — nothing additional is retained.
+    """
+    for attr in ("refresh_token", "token"):
+        value = getattr(credentials, attr, None)
+        if isinstance(value, str) and value:
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            return f"{attr}:{digest}"
+    return None
+
+
+class CachingGoogleApiClientAdapter:
+    """Composing adapter: bounded LRU of built Resources.
+
+    Key: ``(service, version, credential identity)`` — see
+    ``_credential_cache_identity`` for the identity derivation and the
+    fail-open rule when no identity exists.
+
+    **Thread-safety reasoning** (the whole point of this design —
+    httplib2 is not thread-safe, so a naive cache would share one
+    ``Http`` connection object across concurrent tool calls and
+    corrupt request state):
+
+    - A cache HIT hands the same Resource to multiple threads. That is
+      safe ONLY because the production adapter builds Resources with
+      ``_make_request_builder``, which binds every outgoing request to
+      its own fresh ``AuthorizedHttp`` + ``httplib2.Http`` (the pattern
+      googleapiclient's thread-safety guide prescribes). No request
+      ever touches the Resource's shared baseline transport — including
+      batch requests, whose ``execute()`` falls back to the FIRST
+      request's (fresh) transport, not the Resource's.
+    - Cache bookkeeping (lookup, insert, LRU reorder, eviction) runs
+      under ``_lock``. The slow part — ``build()`` on a miss — runs
+      OUTSIDE the lock so one user's cold build never blocks another
+      user's cache hit.
+    - Two threads can therefore race to build the same key. The first
+      insert wins; the loser discards its build and returns the
+      winner's Resource (both are valid; the duplicate build is the
+      benign cost of not holding a lock across ``build()``).
+
+    Only wrap adapters that return thread-shareable Resources (the
+    production adapter does; ``InMemoryGoogleAPIClient`` stubs are
+    test-only and tests own their own isolation).
+    """
+
+    def __init__(
+        self,
+        inner: GoogleAPIClient,
+        *,
+        max_entries: int | None = None,
+    ) -> None:
+        self._inner = inner
+        self._max_entries = (
+            _resolve_service_cache_max_entries()
+            if max_entries is None
+            else max_entries
+        )
+        self._lock = threading.Lock()
+        self._cache: OrderedDict[tuple[str, str, str], Resource] = OrderedDict()
+
+    def get_service(
+        self,
+        service: str,
+        version: str,
+        *,
+        credentials: Credentials,
+    ) -> Resource:
+        if self._max_entries <= 0:
+            return self._inner.get_service(service, version, credentials=credentials)
+        identity = _credential_cache_identity(credentials)
+        if identity is None:
+            # No stable identity — never guess. Build per call, exactly
+            # like the pre-cache behavior.
+            return self._inner.get_service(service, version, credentials=credentials)
+
+        key = (service, version, identity)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                return cached
+
+        resource = self._inner.get_service(service, version, credentials=credentials)
+
+        with self._lock:
+            existing = self._cache.get(key)
+            if existing is not None:
+                # Lost a build race — return the winner so every caller
+                # holding this key shares one Resource.
+                self._cache.move_to_end(key)
+                return existing
+            self._cache[key] = resource
+            while len(self._cache) > self._max_entries:
+                self._cache.popitem(last=False)
+        return resource
+
+
+# ---------------------------------------------------------------------
 # Module-level default + injection ergonomics
 # ---------------------------------------------------------------------
 
 
 # Process-wide active client. Production wires this to a
-# ``RetryingGoogleApiClientAdapter`` composing the production
-# ``GoogleApiClientAdapter`` at import time (PR-Δ3 / 2026-05-27).
-# The retry policy is opt-in per-call-site via ``execute_with_retry`` —
-# ``get_service`` itself is unchanged pure delegation, so the existing
-# 14 call sites that just do ``get_service(...)`` are untouched. Call
-# sites that want retry call ``get_active_retry_client().execute_with_retry(...)``
-# (or use the ``execute_with_retry`` convenience facade defined below).
+# ``RetryingGoogleApiClientAdapter`` composing the caching + production
+# adapters at import time (PR-Δ3 / 2026-05-27; caching added for BUG 1b
+# 2026-07-10). ``get_service`` flows retry -> cache -> build, so the
+# existing call sites that just do ``get_service(...)`` are untouched
+# and now hit the bounded Resource cache. The retry policy stays
+# opt-in per-call-site via ``execute_with_retry`` (or the convenience
+# facade defined below).
 # Tests swap via ``set_google_api_client()`` or ``with_google_api_client()``
-# — the InMemoryGoogleAPIClient adapter does NOT layer retry (tests
-# that need to verify retry behavior wire the RetryingGoogleApiClientAdapter
-# explicitly around an InMemory inner).
-_active_client: GoogleAPIClient = RetryingGoogleApiClientAdapter(GoogleApiClientAdapter())
+# — the InMemoryGoogleAPIClient adapter does NOT layer retry or caching
+# (tests that need either wire the composing adapter explicitly around
+# an InMemory inner).
+_active_client: GoogleAPIClient = RetryingGoogleApiClientAdapter(
+    CachingGoogleApiClientAdapter(GoogleApiClientAdapter())
+)
 _client_lock = threading.Lock()
 
 

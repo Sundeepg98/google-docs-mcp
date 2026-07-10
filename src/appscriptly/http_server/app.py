@@ -173,24 +173,52 @@ def build_app(mcp: FastMCP) -> Starlette:
     )
 
 
+def configure_http_logging() -> None:
+    """Root logging config with ``request_id`` stamped on every record.
+
+    PR-Δ4 shipped the ``[req=%(request_id)s]`` format with
+    ``RequestIdLogFilter`` attached to the root LOGGER. That wiring
+    never covered records from CHILD loggers: logger-level filters run
+    only on the logger a record is emitted on, and a record PROPAGATED
+    to an ancestor skips the ancestor's logger-level filters entirely,
+    going straight to its handlers. So every record from a named logger
+    (startup, ``mcp.server`` CallToolRequest lines, the
+    ``appscriptly.credentials`` tenant audit) reached the root handler
+    without a ``request_id`` attribute, the formatter raised KeyError,
+    and the logging machinery wrapped EVERY real line in a
+    "--- Logging error ---" traceback block (BUG 4, 2026-07-09).
+
+    Fix, two layers:
+      1. the filter goes on the HANDLERS — handler-level filters run
+         for every record the handler processes, propagated or not;
+      2. ``Formatter(defaults=...)`` supplies ``request_id="-"`` for
+         any future handler wired without the filter.
+
+    Outside an HTTP request the placeholder ``-`` appears (the
+    ContextVar default) — intentional, so operators can tell "no
+    request in scope" from "request_id missing".
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [req=%(request_id)s] "
+            "%(name)s %(message)s",
+            defaults={"request_id": "-"},
+        )
+    )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    # basicConfig no-ops when the root logger already has handlers
+    # (an embedding process may configure logging first) — stamp the
+    # filter on every root handler either way so propagated records
+    # always carry request_id.
+    request_id_filter = RequestIdLogFilter()
+    for root_handler in logging.getLogger().handlers:
+        root_handler.addFilter(request_id_filter)
+
+
 def run_http(mcp: FastMCP, *, port: int = 8080) -> None:
     """Boot the HTTP server on ``0.0.0.0:<port>``."""
-    # PR-Δ4: format string includes ``[req=%(request_id)s]`` and the
-    # ``RequestIdLogFilter`` injects the active ContextVar value into
-    # every LogRecord. Outside an HTTP request the placeholder ``-``
-    # appears (filter default) — that's intentional, not a bug, so
-    # operators can tell "no request in scope" from "request_id missing".
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s %(levelname)s [req=%(request_id)s] "
-            "%(name)s %(message)s"
-        ),
-    )
-    # Install the filter on the ROOT logger so every named logger
-    # (appscriptly.http, .credentials, .audit.*, uvicorn.*, …)
-    # inherits it without per-logger setup.
-    logging.getLogger().addFilter(RequestIdLogFilter())
+    configure_http_logging()
 
     app = build_app(mcp)
     log.info("starting HTTP MCP server on 0.0.0.0:%d", port)

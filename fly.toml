@@ -79,6 +79,19 @@
 app = "sundeepg98-docs-mcp"
 primary_region = "bom"
 
+# BUG 1c (2026-07-09 OOM): 512MB swap as headroom against brief RSS
+# spikes on the 512MB machine - three OOM kills on a single 23KB
+# convert (baseline ~390MB + per-call discovery/build garbage; the
+# code-side fix is the service-object cache + static discovery in
+# google_api_client.py, this is the belt for whatever spikes remain).
+# Top-level key per Fly's config reference; TOML requires it BEFORE
+# the first [section] header. Deliberately NOT a RAM bump (paid =
+# operator decision). NOTE for the operator: a hand-created runtime
+# /data/swapfile (768MB, 2026-07-09) must be deleted once this ships
+# and one clean convert is verified - swapon does not survive restart
+# and the dead file eats most of the 1GB volume.
+swap_size_mb = 512
+
 [build]
 
 [[mounts]]
