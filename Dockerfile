@@ -21,7 +21,7 @@ FROM litestream/litestream:0.5.12 AS litestream-binary
 # Bumped via dependabot's ``docker`` ecosystem (see .github/dependabot.yml).
 # The digest below was the current ``3.13-slim`` tag as of 2026-05-22
 # (Docker Hub manifest lookup).
-FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97
+FROM python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061
 
 # Minimal runtime image. Build the package, then install it. No dev
 # tooling (uv etc.) shipped to the final image.
