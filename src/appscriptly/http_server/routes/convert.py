@@ -125,15 +125,44 @@ async def upload_frame_endpoint(request: Request) -> JSONResponse:
 async def convert_endpoint(request: Request) -> JSONResponse:
     """``POST /api/convert`` — multipart .docx upload + conversion + optional icons.
 
-    Form fields:
-      ``file``: the .docx file (multipart/form-data)
+    Form fields (mirror ``gdocs_tab_existing_doc``'s parameters):
+      ``file``: the .docx file (multipart/form-data). REQUIRED.
       ``split_by``: optional, one of "heading_1"|"heading_2"|"page_break"|"auto"
-      ``title``: optional document title override
+      ``title``: optional document title override. When absent, the
+        title is derived from the uploaded FILENAME (minus ``.docx``) at
+        import time - never from a server temp-file name, and never
+        renamed later (a pipeline that dies mid-way must still leave a
+        doc the user can find by its real title).
       ``icons_by_title``: optional JSON string mapping tab-title fragments
-        to single-emoji strings, applied after conversion via
-        set_tab_icons. Example: '{"Profile":"\\ud83d\\udc64","Skills":"\\ud83d\\udee0"}'.
+        to single-emoji strings, applied AFTER all safety steps via
+        set_tab_icons (icon failures downgrade to response warnings).
+        Example: '{"Profile":"\\ud83d\\udc64","Skills":"\\ud83d\\udee0"}'.
         Matching is case-insensitive substring (same semantics as the
         set_tab_icons MCP tool).
+      ``placeholder_behavior``: optional, "delete" (default) | "rename"
+        | "keep" - what happens to the original "Tab 1" placeholder
+        after content is moved out. Default is unified with the
+        gdocs_tab_existing_doc tool ("delete" on both paths); the
+        response's ``placeholder`` field reports what ACTUALLY happened
+        ("deleted"|"renamed"|"kept"|"none"). NOTE: a Google-side defect
+        makes tab icons/renames permanently uneditable on a doc whose
+        original first tab was deleted - "delete" responses carry an
+        advisory warning; use "rename" or "keep" to avoid it.
+      ``placeholder_title`` / ``placeholder_icon``: optional, used when
+        ``placeholder_behavior`` is "rename".
+      ``replace_doc_id``: optional explicit prior-version doc id to
+        trash after a fully successful build.
+      ``on_conflict``: optional, "new" (default) | "replace" | "skip" -
+        same-title conflict policy (title lookup is limited to docs
+        this app created or was granted, the drive.file scope).
+
+    Response: the full convert envelope, including ``heading1_found``,
+    ``tabs_created``, ``placeholder``, ``warnings``, ``on_conflict_action``
+    and the ``completion`` manifest ``{steps_completed, moved_sections,
+    pending_sections}``. A partial failure that leaves a recoverable
+    document returns HTTP 500 with that same envelope plus an ``error``
+    field - ``completion.pending_sections`` then lists sections whose
+    ONLY copy is inside the placeholder tab (do not delete it).
 
     **Upload-size cap (signed-URL path).** When the caller authenticated
     via a signed URL, ``BearerTokenMiddleware`` has stashed the verified
@@ -238,6 +267,18 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         replace_doc_id_raw if isinstance(replace_doc_id_raw, str) and replace_doc_id_raw
         else None
     )
+
+    on_conflict_raw = form.get("on_conflict") or "new"
+    if not isinstance(on_conflict_raw, str) or on_conflict_raw not in {
+        "new", "replace", "skip",
+    }:
+        return JSONResponse(
+            {
+                "error": f"Invalid on_conflict: {on_conflict_raw!r} "
+                "(must be 'new', 'replace', or 'skip')"
+            },
+            status_code=400,
+        )
 
     icons_raw = form.get("icons_by_title")
     icons_by_title: dict[str, str] | None = None
@@ -369,10 +410,9 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             # Bearer-header path — operator creds, single-tenant. Same
             # behavior as v2.0.
             creds = load_credentials(default_data_dir())
-        # Pass icons_by_title INTO the convert pipeline so they're
-        # applied between Apps Script restructure and placeholder
-        # delete. Calling set_tab_icons AFTER delete races against
-        # Google's server-state propagation and 500s on heavy converts.
+        # icons_by_title rides INTO the pipeline so icons run at their
+        # pinned position: strictly after every safety step (transplant,
+        # verify, carve, placeholder), as a warnings-only cosmetic.
         result = _convert_docx(
             creds,
             docx_path=tmp_path,
@@ -383,9 +423,17 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             placeholder_title=placeholder_title_raw,
             placeholder_icon=placeholder_icon_raw,
             replace_doc_id=replace_doc_id,
+            on_conflict=on_conflict_raw,  # type: ignore[arg-type]
             user_id=signed_uid,
         )
-        return JSONResponse(result)
+        # A partial failure (transplant died after content started
+        # moving) returns the SAME envelope with an ``error`` field and
+        # a completion manifest instead of raising: the document was
+        # kept and the caller needs the moved/pending breakdown to
+        # recover safely. Signal failure via the status code while
+        # keeping the recovery data in the body.
+        status = 500 if result.get("error") else 200
+        return JSONResponse(result, status_code=status)
     except FileNotFoundError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except ValueError as e:

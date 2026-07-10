@@ -85,15 +85,76 @@ GDOCS_ADD_TABS_OUTPUT_SCHEMA = _object(
 )
 
 
+# The convert response contract (T2.1/T2.3 + the S2.5 completion
+# manifest). ``doc_id``/``url`` are nullable for the retrofit
+# zero-match error return (nothing was created). ``action`` values:
+# created | replaced (a prior version was actually trashed) | skipped
+# (on_conflict=skip found an existing doc) | failed (error return that
+# created nothing). ``completion.pending_sections`` non-empty means
+# those sections exist ONLY in the placeholder tab - never delete it.
 GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA = _object(
     properties={
-        "doc_id": {"type": "string"},
-        "url": {"type": "string", "format": "uri"},
-        "action": {"type": "string", "enum": ["created", "replaced"]},
+        "doc_id": {"type": ["string", "null"]},
+        "url": {"type": ["string", "null"], "format": "uri"},
+        "action": {
+            "type": "string",
+            "enum": ["created", "replaced", "skipped", "failed"],
+        },
+        "on_conflict_action": {
+            "type": "string",
+            "enum": ["created", "replaced", "skipped"],
+        },
         "tabs": {"type": "array"},
         "split_strategy_used": {"type": "string"},
+        "heading1_found": {"type": "integer", "minimum": 0},
+        "tabs_created": {"type": "integer", "minimum": 0},
+        "placeholder": {
+            "type": "string",
+            "enum": ["deleted", "renamed", "kept", "none"],
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "info": {"type": "array", "items": {"type": "string"}},
+        "replaced_doc_id": {"type": "string"},
+        "error": {"type": "string"},
+        "completion": _object(
+            properties={
+                "steps_completed": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "import",
+                            "shells",
+                            "transplant",
+                            "verify",
+                            "carve",
+                            "placeholder",
+                            "cosmetics",
+                        ],
+                    },
+                },
+                "moved_sections": {
+                    "type": "array", "items": {"type": "string"},
+                },
+                "pending_sections": {
+                    "type": "array", "items": {"type": "string"},
+                },
+            },
+            required=["steps_completed", "moved_sections", "pending_sections"],
+        ),
     },
-    required=["doc_id", "url", "action", "tabs", "split_strategy_used"],
+    required=[
+        "doc_id",
+        "url",
+        "action",
+        "tabs",
+        "split_strategy_used",
+        "heading1_found",
+        "tabs_created",
+        "placeholder",
+        "warnings",
+        "completion",
+    ],
 )
 
 

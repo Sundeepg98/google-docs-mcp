@@ -1,9 +1,10 @@
 """Wave E: .docx / Google Doc → native-tabbed Google Doc (pure REST).
 
-Pipeline:
-  1. Drive uploads + converts .docx (preserves tables, shading, borders,
-     images - Drive's converter handles the Word side losslessly), or
-     copies an existing Google Doc.
+Pipeline (ORDER IS A DATA-SAFETY CONTRACT - the 2026-07-10 order pin):
+  1. Import with the FINAL title set at Drive-create time (upload +
+     convert .docx, fetch-and-convert a Drive .docx, or copy an
+     existing Google Doc). Never a temp name: a pipeline that dies
+     later must still leave a doc the user can find by its real title.
   2. We identify split points by walking the converted doc's paragraph
      stream looking for the configured heading style.
   3. REST creates empty tab shells (addDocumentTab) - one per split
@@ -13,15 +14,35 @@ Pipeline:
      read shape → write shape, table sync-points, explicit tabId on
      every request. High-fidelity with a detected-and-warned loss tail
      (equations, drawings, floating objects - see ``DROPPED_KINDS``).
-  5. Only after every new tab is built AND verified does the source
-     content leave the primary tab (tab delete, or range carve for the
-     rename/keep placeholder policies). Failure cleanup is phase-aware
-     (BUG 1d, 2026-07-10): a failure BEFORE any transplant write rolls
-     the shells back and trashes the working copy (no orphans, source
-     untouched); a failure AT or AFTER the first transplant write KEEPS
-     the working copy and reports doc_id plus a completed/pending tab
-     manifest in the error - content that may exist only in that doc is
-     never trashed by cleanup code.
+  5. Verify EVERY new tab, then (and only then) carve the transplanted
+     ranges out of the primary tab. Carving strictly after verify-all
+     means a death at ANY earlier point leaves a duplicated-but-
+     lossless doc: the placeholder still holds everything.
+  6. Cosmetics (icons, prior-version trash) run AFTER every data-
+     safety step but BEFORE the placeholder policy: a Google-side
+     defect makes every ``updateDocumentTabProperties`` (icon sets AND
+     tab renames) 500 permanently once a document's ORIGINAL FIRST TAB
+     has been deleted, so icons must land while that tab still exists
+     (2026-07-10 contract amendment; defect live-proven in the tools
+     stream). Cosmetic failures downgrade to response warnings; they
+     can never abort or precede a safety step (the S2.2 incident: an
+     OOM during finishing steps stranded the placeholder handling).
+  7. The placeholder policy (delete / rename / keep) runs LAST. A
+     successful delete appends an advisory warning that tab icons and
+     tab renames are permanently uneditable on the produced doc (the
+     same Google defect); use rename/keep to avoid that.
+
+Failure semantics: if the pipeline fails BEFORE any content write, any
+shells are removed and the working copy is moved to Drive trash
+(recoverable there for 30 days; the error names the trashed doc_id).
+Once content has started moving, the working copy is KEPT and a partial
+result is returned whose ``completion`` manifest says exactly which
+sections are verified in their tabs (``moved_sections``) and which
+still exist ONLY inside the placeholder tab (``pending_sections``) - so
+no tool or user deletes a placeholder that holds sole-copy content (the
+S2.5 data-loss incident). ``steps_completed`` distinguishes an
+execution death ("transplant" absent) from a verify shortfall
+("transplant" present, "verify" absent).
 
 History: steps 4-5 used to POST the split spec to a per-user Apps
 Script web app (``Element.copy()`` moves). That path never worked for
@@ -35,7 +56,7 @@ root-cause spike: ``_audit/2026-07-08-exec-scope-auth-spike.md``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from google.oauth2.credentials import Credentials
 from appscriptly.google_clients import get_service
@@ -59,14 +80,34 @@ from .services.docs.content_transplant import (
 )
 
 PlaceholderBehavior = Literal["delete", "rename", "keep"]
+OnConflict = Literal["new", "replace", "skip"]
 DEFAULT_PLACEHOLDER_TITLE = "Overview"
 DEFAULT_PLACEHOLDER_ICON = "\U0001f4d1"  # 📑
+
+# Canonical pipeline steps in execution order (the data-safety order
+# pin, amended 2026-07-10: cosmetics precede the placeholder step so
+# icons land before the original first tab can be deleted - see the
+# module docstring). ``completion.steps_completed`` in every convert
+# response draws from this tuple; a step is listed when it ran to
+# completion OR had nothing to do, so an ABSENT step always means
+# "work remains or failed" - the signal a consumer needs before
+# trusting the doc state.
+PIPELINE_STEPS = (
+    "import",
+    "shells",
+    "transplant",
+    "verify",
+    "carve",
+    "cosmetics",
+    "placeholder",
+)
 from .services.drive.api import (
     DOCX_MIME,
     GDOC_MIME,
     classify_drive_file,
     copy_google_doc,
     fetch_and_convert_drive_docx,
+    find_doc_by_title,
     trash_drive_file,
     upload_and_convert_docx,
 )
@@ -76,6 +117,23 @@ _STYLE_FOR_SPLIT = {
     "heading_1": "HEADING_1",
     "heading_2": "HEADING_2",
 }
+
+# Advisory appended whenever the placeholder tab is actually deleted:
+# a live-proven Google-side defect makes updateDocumentTabProperties
+# (icon sets AND tab renames) return 500 permanently on a document
+# whose ORIGINAL FIRST TAB has been deleted. The conversion itself is
+# unaffected; only later tab-property edits are. The trailing
+# (first_tab_deleted_500) marker is the defect's canonical grep-able
+# identifier, shared with gdocs_delete_tab and the docs api error text.
+_DELETE_LOCKS_TAB_PROPERTIES_WARNING = (
+    "placeholder tab deleted: due to a Google-side defect, tab icons and "
+    "tab titles can no longer be edited on this document (Google returns "
+    "an internal error for tab-property updates after a document's "
+    "original first tab is deleted; adding tabs later does not clear the "
+    "state). New tabs can still carry icon_emoji at creation. If you need "
+    "to adjust icons or rename tabs later, convert with "
+    "placeholder_behavior='rename' or 'keep' instead. (first_tab_deleted_500)"
+)
 
 
 class _SplitPoint(TypedDict):
@@ -101,6 +159,7 @@ def convert_docx_to_tabbed_doc(
     placeholder_title: str = DEFAULT_PLACEHOLDER_TITLE,
     placeholder_icon: str = DEFAULT_PLACEHOLDER_ICON,
     replace_doc_id: str | None = None,
+    on_conflict: OnConflict = "new",
     docx_drive_file_id: str | None = None,  # deprecated alias for drive_file_id
     user_id: str | None = None,
 ) -> dict:
@@ -128,12 +187,34 @@ def convert_docx_to_tabbed_doc(
     remaining tabs get no icon. To set icons later (or by title
     match instead of order), use ``set_tab_icons``.
 
+    ``on_conflict`` controls what happens when an app-visible Google
+    Doc with the SAME final title already exists (title lookup runs
+    under the ``drive.file`` scope, so only docs this app created or
+    was explicitly granted are considered):
+
+    - ``"new"`` (default): always create a new doc; never look.
+    - ``"replace"``: build the new doc fully; after a fully successful
+      build, trash the newest prior same-title doc (recoverable from
+      Drive trash for 30 days). If the build fails or finds no split
+      points, the prior doc is left untouched. An explicit
+      ``replace_doc_id`` takes precedence over the title lookup.
+    - ``"skip"``: if a same-title doc already exists, perform NO
+      conversion and return that doc's info with ``action="skipped"``.
+
     ``user_id`` is accepted for REST-route compatibility (the
     ``/api/convert`` endpoint forwards the signed-URL caller's uid).
     The conversion derives identity from ``creds`` alone now that the
     per-user web-app step (which needed a per-user URL lookup) is gone.
 
-    Returns ``{"doc_id", "url", "tabs", "split_strategy_used", ...}``.
+    Returns ``{"doc_id", "url", "action", "on_conflict_action", "tabs",
+    "split_strategy_used", "heading1_found", "tabs_created",
+    "placeholder", "warnings", "info", "completion", ...}``.
+
+    ``completion`` is the manifest every response carries:
+    ``{"steps_completed": [...], "moved_sections": [...],
+    "pending_sections": [...]}``. ``pending_sections`` is non-empty only
+    on partial-failure returns; a section listed there exists ONLY in
+    the placeholder tab - deleting that tab destroys it.
     """
     del user_id  # accepted for the REST route's signature; unused here
 
@@ -142,6 +223,24 @@ def convert_docx_to_tabbed_doc(
             "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
         )
+    if on_conflict not in ("new", "replace", "skip"):
+        raise ValueError(
+            f"on_conflict must be one of 'new', 'replace', 'skip' "
+            f"(got {on_conflict!r})."
+        )
+
+    # 0. on_conflict=skip resolves BEFORE any import work: if a same-
+    # title doc already exists, return it without creating anything.
+    # The lookup title mirrors the import helpers' naming rules (see
+    # _expected_final_title - kept in lockstep with them).
+    if on_conflict == "skip":
+        existing = _newest_same_title_doc(
+            creds,
+            _expected_final_title(creds, docx_path, drive_file_id, title),
+            exclude_ids=frozenset(),
+        )
+        if existing is not None:
+            return _skipped_result(creds, existing)
 
     # 1. Get the source content into a Google Doc we own.
     # Three input modes:
@@ -172,20 +271,25 @@ def convert_docx_to_tabbed_doc(
     doc_id = converted["doc_id"]
 
     # Steps 2-5 (fetch, split detection, shells, transplant, verify)
-    # run under phase-aware failure cleanup (BUG 1d):
+    # run under phase-aware failure handling (BUG 1d + S2.5):
     #   - failure BEFORE any transplant write: the staging copy holds
     #     nothing unique (the source is untouched), so delete any
     #     shells and trash the copy - failed conversions must not
-    #     orphan working copies in Drive.
+    #     orphan working copies in Drive. The error names the trashed
+    #     doc_id (recoverable from Drive trash for 30 days).
     #   - failure AT or AFTER the first transplant write: content may
     #     already live in the new tabs and a batch whose response was
-    #     lost may have landed server-side - the copy is KEPT and the
-    #     error carries doc_id plus a completed/pending manifest.
+    #     lost may have landed server-side - the copy is KEPT and a
+    #     structured partial result carries the completion manifest.
     #     Cleanup code must never trash a doc that could hold the only
     #     copy of anything.
     transplant_write_attempted = False
-    completed_tab_titles: list[str] = []
+    executed_count = 0
     created_tabs: list[dict] = []
+    plans: list[tuple[dict, TabTransplantPlan]] = []
+    report = FidelityReport()
+    strategy_used: str = split_by
+    docs: Any = None
     moved_blocks = 0
     try:
         # 2. Find split points in the converted doc's primary tab body.
@@ -198,12 +302,39 @@ def convert_docx_to_tabbed_doc(
 
         splits, strategy_used = _detect_splits(body_content, split_by)
         if not splits:
+            # No conversion work to do: the doc is a clean single-tab
+            # import carrying its final title. Prior-version replacement
+            # (replace_doc_id / on_conflict=replace) is deliberately NOT
+            # applied here - trashing a real tabbed doc in favor of an
+            # unsplit import is never what a retry intended.
+            info: list[str] = []
+            if replace_doc_id or on_conflict == "replace":
+                info.append(
+                    "prior version NOT replaced: no split points were found, "
+                    "so the previous document was left untouched."
+                )
             return {
                 "doc_id": doc_id,
                 "url": converted["url"],
-                "action": "replaced" if replace_doc_id else "created",
+                "action": "created",
+                "on_conflict_action": "created",
                 "tabs": [],
+                "moved_children": 0,
+                "heading1_found": 0,
+                "tabs_created": 0,
+                "placeholder": "none",
+                "warnings": [],
+                "info": info,
                 "split_strategy_used": strategy_used,
+                "completion": {
+                    # Every step either ran or had nothing to do;
+                    # nothing is pending. (There is no placeholder
+                    # duplication in a single-tab import - the one tab
+                    # IS the content.)
+                    "steps_completed": list(PIPELINE_STEPS),
+                    "moved_sections": [],
+                    "pending_sections": [],
+                },
                 "note": (
                     "No split points found; doc is left as a single-tab "
                     f"conversion of {source_label}."
@@ -246,11 +377,9 @@ def convert_docx_to_tabbed_doc(
                 f"{len(flat_splits)} split points"
             )
 
-        report = FidelityReport()
         if sum(1 for e in body_content if "sectionBreak" in e) > 1:
             report.count("multi_section")
 
-        plans: list[tuple[dict, TabTransplantPlan]] = []
         for split, tab in zip(flat_splits, created_tabs):
             elements = [
                 element
@@ -280,7 +409,7 @@ def convert_docx_to_tabbed_doc(
             moved_blocks += execute_tab_transplant(
                 docs, doc_id, tab["tab_id"], plan, document=shells_doc
             )
-            completed_tab_titles.append(tab["title"])
+            executed_count += 1
         verify_doc = docs.documents().get(
             documentId=doc_id, includeTabsContent=True
         ).execute()
@@ -288,137 +417,202 @@ def convert_docx_to_tabbed_doc(
             verify_tab_transplant(verify_doc, tab["tab_id"], plan)
     except Exception as e:
         if transplant_write_attempted:
-            pending_titles = [
-                t["title"] for t in created_tabs[len(completed_tab_titles):]
-            ]
-            raise RuntimeError(
-                f"Conversion of {source_label} failed mid-transplant: {e}. "
-                f"The working copy was KEPT to avoid any risk of losing "
-                f"moved content: doc_id={doc_id} url={converted['url']}. "
-                f"The first tab still holds the complete source content. "
-                f"Tabs fully transplanted: "
-                f"{', '.join(completed_tab_titles) or 'none'}. "
-                f"Tabs pending or possibly partial: "
-                f"{', '.join(pending_titles) or 'none'}. "
-                "Verify the document in Google Docs, then retry the "
-                "conversion or remove the copy manually."
-            ) from e
+            # Content HAS started moving. The placeholder tab still
+            # holds the full source (nothing is carved before
+            # verify-all), but some sections may exist only there -
+            # trashing or shell-deleting now could destroy the only
+            # reachable copy (S2.5). Keep everything and return a
+            # partial result whose manifest says exactly what is safe.
+            return _partial_failure_result(
+                creds,
+                docs,
+                doc_id=doc_id,
+                url=converted["url"],
+                plans=plans,
+                created_tabs=created_tabs,
+                strategy_used=strategy_used,
+                report=report,
+                error=e,
+                source_label=source_label,
+                executed_count=executed_count,
+            )
+        # No content has moved yet: the shells are empty and the
+        # working copy holds nothing that doesn't exist elsewhere, so
+        # cleanup cannot destroy content.
         _cleanup_failed_staging_copy(
             creds, doc_id, [t["tab_id"] for t in created_tabs]
         )
         raise RuntimeError(
             f"Conversion of {source_label} failed before any content "
-            f"moved: {e}. The staging copy was removed; the source "
-            "document is untouched."
+            f"moved: {e}. The staging copy {doc_id} was moved to Drive "
+            "trash (recoverable there for 30 days); the original source "
+            "was not modified."
         ) from e
 
-    # 6. Apply post-transplant icons by title match. MUST run BEFORE
-    # the placeholder delete - Google returns 500 on the icon-apply
-    # batchUpdate if we delete a tab and then immediately submit
-    # another tab-touching batch in the same logical sequence (server
-    # state hasn't settled). Race confirmed empirically on 14-section
-    # converts. Order is: transplant → set_tab_icons → delete/rename.
+    # 6. Carve the transplanted ranges out of the primary tab - for
+    # EVERY placeholder policy, strictly after verify-all. For
+    # ``delete`` this makes the subsequent tab removal a cosmetic
+    # cleanup of an (almost) empty tab: if the removal then fails, the
+    # stray "Tab 1" contains nothing, instead of a confusing full copy.
+    warnings: list[str] = list(report.warnings)
+    info: list[str] = list(report.notes)
+    all_ranges = [r for s in flat_splits for r in s["ranges"]]
+    carve_ok = True
+    try:
+        carve_source_ranges(
+            docs, doc_id, primary_tab_id, docapp_children, all_ranges
+        )
+    except Exception as e:  # noqa: BLE001
+        carve_ok = False
+        warnings.append(
+            f"could not carve moved content out of the placeholder tab: {e}"
+        )
+
+    # 7. Cosmetics run BEFORE the placeholder step (2026-07-10 contract
+    # amendment): deleting a doc's ORIGINAL FIRST TAB permanently 500s
+    # every later updateDocumentTabProperties on that document (Google-
+    # side defect, live-proven in the tools stream) - so icons must
+    # land while that tab still exists. Every DATA-safety step
+    # (transplant, verify, carve) is already done; failures here
+    # downgrade to warnings, never fatal, and never block the
+    # placeholder step below.
     icons_result: dict | None = None
+    cosmetics_ok = True
     if icons_by_title:
         try:
             icons_result = set_tab_icons(creds, doc_id, icons_by_title)
         except Exception as e:  # noqa: BLE001
+            cosmetics_ok = False
             icons_result = {"error": str(e)}
+            warnings.append(
+                "cosmetic step failed (the conversion itself is complete): "
+                f"could not apply tab icons: {e}"
+            )
 
-    # 7. Apply the user's chosen placeholder-tab policy. The source
-    # content leaves the primary tab only HERE, after the verify pass
-    # (the transactional contract):
-    #    delete: remove the whole placeholder tab, content goes with
-    #            it, so the sidebar shows only section tabs (default)
-    #    rename: carve the transplanted ranges out, then rename to
-    #            placeholder_title with an icon (landing/intro tab)
-    #    keep:   carve the transplanted ranges out, leave it as "Tab 1"
-    placeholder_warning: str | None = None
+    # 8. Apply the user's chosen placeholder-tab policy - LAST:
+    #    delete: remove the placeholder tab (default) - REFUSED when
+    #            content that was never moved into any tab (e.g. text
+    #            before the first split heading) still lives there,
+    #            because deleting it would destroy the only copy.
+    #    rename: rename to placeholder_title with an icon.
+    #    keep:   leave it as "Tab 1".
+    placeholder_outcome = "kept"
+    placeholder_done = False
     if placeholder_behavior == "delete":
+        unmoved = _unmoved_visible_count(docapp_children, all_ranges)
+        if unmoved:
+            warnings.append(
+                f"placeholder tab kept instead of deleted: {unmoved} content "
+                "block(s) before the first split point were never moved into "
+                "any tab, and deleting the tab would destroy the only copy. "
+                "Review the placeholder tab; delete it manually only if that "
+                "content is disposable."
+            )
+        else:
+            try:
+                delete_tab(creds, doc_id, primary_tab_id)
+                placeholder_outcome = "deleted"
+                placeholder_done = True
+                warnings.append(_DELETE_LOCKS_TAB_PROPERTIES_WARNING)
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"could not delete placeholder tab: {e}")
+    elif placeholder_behavior == "rename":
         try:
-            delete_tab(creds, doc_id, primary_tab_id)
-        except Exception as e:  # noqa: BLE001
-            placeholder_warning = f"could not delete placeholder tab: {e}"
-    else:
-        try:
-            carve_source_ranges(
-                docs,
+            rename_tab(
+                creds,
                 doc_id,
                 primary_tab_id,
-                docapp_children,
-                [r for s in flat_splits for r in s["ranges"]],
+                title=placeholder_title,
+                icon_emoji=placeholder_icon,
             )
+            placeholder_outcome = "renamed"
+            placeholder_done = True
         except Exception as e:  # noqa: BLE001
-            placeholder_warning = (
-                f"could not carve moved content out of the placeholder tab: {e}"
-            )
-        if placeholder_behavior == "rename":
-            try:
-                rename_tab(
-                    creds,
-                    doc_id,
-                    primary_tab_id,
-                    title=placeholder_title,
-                    icon_emoji=placeholder_icon,
-                )
-            except Exception as e:  # noqa: BLE001
-                placeholder_warning = f"could not rename placeholder tab: {e}"
+            warnings.append(f"could not rename placeholder tab: {e}")
+    else:  # keep
+        placeholder_done = True
 
-    # Fidelity split: DROPPED content (equations, drawings, ...) goes
-    # in warnings - the caller should surface it. Visible-but-carried
-    # degradations (horizontal-rule borders, numbering restarts) are
-    # info notes.
-    warnings: list[str] = list(report.warnings)
-    info: list[str] = list(report.notes)
-    if placeholder_warning:
-        warnings.append(placeholder_warning)
-
-    # 8. Optional idempotency: trash the prior version so iterating on
-    # a doc doesn't leave a trail of orphaned copies in Drive. Failures
-    # here are non-fatal - surface as info, not warning.
-    replaced_note: str | None = None
+    # 9. Prior-version cleanup - after the build is fully complete. An
+    # explicit replace_doc_id wins over the on_conflict=replace title
+    # lookup. Failures are non-fatal (info, not warning);
+    # ``on_conflict_action`` reports what actually happened, so a
+    # failed trash reads "created", not "replaced".
+    on_conflict_action = "created"
+    replaced_doc_id: str | None = None
     if replace_doc_id:
         try:
             trash_drive_file(creds, replace_doc_id)
-            replaced_note = (
+            replaced_doc_id = replace_doc_id
+            on_conflict_action = "replaced"
+            info.append(
                 f"trashed prior version {replace_doc_id} "
                 "(recoverable from Drive trash for 30 days)"
             )
         except Exception as e:  # noqa: BLE001
             info.append(f"could not trash replace_doc_id {replace_doc_id}: {e}")
+    elif on_conflict == "replace":
+        prior = _newest_same_title_doc(
+            creds,
+            converted.get("title")
+            or _expected_final_title(creds, docx_path, drive_file_id, title),
+            exclude_ids=frozenset(x for x in (doc_id, drive_file_id) if x),
+        )
+        if prior is not None:
+            # _newest_same_title_doc only returns matches with a
+            # non-empty file_id.
+            prior_id = prior["file_id"]
+            try:
+                trash_drive_file(creds, prior_id)
+                replaced_doc_id = prior_id
+                on_conflict_action = "replaced"
+                info.append(
+                    f"trashed prior same-title doc {prior_id} "
+                    "(recoverable from Drive trash for 30 days)"
+                )
+            except Exception as e:  # noqa: BLE001
+                info.append(
+                    f"could not trash prior same-title doc {prior_id}: {e}"
+                )
 
-    # 9. Refresh tabs from the live doc so the response reflects FINAL
+    # 10. Refresh tabs from the live doc so the response reflects FINAL
     # state - including renamed placeholder, applied icons, and any
     # tab IDs assigned by Google.
-    try:
-        outline = get_doc_outline(creds, doc_id)
-        # Keep ``id`` as alias for ``tab_id`` so callers that predate
-        # the REST transplant (Apps-Script-snapshot shape) don't break.
-        for t in outline["tabs"]:
-            t["id"] = t["tab_id"]
-        final_tabs: list[dict] = outline["tabs"]
-    except Exception:  # noqa: BLE001
-        # Fallback: report the tabs we created if the refresh fails.
-        # Better slightly-stale data than no response.
-        final_tabs = [{**t, "id": t["tab_id"]} for t in created_tabs]
+    final_tabs = _refresh_tabs(creds, doc_id, created_tabs)
+
+    steps_completed = ["import", "shells", "transplant", "verify"]
+    if carve_ok:
+        steps_completed.append("carve")
+    if cosmetics_ok:
+        steps_completed.append("cosmetics")
+    if placeholder_done:
+        steps_completed.append("placeholder")
 
     result = {
         "doc_id": doc_id,
         "url": converted["url"],
-        # action distinguishes a brand-new doc from one that REPLACED
-        # an older doc via replace_doc_id (the old one is trashed and
-        # the caller can verify the lifecycle from the payload alone).
-        "action": "replaced" if replace_doc_id else "created",
+        # ``action`` mirrors ``on_conflict_action`` (kept for callers
+        # that predate the on_conflict parameter): "replaced" only when
+        # a prior version was actually trashed.
+        "action": on_conflict_action,
+        "on_conflict_action": on_conflict_action,
         "tabs": final_tabs,
         "moved_children": moved_blocks,
+        "heading1_found": len(flat_splits),
+        "tabs_created": len(created_tabs),
+        "placeholder": placeholder_outcome,
         "warnings": warnings,
         "info": info,
         "split_strategy_used": strategy_used,
+        "completion": {
+            "steps_completed": steps_completed,
+            "moved_sections": [t["title"] for t, _ in plans],
+            "pending_sections": [],
+        },
     }
     if icons_result is not None:
         result["icons"] = icons_result
-    if replaced_note:
-        result["replaced_doc_id"] = replace_doc_id
+    if replaced_doc_id:
+        result["replaced_doc_id"] = replaced_doc_id
     return result
 
 
@@ -457,6 +651,226 @@ def _cleanup_failed_staging_copy(
         trash_drive_file(creds, doc_id)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _partial_failure_result(
+    creds: Credentials,
+    docs,
+    *,
+    doc_id: str,
+    url: str,
+    plans: list[tuple[dict, TabTransplantPlan]],
+    created_tabs: list[dict],
+    strategy_used: str,
+    report: FidelityReport,
+    error: Exception,
+    source_label: str,
+    executed_count: int,
+) -> dict:
+    """The keep-everything response for a failure after content started
+    moving (the S2.5 contract).
+
+    Classifies each planned section by re-verifying it against a fresh
+    fetch: verified sections are ``moved_sections`` (their copies are
+    proven), everything else is ``pending_sections`` (the ONLY copy
+    still lives inside the placeholder tab, which is left untouched -
+    nothing is carved before verify-all). If even the classification
+    fetch fails, every section is reported pending: the manifest may
+    under-promise but never over-promises what is safe to delete.
+
+    EXECUTED vs VERIFIED are kept distinct (review finding on the #226
+    interim manifest, which called executed tabs "fully transplanted"
+    even when the failure WAS a verify shortfall): ``steps_completed``
+    includes ``"transplant"`` only when every plan finished executing
+    (``executed_count == len(plans)``) - so "transplant present, verify
+    absent" reads unambiguously as a verify shortfall, while "transplant
+    absent" means execution itself died mid-way. ``moved_sections``
+    never promotes an executed-but-unverified tab.
+    """
+    moved_sections: list[str] = []
+    pending_sections: list[str] = []
+    moved_blocks = 0
+    try:
+        document = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+    except Exception:  # noqa: BLE001
+        document = None
+    for tab, plan in plans:
+        verified = False
+        if document is not None:
+            try:
+                verify_tab_transplant(document, tab["tab_id"], plan)
+                verified = True
+            except Exception:  # noqa: BLE001
+                verified = False
+        if verified:
+            moved_sections.append(tab["title"])
+            moved_blocks += plan.block_count
+        else:
+            pending_sections.append(tab["title"])
+
+    return {
+        "doc_id": doc_id,
+        "url": url,
+        "action": "created",
+        "on_conflict_action": "created",
+        "error": (
+            f"conversion of {source_label} failed after a partial content "
+            f"transplant: {error}. The working copy was KEPT: the already-"
+            "built section tabs and the original content in the first "
+            "(placeholder) tab are all still in the document. Sections in "
+            "completion.pending_sections exist ONLY inside the placeholder "
+            "tab - do NOT delete that tab. To recover, re-run the "
+            "conversion, or move the pending sections yourself with "
+            "gdocs_append_to_tab."
+        ),
+        "tabs": _refresh_tabs(creds, doc_id, created_tabs),
+        "moved_children": moved_blocks,
+        "heading1_found": len(plans),
+        "tabs_created": len(created_tabs),
+        "placeholder": "kept",
+        "warnings": list(report.warnings),
+        "info": list(report.notes),
+        "split_strategy_used": strategy_used,
+        "completion": {
+            "steps_completed": (
+                ["import", "shells", "transplant"]
+                if plans and executed_count == len(plans)
+                else ["import", "shells"]
+            ),
+            "moved_sections": moved_sections,
+            "pending_sections": pending_sections,
+        },
+    }
+
+
+def _refresh_tabs(
+    creds: Credentials, doc_id: str, created_tabs: list[dict]
+) -> list[dict]:
+    """Live tab list for the response (with the legacy ``id`` alias);
+    falls back to the created-tab records if the refresh fails - better
+    slightly-stale data than no response."""
+    try:
+        outline = get_doc_outline(creds, doc_id)
+        for t in outline["tabs"]:
+            t["id"] = t["tab_id"]
+        return outline["tabs"]
+    except Exception:  # noqa: BLE001
+        return [{**t, "id": t["tab_id"]} for t in created_tabs]
+
+
+def _expected_final_title(
+    creds: Credentials,
+    docx_path: Path | None,
+    drive_file_id: str | None,
+    title: str | None,
+) -> str:
+    """The title the import step WILL assign, resolved without running
+    it - the on_conflict lookups need it before/independent of import.
+
+    MUST mirror the naming rules of ``upload_and_convert_docx`` /
+    ``fetch_and_convert_drive_docx`` / ``copy_google_doc`` (keep in
+    lockstep with services/drive/api.py).
+    """
+    if docx_path is not None:
+        return title or docx_path.stem
+    assert drive_file_id is not None  # caller validated exactly-one-of
+    drive = get_service("drive", "v3", credentials=creds)
+    meta = drive.files().get(
+        fileId=drive_file_id, fields="name,mimeType"
+    ).execute()
+    name = meta.get("name") or ""
+    if meta.get("mimeType") == GDOC_MIME:
+        return (title or name) + " (tabified)"
+    if name.lower().endswith(".docx"):
+        name = name[:-5]
+    return title or name
+
+
+def _newest_same_title_doc(
+    creds: Credentials, final_title: str, exclude_ids: frozenset[str]
+) -> dict | None:
+    """Newest app-visible Google Doc whose title exactly matches, or
+    None. Runs under the ``drive.file`` scope, so ONLY files this app
+    created or was explicitly granted are considered - a same-title doc
+    the app has never touched is invisible here (documented limitation
+    of the on_conflict lookups)."""
+    if not final_title:
+        return None
+    found = find_doc_by_title(creds, final_title, exact=True)
+    for match in found.get("matches") or []:
+        if match.get("mimeType") != GDOC_MIME:
+            continue  # a lingering .docx source is not a prior OUTPUT
+        if not match.get("file_id") or match["file_id"] in exclude_ids:
+            continue
+        return match
+    return None
+
+
+def _skipped_result(creds: Credentials, existing: dict) -> dict:
+    """The no-op response for ``on_conflict="skip"`` when a same-title
+    doc already exists: return the existing doc's info; convert nothing.
+    """
+    doc_id = existing["file_id"]
+    return {
+        "doc_id": doc_id,
+        "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        "action": "skipped",
+        "on_conflict_action": "skipped",
+        "existing_title": existing.get("name"),
+        "tabs": _refresh_tabs(creds, doc_id, []),
+        "moved_children": 0,
+        "heading1_found": 0,
+        "tabs_created": 0,
+        "placeholder": "none",
+        "warnings": [],
+        "info": [
+            "on_conflict=skip: a document with this title already exists "
+            "(within this app's drive.file visibility); no conversion was "
+            "performed. Returning the existing document."
+        ],
+        "split_strategy_used": "none",
+        "completion": {
+            "steps_completed": [],
+            "moved_sections": [],
+            "pending_sections": [],
+        },
+    }
+
+
+def _unmoved_visible_count(
+    docapp_children: list[dict], ranges: list[tuple[int, int]]
+) -> int:
+    """How many body elements with VISIBLE content sit outside every
+    transplanted range (typically content before the first split
+    heading). Such elements were never moved into any tab, so the
+    placeholder tab is their only home - a nonzero count vetoes the
+    ``delete`` placeholder policy."""
+    covered: set[int] = set()
+    for lo, hi in ranges:
+        covered.update(range(lo, hi + 1))
+    return sum(
+        1
+        for i, elem in enumerate(docapp_children)
+        if i not in covered and _has_visible_content(elem)
+    )
+
+
+def _has_visible_content(elem: dict) -> bool:
+    """True when a body element would show the user something: any
+    non-paragraph element (table, TOC, ...), any paragraph with
+    non-whitespace text, or any non-text inline (image, chip, break)."""
+    para = elem.get("paragraph")
+    if para is None:
+        return True
+    for pe in para.get("elements") or []:
+        if "textRun" in pe:
+            if (pe["textRun"].get("content") or "").strip():
+                return True
+        else:
+            return True
+    return bool(para.get("bullet"))
 
 
 def _docapp_children(body_content: list[dict]) -> list[dict]:

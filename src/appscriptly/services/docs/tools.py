@@ -480,6 +480,7 @@ def gdocs_tab_existing_doc(
     placeholder_title: str = "Overview",
     placeholder_icon: str = "\U0001f4d1",
     replace_doc_id: str | None = None,
+    on_conflict: Literal["new", "replace", "skip"] = "new",
     docx_drive_file_id: str | None = None,
 ) -> dict:
     """Convert an EXISTING .docx or Google Doc on Drive into tabs.
@@ -515,14 +516,15 @@ def gdocs_tab_existing_doc(
       then POST. Only do this if you genuinely have an existing .docx
       file in the sandbox (not a docx you just built from text).
 
-    Pipeline: Drive imports the .docx (lossless: tables, cell shading,
-    colored borders, images, equations all preserved) → we identify
-    split points by walking the converted doc → REST creates empty
-    nested tab shells → Apps Script moves content from the primary tab
-    into the new shells using ``Element.copy()``.
-
-    Prerequisite: helper Apps Script Web App must be deployed once.
-    Run ``google-docs-mcp setup-apps-script`` for setup instructions.
+    Pipeline (pure REST, no Apps Script, no extra setup): Drive imports
+    the .docx with its FINAL title -> split points are detected -> empty
+    tab shells are created -> content is transplanted into every shell
+    and VERIFIED -> only then is the moved content carved out of the
+    original first tab -> cosmetics (icons) are applied, producing at
+    most warnings -> the placeholder policy runs last. Icons run before
+    the placeholder step because a Google-side defect permanently
+    breaks tab-property updates (icons and renames) on any document
+    whose original first tab has been deleted.
 
     Args:
         docx_path: Absolute path to a local ``.docx`` (local MCP only).
@@ -548,10 +550,17 @@ def gdocs_tab_existing_doc(
         placeholder_behavior: What to do with the original "Tab 1"
             placeholder after content has been split into section tabs.
             - ``"delete"`` (default): remove the now-empty placeholder
-              so the sidebar shows only section tabs.
+              so the sidebar shows only section tabs. CAVEAT: a
+              Google-side defect makes tab icons and tab renames
+              permanently uneditable on a doc whose original first tab
+              was deleted; the response carries an advisory warning.
+              Refused (downgraded to keep, with a warning) when
+              content that belongs to no section still lives in the
+              placeholder - deleting it would destroy the only copy.
             - ``"rename"``: rename it to ``placeholder_title`` with
               ``placeholder_icon``. Use this if you want a landing/
-              intro tab as the first sidebar entry.
+              intro tab as the first sidebar entry, or to keep tab
+              icons/renames editable later (see the delete caveat).
             - ``"keep"``: leave it untouched as "Tab 1".
         placeholder_title: Title to use when ``placeholder_behavior``
             is ``"rename"``. Default ``"Overview"``.
@@ -565,15 +574,55 @@ def gdocs_tab_existing_doc(
             and tolerant of fragmented OOXML runs.
         case_sensitive: Default False. Only applies when ``markers``
             is given.
+        replace_doc_id: Optional EXPLICIT id of a prior version to
+            trash after a fully successful build. Takes precedence
+            over ``on_conflict="replace"``'s title lookup.
+        on_conflict: What to do when an app-visible Google Doc with the
+            SAME final title already exists. The title lookup runs
+            under the ``drive.file`` scope, so ONLY docs this app
+            created or was explicitly granted are considered.
+            - ``"new"`` (default): always create a new doc.
+            - ``"replace"``: build fully, then trash the newest prior
+              same-title doc (recoverable from Drive trash for 30
+              days). On failure or when no split points are found, the
+              prior doc is untouched.
+            - ``"skip"``: if a same-title doc exists, convert nothing
+              and return the existing doc with ``action="skipped"``.
 
     Exactly one of ``docx_path`` or ``drive_file_id`` must be set.
 
     Returns:
-        ``{"doc_id", "url", "tabs": [...], "split_strategy_used",
-        "warnings": [], "info": [], ...}``. When ``markers`` was
-        provided, also includes ``"retrofit": {"markers_matched",
-        "markers_missed": [...]}``. If zero markers matched, returns
-        an ``error`` field plus candidate_blocks for debugging.
+        ``{"doc_id", "url", "action", "on_conflict_action",
+        "tabs": [...], "split_strategy_used", "heading1_found",
+        "tabs_created", "placeholder", "warnings": [], "info": [],
+        "completion": {...}, ...}``.
+
+        ``heading1_found`` counts the split points detected under
+        ``split_strategy_used``; ``tabs_created`` counts the section
+        tabs actually created (they match unless something went wrong).
+        ``placeholder`` reports what ACTUALLY happened to the original
+        first tab: ``"deleted"``, ``"renamed"``, ``"kept"``, or
+        ``"none"`` (nothing to handle). ``on_conflict_action`` is
+        ``"created"``, ``"replaced"`` (+ ``replaced_doc_id``), or
+        ``"skipped"``.
+
+        ``completion`` is the manifest in EVERY response:
+        ``{"steps_completed": [import, shells, transplant, verify,
+        carve, placeholder, cosmetics], "moved_sections": [...],
+        "pending_sections": [...]}``. A step absent from
+        ``steps_completed`` failed or still has work; a section in
+        ``pending_sections`` exists ONLY inside the placeholder tab -
+        NEVER delete the placeholder tab while ``pending_sections`` is
+        non-empty (that destroys the sole copy of those sections). On
+        such a partial failure the response also carries an ``error``
+        field, the working document is kept, and the pending sections
+        can be recovered by re-running the conversion or via
+        ``gdocs_append_to_tab``.
+
+        When ``markers`` was provided, also includes ``"retrofit":
+        {"markers_matched", "markers_missed": [...]}``. If zero markers
+        matched, returns an ``error`` field plus candidate_blocks for
+        debugging.
 
     Choreography:
     - Typically preceded by ``gdocs_preview_tab_split`` to validate
@@ -641,6 +690,7 @@ def gdocs_tab_existing_doc(
                 placeholder_title=placeholder_title,
                 placeholder_icon=placeholder_icon,
                 replace_doc_id=replace_doc_id,
+                on_conflict=on_conflict,
                 case_sensitive=case_sensitive,
             )
         else:
@@ -656,6 +706,7 @@ def gdocs_tab_existing_doc(
                 placeholder_title=placeholder_title,
                 placeholder_icon=placeholder_icon,
                 replace_doc_id=replace_doc_id,
+                on_conflict=on_conflict,
             )
         if deprecation is not None and isinstance(result, dict):
             result = {**result, "deprecation": deprecation}

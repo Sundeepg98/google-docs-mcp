@@ -69,13 +69,17 @@ def test_tab_existing_doc_with_heading1_sections(
             f"expected tab titled {expected!r} not in {tab_titles!r}"
         )
 
-    # No real warnings (info messages about empty placeholder section
-    # are allowed — they're cosmetic constraints of the Apps Script
-    # path, not actionable bugs).
-    warnings = result.get("warnings") or []
+    # No real warnings. The default placeholder delete appends one
+    # known ADVISORY (tab icons/renames locked by a Google-side defect
+    # after the original first tab is deleted) - filter it out; any
+    # other warning is a fidelity problem.
+    warnings = [
+        w for w in (result.get("warnings") or [])
+        if "can no longer be edited" not in w
+    ]
     assert warnings == [], (
         f"expected zero actionable warnings, got: {warnings!r}. "
-        "Apps Script's structural 'Can't remove the last paragraph' "
-        "messages go into result.info, not warnings — if those landed "
-        "in warnings, the split logic is wrong."
+        "Only the tab-properties-locked delete advisory is expected "
+        "on this path - anything else means the split/transplant "
+        "logic dropped or degraded content."
     )

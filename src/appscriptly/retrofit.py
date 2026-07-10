@@ -35,6 +35,7 @@ from docx.oxml.ns import qn
 from google.oauth2.credentials import Credentials
 
 from .docx_import import (
+    OnConflict,
     PlaceholderBehavior,
     convert_docx_to_tabbed_doc,
 )
@@ -61,6 +62,7 @@ def retrofit_existing_docx(
     placeholder_title: str = "Overview",
     placeholder_icon: str = "\U0001f4d1",
     replace_doc_id: str | None = None,
+    on_conflict: OnConflict = "new",
     case_sensitive: bool = False,
 ) -> dict:
     """Inject heading markers into a styled .docx, then convert to tabs.
@@ -96,7 +98,10 @@ def retrofit_existing_docx(
                 f"markers[{i}] must be {{'marker_text': str, 'tab_title': str}}"
             )
 
-    # 1. Load the .docx bytes.
+    # 1. Load the .docx bytes. The final title is resolved HERE, from
+    # the ORIGINAL source - the conversion below runs on a temp copy of
+    # the modified bytes, and a temp file's stem must never become the
+    # document title (the rename-last/tmp-name bug class).
     if docx_path is not None:
         if not docx_path.exists():
             raise FileNotFoundError(
@@ -109,8 +114,13 @@ def retrofit_existing_docx(
             )
         with open(docx_path, "rb") as f:
             src_bytes = f.read()
+        title = title or docx_path.stem
     else:
-        src_bytes = _fetch_drive_as_docx_bytes(creds, drive_file_id)  # type: ignore[arg-type]
+        src_bytes, source_name = _fetch_drive_as_docx_bytes(creds, drive_file_id)  # type: ignore[arg-type]
+        if title is None and source_name:
+            if source_name.lower().endswith(".docx"):
+                source_name = source_name[:-5]
+            title = source_name
 
     # 2. Open with python-docx and inject headings.
     doc = Document(io.BytesIO(src_bytes))
@@ -119,9 +129,27 @@ def retrofit_existing_docx(
     )
 
     if not matched:
+        # Carries the full convert envelope (action="failed", empty
+        # manifest) so the tool's output schema validates this early
+        # return too - a schema-failing error payload would otherwise
+        # mask the real problem behind an output-validation error.
         return {
             "doc_id": None,
             "url": None,
+            "action": "failed",
+            "tabs": [],
+            "moved_children": 0,
+            "heading1_found": 0,
+            "tabs_created": 0,
+            "placeholder": "none",
+            "warnings": [],
+            "info": [],
+            "split_strategy_used": "none",
+            "completion": {
+                "steps_completed": [],
+                "moved_sections": [],
+                "pending_sections": [],
+            },
             "retrofit": {
                 "markers_matched": 0,
                 "markers_missed": missed_specs,
@@ -152,6 +180,7 @@ def retrofit_existing_docx(
             placeholder_title=placeholder_title,
             placeholder_icon=placeholder_icon,
             replace_doc_id=replace_doc_id,
+            on_conflict=on_conflict,
         )
     finally:
         try:
@@ -317,17 +346,29 @@ def _build_heading_paragraph(title: str) -> Any:
     return p
 
 
-def _fetch_drive_as_docx_bytes(creds: Credentials, drive_file_id: str) -> bytes:
-    """Pull a Drive file as .docx bytes (works for .docx and Google Doc)."""
+def _fetch_drive_as_docx_bytes(
+    creds: Credentials, drive_file_id: str
+) -> tuple[bytes, str]:
+    """Pull a Drive file as .docx bytes (works for .docx and Google Doc).
+
+    Returns ``(bytes, source_name)`` - the name feeds the final title
+    so the converted doc never wears a temp-file name.
+    """
     drive = get_service("drive", "v3", credentials=creds)
-    meta = drive.files().get(fileId=drive_file_id, fields="mimeType").execute()
+    meta = drive.files().get(
+        fileId=drive_file_id, fields="name,mimeType"
+    ).execute()
     mime = meta.get("mimeType")
+    name = meta.get("name") or ""
     if mime == DOCX_MIME:
-        return drive.files().get_media(fileId=drive_file_id).execute()
+        return drive.files().get_media(fileId=drive_file_id).execute(), name
     if mime == GDOC_MIME:
-        return drive.files().export(
-            fileId=drive_file_id, mimeType=DOCX_MIME
-        ).execute()
+        return (
+            drive.files().export(
+                fileId=drive_file_id, mimeType=DOCX_MIME
+            ).execute(),
+            name,
+        )
     raise ValueError(
         f"Drive file {drive_file_id!r} has mimeType {mime!r}. "
         "Expected .docx or Google Doc."
