@@ -63,6 +63,10 @@ def test_classifier_diagnoses_500_when_original_first_tab_is_gone():
     assert msg is not None
     assert "first_tab_deleted_500" in msg
     assert "Retryable: false" in msg
+    # Callers must not chase adding-a-tab as a cure: live evidence shows
+    # addDocumentTab succeeds on a poisoned doc WITHOUT clearing the
+    # defect, so the diagnosis says so explicitly.
+    assert "does NOT clear" in msg
 
 
 def test_classifier_passes_500_through_when_t0_still_present():

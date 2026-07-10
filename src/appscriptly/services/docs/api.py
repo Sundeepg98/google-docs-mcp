@@ -1474,11 +1474,16 @@ _FIRST_TAB_DELETED_500_MESSAGE = (
     "tab is deleted, every updateDocumentTabProperties request (tab "
     "renames and icon changes) on that document fails with 500, "
     "durably.\n"
-    "Retryable: false - retrying the same call will keep failing.\n"
+    "Retryable: false - retrying the same call will keep failing. "
+    "Adding tabs does NOT clear the state either (verified live): "
+    "gdocs_add_tabs succeeds, but property updates stay broken, "
+    "including on the tabs it just added - do not chase that as a "
+    "remediation.\n"
     "Workarounds: set icons and titles BEFORE deleting the original "
     "first tab; give new tabs their icon_emoji at creation time "
-    "(gdocs_make_tabbed_doc / gdocs_add_tabs still work on this "
-    "document); or rebuild the document. (first_tab_deleted_500)"
+    "(addDocumentTab accepts it, so gdocs_make_tabbed_doc / "
+    "gdocs_add_tabs still decorate correctly); or rebuild the "
+    "document. (first_tab_deleted_500)"
 )
 
 
