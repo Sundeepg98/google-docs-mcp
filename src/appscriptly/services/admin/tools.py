@@ -1502,10 +1502,27 @@ def gdrive_get_signed_upload_url(
         ttl_seconds=ttl_seconds,
         max_bytes=max_bytes,
     )
+    # T3.2: FULL parameter parity documented here (the endpoint was
+    # silently accepting fields the hint never mentioned). Keep this
+    # hint in lockstep with convert_endpoint's form parsing.
     minted["usage_hint"] = (
         "requests.post(URL, files={'file': ('doc.docx', open('/path/to/doc.docx','rb'), "
         "'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}, "
-        "data={'split_by': 'heading_1', 'icons_by_title': '<json-string>'})"
+        "data=params, timeout=600). All params optional: "
+        "split_by ('heading_1'|'heading_2'|'page_break'|'auto'), "
+        "nest_by ('heading_2', only with split_by='heading_1': H2 sections become child tabs), "
+        "title (document title, single input only), "
+        "icons_by_title (JSON string, tab-title fragment to emoji), "
+        "placeholder_behavior ('delete'|'rename'|'keep'), "
+        "markers (JSON list of {'marker_text','tab_title'}: injects Heading 1s into a styled docx first), "
+        "on_conflict ('new'|'replace'|'skip', by title), "
+        "async ('1': immediate 202 {job_id, status_url}; poll status_url until status is 'done' for the full result. RECOMMENDED for large docs), "
+        "drive_file_id (convert an existing app-accessible Drive docx/Doc: pass data only, no files=), "
+        "drive_file_ids (JSON list) or repeated 'file' parts (batch: always 202 {jobs:[...]}). "
+        "Conversion survives client disconnects (job model): re-POSTing the identical request "
+        "within 15 min attaches to the same job instead of duplicating docs, even though the URL "
+        "is single-use. If a status poll reads 'stalled' (server redeployed mid-run), the same "
+        "re-POST resumes that job."
     )
     return minted
 

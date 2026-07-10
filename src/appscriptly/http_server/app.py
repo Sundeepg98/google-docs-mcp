@@ -28,6 +28,7 @@ from .middleware import (
     derive_trusted_hosts,
 )
 from .routes.convert import convert_endpoint, upload_frame_endpoint
+from .routes.convert_status import convert_job_status_endpoint
 from .routes.oauth import oauth_google_api_callback
 from .routes.observability import (
     health,
@@ -120,6 +121,15 @@ def build_app(mcp: FastMCP) -> Starlette:
         # BearerTokenMiddleware dispatch path as /api/*.
         Route("/info", info_endpoint, methods=["GET"]),
         Route("/api/convert", convert_endpoint, methods=["POST"]),
+        # T1.1 job model: poll a convert job minted by POST /api/convert
+        # (async=1 / batch / burned-nonce attach). Auth is the pre-signed
+        # multi-use status URL (or bearer), enforced in
+        # BearerTokenMiddleware; see routes/convert_status.py.
+        Route(
+            "/api/convert/status/{job_id}",
+            convert_job_status_endpoint,
+            methods=["GET"],
+        ),
         # PR-Δ1 (v2.3.4): RFC 9728 OAuth Protected Resource Metadata.
         # The companion RFC 8414 endpoint is wired by FastMCP's
         # GoogleProvider; this is the OTHER MCP-Authorization-

@@ -185,8 +185,9 @@ def verify_signed_params(
     sig: str,
     user_id: str | None,
     nonce_store: NonceStore,
+    consume_nonce: bool = True,
 ) -> tuple[bool, str | None, int | None, str | None]:
-    """Validate a signed-URL query-string and consume the nonce.
+    """Validate a signed-URL query-string and (by default) consume the nonce.
 
     ``signing_key`` is bytes — see ``sign_upload_url`` docstring for
     the v2.0b rationale (HKDF output isn't UTF-8 in general).
@@ -199,6 +200,16 @@ def verify_signed_params(
     the HMAC compare even runs. The HMAC compare itself is over the
     canonical including user_id, so any tamper of ``uid`` after signing
     fails signature verification.
+
+    ``consume_nonce=False`` (job-model, T1.1) verifies signature, expiry
+    and bounds but leaves the nonce store untouched AND does not reject
+    an already-redeemed nonce. The convert endpoint then consumes the
+    nonce itself at JOB-CREATION time, so a request that fails
+    validation before any work starts (bad form field, missing creds)
+    never burns the single-use URL, and a retry whose nonce is already
+    burned can still ATTACH to the job that burned it via the request
+    fingerprint. Callers that keep the default get the historical
+    verify-and-consume behavior unchanged.
     """
     if not user_id:
         # v2.1 strict cutoff — pre-v2.1 URLs lack uid and are rejected.
@@ -236,7 +247,90 @@ def verify_signed_params(
             None,
         )
 
-    if not nonce_store.consume(nonce, exp_i):
+    if consume_nonce and not nonce_store.consume(nonce, exp_i):
         return False, "URL already used", None, None
 
     return True, None, max_i, user_id
+
+
+# ---------------------------------------------------------------------
+# Job-status URLs (T1.1 async job model)
+# ---------------------------------------------------------------------
+
+# Status URLs live much longer than upload URLs: a client that opted
+# into async=1 (or got disconnected) may poll hours later, and the
+# conversion result should stay collectible across a workday. 24h.
+JOB_STATUS_TTL_SECONDS = 24 * 3600
+
+
+def _job_status_canonical(job_id: str, exp: int) -> str:
+    """Domain-tagged canonical for job-status signatures.
+
+    The ``jobstatus.`` prefix separates this signature domain from the
+    upload-URL canonical (``{exp}.{nonce}.{max}.{user_id}``) even though
+    the two shapes could never collide today - explicit domain tags cost
+    nothing and survive future shape changes. The user_id is NOT in the
+    canonical: job_id is an unguessable uuid4 and the signature binds
+    it, so possession of the signed URL (returned only to the
+    authenticated uploader) is the capability.
+    """
+    return f"jobstatus.{job_id}.{exp}"
+
+
+def sign_job_status_url(
+    *,
+    base_url: str,
+    signing_key: bytes,
+    job_id: str,
+    ttl_seconds: int = JOB_STATUS_TTL_SECONDS,
+) -> dict:
+    """Mint a pre-signed, MULTI-use status URL for one convert job.
+
+    Unlike upload URLs there is deliberately NO nonce: polling is the
+    whole point, so the URL must verify any number of times until
+    ``exp``. Returns ``{"status_url", "expires_at"}``.
+    """
+    if not isinstance(job_id, str) or not job_id:
+        raise ValueError("job_id must be a non-empty string")
+    if ttl_seconds <= 0:
+        raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
+    exp = int(time.time()) + ttl_seconds
+    sig = hmac.new(
+        signing_key,
+        _job_status_canonical(job_id, exp).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    query = urlencode({"exp": exp, "sig": sig})
+    return {
+        "status_url": f"{base_url.rstrip('/')}?{query}",
+        "expires_at": exp,
+    }
+
+
+def verify_job_status_sig(
+    *,
+    signing_key: bytes,
+    job_id: str,
+    exp: str,
+    sig: str,
+) -> tuple[bool, str | None]:
+    """Validate a job-status URL's signature + expiry. No nonce, multi-use.
+
+    ``job_id`` comes from the request PATH (the middleware extracts it),
+    so a tampered path breaks the HMAC exactly like a tampered query
+    param. Returns ``(ok, error_message_if_not_ok)``.
+    """
+    try:
+        exp_i = int(exp)
+    except (TypeError, ValueError):
+        return False, "exp must be an integer"
+    if exp_i <= int(time.time()):
+        return False, "status URL has expired"
+    expected = hmac.new(
+        signing_key,
+        _job_status_canonical(job_id, exp_i).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return False, "signature mismatch"
+    return True, None

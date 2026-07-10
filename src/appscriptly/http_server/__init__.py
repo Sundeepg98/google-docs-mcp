@@ -27,10 +27,14 @@ Fly.io probes.
     ├── _pages.py           # OAuth callback HTML + CSP
     ├── middleware.py       # BearerTokenMiddleware, BodySizeLimitMiddleware
     ├── app.py              # build_app, run_http (composition)
+    ├── jobs.py             # T1.1 convert-job runner (detached tasks,
+    │                       #   heartbeats, error classification)
     └── routes/
         ├── observability.py    # health, info_endpoint
         ├── oauth.py            # oauth_google_api_callback
-        └── convert.py          # convert_endpoint
+        ├── convert.py          # convert_endpoint (job model: sync await,
+        │                       #   async=1, batch, fingerprint attach)
+        └── convert_status.py   # convert_job_status_endpoint + status URLs
 
 Pre-v2.2.1 every concern lived in a single 830-LOC ``http_server.py``.
 The split is mechanical — same functions, same behavior, no new
