@@ -125,6 +125,31 @@ _SENSITIVE_QUERY_RE = re.compile(
 )
 
 
+def _scrub_log_arg(value: Any) -> Any:
+    """Redact credential-shaped ``name=value`` pairs from one log arg.
+
+    ``str`` args are scrubbed directly. NON-str args matter too: httpx
+    logs ``request.url`` as an ``httpx.URL`` OBJECT (not a str), and the
+    filter's contract is that no credential reaches a log line whatever
+    emits it. So scrub ``str(value)`` as well - but only SWAP IN the
+    scrubbed string when scrubbing actually changed it. That keeps
+    numeric args (bound to ``%d``/``%f``, whose string form never
+    matches the ``name=value`` pattern) at their original type, so the
+    record still formats; only credential-bearing string-like args get
+    replaced by a scrubbed ``str``. Returns the ORIGINAL object when
+    nothing was redacted, so the caller can detect "changed" by identity.
+    """
+    if isinstance(value, str):
+        scrubbed = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
+        return scrubbed if scrubbed != value else value
+    try:
+        rendered = str(value)
+    except Exception:  # noqa: BLE001 - an unstringifiable arg: leave it be
+        return value
+    scrubbed = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", rendered)
+    return scrubbed if scrubbed != rendered else value
+
+
 class SensitiveQueryScrubFilter(logging.Filter):
     """Redact credential-bearing ``name=value`` pairs from log records.
 
@@ -156,14 +181,13 @@ class SensitiveQueryScrubFilter(logging.Filter):
         # formatter still renders, now redacted (the credential rides in
         # the full_path arg for access lines, the URL arg for httpx).
         if isinstance(record.args, tuple) and record.args:
-            scrubbed_args = tuple(
-                _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", a)
-                if isinstance(a, str)
-                else a
-                for a in record.args
-            )
-            if scrubbed_args != record.args:
-                record.args = scrubbed_args
+            new_args = tuple(_scrub_log_arg(a) for a in record.args)
+            # Reassign only if a redaction happened - detected by IDENTITY
+            # (_scrub_log_arg returns the original object when unchanged),
+            # so benign records keep their exact args and no arg's __eq__
+            # is invoked during the check.
+            if any(n is not o for n, o in zip(new_args, record.args)):
+                record.args = new_args
             return True
         # Args-less records (pre-rendered single strings): the rendered
         # message IS record.msg. Scrub it directly - the historical path.

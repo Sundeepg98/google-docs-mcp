@@ -186,6 +186,31 @@ def test_scrub_filter_redacts_lazy_percent_formatted_records():
     assert _LIVE_TOKEN not in record.getMessage()
 
 
+def test_scrub_filter_redacts_credential_in_non_str_arg():
+    """httpx logs ``request.url`` as an httpx.URL OBJECT (not a str);
+    a credential in that object's string form must still be redacted.
+    A str-only scrub (``isinstance(a, str)``) would let it through - the
+    filter's contract is "no credential from httpx/urllib3/... reaches a
+    log line", and those libraries pass URL objects, not strings. Arity
+    and the numeric %d arg's type are preserved so the record still
+    formats."""
+    url = httpx.URL(f"{_TOKENINFO_URL}?access_token={_LIVE_TOKEN}")
+    assert not isinstance(url, str)  # guards the premise this test exists for
+    record = logging.LogRecord(
+        name="httpx", level=logging.INFO, pathname="x", lineno=1,
+        msg='HTTP Request: %s %s "%s %d %s"',
+        args=("GET", url, "1.1", 200, "OK"),
+        exc_info=None,
+    )
+    SensitiveQueryScrubFilter().filter(record)
+    # getMessage also proves %d still formats -> the 200 arg kept its int type.
+    rendered = record.getMessage()
+    assert _LIVE_TOKEN not in rendered
+    assert "access_token=[REDACTED]" in rendered
+    assert len(record.args) == 5
+    assert record.args[3] == 200 and isinstance(record.args[3], int)
+
+
 def test_signed_url_query_params_scrubbed_from_access_log_lines():
     """uvicorn.access logs the full request target; a signed upload URL
     carries nonce + sig (credentials) and uid (the Google sub, PII).
