@@ -1234,3 +1234,39 @@ def test_copy_google_doc_rejects_non_google_doc_mimetype():
             copy_google_doc(MagicMock(), "F4")
     # Guard fired before any copy was attempted.
     drive.files().copy.assert_not_called()
+
+
+def test_copy_google_doc_honors_explicit_title_verbatim():
+    """N8 (retest 3): an EXPLICIT title must reach Drive VERBATIM — the
+    " (tabified)" suffix on explicit titles broke cross-entry-point
+    on_conflict matching (drive-path skip/replace looked for the
+    suffixed name and missed upload-path docs with the requested one)."""
+    drive = _drive_returning_meta(
+        {"id": "S1", "name": "Retest3 Source", "mimeType": GDOC_MIME}
+    )
+    drive.files().copy.return_value.execute.return_value = {
+        "id": "C1", "name": "Retest3 Multi",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = copy_google_doc(MagicMock(), "S1", title="Retest3 Multi")
+    assert result["doc_id"] == "C1"
+    assert result["title"] == "Retest3 Multi"
+    call = drive.files().copy.call_args
+    assert call.kwargs["body"] == {"name": "Retest3 Multi"}
+
+
+def test_copy_google_doc_suffixes_only_the_no_title_fallback():
+    """Without an explicit title the copy takes the SOURCE name plus
+    " (tabified)" so it cannot shadow the source doc's own name in
+    Drive — that fallback (and only that fallback) keeps the suffix."""
+    drive = _drive_returning_meta(
+        {"id": "S1", "name": "Retest3 Source", "mimeType": GDOC_MIME}
+    )
+    drive.files().copy.return_value.execute.return_value = {
+        "id": "C2", "name": "Retest3 Source (tabified)",
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("drive", "v3"): drive})):
+        result = copy_google_doc(MagicMock(), "S1")
+    assert result["doc_id"] == "C2"
+    call = drive.files().copy.call_args
+    assert call.kwargs["body"] == {"name": "Retest3 Source (tabified)"}

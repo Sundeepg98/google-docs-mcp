@@ -863,7 +863,13 @@ def _expected_final_title(
     ).execute()
     name = meta.get("name") or ""
     if meta.get("mimeType") == GDOC_MIME:
-        return (title or name) + " (tabified)"
+        # N8 (retest 3): explicit titles are honored VERBATIM on every
+        # entry point; the " (tabified)" suffix belongs ONLY to the
+        # no-title fallback (where the working copy must not shadow the
+        # source doc's own name). Suffixing an explicit title made
+        # drive-path on_conflict lookups miss upload-path docs carrying
+        # the requested title.
+        return title if title else name + " (tabified)"
     if name.lower().endswith(".docx"):
         name = name[:-5]
     return title or name
