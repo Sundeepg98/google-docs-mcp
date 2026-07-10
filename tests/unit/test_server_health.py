@@ -122,6 +122,9 @@ def test_every_payload_states_what_the_runtime_gates(monkeypatch, google_stubs):
     gates = result["automation_runtime"]["gates"]
     assert "as_*" in gates
     assert "unaffected" in gates
+    # PR-D: the gating set was derived from code and is EMPTY - the
+    # field must say so, not merely scope the blast radius to as_*.
+    assert "nothing at runtime" in gates
 
     # The not_installed early return carries it too.
     result, _ = _run_health(
@@ -134,21 +137,21 @@ def test_every_payload_states_what_the_runtime_gates(monkeypatch, google_stubs):
     assert "as_*" in result["automation_runtime"]["gates"]
 
 
-def test_needs_activation_detail_says_convert_keeps_working(
+def test_needs_activation_detail_prevents_false_abort(
     monkeypatch, google_stubs
 ):
-    """R3: the needs_activation detail itself must prevent the
-    false-abort ("do NOT abort a convert on this reading")."""
+    """R3 (sharpened by PR-D): the needs_activation detail itself must
+    prevent the false-abort. PR-D derived the gating set as EMPTY, so
+    the detail now states no tool is blocked at all."""
     result, _ = _run_health(
         monkeypatch,
         creds=MagicMock(name="creds"),
         stubs=google_stubs,
-        probe=WebAppHealth.DEAD,
+        probe=WebAppHealth.CONSENT_GATED,
     )
     rt = result["automation_runtime"]
     assert rt["exec"] == "needs_activation"
-    assert "as_*" in rt["detail"]
-    assert "keep working" in rt["detail"]
+    assert "No tool is blocked" in rt["detail"]
 
 
 def test_not_installed_short_circuits_before_any_probe(monkeypatch):
@@ -168,21 +171,46 @@ def test_not_installed_short_circuits_before_any_probe(monkeypatch):
     assert probe_calls == []
 
 
-def test_dead_probe_reports_needs_activation_with_editor_url(
+def test_consent_gated_probe_reports_needs_activation_with_editor_url(
     monkeypatch, google_stubs
 ):
-    """The 403 door page (DEAD probe) = the one-time interactive
-    activation is missing; remediation is the script editor."""
+    """The 403 door page (CONSENT_GATED probe) = the one-time
+    interactive activation is missing; remediation is the script
+    editor's Run + Allow."""
     result, _ = _run_health(
         monkeypatch,
         creds=MagicMock(name="creds"),
-        probe=WebAppHealth.DEAD,
+        probe=WebAppHealth.CONSENT_GATED,
         stubs=google_stubs,
     )
     rt = result["automation_runtime"]
+    assert rt["installed"] is True
     assert rt["exec"] == "needs_activation"
     assert rt["remediation_url"] == "https://script.google.com/d/S1/edit"
     assert "Allow" in rt["detail"]
+
+
+def test_gone_probe_reports_not_installed_with_redeploy_detail(
+    monkeypatch, google_stubs
+):
+    """PR-D (Finding C): a 404-dead deployment is NOT a consent problem
+    - the old code mislabeled it needs_activation and sent the user to
+    a consent remediation that cannot fix a deleted deployment. It now
+    reads as not_installed (functionally there is no runtime to reach)
+    with a redeploy detail that promises consent preservation."""
+    result, _ = _run_health(
+        monkeypatch,
+        creds=MagicMock(name="creds"),
+        probe=WebAppHealth.GONE,
+        stubs=google_stubs,
+    )
+    rt = result["automation_runtime"]
+    assert rt["installed"] is False
+    assert rt["exec"] == "not_installed"
+    assert rt["remediation_url"] is None
+    assert "404" in rt["detail"]
+    assert "as_install_automation" in rt["detail"]
+    assert "consent" in rt["detail"]
 
 
 def test_unknown_probe_reports_unknown_not_a_guess(monkeypatch, google_stubs):

@@ -365,7 +365,8 @@ The counts above are approximate; `gdocs_test_manifest()` / `gdocs_server_info()
 - Tokens are stored unencrypted at `~/.google-docs-mcp/token.json`. Don't sync that path to a shared drive.
 - **Stdio mode is single-user** (one OAuth identity per machine). HTTP mode (Fly deploy + claude.ai connector) is multi-tenant — each user's state is keyed by their Google `sub` claim in `user_state.db` (see `src/appscriptly/user_store.py`).
 - Drive's `drive.file` scope restricts writes to files this app created. Trash/untrash/move on externally-uploaded files returns `reason: "app_not_authorized"` (soft-failure, not raised — see `gdocs_find_doc_by_title`'s `owned_by_app` flag).
-- Apps Script Web App is a hard prerequisite for `gdocs_tab_existing_doc` and retrofit — the script does what REST can't (preserve drawings/equations/cell shading during content moves).
+- The central Apps Script Web App is NOT required by any tool at runtime since the pure-REST tab transplant (#222): `gdocs_tab_existing_doc`, retrofit, and `/api/convert` run entirely on the Docs/Drive REST APIs, and the `as_*` installers drive the Apps Script API with their own per-automation scripts. `server_health` reports the runtime's state for observability only.
+- If a connector tool call returns "No approval received", that is claude.ai's own approval popup (shown on first use of new or destructive tools) - approve the prompt in the chat UI and retry. It is client-side, not a server error.
 
 ## Security
 

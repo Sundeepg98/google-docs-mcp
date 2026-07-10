@@ -57,6 +57,7 @@ from appscriptly.services.drive.api import (
     _escape_q_literal,
     copy_google_doc,
     create_folder,
+    effective_convert_title,
     export_doc,
     fetch_and_convert_drive_docx,
     find_doc_by_title,
@@ -89,6 +90,62 @@ def test_max_upload_bytes_is_50_mib():
     explicitly so a change forces a CHANGELOG note + comms (e.g. updating
     user-facing docs that quote the limit)."""
     assert MAX_UPLOAD_BYTES == 50 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------
+# effective_convert_title — the ONE title rule (N8 / PR-D rider)
+#
+# Every naming site (upload_and_convert_docx, fetch_and_convert_drive_
+# docx, copy_google_doc) and the on_conflict predictor
+# (docx_import._expected_final_title) route through this helper. The
+# N8 incident was a site suffixing EXPLICIT titles; these pins are the
+# contract.
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["docx", "gdoc"])
+def test_effective_convert_title_explicit_title_is_verbatim(kind):
+    """An explicit title is returned VERBATIM for every source kind —
+    no suffix, no extension surgery."""
+    assert effective_convert_title(
+        "Quarterly Plan.docx", source_kind=kind, source_name="whatever"
+    ) == "Quarterly Plan.docx"
+
+
+def test_effective_convert_title_gdoc_fallback_appends_tabified():
+    """No-title gdoc copy: the working copy must not shadow the source
+    doc's own name in Drive."""
+    assert effective_convert_title(
+        None, source_kind="gdoc", source_name="Roadmap"
+    ) == "Roadmap (tabified)"
+
+
+def test_effective_convert_title_docx_fallback_strips_extension():
+    assert effective_convert_title(
+        None, source_kind="docx", source_name="Notes.docx"
+    ) == "Notes"
+
+
+def test_effective_convert_title_docx_extension_strip_is_case_insensitive():
+    assert effective_convert_title(
+        None, source_kind="docx", source_name="Notes.DOCX"
+    ) == "Notes"
+
+
+def test_effective_convert_title_docx_fallback_keeps_non_docx_name():
+    """A stem (no extension) — e.g. Path.stem from the upload path —
+    passes through unchanged."""
+    assert effective_convert_title(
+        None, source_kind="docx", source_name="Notes"
+    ) == "Notes"
+
+
+def test_effective_convert_title_empty_string_title_falls_back():
+    """An empty-string title means "no title" (same truthiness rule the
+    naming sites always had), not a literal empty name."""
+    assert effective_convert_title(
+        "", source_kind="gdoc", source_name="Roadmap"
+    ) == "Roadmap (tabified)"
 
 
 # ---------------------------------------------------------------------

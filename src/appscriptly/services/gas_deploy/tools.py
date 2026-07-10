@@ -89,6 +89,8 @@ from appscriptly.services.gas_deploy.api import (
     inject_webapp_hmac_guard as _inject_webapp_hmac_guard,
 )
 from appscriptly.setup_apps_script import (
+    WebAppHealth,
+    probe_webapp_health,
     setup_apps_script_auto,
     setup_apps_script_for_user,
 )
@@ -110,6 +112,70 @@ _WEB_APP_DEPLOY_SCOPES = [
 # ---------------------------------------------------------------------
 # Core implementation — shared by the canonical name AND the alias
 # ---------------------------------------------------------------------
+
+
+def _installed_runtime_payload(deployment) -> dict:
+    """Classify the just-provisioned deployment and answer honestly.
+
+    PR-D (Finding B): a brand-new (or freshly redeployed) web app
+    serves Google's 403 consent door until its owner performs the
+    ONE-TIME Run + Allow in the script editor. Pre-PR-D the installer
+    either reported "ready" for that gated endpoint or - on the heal
+    path - raised a misdiagnosed "re-authorize / Apps Script API
+    disabled" error. Now one probe classifies the live state and the
+    consent gate comes back as DATA with the exact remediation.
+    """
+    base = {
+        "url": deployment.url,
+        "script_id": deployment.script_id,
+        "deployment_id": deployment.deployment_id,
+    }
+    health = probe_webapp_health(deployment.url)
+    if health is WebAppHealth.CONSENT_GATED:
+        activation_url = (
+            f"https://script.google.com/d/{deployment.script_id}/edit"
+        )
+        return {
+            **base,
+            "status": "needs_activation",
+            "activation_url": activation_url,
+            "message": (
+                "Runtime installed; one step remains. Google gates every "
+                "Apps Script web app behind a ONE-TIME interactive "
+                "consent from its owner. Open the activation URL as the "
+                "installing Google user, run any function once (for "
+                "example doGet) via the Run button, and click Allow on "
+                "the consent prompt. The runtime serves immediately "
+                "after that; re-run server_health to confirm 'serving'. "
+                "Re-running this installer does NOT replace this step "
+                "and is not needed."
+            ),
+        }
+    if health is WebAppHealth.GONE:
+        # A deployment that 404s the moment it was created is a
+        # Google-side anomaly (eventual consistency at worst) - loud,
+        # accurate, and retryable; the ledger is persisted so a re-run
+        # redeploys on the SAME project.
+        raise ToolError(
+            f"The freshly created web-app deployment is not reachable "
+            f"(GET {deployment.url} returns 404). This is a transient "
+            "Google-side state, not an account problem. Re-run "
+            "as_install_automation; the existing script project is "
+            "reused, so no additional consent is created."
+        )
+    # HEALTHY - or UNKNOWN, because a network blip on the verification
+    # probe must never fail an otherwise complete install.
+    return {
+        **base,
+        "status": "ready",
+        "message": (
+            "Workflow runtime installed under your Google account. "
+            "Claude can now build custom automations in your "
+            "Workspace - time-driven jobs, custom menus inside your "
+            "docs / sheets / slides, and reactive workflows that run "
+            "when your data changes."
+        ),
+    }
 
 
 def _install_automation_runtime() -> dict:
@@ -138,16 +204,7 @@ def _install_automation_runtime() -> dict:
             raise ToolError(
                 f"Workspace automation runtime install failed: {e}"
             ) from e
-        return {
-            "status": "ready",
-            "url": deployment.url,
-            "script_id": deployment.script_id,
-            "deployment_id": deployment.deployment_id,
-            "message": (
-                "Workflow runtime installed. Claude can now build "
-                "custom automations in your Workspace."
-            ),
-        }
+        return _installed_runtime_payload(deployment)
 
     # HTTP / multi-tenant mode: per-user creds, per-user user_store ledger.
     try:
@@ -181,19 +238,7 @@ def _install_automation_runtime() -> dict:
             f"Workspace automation runtime install failed: {e}"
         ) from e
 
-    return {
-        "status": "ready",
-        "url": deployment.url,
-        "script_id": deployment.script_id,
-        "deployment_id": deployment.deployment_id,
-        "message": (
-            "Workflow runtime installed under your Google account. "
-            "Claude can now build custom automations in your "
-            "Workspace — time-driven jobs, custom menus inside your "
-            "docs / sheets / slides, and reactive workflows that run "
-            "when your data changes."
-        ),
-    }
+    return _installed_runtime_payload(deployment)
 
 
 # ---------------------------------------------------------------------
