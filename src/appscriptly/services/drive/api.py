@@ -264,10 +264,18 @@ def copy_google_doc(
             "use fetch_and_convert_drive_docx instead."
         )
 
-    fallback_title = (title or meta["name"]) + " (tabified)"
+    # N8 (2026-07-10 retest 3): an EXPLICIT title is honored VERBATIM -
+    # every entry point must produce the exact title the caller asked
+    # for, or cross-entry-point on_conflict lookups (which match by
+    # final title) silently miss each other's documents. The
+    # " (tabified)" suffix applies ONLY to the no-title fallback, where
+    # it exists so the working copy cannot shadow the SOURCE doc's own
+    # name in Drive. Keep in lockstep with
+    # docx_import._expected_final_title.
+    new_name = title if title else meta["name"] + " (tabified)"
     new_file = drive.files().copy(
         fileId=google_doc_id,
-        body={"name": fallback_title},
+        body={"name": new_name},
         fields="id,name",
     ).execute()
     new_id = new_file["id"]

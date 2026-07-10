@@ -214,7 +214,8 @@ def test_async_error_job_reports_error_via_status():
         assert resp.status_code == 202, resp.text
         final = _poll_until_terminal(client, _status_path(resp.json()))
         assert final["status"] == "error"
-        assert final["error"] == {"error": "bad document structure"}
+        # N9: the message lives at error.message, never error.error.
+        assert final["error"] == {"message": "bad document structure"}
         assert final["error_http_status"] == 400
 
 
@@ -1012,12 +1013,19 @@ def test_partial_failure_envelope_maps_to_500_with_body():
         # poller may trust status=="done" as success - and the whole
         # recovery envelope (kept doc id, completion manifest) rides
         # under ``error`` with the sync path's HTTP status beside it.
+        # N9: the message is at error.message; error.error must not
+        # exist (consumers were double-reading result.error.error).
         assert final["status"] == "error"
-        assert final["error"]["error"].startswith("transplant died")
+        assert final["error"]["message"].startswith("transplant died")
+        assert "error" not in final["error"]
         assert final["error"]["doc_id"] == "KEPT"
         assert final["error"]["completion"]["pending_sections"] == ["B"]
         assert final["error_http_status"] == 500
         assert "not deduplicated" in final["note"]
+        # The SYNC contract is untouched by N9: the envelope's
+        # historical top-level "error" key stays (asserted above via
+        # the 500 body's completion/doc_id + here explicitly).
+        assert sync.json()["error"].startswith("transplant died")
 
 
 def test_happy_path_still_polls_done():

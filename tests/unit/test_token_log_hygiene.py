@@ -108,8 +108,13 @@ def test_non_tokeninfo_requests_pass_through_as_get():
 def test_fastmcp_verifier_path_logs_no_token(caplog):
     """End to end through fastmcp's real GoogleTokenVerifier with our
     client injected: the full validation path (tokeninfo + userinfo)
-    succeeds AND the captured log stream never contains the token."""
-    pytest.importorskip("fastmcp.server.auth.providers.google")
+    succeeds AND the captured log stream never contains the token.
+
+    This test is the N4 CANARY named at the fastmcp pin in
+    pyproject.toml: a fastmcp bump that changes the verifier's call
+    shape must FAIL here, never skip - hence the plain import (fastmcp
+    is a hard runtime dependency; an import failure is a real failure).
+    """
     from fastmcp.server.auth.providers.google import GoogleTokenVerifier
 
     seen: list[httpx.Request] = []

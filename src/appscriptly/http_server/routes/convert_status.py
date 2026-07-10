@@ -24,11 +24,12 @@ re-arm.
 
 Poller contract (N3, 2026-07-10 retest): ``done`` MEANS SUCCESS. Every
 failure - a raised converter exception AND the S2.5 partial-failure
-recovery envelope (kept doc + completion manifest + ``error``) - is
-terminal ``status="error"``, with the full payload under ``error`` and
-the sync path's HTTP status under ``error_http_status``. A machine
-consumer may branch on ``status`` alone. Failed jobs are not attach
-targets (N1): re-POST with a fresh signed URL to try again.
+recovery envelope (kept doc + completion manifest) - is terminal
+``status="error"``, with the full payload under ``error`` (its message
+at ``error.message``, N9) and the sync path's HTTP status under
+``error_http_status``. A machine consumer may branch on ``status``
+alone. Failed jobs are not attach targets (N1): re-POST with a fresh
+signed URL to try again.
 """
 from __future__ import annotations
 
@@ -70,6 +71,13 @@ def job_status_view(row: dict[str, Any]) -> dict[str, Any]:
     failure payload (for S2.5 partial failures that is the whole
     kept-doc recovery envelope: doc_id, completion manifest, warnings)
     plus the HTTP status a synchronous caller would have received.
+
+    N9 (2026-07-10 retest 3): the failure MESSAGE lives at
+    ``error.message`` - never ``error.error``. The sync path keeps the
+    envelope's historical top-level ``error`` key (its contract since
+    S2.5); only this polling view renames, because here the envelope is
+    already nested under ``error`` and consumers were double-reading
+    ``result.error.error``.
     """
     derived = job_store.derive_status(row)
     view: dict[str, Any] = {
@@ -83,7 +91,14 @@ def job_status_view(row: dict[str, Any]) -> dict[str, Any]:
         view["result"] = job_store.result_dict(row)
     elif derived == "error":
         err = job_store.error_dict(row) or {}
-        view["error"] = err.get("payload")
+        payload = err.get("payload")
+        if isinstance(payload, dict):
+            flattened = dict(payload)
+            if "error" in flattened and "message" not in flattened:
+                flattened["message"] = flattened.pop("error")
+            view["error"] = flattened
+        else:
+            view["error"] = payload
         # The status this job WOULD have answered synchronously - lets a
         # polling client apply the same handling as a sync caller.
         view["error_http_status"] = err.get("http_status")

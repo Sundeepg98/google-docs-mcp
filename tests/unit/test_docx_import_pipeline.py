@@ -398,6 +398,17 @@ def test_rename_behavior_carves_source_ranges_then_renames(pipeline):
     assert not any("can no longer be edited" in w for w in result["warnings"])
 
 
+def test_keep_policy_reports_kept_without_veto_marker(pipeline):
+    """Explicit keep is a POLICY, not a refusal: placeholder='kept' with
+    NO placeholder_veto marker - that field is reserved for the
+    sole-copy guard overriding a requested delete (R1), and leaking it
+    onto policy keeps would make the two indistinguishable again."""
+    result = _convert(placeholder_behavior="keep")
+    assert result["placeholder"] == "kept"
+    assert "placeholder_veto" not in result
+    assert ("delete_tab", PRIMARY) not in pipeline["events"]
+
+
 def test_no_splits_returns_single_tab_note_without_touching_tabs(pipeline, monkeypatch):
     doc = _source_doc()
     for elem in doc["tabs"][0]["documentTab"]["body"]["content"]:
@@ -784,7 +795,10 @@ def test_on_conflict_replace_trashes_prior_only_after_success(pipeline):
 
 
 def _wire_drive_source(monkeypatch, mime):
-    """Route the converter's drive_file_id branch into the harness."""
+    """Route the converter's drive_file_id branch into the harness.
+
+    The fakes mirror the REAL import helpers' post-N8 title rules: an
+    explicit title verbatim; the gdoc-copy fallback suffixed."""
     monkeypatch.setattr(
         docx_import, "classify_drive_file", lambda creds, fid: mime,
     )
@@ -793,7 +807,7 @@ def _wire_drive_source(monkeypatch, mime):
         lambda creds, fid, title=None: {
             "doc_id": DOC_ID,
             "url": f"https://docs.google.com/document/d/{DOC_ID}/edit",
-            "title": title or "copied doc",
+            "title": title or "copied doc (tabified)",
         },
     )
     monkeypatch.setattr(
@@ -803,6 +817,26 @@ def _wire_drive_source(monkeypatch, mime):
             "url": f"https://docs.google.com/document/d/{DOC_ID}/edit",
             "title": title or "fetched doc",
         },
+    )
+
+
+def _wire_drive_meta(monkeypatch, pipeline, *, name, mime):
+    """Serve drive.files().get metadata (what _expected_final_title
+    reads) while keeping the docs service on the pipeline fake."""
+    class _FakeDrive:
+        def files(self):
+            return self
+
+        def get(self, fileId, fields):  # noqa: N803 - Google API casing
+            return _Call(lambda: {"name": name, "mimeType": mime})
+
+    fake_drive = _FakeDrive()
+    docs_fake = pipeline["docs"]
+    monkeypatch.setattr(
+        docx_import, "get_service",
+        lambda kind, version, credentials=None: (
+            fake_drive if kind == "drive" else docs_fake
+        ),
     )
 
 
@@ -827,6 +861,100 @@ def test_upload_entry_defaults_placeholder_delete(pipeline):
     form modes is pinned separately in test_convert_job_model.py."""
     result = _convert()
     assert result["placeholder"] == "deleted"
+
+
+# ---------------------------------------------------------------------
+# N8 (retest 3) - explicit titles verbatim + cross-entry on_conflict
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("Retest3 Multi", "Retest3 Multi"),
+    (None, "Retest3 Source (tabified)"),
+])
+def test_expected_final_title_gdoc_suffixes_only_the_fallback(
+    pipeline, monkeypatch, title, expected
+):
+    """N8 root cause: the on_conflict lookup title for a gdoc source
+    suffixed EXPLICIT titles too. Explicit = verbatim; only the
+    no-title fallback carries " (tabified)" (so the working copy does
+    not shadow the source doc's own name)."""
+    _wire_drive_meta(
+        monkeypatch, pipeline, name="Retest3 Source",
+        mime=docx_import.GDOC_MIME,
+    )
+    got = docx_import._expected_final_title(object(), None, "SRC1", title)
+    assert got == expected
+
+
+def test_expected_final_title_docx_source_never_suffixes(
+    pipeline, monkeypatch
+):
+    """The .docx drive source never carried the suffix; pin both title
+    modes so the two branches cannot drift apart again."""
+    _wire_drive_meta(
+        monkeypatch, pipeline, name="Retest3 Source.docx",
+        mime=docx_import.DOCX_MIME,
+    )
+    assert docx_import._expected_final_title(
+        object(), None, "SRC1", "Retest3 Multi"
+    ) == "Retest3 Multi"
+    assert docx_import._expected_final_title(
+        object(), None, "SRC1", None
+    ) == "Retest3 Source"
+
+
+@pytest.mark.parametrize("entry", ["upload", "drive_gdoc", "drive_docx"])
+@pytest.mark.parametrize("conflict", ["skip", "replace"])
+def test_on_conflict_matrix_identical_across_entry_points(
+    pipeline, monkeypatch, entry, conflict
+):
+    """N8 (retest 3), the tester's exact repro as a matrix: with an
+    EXPLICIT title, on_conflict must behave identically on every entry
+    point against the same prior. Pre-fix, the drive path looked up the
+    SUFFIXED title: skip returned created while an upload-path doc with
+    the requested title was live, and replace trashed only the suffixed
+    doc. The load-bearing assertion is the LOOKUP QUERY: the final
+    effective title, verbatim, on every entry.
+
+    'upload' here also covers the HTTP batch entry: batch fans into
+    per-file converter calls identical to this one (explicit titles are
+    rejected on batch; per-file stem titles take this same code path).
+    """
+    pipeline["title_matches"] = [
+        {"file_id": "PRIOR_UPLOAD", "name": "Retest3 Multi",
+         "mimeType": "application/vnd.google-apps.document"},
+    ]
+
+    if entry == "upload":
+        result = _convert(title="Retest3 Multi", on_conflict=conflict)
+    else:
+        mime = (
+            docx_import.GDOC_MIME if entry == "drive_gdoc"
+            else docx_import.DOCX_MIME
+        )
+        _wire_drive_source(monkeypatch, mime)
+        _wire_drive_meta(
+            monkeypatch, pipeline, name="Retest3 Source", mime=mime,
+        )
+        result = convert_docx_to_tabbed_doc(
+            object(), drive_file_id="SRC1",
+            title="Retest3 Multi", on_conflict=conflict,
+        )
+
+    # The lookup ran against the FINAL effective title = the explicit
+    # title VERBATIM - never the suffixed variant - on every entry.
+    assert ("Retest3 Multi", True) in pipeline["find_calls"]
+    assert not any("(tabified)" in q for q, _ in pipeline["find_calls"])
+
+    if conflict == "skip":
+        assert result["on_conflict_action"] == "skipped"
+        assert result["doc_id"] == "PRIOR_UPLOAD"
+        assert all(e[0] != "trash" for e in pipeline["events"])
+    else:
+        assert result["on_conflict_action"] == "replaced"
+        assert result["replaced_doc_ids"] == ["PRIOR_UPLOAD"]
+        assert ("trash", "PRIOR_UPLOAD") in pipeline["events"]
 
 
 def test_drive_doc_with_preamble_keeps_placeholder_with_explicit_veto(
