@@ -26,7 +26,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from appscriptly.crypto import verify_signed_params
+from appscriptly.crypto import verify_job_status_sig, verify_signed_params
+from .routes.convert_status import (
+    JOB_STATUS_PATH_PREFIX as _JOB_STATUS_PREFIX,
+)
 from . import _state  # late-bound access to _state._NONCE_STORE so test
                       # reassignments propagate (tests reset between cases)
 
@@ -205,6 +208,12 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
 
     Token is set via ``MCP_BEARER_TOKEN`` env var.
 
+    Three accepted credentials on the protected surface: the bearer
+    header, a signed upload URL (single-use nonce; consumption deferred
+    to the convert handler on ``POST /api/convert`` per the T1.1 job
+    model), and a pre-signed multi-use job-status URL on
+    ``GET /api/convert/status/{job_id}``.
+
     Scope of protection (intentionally narrow):
     - ``/api/*`` (currently just ``/api/convert``) — bearer required.
       Cloud chat's Python sandbox calls these and can trivially set
@@ -294,12 +303,23 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Auth path 2: signed-URL query string (cloud-chat sandbox).
-        # If all four signed-URL params are present, validate the HMAC
-        # and consume the nonce here so the endpoint sees an already-
-        # authorized request. Bearer-token fallback still wins if both
-        # are present and the header matches.
+        # If all four signed-URL params are present, validate the HMAC.
+        # Bearer-token fallback still wins if both are present and the
+        # header matches.
+        #
+        # Nonce handling forked in the T1.1 job model: for the convert
+        # endpoint itself, verification here checks signature/expiry/
+        # bounds ONLY and the single-use nonce is consumed by the
+        # handler at JOB-CREATION time (so a request rejected before
+        # any work starts never burns the URL, and a burned-nonce retry
+        # can attach to the job that burned it via the request
+        # fingerprint). Every other signed-URL path keeps the historical
+        # verify-and-consume behavior.
         qp = request.query_params
         if all(k in qp for k in ("exp", "nonce", "max", "sig")):
+            defer_nonce = (
+                request.method == "POST" and path == "/api/convert"
+            )
             # v2.1: ``uid`` is required. verify_signed_params returns the
             # validated user_id AND the signed ``max`` (the per-URL upload
             # cap); stash both on request.state so the downstream handler
@@ -313,6 +333,7 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                 sig=qp["sig"],
                 user_id=qp.get("uid"),
                 nonce_store=_state._NONCE_STORE,
+                consume_nonce=not defer_nonce,
             )
             if ok:
                 request.state.signed_url_user_id = user_id
@@ -322,14 +343,20 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
                 # with 413 — closing the dead-contract where ``max`` was
                 # signed + returned but never enforced.
                 request.state.signed_url_max_bytes = signed_max
+                if defer_nonce:
+                    # Hand the verified nonce+exp to the handler; it
+                    # consumes via _state._NONCE_STORE when (and only
+                    # when) it creates a job.
+                    request.state.signed_url_nonce = qp["nonce"]
+                    request.state.signed_url_exp = int(qp["exp"])
                 # Defense-in-depth fast path: reject an honestly-DECLARED
                 # over-cap upload before the body is read. This does NOT
                 # replace the endpoint's post-read check — a chunked /
                 # Content-Length-omitting POST has no Content-Length here
                 # and falls through to the endpoint, which measures actual
-                # bytes. (The nonce was already consumed by
-                # verify_signed_params; an over-cap attempt burns the URL,
-                # which is intended — retrying requires a fresh mint.)
+                # bytes. (Job model: the nonce is not yet consumed on the
+                # convert path, so this 413 no longer burns the URL; the
+                # caller can shrink the payload and reuse it.)
                 if signed_max is not None:
                     cl = request.headers.get("content-length")
                     if cl is not None:
@@ -352,6 +379,27 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": f"signed URL rejected: {err}"}, status_code=401
             )
+
+        # Auth path 3: pre-signed job-status URL (T1.1) — GET
+        # /api/convert/status/{job_id}?exp=...&sig=... . Multi-use by
+        # design (polling), so no nonce is involved; the HMAC binds the
+        # job_id from the PATH plus the expiry. Tampered or expired
+        # URLs get 403 (not 401: credentials were presented, they are
+        # just not valid for this resource).
+        if request.method == "GET" and path.startswith(_JOB_STATUS_PREFIX):
+            if "exp" in qp and "sig" in qp:
+                job_id = path[len(_JOB_STATUS_PREFIX):]
+                ok, err = verify_job_status_sig(
+                    signing_key=self._signing_key,
+                    job_id=job_id,
+                    exp=qp["exp"],
+                    sig=qp["sig"],
+                )
+                if ok:
+                    return await call_next(request)
+                return JSONResponse(
+                    {"error": f"status URL rejected: {err}"}, status_code=403
+                )
 
         return JSONResponse(
             {"error": "missing or invalid credentials (bearer header or signed URL)"},
