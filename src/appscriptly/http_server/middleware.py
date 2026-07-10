@@ -19,6 +19,7 @@ import contextvars
 import hmac
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -96,6 +97,61 @@ class RequestIdLogFilter(logging.Filter):
         # set (e.g. a background task injecting a synthetic id).
         if not hasattr(record, "request_id"):
             record.request_id = _request_id_var.get()
+        return True
+
+
+# N4 (2026-07-10 retest, SECURITY): credential-shaped query parameters,
+# scrubbed from every log line. The concrete incident: fastmcp's token
+# verifier hit ``tokeninfo?access_token=<live bearer>`` and httpx
+# INFO-logged the full URL into the Fly log stream on every MCP call.
+# The primary fix moves that call's token into a POST body
+# (``oauth_google._TokenInfoBodyClient``); this filter is the defense
+# in depth that guarantees NO log line - from httpx, urllib3, uvicorn,
+# google client libraries, or our own code - ships a query-string
+# credential even if a future dependency reintroduces one.
+#
+# The name pattern intentionally over-matches (any param ENDING in
+# token/sig/signature/secret/assertion/password/key/nonce/uid):
+# redacting a benign value from a log line costs nothing; missing a
+# credential leaks one. ``uid`` is included because signed upload URLs
+# carry the caller's Google ``sub`` as ``uid=`` and uvicorn's access
+# line logs the full request target. Mirrors the Sentry-side
+# ``_REDACT_KEY_PATTERNS`` posture in ``observability.py``.
+_SENSITIVE_QUERY_RE = re.compile(
+    r"((?:^|[?&\s\"'(,])[\w.\-]*"
+    r"(?:token|sig|signature|secret|assertion|password|key|nonce|uid)=)"
+    r"[^&\s\"'),]+",
+    re.IGNORECASE,
+)
+
+
+class SensitiveQueryScrubFilter(logging.Filter):
+    """Redact credential-bearing ``name=value`` pairs from log records.
+
+    Installed on the root logging HANDLERS (like ``RequestIdLogFilter``,
+    and for the same reason: handler-level filters run for propagated
+    records from child loggers such as ``httpx``, logger-level ones do
+    not) AND on the ``uvicorn`` / ``uvicorn.access`` LOGGER objects:
+    uvicorn's dictConfig wires its own non-propagating handlers, so
+    root-handler filters never see its records - but a logger-level
+    filter runs for records emitted ON that logger regardless of which
+    handlers serve them, and ``logging.config`` re-configuration clears
+    a logger's HANDLERS, not its FILTERS, so the attachment survives
+    uvicorn's own logging setup. This is what keeps signed-URL query
+    strings (exp/nonce/sig/uid) out of the access log. Rewrites the
+    record's message in place; a scrubbed record keeps flowing, nothing
+    is dropped.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a malformed record must still log
+            return True
+        scrubbed = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", message)
+        if scrubbed != message:
+            record.msg = scrubbed
+            record.args = ()
         return True
 
 

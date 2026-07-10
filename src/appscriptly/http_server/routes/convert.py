@@ -21,8 +21,10 @@ and spawns the work as a detached asyncio task
   creds) leaves the URL usable; a retry of the SAME request whose nonce
   is already burned ATTACHES to the job that burned it via the request
   fingerprint (user + content hash + params) within 15 minutes,
-  returning the in-flight/completed outcome instead of duplicating
-  work or documents.
+  returning the in-flight/succeeded outcome instead of duplicating
+  work or documents. FAILED jobs are deliberately NOT attach targets
+  (N1): a re-POST matching a failed attempt starts a fresh conversion
+  (with a fresh signed URL when the original nonce was consumed).
 - **Deploy semantics:** a Fly deploy/restart kills in-flight tasks.
   Rows stop heartbeating and derive ``stalled``; re-POSTing the
   identical request re-arms the SAME job row (status URLs stay valid).
@@ -174,13 +176,14 @@ class _PlannedJob:
 
     ``kind`` is one of:
       create          - no attachable job; a fresh row + task is needed
+                        (including when the only candidate FAILED - a
+                        failed attempt never captures retries, N1)
       rearm           - an attachable row exists but its process died
                         (derived stalled / orphaned); re-run on the SAME
                         row so issued status URLs stay valid
       attach_running  - an identical job is live in this process; reuse
                         its task instead of duplicating work
-      attach_done     - an identical job already finished; reuse result
-      attach_error    - an identical job already failed; replay its error
+      attach_done     - an identical job already SUCCEEDED; reuse result
     """
     label: str
     fingerprint: str
@@ -235,6 +238,14 @@ def _plan_input(
     lookup + decision + row-write + task-spawn sequence is then atomic
     with respect to other requests, so two identical concurrent POSTs
     serialize and the second one attaches to the first one's job.
+
+    N1 (2026-07-10 retest): FAILED terminal jobs never capture the
+    fingerprint window. Attaching to an error row replayed the cached
+    failure on every identical re-POST for 15 minutes - the failure
+    text's own "re-run the conversion" advice could not work without
+    mutating a param to shift the hash. A retry matching a failed job
+    now starts a NEW job (a fresh signed URL is needed if the original
+    nonce was consumed; the 401 says exactly that).
     """
     row = job_store.find_attachable_job(fingerprint, user_key)
     if row is None:
@@ -265,20 +276,30 @@ def _plan_input(
                 )
 
     if derived == "done":
-        return _PlannedJob(
-            label=label, fingerprint=fingerprint, kind="attach_done",
-            job_id=row["job_id"], row=row,
-        )
+        result = job_store.result_dict(row) or {}
+        if not result.get("error"):
+            return _PlannedJob(
+                label=label, fingerprint=fingerprint, kind="attach_done",
+                job_id=row["job_id"], row=row,
+            )
+        # A done row whose result carries ``error`` is a partial-failure
+        # envelope persisted by a pre-N3 build (current runners finish
+        # those as status=error). Treat it as failed: fall through to a
+        # fresh job rather than replaying the corpse.
     if derived == "error":
+        # Failed attempts are not idempotency anchors (N1): fall
+        # through to a fresh job.
         return _PlannedJob(
-            label=label, fingerprint=fingerprint, kind="attach_error",
-            job_id=row["job_id"], row=row,
+            label=label, fingerprint=fingerprint, kind="create", work=work,
         )
-    # stalled: the owning process died mid-run. Re-run on the same row.
-    return _PlannedJob(
-        label=label, fingerprint=fingerprint, kind="rearm",
-        job_id=row["job_id"], row=row, work=work,
-    )
+    if derived == "stalled":
+        # The owning process died mid-run. Re-run on the same row.
+        return _PlannedJob(
+            label=label, fingerprint=fingerprint, kind="rearm",
+            job_id=row["job_id"], row=row, work=work,
+        )
+    # done-with-error (legacy rows): new job.
+    return _PlannedJob(label=label, fingerprint=fingerprint, kind="create", work=work)
 
 
 def _make_file_work(
@@ -402,15 +423,10 @@ async def _sync_outcome(plan: _PlannedJob) -> tuple[str, Any, Any]:
         # property) - a bare ``await plan.task`` would cancel the job
         # with its awaiter.
         return await jobs.wait_for_outcome(plan.task)
-    assert plan.row is not None
-    if plan.kind == "attach_done":
-        return ("done", job_store.result_dict(plan.row), None)
-    err = job_store.error_dict(plan.row) or {}
-    return (
-        "error",
-        err.get("http_status", 500),
-        err.get("payload", {"error": "job failed"}),
-    )
+    # The only task-less plan is attach_done (failed jobs stopped being
+    # attachable under N1; every other kind spawns a task).
+    assert plan.kind == "attach_done" and plan.row is not None
+    return ("done", job_store.result_dict(plan.row), None)
 
 
 def _sync_response(outcome: tuple[str, Any, Any], attached: bool) -> JSONResponse:
@@ -486,9 +502,13 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     duplicating it - including when the single-use signed URL's nonce
     was already consumed by the first attempt, and including after a
     server deploy killed the in-flight run (the row derives ``stalled``
-    and the retry re-arms it under the same job_id). The nonce is
-    consumed only when a request actually creates a job, so a rejected
-    request (validation error, missing creds) never burns the URL.
+    and the retry re-arms it under the same job_id). FAILED attempts
+    are not deduplicated (N1): a re-POST matching a failed job starts a
+    fresh conversion; if the original URL's nonce was consumed, mint a
+    fresh signed URL first (the 401 for a burned nonce says so). The
+    nonce is consumed only when a request actually creates a job, so a
+    rejected request (validation error, missing creds) never burns the
+    URL.
 
     **Upload-size cap (signed-URL path).** When the caller authenticated
     via a signed URL, ``BearerTokenMiddleware`` has stashed the verified

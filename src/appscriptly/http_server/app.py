@@ -25,6 +25,7 @@ from .middleware import (
     LicenseKeyMiddleware,
     RequestIdLogFilter,
     RequestIdMiddleware,
+    SensitiveQueryScrubFilter,
     derive_trusted_hosts,
 )
 from .routes.convert import convert_endpoint, upload_frame_endpoint
@@ -219,11 +220,24 @@ def configure_http_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     # basicConfig no-ops when the root logger already has handlers
     # (an embedding process may configure logging first) — stamp the
-    # filter on every root handler either way so propagated records
-    # always carry request_id.
+    # filters on every root handler either way so propagated records
+    # always carry request_id AND never carry a query-string credential
+    # (N4: httpx's request-URL lines flow through these handlers).
     request_id_filter = RequestIdLogFilter()
+    scrub_filter = SensitiveQueryScrubFilter()
     for root_handler in logging.getLogger().handlers:
         root_handler.addFilter(request_id_filter)
+        root_handler.addFilter(scrub_filter)
+    # uvicorn wires its own NON-propagating handlers (its dictConfig
+    # runs inside uvicorn.run, after us), so the root-handler filters
+    # above never see its records — and uvicorn.access logs the full
+    # request target, query string included (signed-URL exp/nonce/sig/
+    # uid). Logger-LEVEL filters run for every record emitted on that
+    # logger regardless of which handlers serve it, and logging.config
+    # re-configuration clears a logger's HANDLERS but not its FILTERS,
+    # so attaching here (before uvicorn.run) sticks.
+    for uvicorn_logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        logging.getLogger(uvicorn_logger_name).addFilter(scrub_filter)
 
 
 def run_http(mcp: FastMCP, *, port: int = 8080) -> None:

@@ -40,6 +40,21 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
+    # N4 CANARY (2026-07-10, SECURITY - re-check on EVERY fastmcp bump):
+    # oauth_google._TokenInfoBodyClient stops bearer tokens leaking into
+    # logs by intercepting GoogleTokenVerifier's exact call shape -
+    # client.get("https://oauth2.googleapis.com/tokeninfo",
+    # params={"access_token": ...}). A fastmcp release that switches to
+    # client.request()/build_request(), changes the URL, or moves the
+    # token would SILENTLY bypass the rewrite and revert to leaking.
+    # Tripwire: tests/unit/test_token_log_hygiene.py::
+    # test_fastmcp_verifier_path_logs_no_token runs fastmcp's REAL
+    # verifier through our client and fails loudly on a shape change -
+    # run it (or the unit suite) against the new version before merging
+    # any fastmcp bump. Defense in depth (SensitiveQueryScrubFilter on
+    # the log handlers) keeps tokens out of OUR logs regardless. No
+    # upper bound on purpose: this file pins CVE FLOORS, and a ceiling
+    # would block security fixes; the tripwire test is the guard.
     "fastmcp>=3.4.2",  # v1.1: GoogleProvider + OAuthProxy + get_access_token deps; v1.5.2: minor bump 3.3.1->3.4.2 (same major, dependabot.yml ignores only major fastmcp bumps)
     "google-api-python-client>=2.197.0",
     "google-auth>=2.53.0",

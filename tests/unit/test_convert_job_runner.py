@@ -94,6 +94,31 @@ def test_error_outcome_is_classified_and_persisted():
     }
 
 
+def test_returned_error_envelope_finishes_as_error_row():
+    """N3: a converter that RETURNS the S2.5 kept-doc envelope with an
+    ``error`` field is a FAILED job. The row must be terminal
+    status=error carrying the FULL envelope (a poller reading
+    status=="done" may trust it as success)."""
+    job_id = job_store.create_job("user-A", "fp-envelope")
+    envelope = {
+        "doc_id": "KEPT", "url": "https://x", "tabs": [],
+        "error": "quota death mid-transplant",
+        "completion": {"steps_completed": ["import"], "moved_sections": [],
+                       "pending_sections": ["A", "B"]},
+    }
+
+    async def scenario():
+        return await jobs.start_job(job_id, lambda: envelope)
+
+    outcome = asyncio.run(scenario())
+    assert outcome == ("error", 500, envelope)
+    row = job_store.get_job(job_id)
+    assert row is not None
+    assert row["status"] == "error"
+    assert job_store.error_dict(row) == {"http_status": 500, "payload": envelope}
+    assert job_store.result_dict(row) is None
+
+
 def test_classifier_matches_historical_sync_mapping():
     assert jobs.classify_convert_error(FileNotFoundError("x"))[0] == 400
     assert jobs.classify_convert_error(ValueError("x"))[0] == 400

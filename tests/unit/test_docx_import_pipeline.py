@@ -783,6 +783,142 @@ def test_on_conflict_replace_trashes_prior_only_after_success(pipeline):
     assert result["replaced_doc_id"] == "PRIOR"
 
 
+def _wire_drive_source(monkeypatch, mime):
+    """Route the converter's drive_file_id branch into the harness."""
+    monkeypatch.setattr(
+        docx_import, "classify_drive_file", lambda creds, fid: mime,
+    )
+    monkeypatch.setattr(
+        docx_import, "copy_google_doc",
+        lambda creds, fid, title=None: {
+            "doc_id": DOC_ID,
+            "url": f"https://docs.google.com/document/d/{DOC_ID}/edit",
+            "title": title or "copied doc",
+        },
+    )
+    monkeypatch.setattr(
+        docx_import, "fetch_and_convert_drive_docx",
+        lambda creds, fid, title=None: {
+            "doc_id": DOC_ID,
+            "url": f"https://docs.google.com/document/d/{DOC_ID}/edit",
+            "title": title or "fetched doc",
+        },
+    )
+
+
+@pytest.mark.parametrize("source_mime_attr", ["GDOC_MIME", "DOCX_MIME"])
+def test_drive_entry_defaults_placeholder_delete_like_upload(
+    pipeline, monkeypatch, source_mime_attr
+):
+    """R1 (2026-07-10 retest 2): the convert-from-Drive entry must apply
+    the SAME placeholder default (delete) as the upload entry - the
+    T2.2 determinism contract covers every entry point. Covers both
+    drive source kinds (Google Doc copy + raw .docx fetch+convert)."""
+    _wire_drive_source(monkeypatch, getattr(docx_import, source_mime_attr))
+    result = convert_docx_to_tabbed_doc(object(), drive_file_id="SRC1")
+    assert result["placeholder"] == "deleted", result
+    assert ("delete_tab", PRIMARY) in pipeline["events"]
+
+
+def test_upload_entry_defaults_placeholder_delete(pipeline):
+    """Companion to the drive-entry default test: the upload entry's
+    default, asserted explicitly (the happy-path test also covers it
+    implicitly). The HTTP layer's default for the upload/batch/drive
+    form modes is pinned separately in test_convert_job_model.py."""
+    result = _convert()
+    assert result["placeholder"] == "deleted"
+
+
+def test_drive_doc_with_preamble_keeps_placeholder_with_explicit_veto(
+    pipeline, monkeypatch
+):
+    """The R1 field observation, reproduced mechanically: a drive-sourced
+    Google Doc whose body carries visible content BEFORE the first
+    Heading 1 (title line, intro paragraph - common in hand-authored
+    docs) gets placeholder='kept' NOT because the delete default was
+    missed but because the S2.5 sole-copy guard vetoes the delete. The
+    response must make that machine-distinguishable from a keep policy:
+    placeholder_veto='unmoved_content' + the warning."""
+    src_tab = {
+        "tabProperties": {"tabId": PRIMARY},
+        "documentTab": {
+            "body": {"content": [
+                {"startIndex": 0, "endIndex": 1, "sectionBreak": {}},
+                _para("Course title page\n", start=1, end=19),
+                _para("Intro\n", "HEADING_1", 19, 25),
+                _para("intro body\n", start=25, end=36),
+                _para("Methods\n", "HEADING_1", 36, 44),
+                _para("methods body\n", start=44, end=57),
+            ]},
+            "lists": {},
+            "inlineObjects": {},
+        },
+    }
+    src = {"tabs": [src_tab]}
+    shells = {"tabs": [src_tab, _tab("t.1", _empty_shell()), _tab("t.2", _empty_shell())]}
+    verify = {"tabs": [src_tab, _tab("t.1", _filled(3)), _tab("t.2", _filled(3))]}
+    pipeline["docs"]._gets = [src, shells, verify]
+    _wire_drive_source(monkeypatch, docx_import.GDOC_MIME)
+
+    result = convert_docx_to_tabbed_doc(object(), drive_file_id="SRC1")
+
+    assert result["placeholder"] == "kept"
+    assert result["placeholder_veto"] == "unmoved_content"
+    assert any("never moved" in w for w in result["warnings"])
+    assert ("delete_tab", PRIMARY) not in pipeline["events"]
+    # A clean-bodied doc through the same entry deletes (proven by
+    # test_drive_entry_defaults_placeholder_delete_like_upload); this
+    # veto is content-dependent, not entry-point-dependent.
+
+
+def test_on_conflict_replace_trashes_all_same_title_priors(pipeline):
+    """N5 (2026-07-10 retest): with N>1 same-title priors, replace used
+    to trash only the newest and leave the older duplicates lingering.
+    Every app-visible prior goes; the response lists them all
+    (newest-first) and keeps the singular field as the newest."""
+    pipeline["title_matches"] = [
+        {"file_id": "PRIOR_NEW", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+        {"file_id": "PRIOR_OLD", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+    ]
+    result = _convert(on_conflict="replace")
+
+    events = pipeline["events"]
+    assert ("trash", "PRIOR_NEW") in events
+    assert ("trash", "PRIOR_OLD") in events
+    assert result["on_conflict_action"] == "replaced"
+    assert result["replaced_doc_ids"] == ["PRIOR_NEW", "PRIOR_OLD"]
+    assert result["replaced_doc_id"] == "PRIOR_NEW"
+
+
+def test_on_conflict_replace_partial_trash_failure_reports_what_happened(
+    pipeline, monkeypatch
+):
+    """One prior trashed + one trash failure: action says replaced (a
+    prior WAS replaced) and replaced_doc_ids lists only the doc that
+    actually went to trash; the failure lands in info."""
+    pipeline["title_matches"] = [
+        {"file_id": "PRIOR_NEW", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+        {"file_id": "PRIOR_STUCK", "name": "fake",
+         "mimeType": "application/vnd.google-apps.document"},
+    ]
+    real_trash = docx_import.trash_drive_file
+
+    def selective_trash(creds, file_id):
+        if file_id == "PRIOR_STUCK":
+            raise RuntimeError("Drive 500")
+        return real_trash(creds, file_id)
+
+    monkeypatch.setattr(docx_import, "trash_drive_file", selective_trash)
+    result = _convert(on_conflict="replace")
+
+    assert result["on_conflict_action"] == "replaced"
+    assert result["replaced_doc_ids"] == ["PRIOR_NEW"]
+    assert any("PRIOR_STUCK" in line for line in result["info"])
+
+
 def test_on_conflict_replace_ignores_docx_and_self_matches(pipeline):
     """The lookup must never trash a lingering .docx SOURCE (mimeType
     filter) nor the just-created doc itself (id exclusion)."""

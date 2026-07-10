@@ -1573,6 +1573,12 @@ def inspect_tab_content(creds: Credentials, doc_id: str, tab_id: str) -> dict:
         {"found": bool,
          "title": str,                # target tab's title ("" if not found)
          "is_first_root_tab": bool,   # target is the doc's first root tab
+         "original_first_tab_present": bool,  # the doc still has its
+                                      # ORIGINAL first tab (id "t.0" -
+                                      # the same convention the
+                                      # first_tab_deleted_500 classifier
+                                      # keys on); False = the document
+                                      # is ALREADY tab-property poisoned
          "child_tab_count": int,      # descendants (cascade-deleted too)
          "non_empty_elements": int,   # total meaningful elements, tab+descendants
          "counts": {"paragraphs", "tables", "images", "other"}}
@@ -1586,12 +1592,22 @@ def inspect_tab_content(creds: Credentials, doc_id: str, tab_id: str) -> dict:
         op_name="docs.documents.get.inspect_tab",
     )
     root_tabs = fetched.get("tabs") or []
+    # Google assigns the deterministic id "t.0" to every document's
+    # original first tab; its absence from the ROOT list is the exact
+    # signal _classify_tab_props_500 uses for the first_tab_deleted_500
+    # defect. Surfaced here so the delete tool can phrase its advisory
+    # honestly (will-trigger vs already-affected - R2, retest 2).
+    original_first_tab_present = any(
+        (rt.get("tabProperties") or {}).get("tabId") == "t.0"
+        for rt in root_tabs
+    )
     tab = _find_tab_by_id(root_tabs, tab_id)
     if tab is None:
         return {
             "found": False,
             "title": "",
             "is_first_root_tab": False,
+            "original_first_tab_present": original_first_tab_present,
             "child_tab_count": 0,
             "non_empty_elements": 0,
             "counts": {"paragraphs": 0, "tables": 0, "images": 0, "other": 0},
@@ -1623,6 +1639,7 @@ def inspect_tab_content(creds: Credentials, doc_id: str, tab_id: str) -> dict:
         "found": True,
         "title": (tab.get("tabProperties") or {}).get("title", ""),
         "is_first_root_tab": first_root_id == tab_id,
+        "original_first_tab_present": original_first_tab_present,
         "child_tab_count": child_count,
         "non_empty_elements": sum(totals.values()),
         "counts": totals,

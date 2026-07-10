@@ -345,6 +345,11 @@ def test_gdocs_tab_existing_doc_drive_file_id_dispatches_to_convert(
     assert captured["kwargs"]["drive_file_id"] == "DRIVE_X"
     assert captured["kwargs"]["split_by"] == "heading_1"  # default
     assert captured["kwargs"]["nest_by"] is None  # default: flat split
+    # R1 (retest 2): the TOOL's from-Drive entry - the exact path the
+    # retest drove - forwards the unified placeholder default (delete),
+    # same as the upload and HTTP entries (pinned in
+    # test_docx_import_pipeline.py + test_convert_job_model.py).
+    assert captured["kwargs"]["placeholder_behavior"] == "delete"
 
 
 def test_gdocs_tab_existing_doc_passes_nest_by_to_convert(monkeypatch):
@@ -585,6 +590,54 @@ def test_gdocs_delete_tab_first_tab_delete_warns_about_google_defect(
     result = tools.gdocs_delete_tab(doc_id="DOC1", tab_id="t.0")
     assert result["deleted_tab_id"] == "t.0"
     assert any("first_tab_deleted_500" in w for w in result["warnings"])
+    # R2 (retest 2): the tense matches reality. t.0 was present and this
+    # delete removed it, so the defect is active NOW - "will now fail",
+    # never the pre-delete "once it is deleted" phrasing, and never the
+    # already-affected phrasing.
+    assert any("will now fail" in w for w in result["warnings"])
+    assert not any("ALREADY affected" in w for w in result["warnings"])
+
+
+def test_gdocs_delete_tab_already_poisoned_doc_gets_already_affected_note(
+    with_docs_stub,
+):
+    """R2 (retest 2): when the doc's ORIGINAL first tab (t.0) is already
+    gone, the document is already tab-property poisoned. Deleting the
+    CURRENT first tab must say "this document is already affected", not
+    warn (future tense) that this delete will trigger the defect."""
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("t.5", "Current First", [""]),
+            _tab("T_B", "Beta", ["x"]),
+        ],
+    }
+    result = tools.gdocs_delete_tab(doc_id="DOC1", tab_id="t.5")
+    assert result["deleted_tab_id"] == "t.5"
+    warnings = result["warnings"]
+    assert any("ALREADY affected" in w for w in warnings)
+    assert any("first_tab_deleted_500" in w for w in warnings)
+    assert not any("will now fail" in w for w in warnings)
+
+
+def test_gdocs_delete_tab_refusal_tense_tracks_prior_poisoning(with_docs_stub):
+    """R2 on the REFUSAL path: a non-empty current-first tab on an
+    already-poisoned doc (no t.0) carries the already-affected note, not
+    the future-tense trigger warning."""
+    from fastmcp.exceptions import ToolError
+
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("t.5", "Current First", ["sole copy of something"]),
+            _tab("T_B", "Beta", ["x"]),
+        ],
+    }
+    with pytest.raises(ToolError, match="non_empty_tab_guard") as excinfo:
+        tools.gdocs_delete_tab(doc_id="DOC1", tab_id="t.5")
+    message = str(excinfo.value)
+    assert "ALREADY affected" in message
+    assert "once it is deleted" not in message
 
 
 # ---------------------------------------------------------------------
