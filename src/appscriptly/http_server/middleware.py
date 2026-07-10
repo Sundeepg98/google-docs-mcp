@@ -144,6 +144,29 @@ class SensitiveQueryScrubFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Records carrying %-args (uvicorn.access, httpx) must keep their
+        # args ARITY. uvicorn's AccessFormatter unpacks record.args into
+        # exactly 5 positional values (client_addr, method, full_path,
+        # http_version, status_code); rendering the message and clearing
+        # record.args = () makes that unpack raise, and logging then
+        # prints a "--- Logging error ---" traceback INSTEAD of the
+        # access line on every signed request. Scrub the string args in
+        # place instead, preserving arity and leaving the format string
+        # (record.msg) untouched so no %-specifier is destroyed - every
+        # formatter still renders, now redacted (the credential rides in
+        # the full_path arg for access lines, the URL arg for httpx).
+        if isinstance(record.args, tuple) and record.args:
+            scrubbed_args = tuple(
+                _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", a)
+                if isinstance(a, str)
+                else a
+                for a in record.args
+            )
+            if scrubbed_args != record.args:
+                record.args = scrubbed_args
+            return True
+        # Args-less records (pre-rendered single strings): the rendered
+        # message IS record.msg. Scrub it directly - the historical path.
         try:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 - a malformed record must still log
