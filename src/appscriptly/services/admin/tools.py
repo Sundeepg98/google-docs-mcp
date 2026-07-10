@@ -19,15 +19,16 @@ emits a ``DeprecationWarning`` (via
 ``appscriptly._deprecation.warn_deprecated_alias``) and delegates to the
 canonical body.
 
-**Tools registered here** (7 admin-service tools — canonical → alias):
+**Tools registered here** (8 admin-service tools — canonical → alias):
 
 1. ``server_info``               (alias ``gdocs_server_info``)           — server identity + tool inventory + CI status
 2. ``server_test_manifest``      (alias ``gdocs_test_manifest``)         — full test inventory + per-test outcomes
 3. ``server_guide``              (alias ``gdocs_guide``)                 — orientation as a structured payload
 4. ``server_help``               (alias ``gdocs_help``)                  — error-message recovery guidance
-5. ``gdrive_get_signed_upload_url`` (alias ``gdocs_get_signed_upload_url``) — mint one-shot signed upload URL
-6. ``account_reset_authorization`` (alias ``gdocs_reset_authorization``) — clear stored OAuth credentials
-7. ``admin_audit``               (alias ``gdocs_admin_audit``)           — forensic timeline (admin-token gated)
+5. ``server_health``             (NO alias; new in the 2026-07 wave)     — server / Google API / automation-runtime health report
+6. ``gdrive_get_signed_upload_url`` (alias ``gdocs_get_signed_upload_url``) — mint one-shot signed upload URL
+7. ``account_reset_authorization`` (alias ``gdocs_reset_authorization``) — clear stored OAuth credentials
+8. ``admin_audit``               (alias ``gdocs_admin_audit``)           — forensic timeline (admin-token gated)
 
 **Several tools use ``creds=False``** (decorator's standard credentials
 injection is the wrong shape for each):
@@ -70,10 +71,15 @@ import time
 from pathlib import Path
 
 from fastmcp.exceptions import ToolError
+from googleapiclient.errors import HttpError
 
 from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.auth import default_data_dir
 from appscriptly.credentials import current_user_id_or_none
+from appscriptly.errors import friendly_http_error_message
+from appscriptly.google_api_client import execute_with_retry
+from appscriptly.google_clients import get_service
+from appscriptly.setup_apps_script import WebAppHealth, probe_webapp_health
 from appscriptly.crypto import (
     DEFAULT_MAX_BYTES,
     DEFAULT_TTL_SECONDS,
@@ -97,6 +103,7 @@ from appscriptly.tool_schemas import (
     GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
     GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
+    SERVER_HEALTH_OUTPUT_SCHEMA,
 )
 
 _log = logging.getLogger("appscriptly.services.admin")
@@ -1039,6 +1046,338 @@ def gdocs_help(error_message: str) -> dict:
     """
     warn_deprecated_alias("gdocs_help", "server_help")
     return server_help(error_message)
+
+
+# ---------------------------------------------------------------------
+# 4b. server_health (T1.2, 2026-07-10) — canonical only, NO alias
+# ---------------------------------------------------------------------
+
+
+_APPS_SCRIPT_USERSETTINGS_URL = "https://script.google.com/home/usersettings"
+
+# Substrings (lowercased) that identify Google's "user has not enabled
+# the Apps Script API" 403 - the distinctive signature the T1.2 health
+# check looks for. Google's message reads: "User has not enabled the
+# Apps Script API. Enable it by visiting
+# https://script.google.com/home/usersettings then retry."
+_APPS_SCRIPT_API_DISABLED_MARKERS = (
+    "has not enabled the apps script api",
+    "script.google.com/home/usersettings",
+)
+
+
+def _is_apps_script_api_disabled(e: HttpError) -> bool:
+    """True iff ``e`` is Google's Apps-Script-API-disabled 403."""
+    text = " ".join(
+        str(part)
+        for part in (
+            e,
+            getattr(e, "reason", "") or "",
+            getattr(e, "error_details", "") or "",
+        )
+    ).lower()
+    return any(marker in text for marker in _APPS_SCRIPT_API_DISABLED_MARKERS)
+
+
+def _peek_credentials_non_interactive():
+    """Resolve Google creds WITHOUT ever starting an interactive flow.
+
+    A health check must never pop a browser consent (stdio) or raise a
+    ToolError (HTTP) - it REPORTS auth state instead. Returns
+    ``(creds | None, status, detail)`` where status is the tool's
+    ``google_api`` value so far ("ok" pending the live probe,
+    "unauthorized", or "error").
+    """
+    user_id = current_user_id_or_none()
+
+    if user_id is not None:
+        # HTTP / multi-tenant: the standard resolver, with
+        # NeedsReauthError reported as data instead of raised.
+        from appscriptly.credentials import (
+            NeedsReauthError,
+            get_credentials_for_user,
+        )
+        from appscriptly.oauth_google import resolve_runtime_oauth_config
+
+        try:
+            creds = get_credentials_for_user(
+                user_id, **resolve_runtime_oauth_config()
+            )
+            return creds, "ok", None
+        except NeedsReauthError as e:
+            return None, "unauthorized", (
+                f"Google authorization required. Open {e.auth_url} "
+                f"and grant access, then re-run."
+            )
+        except RuntimeError as e:
+            return None, "error", f"Server OAuth config error: {e}"
+
+    # Stdio / single-tenant: peek at the cached token file only. The
+    # normal loader (auth.load_credentials) LAUNCHES a browser consent
+    # flow when the token is missing/stale - never acceptable from a
+    # health probe - so this replicates just its non-interactive prefix.
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials as _UserCredentials
+
+    from appscriptly.auth import SCOPES
+
+    token_file = default_data_dir() / "token.json"
+    if not token_file.exists():
+        return None, "unauthorized", (
+            "No cached OAuth token. Run any Google-backed tool once "
+            "to complete the consent flow."
+        )
+    try:
+        creds = _UserCredentials.from_authorized_user_file(
+            str(token_file), SCOPES
+        )
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                return None, "unauthorized", (
+                    "Cached OAuth token is not usable (expired with no "
+                    "refresh token). Re-run a Google-backed tool to "
+                    "re-consent."
+                )
+        return creds, "ok", None
+    except Exception as e:  # noqa: BLE001 - report, never raise, in a health probe
+        return None, "unauthorized", (
+            f"Cached OAuth token could not be loaded/refreshed: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+def _probe_google_api(creds) -> tuple[str, str | None]:
+    """One cheap credentialed round-trip: ``drive.about.get``.
+
+    Classifies the Google API layer as ok / unauthorized / error.
+    ``about.get`` is accepted under ``drive.file`` (no extra scope) and
+    returns a tiny payload.
+    """
+    from google.auth.exceptions import GoogleAuthError
+
+    try:
+        drive = get_service("drive", "v3", credentials=creds)
+        execute_with_retry(
+            lambda: drive.about().get(fields="user").execute(),
+            idempotent=True,
+            op_name="drive.about.get.health",
+        )
+        return "ok", None
+    except HttpError as e:
+        status = getattr(e, "status_code", None)
+        if status in (401, 403):
+            return "unauthorized", friendly_http_error_message(e)
+        return "error", friendly_http_error_message(e)
+    except GoogleAuthError as e:
+        # RefreshError and friends: the token is revoked/broken.
+        return "unauthorized", f"OAuth token refresh failed: {e}"
+    except Exception as e:  # noqa: BLE001 - report, never raise, in a health probe
+        return "error", f"{type(e).__name__}: {e}"
+
+
+def _read_runtime_state() -> tuple[str | None, str | None]:
+    """Return ``(script_id, exec_url)`` for the calling identity.
+
+    HTTP mode reads the caller's user_store row; stdio reads the local
+    setup-state ledger. Either value may be None (never installed, or
+    a partial install).
+    """
+    user_id = current_user_id_or_none()
+    if user_id is not None:
+        from appscriptly import user_store
+
+        row = user_store.get_state(user_id)
+        return (
+            row.get("apps_script_script_id"),
+            row.get("apps_script_url"),
+        )
+    from appscriptly import setup_state
+
+    state = setup_state.load_state(default_data_dir())
+    return state.get("script_id"), state.get("url")
+
+
+@workspace_tool(
+    title="Health check: server, Google API, automation runtime",
+    service="admin",
+    readonly=True, destructive=False, idempotent=True, external=True,
+    # creds=False: a health check REPORTS auth failures as data
+    # (google_api: "unauthorized") - the standard creds envelope would
+    # turn them into a raised ToolError and hide the rest of the report.
+    output_schema=SERVER_HEALTH_OUTPUT_SCHEMA,
+)
+def server_health() -> dict:
+    """Report the health of the server, Google API access, and the automation runtime.
+
+    USE WHEN: something Apps-Script-backed is failing and you need to
+    know WHERE it is broken before retrying - or as a preflight before
+    an ``as_*`` automation install. One call answers three questions:
+
+    - ``server``: is the MCP server itself responding ("ok" - if you
+      got a response at all, it is).
+    - ``google_api``: can the calling account make a real Google API
+      round-trip right now ("ok" | "unauthorized" | "error", with
+      ``google_api_detail`` explaining any non-ok).
+    - ``automation_runtime``: the per-user Apps Script web app that
+      powers ``as_*`` automations - ``{installed, exec,
+      remediation_url, detail}`` where ``exec`` is one of:
+
+      - ``"serving"``: the /exec endpoint answered like a live script.
+      - ``"needs_activation"``: deployed, but Google refuses requests
+        (403 door page) until the owning user opens the script once
+        interactively and clicks Allow. ``remediation_url`` is the
+        script editor to do that in.
+      - ``"api_disabled"``: the Google account has the Apps Script API
+        toggled OFF - nothing script-related can be managed until it
+        is enabled. ``remediation_url`` is
+        https://script.google.com/home/usersettings (toggle ON, retry).
+      - ``"not_installed"``: no runtime recorded for this account (or
+        the recorded project no longer exists). Run
+        ``as_install_automation``.
+      - ``"unknown"``: the liveness probe hit transport trouble
+        (timeout / DNS); says nothing about the deployment - retry.
+
+    Read-only: one Drive ``about.get``, at most one Apps Script
+    ``projects.get``, and one anonymous GET of the /exec URL. Never
+    triggers a consent flow and never raises for auth problems - it
+    reports them.
+
+    Returns:
+        ``{"server": "ok", "google_api": "ok"|"unauthorized"|"error",
+        "google_api_detail": str|null, "automation_runtime":
+        {"installed": bool, "exec": str, "remediation_url": str|null,
+        "detail": str|null}}``.
+
+    Choreography: run before / after ``as_install_automation`` to
+    verify runtime state, or first thing when an ``as_*`` tool or
+    ``server_info`` reports something odd.
+    """
+    creds, api_status, api_detail = _peek_credentials_non_interactive()
+    if creds is not None:
+        api_status, api_detail = _probe_google_api(creds)
+
+    runtime: dict = {}
+    try:
+        script_id, exec_url = _read_runtime_state()
+    except Exception as e:  # noqa: BLE001 - report, never raise, in a health probe
+        script_id, exec_url = None, None
+        runtime["detail"] = (
+            f"Could not read the runtime install ledger: "
+            f"{type(e).__name__}: {e}"
+        )
+
+    # The truthiness check doubles as pyright narrowing: past this
+    # guard, script_id and exec_url are non-None strings.
+    if not script_id or not exec_url:
+        runtime["installed"] = False
+        runtime.setdefault(
+            "detail",
+            "Automation runtime is not installed for this account. "
+            "Run as_install_automation to install it.",
+        )
+        runtime["exec"] = "not_installed"
+        runtime["remediation_url"] = None
+        return {
+            "server": "ok",
+            "google_api": api_status,
+            "google_api_detail": api_detail,
+            "automation_runtime": runtime,
+        }
+
+    runtime["installed"] = True
+
+    # The distinctive T1.2 case first: with creds available, one cheap
+    # Apps Script API call tells us whether the account has the API
+    # toggled off (its 403 carries an unmistakable message). Checked
+    # BEFORE the URL probe because a disabled API makes every
+    # script-management operation fail regardless of what /exec says.
+    if creds is not None:
+        try:
+            script = get_service("script", "v1", credentials=creds)
+            execute_with_retry(
+                lambda: script.projects().get(scriptId=script_id).execute(),
+                idempotent=True,
+                op_name="script.projects.get.health",
+            )
+        except HttpError as e:
+            if _is_apps_script_api_disabled(e):
+                runtime["exec"] = "api_disabled"
+                runtime["remediation_url"] = _APPS_SCRIPT_USERSETTINGS_URL
+                runtime["detail"] = (
+                    "The Apps Script API is turned OFF for this Google "
+                    "account, so the automation runtime cannot be "
+                    "managed. Open the remediation URL, toggle 'Google "
+                    "Apps Script API' ON, then retry."
+                )
+                return {
+                    "server": "ok",
+                    "google_api": api_status,
+                    "google_api_detail": api_detail,
+                    "automation_runtime": runtime,
+                }
+            if getattr(e, "status_code", None) == 404:
+                runtime["installed"] = False
+                runtime["exec"] = "not_installed"
+                runtime["remediation_url"] = None
+                runtime["detail"] = (
+                    "The recorded Apps Script project no longer exists "
+                    "(deleted from Drive?). Re-run "
+                    "as_install_automation to reinstall."
+                )
+                return {
+                    "server": "ok",
+                    "google_api": api_status,
+                    "google_api_detail": api_detail,
+                    "automation_runtime": runtime,
+                }
+            # Any other script-API error: not the distinctive case;
+            # fall through to the URL probe, which needs no creds.
+            runtime["detail"] = (
+                f"Apps Script API check inconclusive: "
+                f"{friendly_http_error_message(e)}"
+            )
+        except Exception as e:  # noqa: BLE001 - report, never raise, in a health probe
+            runtime["detail"] = (
+                f"Apps Script API check inconclusive: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    health = probe_webapp_health(exec_url)
+    if health is WebAppHealth.HEALTHY:
+        runtime["exec"] = "serving"
+        runtime["remediation_url"] = None
+        runtime.setdefault("detail", None)
+    elif health is WebAppHealth.DEAD:
+        runtime["exec"] = "needs_activation"
+        runtime["remediation_url"] = (
+            f"https://script.google.com/d/{script_id}/edit"
+        )
+        runtime["detail"] = (
+            "The /exec endpoint refuses requests (Google's 403 door "
+            "page). The deployment needs its one-time interactive "
+            "activation: open the remediation URL as the installing "
+            "user, run any function once (e.g. doGet), and click "
+            "Allow on the consent prompt. Requests serve normally "
+            "after that."
+        )
+    else:
+        runtime["exec"] = "unknown"
+        runtime["remediation_url"] = None
+        runtime.setdefault(
+            "detail",
+            "The /exec liveness probe hit transport trouble (timeout "
+            "or connection failure) - this says nothing about the "
+            "deployment itself. Retry in a moment.",
+        )
+
+    return {
+        "server": "ok",
+        "google_api": api_status,
+        "google_api_detail": api_detail,
+        "automation_runtime": runtime,
+    }
 
 
 # ---------------------------------------------------------------------

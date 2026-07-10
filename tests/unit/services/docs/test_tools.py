@@ -387,15 +387,139 @@ def test_gdocs_get_tab_url_composes_deep_link_with_no_api_call():
 
 # ---------------------------------------------------------------------
 # 9. gdocs_delete_tab — destructive=True, idempotent=True
+#
+# S2.5 defense (2026-07-10): the tool now inspects the target tab
+# BEFORE deleting. A tab (or descendant) still holding meaningful
+# content is refused unless force=true — deleteTab has no trash/undo,
+# and the session-2 data-loss incident was exactly a "placeholder"
+# delete that destroyed the only copy of unmoved sections.
 # ---------------------------------------------------------------------
 
 
-def test_gdocs_delete_tab_runs_body_and_returns_deleted_id(with_docs_stub):
-    """One batchUpdate call with a deleteTab request; returns
-    {doc_id, deleted_tab_id}."""
+def _tab(tab_id: str, title: str, paragraphs: list[str], children=None) -> dict:
+    """Server-shape tab with a body of plain text paragraphs."""
+    return {
+        "tabProperties": {"tabId": tab_id, "title": title},
+        "documentTab": {
+            "body": {
+                "content": [
+                    {
+                        "paragraph": {
+                            "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                            "elements": [{"textRun": {"content": text}}],
+                        }
+                    }
+                    for text in paragraphs
+                ]
+            }
+        },
+        "childTabs": children or [],
+    }
+
+
+def test_gdocs_delete_tab_deletes_empty_tab_and_returns_deleted_id(
+    with_docs_stub,
+):
+    """An empty (whitespace-only) non-first tab deletes without force and
+    returns {doc_id, deleted_tab_id} — no forced flag, no warnings."""
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("T_KEEP", "Intro", ["real content"]),
+            _tab("T_DOOMED", "Placeholder", ["", "\n"]),
+        ],
+    }
     result = tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_DOOMED")
     assert result == {"doc_id": "DOC1", "deleted_tab_id": "T_DOOMED"}
     assert with_docs_stub.documents().batchUpdate.called
+
+
+def test_gdocs_delete_tab_refuses_non_empty_tab_without_force(with_docs_stub):
+    """The guard: meaningful content + no force -> ToolError naming the
+    guard and the force escape hatch; the deleteTab request is never
+    issued."""
+    from fastmcp.exceptions import ToolError
+
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("T_KEEP", "Intro", ["real content"]),
+            _tab("T_FULL", "Sections", ["the only copy of section 7"]),
+        ],
+    }
+    with_docs_stub.documents().batchUpdate.reset_mock()
+    with pytest.raises(ToolError, match="non_empty_tab_guard") as excinfo:
+        tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_FULL")
+    assert "force=true" in str(excinfo.value)
+    assert not with_docs_stub.documents().batchUpdate.called
+
+
+def test_gdocs_delete_tab_counts_child_tab_content_against_the_guard(
+    with_docs_stub,
+):
+    """deleteTab cascades to children, so a content-bearing CHILD blocks
+    deleting its (empty) parent without force."""
+    from fastmcp.exceptions import ToolError
+
+    child = _tab("T_CHILD", "Child", ["child holds the data"])
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("T_KEEP", "Intro", ["x"]),
+            _tab("T_PARENT", "Parent", [""], children=[child]),
+        ],
+    }
+    with pytest.raises(ToolError, match="non_empty_tab_guard"):
+        tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_PARENT")
+
+
+def test_gdocs_delete_tab_force_overrides_guard_and_flags_forced(
+    with_docs_stub,
+):
+    """force=true deletes a non-empty tab and the response says so."""
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("T_KEEP", "Intro", ["x"]),
+            _tab("T_FULL", "Sections", ["content to discard"]),
+        ],
+    }
+    result = tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_FULL", force=True)
+    assert result["deleted_tab_id"] == "T_FULL"
+    assert result["forced"] is True
+    assert with_docs_stub.documents().batchUpdate.called
+
+
+def test_gdocs_delete_tab_unknown_tab_id_is_a_clear_error(with_docs_stub):
+    """A tab_id that doesn't resolve fails BEFORE any deleteTab request,
+    pointing at gdocs_get_doc_outline."""
+    from fastmcp.exceptions import ToolError
+
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [_tab("T_ONLY", "Solo", ["x"])],
+    }
+    with_docs_stub.documents().batchUpdate.reset_mock()
+    with pytest.raises(ToolError, match="not found"):
+        tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_GONE")
+    assert not with_docs_stub.documents().batchUpdate.called
+
+
+def test_gdocs_delete_tab_first_tab_delete_warns_about_google_defect(
+    with_docs_stub,
+):
+    """Deleting the doc's FIRST root tab returns a warnings entry naming
+    the first_tab_deleted_500 defect (tab property updates break after)."""
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("t.0", "Tab 1", [""]),
+            _tab("T_B", "Beta", ["x"]),
+        ],
+    }
+    result = tools.gdocs_delete_tab(doc_id="DOC1", tab_id="t.0")
+    assert result["deleted_tab_id"] == "t.0"
+    assert any("first_tab_deleted_500" in w for w in result["warnings"])
 
 
 # ---------------------------------------------------------------------

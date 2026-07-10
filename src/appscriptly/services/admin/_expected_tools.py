@@ -22,6 +22,10 @@ EXPECTED: frozenset[str] = frozenset({
     "server_test_manifest",
     "server_guide",
     "server_help",
+    # T1.2 (2026-07 wave): three-layer health report (server / Google
+    # API / automation runtime). Canonical-only - never had a gdocs_
+    # name, so NO deprecated alias is registered for it.
+    "server_health",
     "admin_audit",
     # auth / signed URLs
     "gdrive_get_signed_upload_url",

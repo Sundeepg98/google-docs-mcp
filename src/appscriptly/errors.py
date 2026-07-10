@@ -9,6 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
+# HTTP status codes Google documents as transient (retry may succeed):
+# 429 rate limit, 500/502/503/504 server-side trouble. Every other
+# status is a caller/config problem a retry cannot fix. Kept as a
+# module-local frozenset (this module stays a leaf: no import edge just
+# for 5 integers) but it MUST mirror the retry layer's
+# ``google_api_client._RETRYABLE_STATUS`` — a unit test asserts the two
+# sets stay identical (tests/unit/test_errors_retryable.py).
+RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
+
 # Map fragments that appear in Google API error text -> actionable
 # explanation. Match is case-insensitive substring. Order matters
 # only for tiebreaks (first match wins).
@@ -62,14 +71,30 @@ def friendly_http_error_message(error: Any) -> str:
     Returns a string like::
 
         "Google API error: 400 Bad Request. Details: ...
+        Retryable: false
         Guidance: <actionable explanation, if recognized>"
+
+    ``Retryable`` tells the caller (human or agent) whether repeating
+    the same call can plausibly succeed: true only for Google's
+    documented-transient statuses (429 / 500 / 502 / 503 / 504); every
+    4xx validation/auth failure is false. The reason/details lines
+    carry Google's own error message through verbatim so the caller
+    sees what Google actually said, not a paraphrase.
     """
     status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        # Rare SDK path where only the raw response was populated —
+        # same fallback the retry layer's predicate uses.
+        status_code = getattr(getattr(error, "resp", None), "status", None)
     reason = getattr(error, "reason", "")
     details = getattr(error, "error_details", None) or str(error)
     details_str = str(details).lower()
 
-    base = f"Google API error: {status_code} {reason}. Details: {details}"
+    retryable = "true" if status_code in RETRYABLE_HTTP_STATUS else "false"
+    base = (
+        f"Google API error: {status_code} {reason}. Details: {details}\n"
+        f"Retryable: {retryable}"
+    )
 
     for fragment, guidance in _GUIDANCE:
         if fragment in details_str or fragment in reason.lower():

@@ -73,11 +73,15 @@ class TestAdapterAppliesTimeout:
         # The credentials were wrapped around that timeout-bearing transport.
         fake_authorized_cls.assert_called_once_with(creds, http=fake_http_instance)
 
-        # build() received the authorized transport via http=, NOT credentials=.
+        # build() received the authorized transport via http=, NOT
+        # credentials= — since the 2026-07-10 GET-retry polish it arrives
+        # composed inside _GetRetryHttp (attribute-transparent wrapper).
         fake_build.assert_called_once()
         build_args, build_kwargs = fake_build.call_args
         assert build_args == ("docs", "v1")
-        assert build_kwargs.get("http") is fake_authorized
+        handed_http = build_kwargs.get("http")
+        assert isinstance(handed_http, gac._GetRetryHttp)
+        assert handed_http._http is fake_authorized
         assert "credentials" not in build_kwargs
 
     def test_get_service_honors_env_timeout_override(self, monkeypatch):

@@ -129,6 +129,10 @@ READONLY_TOOLS = {
     "server_guide",               # was gdocs_guide
     "server_help",                # was gdocs_help
     "admin_audit",                # was gdocs_admin_audit
+    # 2026-07 next wave: three-layer health report - probes only
+    # (drive.about.get, script.projects.get, an anonymous /exec GET);
+    # mutates nothing.
+    "server_health",
 }
 
 

@@ -1242,3 +1242,89 @@ def trash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
         "trashed": bool(updated.get("trashed")),
         "was_already_trashed": was_already_trashed,
     }
+
+
+def rename_file(creds: Credentials, file_id: str, new_name: str) -> dict:
+    """Rename a Drive file via ``files.update`` on the ``name`` field.
+
+    BUG 2b (2026-07-10): the convert pipeline historically imported a
+    .docx under a temp name and renamed LAST, so an interrupted run
+    left a finished doc called "tmpjgehtmo2" with NO tool to fix it.
+    This is that tool's engine. Metadata-only PATCH: content, comments,
+    permissions, and id are untouched. Same ``drive.file`` scope
+    surface as ``trash_drive_file`` (writes to app-created files only).
+
+    Returns:
+        Success: ``{file_id, name, previous_name, mimeType}``.
+        Soft-failure (returned as data, not raised, matching the
+        trash/untrash convention): ``{file_id, reason, message}`` with
+        ``reason`` in {``"not_found"``, ``"app_not_authorized"``}.
+
+        Other errors raise ``HttpError`` so genuine bugs surface.
+    """
+    drive = get_service("drive", "v3", credentials=creds)
+
+    # Read current state first: clean not_found reason for a bad id,
+    # and the previous name for the response echo.
+    try:
+        before = execute_with_retry(
+            lambda: drive.files().get(
+                fileId=file_id, fields="id,name,mimeType"
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.get",
+        )
+    except HttpError as e:
+        if e.status_code == 404:
+            return {
+                "file_id": file_id,
+                "reason": "not_found",
+                "message": (
+                    f"Drive file {file_id!r} not found. Check the ID; "
+                    "the file may have been permanently deleted or the "
+                    "OAuth user lacks any access to it."
+                ),
+            }
+        raise
+
+    try:
+        # Renaming to the same name twice yields the same end state -
+        # idempotent, safe to retry.
+        updated = execute_with_retry(
+            lambda: drive.files().update(
+                fileId=file_id,
+                body={"name": new_name},
+                fields="id,name,mimeType",
+            ).execute(),
+            idempotent=True,
+            op_name="drive.files.update.rename",
+        )
+    except HttpError as e:
+        if e.status_code == 403:
+            reasons = [
+                (d.get("reason") or "").strip()
+                for d in (getattr(e, "error_details", None) or [])
+                if isinstance(d, dict)
+            ]
+            if "appNotAuthorizedToFile" in reasons or "appNotAuthorizedToFile" in str(e):
+                return {
+                    "file_id": file_id,
+                    "name": before.get("name"),
+                    "mimeType": before.get("mimeType"),
+                    "reason": "app_not_authorized",
+                    "message": (
+                        "OAuth app lacks write access to this file - it "
+                        "wasn't created by this app. drive.file scope "
+                        "only permits writes to app-created files. To "
+                        "rename, the file's owner must do it via the "
+                        "Drive UI."
+                    ),
+                }
+        raise
+
+    return {
+        "file_id": updated.get("id"),
+        "name": updated.get("name"),
+        "previous_name": before.get("name"),
+        "mimeType": updated.get("mimeType"),
+    }
