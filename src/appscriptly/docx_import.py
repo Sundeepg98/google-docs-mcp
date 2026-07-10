@@ -113,6 +113,9 @@ from .services.drive.api import (
 )
 
 SplitBy = Literal["heading_1", "heading_2", "page_break", "auto"]
+# Second-level split strategy: only "heading_2" (child tabs under each
+# heading_1 parent), and only valid combined with split_by="heading_1".
+NestBy = Literal["heading_2"]
 _STYLE_FOR_SPLIT = {
     "heading_1": "HEADING_1",
     "heading_2": "HEADING_2",
@@ -152,6 +155,7 @@ def convert_docx_to_tabbed_doc(
     docx_path: Path | None = None,
     drive_file_id: str | None = None,
     split_by: SplitBy = "heading_1",
+    nest_by: NestBy | None = None,
     title: str | None = None,
     tab_icons: list[str] | None = None,
     icons_by_title: dict[str, str] | None = None,
@@ -182,10 +186,27 @@ def convert_docx_to_tabbed_doc(
       the same fields as this tool. This is the only reliable path
       for sandbox-built .docx files.
 
+    ``nest_by`` turns the flat split into a depth-2 tab tree. The only
+    supported value is ``"heading_2"``, and it is only valid together
+    with ``split_by="heading_1"`` (anything else raises ``ValueError``
+    - no silent fallback). Each Heading 1 becomes a parent tab; every
+    Heading 2 after it becomes a child tab of that parent; content
+    between a Heading 1 and its first Heading 2 stays in the parent
+    tab. A doc whose Heading 1 sections contain no Heading 2s produces
+    exactly the flat result. A Heading 2 that appears BEFORE the first
+    Heading 1 has no parent to attach to and stays behind in the
+    placeholder tab (the same contract flat mode applies to any
+    content preceding the first split point). The ``completion``
+    manifest treats child sections exactly like parents: each child
+    title appears in ``moved_sections`` / ``pending_sections`` on its
+    own.
+
     ``tab_icons`` is an optional list of emoji icons assigned in
-    detected-split order. If shorter than the number of splits, the
-    remaining tabs get no icon. To set icons later (or by title
-    match instead of order), use ``set_tab_icons``.
+    detected-split order - document order, so with ``nest_by`` parents
+    and children interleave exactly as their headings appear. If
+    shorter than the number of splits, the remaining tabs get no icon.
+    To set icons later (or by title match instead of order), use
+    ``set_tab_icons``.
 
     ``on_conflict`` controls what happens when an app-visible Google
     Doc with the SAME final title already exists (title lookup runs
@@ -228,6 +249,23 @@ def convert_docx_to_tabbed_doc(
             f"on_conflict must be one of 'new', 'replace', 'skip' "
             f"(got {on_conflict!r})."
         )
+
+    # nest_by is strictly validated up front (before any Drive work,
+    # including the on_conflict=skip lookup): an unsupported value or
+    # combination must fail loudly, never fall back to a flat split
+    # the caller didn't ask for.
+    if nest_by is not None:
+        if nest_by != "heading_2":
+            raise ValueError(
+                f"Invalid nest_by: {nest_by!r}. The only supported value "
+                "is 'heading_2' (Heading 2 sections become child tabs)."
+            )
+        if split_by != "heading_1":
+            raise ValueError(
+                "nest_by='heading_2' requires split_by='heading_1' "
+                f"(got split_by={split_by!r}): nesting places Heading 2 "
+                "sections under their Heading 1 parent tabs."
+            )
 
     # 0. on_conflict=skip resolves BEFORE any import work: if a same-
     # title doc already exists, return it without creating anything.
@@ -286,6 +324,7 @@ def convert_docx_to_tabbed_doc(
     transplant_write_attempted = False
     executed_count = 0
     created_tabs: list[dict] = []
+    splits: list[_SplitPoint] = []
     plans: list[tuple[dict, TabTransplantPlan]] = []
     report = FidelityReport()
     strategy_used: str = split_by
@@ -300,7 +339,9 @@ def convert_docx_to_tabbed_doc(
         source_tab = fetched["tabs"][0]["documentTab"]
         body_content = source_tab["body"]["content"]
 
-        splits, strategy_used = _detect_splits(body_content, split_by)
+        splits, strategy_used = _detect_splits(
+            body_content, split_by, nest_by=nest_by
+        )
         if not splits:
             # No conversion work to do: the doc is a clean single-tab
             # import carrying its final title. Prior-version replacement
@@ -341,14 +382,22 @@ def convert_docx_to_tabbed_doc(
                 ),
             }
 
+        # Pre-order flatten once: this is BOTH the icon-assignment
+        # order (document order - parents and children interleaved as
+        # their headings appear) and the order add_tabs_to_doc returns
+        # created shells in, so position i means the same node
+        # everywhere downstream.
+        flat_splits = _flatten_splits(splits)
+
         # Assign optional icons in detected-split order.
         if tab_icons:
-            for i, split in enumerate(splits):
+            for i, split in enumerate(flat_splits):
                 if i < len(tab_icons) and tab_icons[i]:
                     split["icon_emoji"] = tab_icons[i]
 
-        # 3. Cap nesting depth defensively - _detect_splits won't
-        # currently produce nested splits, but a future strategy might.
+        # 3. Cap nesting depth defensively - heading_1 + nest_by emits
+        # at most parent+child (depth 1); guard against a future
+        # strategy emitting deeper trees than Google allows.
         max_depth = _max_depth(splits)
         if max_depth >= MAX_NESTING_DEPTH:
             raise RuntimeError(
@@ -370,7 +419,6 @@ def convert_docx_to_tabbed_doc(
         # are DocApp-child indices, so they slice the same
         # sectionBreak-filtered list _detect_splits walked.
         docapp_children = _docapp_children(body_content)
-        flat_splits = _flatten_splits(splits)
         if len(flat_splits) != len(created_tabs):
             raise RuntimeError(
                 f"shell creation returned {len(created_tabs)} tabs for "
@@ -435,12 +483,18 @@ def convert_docx_to_tabbed_doc(
                 error=e,
                 source_label=source_label,
                 executed_count=executed_count,
+                # Parents only (nest_by children are separate plan
+                # nodes but not Heading 1s); a transplant write implies
+                # detection succeeded, so this is never the initial [].
+                heading1_found=len(splits),
             )
         # No content has moved yet: the shells are empty and the
         # working copy holds nothing that doesn't exist elsewhere, so
-        # cleanup cannot destroy content.
+        # cleanup cannot destroy content. Reversed pre-order deletes
+        # child shells before their parent, so no delete ever targets
+        # a tab Google already removed as part of a parent's subtree.
         _cleanup_failed_staging_copy(
-            creds, doc_id, [t["tab_id"] for t in created_tabs]
+            creds, doc_id, [t["tab_id"] for t in reversed(created_tabs)]
         )
         raise RuntimeError(
             f"Conversion of {source_label} failed before any content "
@@ -597,7 +651,9 @@ def convert_docx_to_tabbed_doc(
         "on_conflict_action": on_conflict_action,
         "tabs": final_tabs,
         "moved_children": moved_blocks,
-        "heading1_found": len(flat_splits),
+        # Parents only: with nest_by, child (Heading 2) sections are
+        # counted in tabs_created but are not Heading 1s.
+        "heading1_found": len(splits),
         "tabs_created": len(created_tabs),
         "placeholder": placeholder_outcome,
         "warnings": warnings,
@@ -666,6 +722,7 @@ def _partial_failure_result(
     error: Exception,
     source_label: str,
     executed_count: int,
+    heading1_found: int,
 ) -> dict:
     """The keep-everything response for a failure after content started
     moving (the S2.5 contract).
@@ -727,7 +784,7 @@ def _partial_failure_result(
         ),
         "tabs": _refresh_tabs(creds, doc_id, created_tabs),
         "moved_children": moved_blocks,
-        "heading1_found": len(plans),
+        "heading1_found": heading1_found,
         "tabs_created": len(created_tabs),
         "placeholder": "kept",
         "warnings": list(report.warnings),
@@ -898,12 +955,25 @@ def _flatten_splits(splits: list[_SplitPoint]) -> list[_SplitPoint]:
 
 
 def _detect_splits(
-    body_content: list[dict], split_by: SplitBy
+    body_content: list[dict],
+    split_by: SplitBy,
+    nest_by: NestBy | None = None,
 ) -> tuple[list[_SplitPoint], str]:
     """Walk the body and emit split points per strategy.
 
     ``auto`` tries ``heading_1`` → ``heading_2`` → ``page_break`` and
     returns the first non-empty result.
+
+    ``nest_by="heading_2"`` (public callers guarantee it only arrives
+    together with ``split_by="heading_1"``) emits a depth-2 forest:
+    each HEADING_1 opens a parent split, each HEADING_2 after it opens
+    a child split under the CURRENT parent, and non-heading content
+    extends whichever node is open (the newest child once one exists,
+    else the parent). A parent's range therefore ends on the last
+    element before its first child's heading - the "content between
+    the H1 and its first H2 stays in the parent tab" contract. A
+    HEADING_2 before the first HEADING_1 has no parent: like all
+    pre-first-split content, it stays behind in the placeholder tab.
     """
     if split_by == "auto":
         for strategy in ("heading_1", "heading_2", "page_break"):
@@ -920,22 +990,51 @@ def _detect_splits(
 
     splits: list[_SplitPoint] = []
     target_style = _STYLE_FOR_SPLIT.get(split_by)
+    child_style = (
+        _STYLE_FOR_SPLIT[nest_by]
+        if nest_by is not None and split_by == "heading_1"
+        else None
+    )
+    # The node whose last range grows as non-split content streams by.
+    # Flat mode: always the newest split. Nested mode: the newest child
+    # once one is open, else the newest parent.
+    current: _SplitPoint | None = None
+    node_count = 0
+
+    def _new_split(title_text: str, child_idx: int) -> _SplitPoint:
+        nonlocal node_count
+        node_count += 1
+        fallback = f"Section {node_count}"
+        return _SplitPoint(
+            # Google Docs API rejects tab titles >50 chars with a 400
+            # ("The tab title cannot be longer than 50 characters").
+            # Truncate to match the API limit so we don't fail at
+            # addDocumentTab time.
+            title=(title_text or fallback)[:50].strip() or fallback,
+            icon_emoji=None,
+            ranges=[(child_idx, child_idx)],
+            children=[],
+        )
 
     for child_idx, elem in enumerate(docapp_children):
         para = elem.get("paragraph")
         if para is None:
-            if splits:
-                lo, _hi = splits[-1]["ranges"][-1]
-                splits[-1]["ranges"][-1] = (lo, child_idx)
+            if current is not None:
+                lo, _hi = current["ranges"][-1]
+                current["ranges"][-1] = (lo, child_idx)
             continue
 
         is_split = False
+        is_child_split = False
         title_text = ""
 
         if split_by in ("heading_1", "heading_2"):
-            style = para.get("paragraphStyle", {})
-            if style.get("namedStyleType") == target_style:
+            named_style = para.get("paragraphStyle", {}).get("namedStyleType")
+            if named_style == target_style:
                 is_split = True
+                title_text = _extract_paragraph_text(para)
+            elif child_style is not None and named_style == child_style and splits:
+                is_child_split = True
                 title_text = _extract_paragraph_text(para)
         elif split_by == "page_break":
             for pe in para.get("elements", []):
@@ -945,22 +1044,16 @@ def _detect_splits(
                     break
 
         if is_split:
-            splits.append(
-                _SplitPoint(
-                    # Google Docs API rejects tab titles >50 chars with
-                    # a 400 ("The tab title cannot be longer than 50
-                    # characters"). Truncate to match the API limit so
-                    # we don't fail at addDocumentTab time.
-                    title=(title_text or f"Section {len(splits) + 1}")[:50].strip()
-                    or f"Section {len(splits) + 1}",
-                    icon_emoji=None,
-                    ranges=[(child_idx, child_idx)],
-                    children=[],
-                )
-            )
-        elif splits:
-            lo, _hi = splits[-1]["ranges"][-1]
-            splits[-1]["ranges"][-1] = (lo, child_idx)
+            node = _new_split(title_text, child_idx)
+            splits.append(node)
+            current = node
+        elif is_child_split:
+            node = _new_split(title_text, child_idx)
+            splits[-1]["children"].append(node)
+            current = node
+        elif current is not None:
+            lo, _hi = current["ranges"][-1]
+            current["ranges"][-1] = (lo, child_idx)
 
     return splits, split_by
 

@@ -348,6 +348,117 @@ def test_detect_splits_auto_returns_empty_when_no_strategy_matches():
     assert strategy == "auto"
 
 
+# _detect_splits — nest_by="heading_2" (nested split tree) --------------
+
+
+def test_detect_splits_nest_by_builds_depth_2_tree_with_per_node_ranges():
+    """The core nested contract: H1 -> parent, H2 -> child of the
+    current parent, content between an H1 and its first H2 stays in
+    the parent's range, each child's range runs from its heading to
+    the last element before the next heading."""
+    body = [
+        _heading_para("Part A"),                    # 0  parent
+        _body_para("a intro"),                      # 1  parent content
+        _heading_para("A.1", style="HEADING_2"),    # 2  child
+        _body_para("a1 body"),                      # 3  child content
+        _heading_para("A.2", style="HEADING_2"),    # 4  child
+        _body_para("a2 body"),                      # 5  child content
+        _heading_para("Part B"),                    # 6  parent
+        _body_para("b body"),                       # 7  parent content
+    ]
+    splits, strategy = _detect_splits(body, "heading_1", nest_by="heading_2")
+    assert strategy == "heading_1"
+    assert [s["title"] for s in splits] == ["Part A", "Part B"]
+    part_a, part_b = splits
+    assert [c["title"] for c in part_a["children"]] == ["A.1", "A.2"]
+    assert part_b["children"] == []
+    assert part_a["ranges"] == [(0, 1)]
+    assert part_a["children"][0]["ranges"] == [(2, 3)]
+    assert part_a["children"][1]["ranges"] == [(4, 5)]
+    assert part_b["ranges"] == [(6, 7)]
+
+
+def test_detect_splits_nest_by_h2_before_first_h1_stays_in_placeholder():
+    """DOCUMENTED DECISION: a Heading 2 before the first Heading 1 has
+    no parent to attach to. It is treated exactly like any other
+    pre-first-split content in flat mode — left behind in the
+    placeholder tab. NOT promoted to a tab, NOT an error."""
+    body = [
+        _heading_para("Orphan", style="HEADING_2"),  # 0  placeholder-bound
+        _body_para("orphan body"),                   # 1  placeholder-bound
+        _heading_para("Real Part"),                  # 2
+        _body_para("part body"),                     # 3
+    ]
+    splits, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    assert [s["title"] for s in splits] == ["Real Part"]
+    assert splits[0]["children"] == []
+    assert splits[0]["ranges"] == [(2, 3)]
+
+
+def test_detect_splits_nest_by_consecutive_h2s_make_heading_only_children():
+    body = [
+        _heading_para("Part"),                       # 0
+        _heading_para("One", style="HEADING_2"),     # 1  heading-only child
+        _heading_para("Two", style="HEADING_2"),     # 2
+        _body_para("two body"),                      # 3
+    ]
+    splits, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    (part,) = splits
+    # H1 with no content before its first H2: the parent's range is
+    # just its own heading paragraph.
+    assert part["ranges"] == [(0, 0)]
+    one, two = part["children"]
+    assert one["ranges"] == [(1, 1)]
+    assert two["ranges"] == [(2, 3)]
+
+
+def test_detect_splits_nest_by_without_any_h2_matches_flat_output():
+    """A doc with H1s but no H2s must behave exactly as today."""
+    body = [
+        _heading_para("Intro"),
+        _body_para("intro body"),
+        _heading_para("Methods"),
+        _body_para("methods body"),
+    ]
+    nested, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    flat, _ = _detect_splits(body, "heading_1")
+    assert nested == flat
+
+
+def test_detect_splits_nest_by_non_paragraph_extends_the_open_child():
+    """Tables and other non-paragraph elements after an H2 belong to
+    that child (the walker extends the OPEN node, which is the child
+    once one exists)."""
+    body = [
+        _heading_para("Part"),                       # 0
+        _heading_para("Sub", style="HEADING_2"),     # 1
+        _table_element(),                            # 2 -> extends child
+        _body_para("after table"),                   # 3
+    ]
+    splits, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    assert splits[0]["ranges"] == [(0, 0)]
+    assert splits[0]["children"][0]["ranges"] == [(1, 3)]
+
+
+def test_detect_splits_nest_by_content_after_h1_following_children_starts_new_parent_range():
+    """After a child section, the next H1 opens a fresh parent whose
+    range is independent of the previous parent's children."""
+    body = [
+        _heading_para("A"),                          # 0
+        _heading_para("A.1", style="HEADING_2"),     # 1
+        _body_para("a1"),                            # 2
+        _heading_para("B"),                          # 3
+        _body_para("b"),                             # 4
+        _heading_para("B.1", style="HEADING_2"),     # 5
+    ]
+    splits, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    a, b = splits
+    assert a["ranges"] == [(0, 0)]
+    assert a["children"][0]["ranges"] == [(1, 2)]
+    assert b["ranges"] == [(3, 4)]
+    assert b["children"][0]["ranges"] == [(5, 5)]
+
+
 # ---------------------------------------------------------------------
 # Hypothesis property tests — same pattern as PR #112 / R14 #8.
 #
@@ -495,6 +606,81 @@ def test_property_detect_splits_strategy_echo_matches_input(body):
     assert returned_strategy == "heading_1"
     splits2, returned_strategy2 = _detect_splits(body, "heading_2")
     assert returned_strategy2 == "heading_2"
+
+
+# ---------------------------------------------------------------------
+# Hypothesis property tests - nest_by="heading_2" (nested walk)
+# ---------------------------------------------------------------------
+
+
+@given(body=st.lists(_body_element_strategy, max_size=20))
+def test_property_nested_ranges_partition_the_flat_ranges(body):
+    """Property: for every H1 section, [parent range + child ranges]
+    is a contiguous ascending partition of the FLAT walk's range for
+    that same section. Nesting re-buckets content between parent and
+    children — it must never drop, duplicate, or reorder an element
+    relative to the flat split.
+
+    Catches: a parent range that swallows its first child's heading,
+    a gap between a parent and its first child, child ranges that
+    leak across the next H1 boundary.
+    """
+    flat, _ = _detect_splits(body, "heading_1")
+    nested, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    assert len(nested) == len(flat)
+    for flat_node, nested_node in zip(flat, nested):
+        pieces = [nested_node, *nested_node["children"]]
+        covered = [r for p in pieces for r in p["ranges"]]
+        ((flat_lo, flat_hi),) = flat_node["ranges"]
+        assert covered[0][0] == flat_lo
+        assert covered[-1][1] == flat_hi
+        for (_, prev_hi), (curr_lo, _) in zip(covered, covered[1:]):
+            assert curr_lo == prev_hi + 1, "partition must be gapless"
+
+
+@given(body=st.lists(_body_element_strategy, max_size=20))
+def test_property_nested_depth_capped_at_2_levels_and_child_count_exact(body):
+    """Property: the nested walk emits at most parent+child (depth 1
+    in _max_depth terms — v1's max-depth-2 contract), and exactly one
+    child per HEADING_2 that appears after the first HEADING_1."""
+    nested, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    assert _max_depth(nested) <= 1
+
+    expected_children = 0
+    seen_h1 = False
+    for elem in body:
+        if "sectionBreak" in elem:
+            continue
+        style = (
+            elem.get("paragraph", {})
+            .get("paragraphStyle", {})
+            .get("namedStyleType")
+        )
+        if style == "HEADING_1":
+            seen_h1 = True
+        elif style == "HEADING_2" and seen_h1:
+            expected_children += 1
+    assert sum(len(p["children"]) for p in nested) == expected_children
+
+
+@given(body=st.lists(_body_element_strategy, max_size=20))
+def test_property_nested_flattened_ranges_well_formed_and_ascending(body):
+    """Property: in pre-order (the order shells are created and
+    transplant slices are planned), all ranges are well-formed, stay
+    inside the filtered index space, and are strictly ascending —
+    the same invariant the flat walk guarantees, extended to the tree.
+    """
+    nested, _ = _detect_splits(body, "heading_1", nest_by="heading_2")
+    docapp_children_count = sum(
+        1 for elem in body if "sectionBreak" not in elem
+    )
+    all_ranges = [
+        r for node in _flatten_splits(nested) for r in node["ranges"]
+    ]
+    for lo, hi in all_ranges:
+        assert 0 <= lo <= hi < docapp_children_count
+    for (_, prev_hi), (curr_lo, _) in zip(all_ranges, all_ranges[1:]):
+        assert curr_lo > prev_hi
 
 
 # ---------------------------------------------------------------------

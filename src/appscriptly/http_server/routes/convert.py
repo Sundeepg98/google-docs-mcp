@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from googleapiclient.errors import HttpError
 from starlette.datastructures import UploadFile
@@ -128,6 +129,14 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     Form fields (mirror ``gdocs_tab_existing_doc``'s parameters):
       ``file``: the .docx file (multipart/form-data). REQUIRED.
       ``split_by``: optional, one of "heading_1"|"heading_2"|"page_break"|"auto"
+      ``nest_by``: optional; the only supported value is "heading_2" and
+        it is only valid with split_by="heading_1" (anything else is a
+        400 - no silent fallback). Each Heading 1 becomes a parent tab,
+        each Heading 2 under it becomes a child tab; content between a
+        Heading 1 and its first Heading 2 stays in the parent tab. The
+        response ``tabs`` entries carry ``parent_tab_id`` and ``depth``,
+        and child sections appear in the ``completion`` manifest under
+        their own titles.
       ``title``: optional document title override. When absent, the
         title is derived from the uploaded FILENAME (minus ``.docx``) at
         import time - never from a server temp-file name, and never
@@ -225,6 +234,30 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": f"Invalid split_by: {split_by_raw!r}"}, status_code=400
         )
+
+    # nest_by: strictly "heading_2", strictly with split_by="heading_1".
+    # Anything else is a loud 400 BEFORE any Drive work - a nested
+    # request must never silently produce a flat doc.
+    nest_by_raw = form.get("nest_by")
+    nest_by: Literal["heading_2"] | None = None
+    if nest_by_raw:
+        if not isinstance(nest_by_raw, str) or nest_by_raw != "heading_2":
+            return JSONResponse(
+                {
+                    "error": f"Invalid nest_by: {nest_by_raw!r} "
+                    "(the only supported value is 'heading_2')"
+                },
+                status_code=400,
+            )
+        if split_by_raw != "heading_1":
+            return JSONResponse(
+                {
+                    "error": "nest_by='heading_2' requires "
+                    f"split_by='heading_1' (got split_by={split_by_raw!r})"
+                },
+                status_code=400,
+            )
+        nest_by = "heading_2"
 
     title_raw = form.get("title")
     title: str | None = title_raw if isinstance(title_raw, str) and title_raw else None
@@ -417,6 +450,7 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             creds,
             docx_path=tmp_path,
             split_by=split_by_raw,  # type: ignore[arg-type]
+            nest_by=nest_by,
             title=title,
             icons_by_title=icons_by_title,
             placeholder_behavior=placeholder_behavior_raw,  # type: ignore[arg-type]

@@ -344,6 +344,48 @@ def test_gdocs_tab_existing_doc_drive_file_id_dispatches_to_convert(
     assert captured["creds"] is stub_creds
     assert captured["kwargs"]["drive_file_id"] == "DRIVE_X"
     assert captured["kwargs"]["split_by"] == "heading_1"  # default
+    assert captured["kwargs"]["nest_by"] is None  # default: flat split
+
+
+def test_gdocs_tab_existing_doc_passes_nest_by_to_convert(monkeypatch):
+    """nest_by rides through to the conversion pipeline unchanged (the
+    pipeline owns the heading_1-only / heading_2-only validation)."""
+    captured = {}
+
+    def fake_convert(creds, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"doc_id": "RESULT", "url": "https://x", "tabs": []}
+
+    monkeypatch.setattr(tools, "_convert_docx", fake_convert)
+
+    tools.gdocs_tab_existing_doc(drive_file_id="DRIVE_X", nest_by="heading_2")
+
+    assert captured["kwargs"]["nest_by"] == "heading_2"
+
+
+def test_gdocs_tab_existing_doc_rejects_nest_by_with_markers():
+    """markers retrofit always splits flat; combining it with nest_by
+    must fail loudly instead of silently ignoring the nesting ask."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="markers"):
+        tools.gdocs_tab_existing_doc(
+            docx_path="/tmp/x.docx",
+            markers=[{"marker_text": "Chapter", "tab_title": "Ch"}],
+            nest_by="heading_2",
+        )
+
+
+def test_gdocs_tab_existing_doc_nest_by_split_combo_error_reaches_caller():
+    """The pipeline's ValueError for nest_by + split_by != heading_1
+    must surface as a clean ToolError - never a silent flat fallback.
+    Validation fires before any Drive traffic, so no stubs needed."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError, match="split_by='heading_1'"):
+        tools.gdocs_tab_existing_doc(
+            docx_path="/tmp/x.docx",
+            split_by="page_break",
+            nest_by="heading_2",
+        )
 
 
 # ---------------------------------------------------------------------
