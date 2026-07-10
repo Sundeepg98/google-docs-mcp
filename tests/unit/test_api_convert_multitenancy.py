@@ -503,6 +503,82 @@ def test_convert_bearer_header_path_has_no_signed_cap():
     assert captured.get("user_id") is None
 
 
+# ---------------------------------------------------------------------
+# Form validation: nest_by (nested tab split on the signed-URL path)
+# ---------------------------------------------------------------------
+
+
+def test_convert_rejects_invalid_nest_by_value():
+    """nest_by only accepts 'heading_2'; anything else is a loud 400
+    BEFORE credential resolution or any Drive work (no patches needed:
+    reaching creds resolution would 500 on the missing client config)."""
+    app = _build_app_under_test()
+    client = TestClient(app)
+    qs = urlparse(_mint_signed_url_for("user-A")).query
+
+    resp = client.post(
+        f"/api/convert?{qs}",
+        files=_docx_form(),
+        data={"nest_by": "heading_3"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "nest_by" in resp.json()["error"]
+    assert "heading_2" in resp.json()["error"]
+
+
+def test_convert_rejects_nest_by_without_heading_1_split():
+    """nest_by is only valid with split_by='heading_1' — the endpoint
+    must refuse the combination rather than silently split flat."""
+    app = _build_app_under_test()
+    client = TestClient(app)
+    qs = urlparse(_mint_signed_url_for("user-A")).query
+
+    resp = client.post(
+        f"/api/convert?{qs}",
+        files=_docx_form(),
+        data={"nest_by": "heading_2", "split_by": "page_break"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "split_by='heading_1'" in resp.json()["error"]
+
+
+def test_convert_passes_nest_by_to_pipeline():
+    """A valid nest_by rides through to convert_docx_to_tabbed_doc; an
+    absent field arrives as None (flat split, today's behavior)."""
+    app = _build_app_under_test()
+    client = TestClient(app)
+
+    captured = {}
+
+    def fake_convert(creds, **kwargs):
+        captured["nest_by"] = kwargs.get("nest_by")
+        return {"doc_id": "DOC123", "url": "https://x", "tabs": []}
+
+    with patch(
+        "appscriptly.http_server.routes.convert.get_credentials_for_user",
+        return_value="per-user-creds",
+    ), patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), patch(
+        "appscriptly.http_server.routes.convert._resolve_client_config",
+        return_value={"web": {"client_id": "X", "client_secret": "Y"}},
+    ):
+        qs = urlparse(_mint_signed_url_for("user-A")).query
+        resp = client.post(
+            f"/api/convert?{qs}",
+            files=_docx_form(),
+            data={"nest_by": "heading_2"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert captured["nest_by"] == "heading_2"
+
+        qs = urlparse(_mint_signed_url_for("user-A")).query
+        resp = client.post(f"/api/convert?{qs}", files=_docx_form())
+        assert resp.status_code == 200, resp.text
+        assert captured["nest_by"] is None
+
+
 def _call_handler_chunked(handler, *, scope_extra, body_chunks, headers):
     """Call a Starlette route ``handler(request)`` with a CHUNKED request
     body (multiple http.request events, ``more_body`` true until the last)

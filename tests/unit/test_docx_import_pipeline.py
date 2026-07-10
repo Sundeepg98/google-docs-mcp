@@ -188,11 +188,26 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(docx_import, "find_doc_by_title", fake_find)
 
     def fake_add_tabs(creds, doc_id, tabs, parent_tab_id=None):
+        # Mirror the real add_tabs_to_doc contract: nested TabSpecs come
+        # back as ONE pre-order flat list carrying depth/parent_tab_id
+        # (that ordering is what the transplant zips against).
         events.append(("add_tabs", [t["title"] for t in tabs]))
-        created = [
-            {"title": t["title"], "tab_id": f"t.{i + 1}", "depth": 0, "parent_tab_id": None}
-            for i, t in enumerate(tabs)
-        ]
+        harness.setdefault("added_specs", []).append(tabs)
+        from appscriptly.services.docs.tab_tree import _flatten_tab_tree
+
+        path_ids: dict[tuple, str] = {}
+        created = []
+        for i, (depth, path, spec) in enumerate(_flatten_tab_tree(tabs)):
+            tab_id = f"t.{i + 1}"
+            path_ids[path] = tab_id
+            created.append(
+                {
+                    "title": spec["title"],
+                    "tab_id": tab_id,
+                    "depth": depth,
+                    "parent_tab_id": path_ids[path[:-1]] if depth > 0 else None,
+                }
+            )
         return {"doc_id": doc_id, "url": "https://docs.google.com/x", "tabs": created}
 
     monkeypatch.setattr(docx_import, "add_tabs_to_doc", fake_add_tabs)
@@ -828,3 +843,250 @@ def test_on_conflict_replace_trash_failure_reports_created(pipeline, monkeypatch
 def test_on_conflict_invalid_value_raises(pipeline):
     with pytest.raises(ValueError, match="on_conflict"):
         _convert(on_conflict="upsert")
+
+
+# ---------------------------------------------------------------------
+# nest_by="heading_2" - nested split tree through the full pipeline
+# ---------------------------------------------------------------------
+#
+# Source: Part A (H1) > a intro > A.1 (H2) > a1 body > Part B (H1) >
+# b body. Expected tree: t.1 = Part A (parent, keeps "a intro"),
+# t.2 = A.1 (child of t.1, gets "a1 body"), t.3 = Part B.
+
+
+def _nested_source_doc() -> dict:
+    content = [
+        {"startIndex": 0, "endIndex": 1, "sectionBreak": {}},
+        _para("Part A\n", "HEADING_1", 1, 8),
+        _para("a intro\n", start=8, end=16),
+        _para("A.1\n", "HEADING_2", 16, 20),
+        _para("a1 body\n", start=20, end=28),
+        _para("Part B\n", "HEADING_1", 28, 35),
+        _para("b body\n", start=35, end=42),
+    ]
+    return {
+        "tabs": [
+            {
+                "tabProperties": {"tabId": PRIMARY},
+                "documentTab": {
+                    "body": {"content": content},
+                    "lists": {},
+                    "inlineObjects": {},
+                },
+            }
+        ]
+    }
+
+
+def _nested_outline() -> dict:
+    return {
+        "doc_id": DOC_ID,
+        "trashed": False,
+        "tabs": [
+            {"tab_id": "t.1", "title": "Part A", "parent_tab_id": None, "depth": 0, "index": 0, "icon_emoji": None},
+            {"tab_id": "t.2", "title": "A.1", "parent_tab_id": "t.1", "depth": 1, "index": 1, "icon_emoji": None},
+            {"tab_id": "t.3", "title": "Part B", "parent_tab_id": None, "depth": 0, "index": 2, "icon_emoji": None},
+        ],
+    }
+
+
+def _use_nested_doc(pipeline, monkeypatch, gets=None):
+    source = _nested_source_doc()["tabs"][0]
+    shells = {
+        "tabs": [
+            source,
+            _tab("t.1", _empty_shell()),
+            _tab("t.2", _empty_shell()),
+            _tab("t.3", _empty_shell()),
+        ]
+    }
+    verify = {
+        "tabs": [source] + [_tab(f"t.{i}", _filled(2)) for i in (1, 2, 3)]
+    }
+    pipeline["docs"]._gets = (
+        gets if gets is not None else [_nested_source_doc(), shells, verify]
+    )
+    pipeline["nested_shells"] = shells
+    monkeypatch.setattr(
+        docx_import, "get_doc_outline", lambda creds, doc_id: _nested_outline()
+    )
+
+
+def test_nested_happy_path_shells_slices_manifest_and_response(
+    pipeline, monkeypatch
+):
+    _use_nested_doc(pipeline, monkeypatch)
+    result = _convert(nest_by="heading_2")
+
+    # Shell specs went to add_tabs_to_doc NESTED (A.1 as a child of
+    # Part A), so Google creates a real depth-2 sidebar.
+    (specs,) = pipeline["added_specs"]
+    assert [s["title"] for s in specs] == ["Part A", "Part B"]
+    assert [c["title"] for c in specs[0].get("children", [])] == ["A.1"]
+    assert "children" not in specs[1]
+
+    # Transplant slices are planned per NODE: the parent keeps only
+    # its H1 heading + the content before its first H2; the child owns
+    # its H2 heading + body; nothing leaks across nodes.
+    by_tab: dict[str, str] = {}
+    for batch in pipeline["docs"].batches:
+        for r in batch:
+            if "insertText" in r:
+                tab = r["insertText"]["location"]["tabId"]
+                by_tab[tab] = by_tab.get(tab, "") + r["insertText"]["text"]
+    assert "Part A" in by_tab["t.1"] and "a intro" in by_tab["t.1"]
+    assert "A.1" not in by_tab["t.1"] and "a1 body" not in by_tab["t.1"]
+    assert "A.1" in by_tab["t.2"] and "a1 body" in by_tab["t.2"]
+    assert "Part B" in by_tab["t.3"] and "b body" in by_tab["t.3"]
+
+    # 3 nodes x 2 blocks each; the T2.1 echo counts PARENTS as
+    # heading1_found and every created tab (children included) as
+    # tabs_created.
+    assert result["moved_children"] == 6
+    assert result["heading1_found"] == 2
+    assert result["tabs_created"] == 3
+    # The completion manifest treats child sections as first-class:
+    # each node's title appears in moved_sections on its own.
+    assert result["completion"]["moved_sections"] == ["Part A", "A.1", "Part B"]
+    assert result["completion"]["pending_sections"] == []
+    assert result["completion"]["steps_completed"] == [
+        "import", "shells", "transplant", "verify",
+        "carve", "cosmetics", "placeholder",
+    ]
+    # The response tabs mirror the outline shape: parent_tab_id + depth
+    # carry the nesting.
+    child = next(t for t in result["tabs"] if t["title"] == "A.1")
+    assert child["parent_tab_id"] == "t.1"
+    assert child["depth"] == 1
+    # Clean source: the one warning is the delete-policy advisory.
+    assert len(result["warnings"]) == 1
+    assert "can no longer be edited" in result["warnings"][0]
+
+
+def test_nested_carve_covers_child_ranges_too(pipeline, monkeypatch):
+    """The post-verify carve removes EVERY transplanted range from the
+    source tab - including the child sections' ranges."""
+    _use_nested_doc(pipeline, monkeypatch)
+    _convert(nest_by="heading_2")
+
+    carve_batches = [
+        b for b in pipeline["docs"].batches if "deleteContentRange" in b[0]
+    ]
+    assert len(carve_batches) == 1
+    spans = [
+        (r["deleteContentRange"]["range"]["startIndex"],
+         r["deleteContentRange"]["range"]["endIndex"])
+        for r in carve_batches[0]
+    ]
+    # Parent A (1..16), child A.1 (16..28), B (28..42 capped to 41),
+    # emitted bottom-up.
+    assert spans == [(28, 41), (16, 28), (1, 16)]
+
+
+def test_nested_child_verify_failure_keeps_doc_and_marks_child_pending(
+    pipeline, monkeypatch
+):
+    """verify-all covers CHILD tabs, and the S2.5 keep-everything
+    contract applies to them: an under-filled child fails the verify
+    pass, the doc is KEPT (no shell deletes, no trash, no carve), and
+    the manifest lists the CHILD section pending while its verified
+    siblings (parent included) read moved."""
+    source = _nested_source_doc()["tabs"][0]
+    shells = {
+        "tabs": [source] + [_tab(f"t.{i}", _empty_shell()) for i in (1, 2, 3)]
+    }
+    bad_verify = {
+        "tabs": [
+            source,
+            _tab("t.1", _filled(2)),
+            _tab("t.2", _empty_shell()),  # the child got nothing
+            _tab("t.3", _filled(2)),
+        ]
+    }
+    # source fetch, shells-state fetch, verify fetch, classification
+    # re-fetch (the partial-failure result re-verifies per tab).
+    _use_nested_doc(
+        pipeline, monkeypatch,
+        gets=[_nested_source_doc(), shells, bad_verify, bad_verify],
+    )
+
+    result = _convert(nest_by="heading_2")
+
+    assert "error" in result
+    assert result["completion"]["moved_sections"] == ["Part A", "Part B"]
+    assert result["completion"]["pending_sections"] == ["A.1"]
+    # Every plan finished executing; verify is what fell short.
+    assert result["completion"]["steps_completed"] == [
+        "import", "shells", "transplant",
+    ]
+    assert result["heading1_found"] == 2
+    assert result["tabs_created"] == 3
+    assert result["placeholder"] == "kept"
+    _assert_placeholder_untouched(pipeline)
+
+
+def test_nested_phase_a_cleanup_deletes_child_shells_first(
+    pipeline, monkeypatch
+):
+    """A failure BEFORE any content write (the shells-state fetch dies)
+    still cleans up - and the shell deletes run in reversed pre-order,
+    children before their parents, so no delete targets a tab Google
+    already removed as part of a parent's subtree."""
+    _use_nested_doc(pipeline, monkeypatch)
+    pipeline["docs"].fail_get_at = 1  # 0=source fetch, 1=shells-state fetch
+
+    with pytest.raises(RuntimeError, match="Drive trash"):
+        _convert(nest_by="heading_2")
+
+    rollback_deletes = [
+        r["deleteTab"]["tabId"]
+        for batch in pipeline["docs"].batches
+        for r in batch
+        if "deleteTab" in r
+    ]
+    assert rollback_deletes == ["t.3", "t.2", "t.1"]
+    assert ("trash", DOC_ID) in pipeline["events"]
+
+
+def test_nested_tab_icons_assign_in_document_order(pipeline, monkeypatch):
+    """tab_icons positions follow document order - parents and children
+    interleaved as their headings appear (Part A, A.1, Part B)."""
+    _use_nested_doc(pipeline, monkeypatch)
+    _convert(nest_by="heading_2", tab_icons=["\U0001f170", "\U00000031", "\U0001f171"])
+    (specs,) = pipeline["added_specs"]
+    assert specs[0].get("icon_emoji") == "\U0001f170"
+    assert specs[0]["children"][0].get("icon_emoji") == "\U00000031"
+    assert specs[1].get("icon_emoji") == "\U0001f171"
+
+
+def test_flat_doc_with_nest_by_behaves_exactly_flat(pipeline):
+    """Regression: nest_by on a doc with H1s but NO H2s must produce
+    the same flat result as today (same shells, same tab count, same
+    manifest)."""
+    result = _convert(nest_by="heading_2")
+    (specs,) = pipeline["added_specs"]
+    assert [s["title"] for s in specs] == ["Intro", "Methods"]
+    assert all("children" not in s for s in specs)
+    assert [t["title"] for t in result["tabs"]] == ["Intro", "Methods"]
+    assert result["heading1_found"] == 2
+    assert result["completion"]["moved_sections"] == ["Intro", "Methods"]
+
+
+# ---------------------------------------------------------------------
+# nest_by validation - loud, and BEFORE any Drive/Docs traffic
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_split_by", ["heading_2", "page_break", "auto"])
+def test_nest_by_rejected_unless_split_by_is_heading_1(pipeline, bad_split_by):
+    with pytest.raises(ValueError, match="split_by='heading_1'"):
+        _convert(split_by=bad_split_by, nest_by="heading_2")
+    assert pipeline["docs"].batches == []
+    assert pipeline["events"] == []
+
+
+def test_nest_by_invalid_value_rejected(pipeline):
+    with pytest.raises(ValueError, match="Invalid nest_by"):
+        _convert(nest_by="heading_3")
+    assert pipeline["docs"].batches == []
+    assert pipeline["events"] == []

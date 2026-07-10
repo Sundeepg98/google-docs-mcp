@@ -471,6 +471,7 @@ def gdocs_tab_existing_doc(
     docx_path: str | None = None,
     drive_file_id: str | None = None,
     split_by: Literal["heading_1", "heading_2", "page_break", "auto"] = "heading_1",
+    nest_by: Literal["heading_2"] | None = None,
     title: str | None = None,
     tab_icons: list[str] | None = None,
     icons_by_title: dict[str, str] | None = None,
@@ -540,10 +541,26 @@ def gdocs_tab_existing_doc(
               Title is auto-generated (``Page 2``, ``Page 3``, ...).
             - ``"auto"``: try heading_1 → heading_2 → page_break and
               use the first strategy that finds any split points.
+        nest_by: Optional second-level split for a NESTED tab tree.
+            Only valid together with ``split_by="heading_1"`` and the
+            only supported value is ``"heading_2"`` (anything else is
+            a validation error - there is no silent fallback). Each
+            Heading 1 becomes a parent tab and every Heading 2 after
+            it becomes a CHILD tab of that parent (max depth 2).
+            Content between a Heading 1 and its first Heading 2 stays
+            in the parent tab. A doc with Heading 1s but no Heading 2s
+            behaves exactly like the flat split. A Heading 2 that
+            appears before the first Heading 1 stays in the
+            placeholder tab (it has no parent to attach to). The
+            returned ``tabs`` entries carry ``parent_tab_id`` and
+            ``depth`` so the nesting is verifiable from the response.
+            Not supported together with ``markers``.
         title: Optional override for the resulting doc's title. Defaults
             to the .docx filename without extension.
         tab_icons: Optional list of single emojis to assign to detected
-            tabs in order (first emoji → first detected split, etc.).
+            tabs in order (first emoji → first detected split, etc.;
+            with ``nest_by`` the order is document order, parents and
+            children interleaved as their headings appear).
             Shorter lists are fine — remaining tabs get no icon. To set
             icons later (or match by title rather than order), use
             ``gdocs_set_tab_icons``.
@@ -642,6 +659,16 @@ def gdocs_tab_existing_doc(
             "Provide exactly one of docx_path or drive_file_id "
             "(got both, or neither)."
         )
+    # markers retrofit always splits flat on the injected synthetic
+    # Heading 1s; silently ignoring nest_by there would violate the
+    # no-silent-fallback contract, so the combination is rejected.
+    if nest_by is not None and markers:
+        raise ToolError(
+            "nest_by is not supported together with markers: the markers "
+            "retrofit injects synthetic Heading 1s and always splits "
+            "flat. To nest, convert a doc whose sections use real "
+            "Heading 1 / Heading 2 paragraphs."
+        )
     if title is not None:
         _validate_title(title)
 
@@ -699,6 +726,7 @@ def gdocs_tab_existing_doc(
                 docx_path=path,
                 drive_file_id=drive_file_id,
                 split_by=split_by,
+                nest_by=nest_by,
                 title=title,
                 tab_icons=tab_icons,
                 icons_by_title=icons_by_title,
