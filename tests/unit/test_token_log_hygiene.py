@@ -186,6 +186,31 @@ def test_scrub_filter_redacts_lazy_percent_formatted_records():
     assert _LIVE_TOKEN not in record.getMessage()
 
 
+def test_scrub_filter_redacts_credential_in_non_str_arg():
+    """httpx logs ``request.url`` as an httpx.URL OBJECT (not a str);
+    a credential in that object's string form must still be redacted.
+    A str-only scrub (``isinstance(a, str)``) would let it through - the
+    filter's contract is "no credential from httpx/urllib3/... reaches a
+    log line", and those libraries pass URL objects, not strings. Arity
+    and the numeric %d arg's type are preserved so the record still
+    formats."""
+    url = httpx.URL(f"{_TOKENINFO_URL}?access_token={_LIVE_TOKEN}")
+    assert not isinstance(url, str)  # guards the premise this test exists for
+    record = logging.LogRecord(
+        name="httpx", level=logging.INFO, pathname="x", lineno=1,
+        msg='HTTP Request: %s %s "%s %d %s"',
+        args=("GET", url, "1.1", 200, "OK"),
+        exc_info=None,
+    )
+    SensitiveQueryScrubFilter().filter(record)
+    # getMessage also proves %d still formats -> the 200 arg kept its int type.
+    rendered = record.getMessage()
+    assert _LIVE_TOKEN not in rendered
+    assert "access_token=[REDACTED]" in rendered
+    assert len(record.args) == 5
+    assert record.args[3] == 200 and isinstance(record.args[3], int)
+
+
 def test_signed_url_query_params_scrubbed_from_access_log_lines():
     """uvicorn.access logs the full request target; a signed upload URL
     carries nonce + sig (credentials) and uid (the Google sub, PII).
@@ -265,6 +290,72 @@ def test_scrub_filter_on_uvicorn_loggers_survives_uvicorns_dictconfig():
         access_logger.propagate = saved_access_propagate
         root.handlers = saved_handlers
         root.setLevel(saved_level)
+
+
+def test_access_log_5arg_record_renders_scrubbed_without_logging_error(capsys):
+    """REGRESSION (post-#232): uvicorn's AccessFormatter unpacks
+    ``record.args`` into exactly 5 positional values. The first scrub
+    implementation rendered the message and set ``record.args = ()``,
+    which made that unpack raise ``ValueError`` and print a
+    "--- Logging error ---" traceback INSTEAD of the access line on
+    every signed request - the BUG-4 noise class, reintroduced on the
+    access log. The fix scrubs the string args in place, preserving
+    arity, so AccessFormatter still renders a (redacted) access line.
+
+    The other Layer-2 tests missed this because they feed pre-rendered
+    single-string records (args=()) through a plain formatter - never
+    the real 5-arg + AccessFormatter shape uvicorn's h11 protocol emits.
+    """
+    import io
+
+    from uvicorn.logging import AccessFormatter
+
+    logger = logging.getLogger("test.regression.uvicorn.access")
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    # use_colors=False -> plain text (no ANSI), so substring asserts hold.
+    handler.setFormatter(
+        AccessFormatter(
+            '%(client_addr)s - "%(request_line)s" %(status_code)s',
+            use_colors=False,
+        )
+    )
+    logger.addHandler(handler)
+    # Attach the filter at the LOGGER level, exactly where production
+    # (configure_http_logging) attaches it to uvicorn.access.
+    logger.addFilter(SensitiveQueryScrubFilter())
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        # The precise record uvicorn emits: 5 positional args, the full
+        # request target (with signed-URL credentials) as the third.
+        logger.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "169.155.1.1:0",
+            "POST",
+            "/api/convert?exp=1799999999&nonce=N-SECRET"
+            "&max=52428800&uid=110169484474386276334&sig=S-SECRET",
+            "1.1",
+            200,
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.filters = []
+
+    written = stream.getvalue()
+    # (a) the access line actually rendered - AccessFormatter did NOT blow up.
+    assert "POST /api/convert" in written
+    assert "200" in written
+    # (b) credentials + PII redacted; harmless params survive.
+    assert "N-SECRET" not in written
+    assert "S-SECRET" not in written
+    assert "110169484474386276334" not in written
+    assert "exp=1799999999" in written
+    assert "[REDACTED]" in written
+    # (c) NO logging-error block on stderr - the regression's symptom.
+    err = capsys.readouterr().err
+    assert "Logging error" not in err
+    assert "ValueError" not in err
 
 
 def test_configure_http_logging_installs_the_scrub_on_root_handlers(capsys):
