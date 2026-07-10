@@ -1225,27 +1225,34 @@ def server_health() -> dict:
       remediation_url, detail}`` where ``exec`` is one of:
 
       - ``"serving"``: the /exec endpoint answered like a live script.
-      - ``"needs_activation"``: deployed, but Google refuses requests
-        (403 door page) until the owning user opens the script once
+      - ``"needs_activation"``: deployed, but Google's consent door
+        (403) answers until the owning user opens the script once
         interactively and clicks Allow. ``remediation_url`` is the
-        script editor to do that in.
+        script editor to do that in. Distinct from a MISSING
+        deployment (PR-D): the consent remediation cannot fix a 404.
       - ``"api_disabled"``: the Google account has the Apps Script API
         toggled OFF - nothing script-related can be managed until it
         is enabled. ``remediation_url`` is
         https://script.google.com/home/usersettings (toggle ON, retry).
-      - ``"not_installed"``: no runtime recorded for this account (or
-        the recorded project no longer exists). Run
-        ``as_install_automation``.
+      - ``"not_installed"``: no runtime recorded for this account, the
+        recorded project no longer exists, or the recorded web-app
+        deployment itself is gone (its /exec 404s - the ``detail``
+        says which). Run ``as_install_automation``; a surviving
+        project is reused, so no new consent is created.
       - ``"unknown"``: the liveness probe hit transport trouble
         (timeout / DNS); says nothing about the deployment - retry.
 
-    SCOPE OF IMPACT (R3, 2026-07-10 retest 2): the automation runtime
-    gates the ``as_*`` automation family ONLY. Conversions
-    (/api/convert, gdocs_tab_existing_doc, gdocs_make_tabbed_doc) and
-    every gdocs/gdrive/gsheets/gslides tool run on plain Google REST
-    APIs and work fine while ``exec`` reads ``needs_activation`` or
-    ``api_disabled`` - do NOT abort a convert on those readings. The
-    ``gates`` field in the payload states this machine-readably.
+    SCOPE OF IMPACT (PR-D correction of the R3 text): the central
+    automation runtime is DORMANT INFRASTRUCTURE kept for future
+    features (operator decision 2026-07-10) and gates NOTHING at
+    runtime today - no tool calls
+    its /exec since the pure-REST transplant (#222), and the as_*
+    installers drive the Apps Script API with their own per-automation
+    scripts (live-proven: as_* installs succeeded while this runtime's
+    /exec was dead). What actually gates the as_* family is the Apps
+    Script API TOGGLE (``api_disabled``) and OAuth scopes. Do NOT
+    block any tool on a ``needs_activation`` or ``not_installed``
+    reading. The ``gates`` field states this machine-readably.
 
     Read-only: one Drive ``about.get``, at most one Apps Script
     ``projects.get``, and one anonymous GET of the /exec URL. Never
@@ -1266,13 +1273,28 @@ def server_health() -> dict:
     if creds is not None:
         api_status, api_detail = _probe_google_api(creds)
 
-    # R3: every runtime state carries WHAT it gates, so a caller seeing
-    # needs_activation does not false-abort a convert (retest 2 proved
-    # 7/7 converts succeed while the runtime needs activation - the
-    # convert path is pure REST since #222).
+    # R3 + PR-D: every runtime state carries WHAT it gates. PR-D derived
+    # the true gating set FROM CODE and it is EMPTY: no tool calls this
+    # web app at runtime since the pure-REST transplant (#222) - the
+    # as_* installers drive the Apps Script API with their own
+    # per-automation scripts and never POST to /exec (live-proven:
+    # as_install_sheet_menu + as_list_script_processes ran fine with
+    # this runtime's /exec dead). What actually gates the as_* family
+    # is the Apps Script API TOGGLE (the api_disabled state below) and
+    # the OAuth scopes. The R3 text claimed "gates as_* tools only" -
+    # overbroad; corrected to the derived reality so nobody blocks any
+    # tool on this runtime's state. The operator ruled (2026-07-10,
+    # brief header) to KEEP the web app as dormant infrastructure
+    # reserved for future features - the text below frames it that way.
     runtime: dict = {
         "gates": (
-            "as_* automation tools only; convert (/api/convert, "
+            "nothing at runtime today: this web app is dormant "
+            "infrastructure reserved for future features (operator "
+            "decision 2026-07-10) - no tool has called it since the "
+            "pure-REST transplant (#222) and no current tool depends on "
+            "its activation state. as_* tools require the Apps Script "
+            "API toggle and granted OAuth scopes (see api_disabled), "
+            "not this runtime; convert (/api/convert, "
             "gdocs_tab_existing_doc, gdocs_make_tabbed_doc) and all "
             "gdocs/gdrive/gsheets/gslides tools are unaffected"
         ),
@@ -1367,20 +1389,38 @@ def server_health() -> dict:
         runtime["exec"] = "serving"
         runtime["remediation_url"] = None
         runtime.setdefault("detail", None)
-    elif health is WebAppHealth.DEAD:
+    elif health is WebAppHealth.CONSENT_GATED:
         runtime["exec"] = "needs_activation"
         runtime["remediation_url"] = (
             f"https://script.google.com/d/{script_id}/edit"
         )
         runtime["detail"] = (
-            "The /exec endpoint refuses requests (Google's 403 door "
-            "page). The deployment needs its one-time interactive "
-            "activation: open the remediation URL as the installing "
-            "user, run any function once (e.g. doGet), and click "
-            "Allow on the consent prompt. Requests serve normally "
-            "after that. This gates as_* automation tools ONLY - "
-            "document conversion and the gdocs/gdrive/gsheets/gslides "
-            "tools do not use this runtime and keep working."
+            "The /exec endpoint answers with Google's consent door "
+            "(403). The deployment exists and needs its one-time "
+            "interactive activation: open the remediation URL as the "
+            "installing user, run any function once (e.g. doGet), and "
+            "click Allow on the consent prompt. Requests serve "
+            "normally after that. No tool is blocked by this state "
+            "today (see gates); activation only matters if a future "
+            "feature consumes this runtime."
+        )
+    elif health is WebAppHealth.GONE:
+        # PR-D (Finding C): a 404-dead deployment is NOT a consent
+        # problem - the consent remediation cannot fix it (this
+        # mislabel started the whole investigation). The exec value
+        # reuses "not_installed" (the declared enum's closest truth:
+        # functionally there is no runtime to reach) rather than
+        # adding a new enum value; the detail carries the precise
+        # state + the redeploy remediation.
+        runtime["installed"] = False
+        runtime["exec"] = "not_installed"
+        runtime["remediation_url"] = None
+        runtime["detail"] = (
+            "The recorded web-app deployment no longer exists (the "
+            "/exec URL returns 404) even though an install was "
+            "recorded. Re-run as_install_automation to redeploy; the "
+            "existing script project is reused when it survives, so "
+            "no new consent is created."
         )
     else:
         runtime["exec"] = "unknown"

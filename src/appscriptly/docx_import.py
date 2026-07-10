@@ -107,6 +107,7 @@ from .services.drive.api import (
     GDOC_MIME,
     classify_drive_file,
     copy_google_doc,
+    effective_convert_title,
     fetch_and_convert_drive_docx,
     find_doc_by_title,
     trash_drive_file,
@@ -225,6 +226,11 @@ def convert_docx_to_tabbed_doc(
       trashes only that doc).
     - ``"skip"``: if a same-title doc already exists, perform NO
       conversion and return that doc's info with ``action="skipped"``.
+
+    on_conflict compares against PRE-EXISTING documents only, never
+    against sibling jobs inside the same batch request: two same-title
+    parts in one batch both get created (by design - the lookup runs
+    before either sibling exists).
 
     ``user_id`` is accepted for REST-route compatibility (the
     ``/api/convert`` endpoint forwards the signed-URL caller's uid).
@@ -889,29 +895,24 @@ def _expected_final_title(
     """The title the import step WILL assign, resolved without running
     it - the on_conflict lookups need it before/independent of import.
 
-    MUST mirror the naming rules of ``upload_and_convert_docx`` /
-    ``fetch_and_convert_drive_docx`` / ``copy_google_doc`` (keep in
-    lockstep with services/drive/api.py).
+    Lockstep with the naming sites is now BY CONSTRUCTION: this
+    predictor and every import helper (``upload_and_convert_docx`` /
+    ``fetch_and_convert_drive_docx`` / ``copy_google_doc``) route
+    through the single ``effective_convert_title`` (services/drive/api)
+    - the N8 incident was exactly these drifting apart.
     """
     if docx_path is not None:
-        return title or docx_path.stem
+        return effective_convert_title(
+            title, source_kind="docx", source_name=docx_path.stem
+        )
     assert drive_file_id is not None  # caller validated exactly-one-of
     drive = get_service("drive", "v3", credentials=creds)
     meta = drive.files().get(
         fileId=drive_file_id, fields="name,mimeType"
     ).execute()
     name = meta.get("name") or ""
-    if meta.get("mimeType") == GDOC_MIME:
-        # N8 (retest 3): explicit titles are honored VERBATIM on every
-        # entry point; the " (tabified)" suffix belongs ONLY to the
-        # no-title fallback (where the working copy must not shadow the
-        # source doc's own name). Suffixing an explicit title made
-        # drive-path on_conflict lookups miss upload-path docs carrying
-        # the requested title.
-        return title if title else name + " (tabified)"
-    if name.lower().endswith(".docx"):
-        name = name[:-5]
-    return title or name
+    kind = "gdoc" if meta.get("mimeType") == GDOC_MIME else "docx"
+    return effective_convert_title(title, source_kind=kind, source_name=name)
 
 
 def _same_title_docs(

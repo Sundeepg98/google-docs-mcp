@@ -2047,13 +2047,25 @@ GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA = {
     "properties": {
         "status": {
             "type": "string",
-            "enum": ["ready", "needs_authorization", "failed"],
+            # PR-D: "needs_activation" = the runtime deployed fine and
+            # is waiting for the user's ONE-TIME per-script consent
+            # (Run + Allow in the script editor). Returned as data, not
+            # an exception: pre-PR-D this state either reported "ready"
+            # (a lie - the endpoint serves Google's 403 door) or raised
+            # a misdiagnosed "re-authorize / API disabled" error.
+            "enum": [
+                "ready",
+                "needs_activation",
+                "needs_authorization",
+                "failed",
+            ],
         },
         # Variant-specific fields:
         "url": {"type": "string", "format": "uri"},
         "script_id": {"type": "string"},
         "deployment_id": {"type": "string"},
         "auth_url": {"type": "string", "format": "uri"},
+        "activation_url": {"type": "string", "format": "uri"},
         "error": {"type": "string"},
         "message": {"type": "string"},
     },
@@ -2063,6 +2075,10 @@ GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA = {
         {
             "properties": {"status": {"const": "ready"}},
             "required": ["status", "url", "script_id", "deployment_id"],
+        },
+        {
+            "properties": {"status": {"const": "needs_activation"}},
+            "required": ["status", "activation_url", "message"],
         },
         {
             "properties": {"status": {"const": "needs_authorization"}},

@@ -120,6 +120,35 @@ _FORMAT_EXTENSION: dict[str, str] = {
 }
 
 
+def effective_convert_title(
+    title: str | None, *, source_kind: str, source_name: str
+) -> str:
+    """One source of truth for a conversion output's FINAL title (N8).
+
+    ``source_kind``: ``"docx"`` (a .docx file name/stem - local upload
+    or a Drive-resident .docx) or ``"gdoc"`` (copying a native Google
+    Doc). An EXPLICIT title is returned VERBATIM on every entry point -
+    the N8 incident was a naming site suffixing explicit titles, which
+    made cross-entry-point on_conflict lookups miss each other's docs.
+    The no-title fallbacks: docx -> the source name minus its ``.docx``
+    extension; gdoc -> the source name + " (tabified)" so the working
+    copy cannot shadow the source doc's own name in Drive.
+
+    EVERY naming site (upload_and_convert_docx,
+    fetch_and_convert_drive_docx, copy_google_doc) AND the on_conflict
+    predictor (docx_import._expected_final_title) route through this
+    function - one definition, no drift (the #235 reviewer's ask).
+    """
+    if title:
+        return title
+    if source_kind == "gdoc":
+        return source_name + " (tabified)"
+    name = source_name
+    if name.lower().endswith(".docx"):
+        name = name[:-5]
+    return name
+
+
 def upload_and_convert_docx(
     creds: Credentials,
     docx_path: Path,
@@ -158,7 +187,9 @@ def upload_and_convert_docx(
     drive = get_service("drive", "v3", credentials=creds)
     media = MediaFileUpload(str(docx_path), mimetype=DOCX_MIME, resumable=False)
     body = {
-        "name": title or docx_path.stem,
+        "name": effective_convert_title(
+            title, source_kind="docx", source_name=docx_path.stem
+        ),
         "mimeType": GDOC_MIME,
     }
     file = drive.files().create(
@@ -216,13 +247,15 @@ def fetch_and_convert_drive_docx(
         _status, done = downloader.next_chunk()
     buf.seek(0)
 
-    fallback_title = meta["name"]
-    if fallback_title.lower().endswith(".docx"):
-        fallback_title = fallback_title[:-5]
 
     media = MediaIoBaseUpload(buf, mimetype=DOCX_MIME, resumable=False)
     file = drive.files().create(
-        body={"name": title or fallback_title, "mimeType": GDOC_MIME},
+        body={
+            "name": effective_convert_title(
+                title, source_kind="docx", source_name=meta["name"]
+            ),
+            "mimeType": GDOC_MIME,
+        },
         media_body=media,
         fields="id,name",
     ).execute()
@@ -272,7 +305,9 @@ def copy_google_doc(
     # it exists so the working copy cannot shadow the SOURCE doc's own
     # name in Drive. Keep in lockstep with
     # docx_import._expected_final_title.
-    new_name = title if title else meta["name"] + " (tabified)"
+    new_name = effective_convert_title(
+        title, source_kind="gdoc", source_name=meta["name"]
+    )
     new_file = drive.files().copy(
         fileId=google_doc_id,
         body={"name": new_name},

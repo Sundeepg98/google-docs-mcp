@@ -592,3 +592,165 @@ def test_as_deploy_web_app_non_public_validation_propagates(monkeypatch):
                 title="No handler",
                 access="MYSELF",
             )
+
+
+# ---------------------------------------------------------------------
+# PR-D (Finding B): _installed_runtime_payload — the installer's
+# post-provision classification. One probe on the fresh deployment;
+# the consent gate comes back as DATA (needs_activation + the exact
+# one-time Run + Allow remediation), never as an exception and never
+# as a re-provision.
+# ---------------------------------------------------------------------
+
+
+def _fresh_deployment():
+    from appscriptly.services.gas_deploy.api import WebAppDeployment
+
+    return WebAppDeployment(
+        script_id="SCRIPT_X",
+        deployment_id="DEPLOY_X",
+        version=1,
+        url="https://script.google.com/macros/s/DEPLOY_X/exec",
+    )
+
+
+def _payload_with_probe(monkeypatch, verdict):
+    import jsonschema
+
+    from appscriptly.services.gas_deploy import tools
+
+    monkeypatch.setattr(tools, "probe_webapp_health", lambda url: verdict)
+    payload = tools._installed_runtime_payload(_fresh_deployment())
+    from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+
+    jsonschema.validate(payload, GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    return payload
+
+
+def test_installed_payload_consent_gated_returns_needs_activation(monkeypatch):
+    """The consent door on a fresh deployment is the EXPECTED state
+    (every new web app serves it until its owner's one-time Run +
+    Allow) — the installer must answer with activation instructions,
+    not claim "ready" and not raise."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    payload = _payload_with_probe(monkeypatch, WebAppHealth.CONSENT_GATED)
+    assert payload["status"] == "needs_activation"
+    assert payload["activation_url"] == (
+        "https://script.google.com/d/SCRIPT_X/edit"
+    )
+    assert "Allow" in payload["message"]
+    assert "Run" in payload["message"]
+    # The provisioned identifiers still travel so the caller can show
+    # or persist them.
+    assert payload["script_id"] == "SCRIPT_X"
+    assert payload["deployment_id"] == "DEPLOY_X"
+
+
+def test_installed_payload_healthy_returns_ready(monkeypatch):
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    payload = _payload_with_probe(monkeypatch, WebAppHealth.HEALTHY)
+    assert payload["status"] == "ready"
+    assert payload["url"].endswith("/exec")
+
+
+def test_installed_payload_unknown_returns_ready(monkeypatch):
+    """A network blip on the verification probe must never fail an
+    otherwise complete install."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    payload = _payload_with_probe(monkeypatch, WebAppHealth.UNKNOWN)
+    assert payload["status"] == "ready"
+
+
+def test_installed_payload_gone_raises_retryable_tool_error(monkeypatch):
+    """A deployment that 404s the moment it was created is a transient
+    Google-side anomaly: loud + retryable, and the message must promise
+    the retry reuses the SAME project (no extra consent)."""
+    import pytest as _pytest
+    from fastmcp.exceptions import ToolError
+
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    monkeypatch.setattr(
+        tools, "probe_webapp_health", lambda url: WebAppHealth.GONE
+    )
+    with _pytest.raises(ToolError, match="404"):
+        tools._installed_runtime_payload(_fresh_deployment())
+    try:
+        tools._installed_runtime_payload(_fresh_deployment())
+    except ToolError as e:
+        assert "reused" in str(e)
+        assert "consent" in str(e)
+
+
+def test_install_tool_stdio_branch_routes_through_payload_classifier(
+    monkeypatch,
+):
+    """WIRING pin (stdio branch): the tool body must hand the fresh
+    deployment to _installed_runtime_payload — a regression back to
+    returning an inline "ready" dict would silently re-lie about
+    consent-gated endpoints."""
+    import jsonschema
+
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+    from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+
+    monkeypatch.setattr(tools, "current_user_id_or_none", lambda: None)
+    monkeypatch.setattr(
+        tools, "setup_apps_script_auto", lambda: _fresh_deployment()
+    )
+    monkeypatch.setattr(
+        tools,
+        "probe_webapp_health",
+        lambda url: WebAppHealth.CONSENT_GATED,
+    )
+
+    payload = tools._install_automation_runtime()
+    jsonschema.validate(payload, GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    assert payload["status"] == "needs_activation"
+    assert payload["activation_url"] == (
+        "https://script.google.com/d/SCRIPT_X/edit"
+    )
+
+
+def test_install_tool_cloud_branch_routes_through_payload_classifier(
+    monkeypatch,
+):
+    """WIRING pin (cloud branch): same guarantee for the multi-tenant
+    path — creds resolve fine, provisioning succeeds, and the consent
+    door still comes back as needs_activation DATA."""
+    import jsonschema
+    from unittest.mock import MagicMock
+
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+    from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+
+    monkeypatch.setattr(tools, "current_user_id_or_none", lambda: "user-1")
+    monkeypatch.setattr(tools, "resolve_runtime_oauth_config", lambda: {})
+    monkeypatch.setattr(
+        tools,
+        "get_credentials_for_user",
+        lambda user_id, required_scopes, **kw: MagicMock(name="creds"),
+    )
+    captured: dict = {}
+
+    def fake_setup(creds, user_id):
+        captured["user_id"] = user_id
+        return _fresh_deployment()
+
+    monkeypatch.setattr(tools, "setup_apps_script_for_user", fake_setup)
+    monkeypatch.setattr(
+        tools,
+        "probe_webapp_health",
+        lambda url: WebAppHealth.CONSENT_GATED,
+    )
+
+    payload = tools._install_automation_runtime()
+    jsonschema.validate(payload, GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    assert payload["status"] == "needs_activation"
+    assert captured["user_id"] == "user-1"
