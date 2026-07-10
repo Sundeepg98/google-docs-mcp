@@ -111,13 +111,15 @@ class RequestIdLogFilter(logging.Filter):
 # credential even if a future dependency reintroduces one.
 #
 # The name pattern intentionally over-matches (any param ENDING in
-# token/sig/signature/secret/assertion/password/key/nonce): redacting a
-# benign value from a log line costs nothing; missing a credential
-# leaks one. Mirrors the Sentry-side ``_REDACT_KEY_PATTERNS`` posture
-# in ``observability.py``.
+# token/sig/signature/secret/assertion/password/key/nonce/uid):
+# redacting a benign value from a log line costs nothing; missing a
+# credential leaks one. ``uid`` is included because signed upload URLs
+# carry the caller's Google ``sub`` as ``uid=`` and uvicorn's access
+# line logs the full request target. Mirrors the Sentry-side
+# ``_REDACT_KEY_PATTERNS`` posture in ``observability.py``.
 _SENSITIVE_QUERY_RE = re.compile(
     r"((?:^|[?&\s\"'(,])[\w.\-]*"
-    r"(?:token|sig|signature|secret|assertion|password|key|nonce)=)"
+    r"(?:token|sig|signature|secret|assertion|password|key|nonce|uid)=)"
     r"[^&\s\"'),]+",
     re.IGNORECASE,
 )
@@ -129,8 +131,16 @@ class SensitiveQueryScrubFilter(logging.Filter):
     Installed on the root logging HANDLERS (like ``RequestIdLogFilter``,
     and for the same reason: handler-level filters run for propagated
     records from child loggers such as ``httpx``, logger-level ones do
-    not). Rewrites the record's message in place; a scrubbed record
-    keeps flowing, nothing is dropped.
+    not) AND on the ``uvicorn`` / ``uvicorn.access`` LOGGER objects:
+    uvicorn's dictConfig wires its own non-propagating handlers, so
+    root-handler filters never see its records - but a logger-level
+    filter runs for records emitted ON that logger regardless of which
+    handlers serve them, and ``logging.config`` re-configuration clears
+    a logger's HANDLERS, not its FILTERS, so the attachment survives
+    uvicorn's own logging setup. This is what keeps signed-URL query
+    strings (exp/nonce/sig/uid) out of the access log. Rewrites the
+    record's message in place; a scrubbed record keeps flowing, nothing
+    is dropped.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:

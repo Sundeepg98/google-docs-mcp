@@ -186,6 +186,87 @@ def test_scrub_filter_redacts_lazy_percent_formatted_records():
     assert _LIVE_TOKEN not in record.getMessage()
 
 
+def test_signed_url_query_params_scrubbed_from_access_log_lines():
+    """uvicorn.access logs the full request target; a signed upload URL
+    carries nonce + sig (credentials) and uid (the Google sub, PII).
+    All three redact; the harmless exp/max survive."""
+    line = (
+        '169.155.1.1:0 - "POST /api/convert?exp=1799999999&nonce=N-SECRET'
+        '&max=52428800&uid=110169484474386276334&sig=S-SECRET HTTP/1.1" 200'
+    )
+    record = _record(line)
+    SensitiveQueryScrubFilter().filter(record)
+    scrubbed = record.getMessage()
+    assert "N-SECRET" not in scrubbed
+    assert "S-SECRET" not in scrubbed
+    assert "110169484474386276334" not in scrubbed
+    assert "exp=1799999999" in scrubbed
+    assert "max=52428800" in scrubbed
+
+
+def test_scrub_filter_on_uvicorn_loggers_survives_uvicorns_dictconfig():
+    """uvicorn wires NON-propagating handlers via dictConfig inside
+    uvicorn.run - after configure_http_logging has run. Root-handler
+    filters never see those records; the logger-LEVEL attachment must
+    (a) exist and (b) survive dictConfig, which clears a logger's
+    handlers but not its filters. Simulated with uvicorn's config shape."""
+    import io
+    import logging.config
+
+    from appscriptly.http_server.app import configure_http_logging
+
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    access_logger = logging.getLogger("uvicorn.access")
+    saved_access_filters = access_logger.filters[:]
+    saved_access_propagate = access_logger.propagate
+    root.handlers = []
+    try:
+        configure_http_logging()
+        assert any(
+            isinstance(f, SensitiveQueryScrubFilter)
+            for f in access_logger.filters
+        )
+
+        # uvicorn's own logging setup: fresh non-propagating handler on
+        # uvicorn.access (mirrors uvicorn.config.LOGGING_CONFIG shape).
+        stream = io.StringIO()
+        logging.config.dictConfig({
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {
+                "access": {"class": "logging.StreamHandler",
+                           "stream": stream},
+            },
+            "loggers": {
+                "uvicorn.access": {
+                    "handlers": ["access"], "level": "INFO",
+                    "propagate": False,
+                },
+            },
+        })
+        # The filter attachment survived...
+        assert any(
+            isinstance(f, SensitiveQueryScrubFilter)
+            for f in access_logger.filters
+        )
+        # ...and scrubs a record served by uvicorn's OWN handler.
+        access_logger.info(
+            '"POST /api/convert?nonce=LIVE-NONCE&sig=LIVE-SIG HTTP/1.1" 200'
+        )
+        written = stream.getvalue()
+        assert "LIVE-NONCE" not in written
+        assert "LIVE-SIG" not in written
+        assert "[REDACTED]" in written
+    finally:
+        access_logger.handlers = []
+        access_logger.filters = saved_access_filters
+        access_logger.propagate = saved_access_propagate
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+
+
 def test_configure_http_logging_installs_the_scrub_on_root_handlers(capsys):
     """The wiring test: after configure_http_logging, a record emitted
     by a CHILD logger (httpx's propagation path) reaches the root

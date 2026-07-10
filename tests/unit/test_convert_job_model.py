@@ -687,6 +687,58 @@ def test_drive_file_ids_batch():
     assert sorted(seen) == ["F1", "F2"]
 
 
+@pytest.mark.parametrize("mode", ["upload", "batch", "drive_file_id"])
+def test_every_entry_point_defaults_placeholder_delete(mode):
+    """R1 regression pin, reviewer-requested form: ONE parametrized test
+    over ALL entry points so the placeholder default can never drift
+    per-path again. No placeholder_behavior is passed; every mode must
+    forward the identical default (delete) to the converter. (The tool
+    entry - gdocs_tab_existing_doc - is pinned the same way in
+    services/docs/test_tools.py; the converter's own entries in
+    test_docx_import_pipeline.py.)"""
+    app = _build_app_under_test()
+    captured_behaviors: list[str] = []
+
+    def fake_convert(creds, **kwargs):
+        captured_behaviors.append(kwargs["placeholder_behavior"])
+        return {
+            "doc_id": f"D{len(captured_behaviors)}", "url": "https://x",
+            "tabs": [],
+        }
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=fake_convert,
+    ), TestClient(app) as client:
+        if mode == "upload":
+            r = client.post(
+                "/api/convert", files=_docx_form(), headers=_bearer_headers(),
+            )
+            assert r.status_code == 200, r.text
+        elif mode == "batch":
+            files = [
+                ("file", ("a.docx", b"PK\x03\x04pd-a", _DOCX_MIME)),
+                ("file", ("b.docx", b"PK\x03\x04pd-b", _DOCX_MIME)),
+            ]
+            r = client.post(
+                "/api/convert", files=files, headers=_bearer_headers(),
+            )
+            assert r.status_code == 202, r.text
+            for descriptor in r.json()["jobs"]:
+                _poll_until_terminal(client, _status_path(descriptor))
+        else:
+            r = client.post(
+                "/api/convert",
+                data={"drive_file_id": "F-DEFAULTS"},
+                headers=_bearer_headers(),
+            )
+            assert r.status_code == 200, r.text
+
+    assert captured_behaviors, "converter never ran"
+    assert all(b == "delete" for b in captured_behaviors), captured_behaviors
+
+
 def test_input_mode_validation():
     app = _build_app_under_test()
     with TestClient(app) as client:

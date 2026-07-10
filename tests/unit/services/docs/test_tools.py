@@ -345,6 +345,11 @@ def test_gdocs_tab_existing_doc_drive_file_id_dispatches_to_convert(
     assert captured["kwargs"]["drive_file_id"] == "DRIVE_X"
     assert captured["kwargs"]["split_by"] == "heading_1"  # default
     assert captured["kwargs"]["nest_by"] is None  # default: flat split
+    # R1 (retest 2): the TOOL's from-Drive entry - the exact path the
+    # retest drove - forwards the unified placeholder default (delete),
+    # same as the upload and HTTP entries (pinned in
+    # test_docx_import_pipeline.py + test_convert_job_model.py).
+    assert captured["kwargs"]["placeholder_behavior"] == "delete"
 
 
 def test_gdocs_tab_existing_doc_passes_nest_by_to_convert(monkeypatch):
