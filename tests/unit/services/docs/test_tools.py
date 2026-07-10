@@ -451,7 +451,30 @@ def test_gdocs_delete_tab_refuses_non_empty_tab_without_force(with_docs_stub):
     with pytest.raises(ToolError, match="non_empty_tab_guard") as excinfo:
         tools.gdocs_delete_tab(doc_id="DOC1", tab_id="T_FULL")
     assert "force=true" in str(excinfo.value)
+    # T_FULL is not the first root tab, so the refusal must NOT carry
+    # the first-tab poisoning note (that would train callers to ignore it).
+    assert "first_tab_deleted_500" not in str(excinfo.value)
     assert not with_docs_stub.documents().batchUpdate.called
+
+
+def test_gdocs_delete_tab_refusal_on_non_empty_first_tab_carries_both_notes(
+    with_docs_stub,
+):
+    """One coherent safety story: refusing a NON-EMPTY FIRST tab names
+    the guard AND the permanent tab-property poisoning, so the caller
+    deciding whether to force sees the full cost up front."""
+    from fastmcp.exceptions import ToolError
+
+    with_docs_stub.documents().get().execute.return_value = {
+        "documentId": "DOC1",
+        "tabs": [
+            _tab("t.0", "Tab 1", ["the only copy of section 7"]),
+            _tab("T_B", "Beta", ["x"]),
+        ],
+    }
+    with pytest.raises(ToolError, match="non_empty_tab_guard") as excinfo:
+        tools.gdocs_delete_tab(doc_id="DOC1", tab_id="t.0")
+    assert "first_tab_deleted_500" in str(excinfo.value)
 
 
 def test_gdocs_delete_tab_counts_child_tab_content_against_the_guard(

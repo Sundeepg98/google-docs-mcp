@@ -819,11 +819,31 @@ def gdocs_delete_tab(
             f"gdocs_get_doc_outline to list the current tab ids "
             f"(the tab may already have been deleted)."
         )
+    # One coherent safety story from a single inspection:
+    #   non-empty  -> REFUSE unless force=true (data is unrecoverable);
+    #   first tab  -> WARN about the permanent tab-property poisoning
+    #                 (applies even to an EMPTY first tab, and rides
+    #                 along inside the refusal so a caller deciding
+    #                 whether to force sees the full cost up front).
+    first_tab_note = (
+        "this is the document's FIRST tab, and a known Google Docs "
+        "API defect makes every later tab rename / icon change "
+        "(updateDocumentTabProperties) on the document fail with a "
+        "permanent 500 once it is deleted. Adding tabs afterwards "
+        "does not clear that state. Set titles and icons BEFORE "
+        "deleting a first tab; new tabs can still carry icon_emoji "
+        "at creation. (first_tab_deleted_500)"
+    )
     counts = info["counts"]
     if info["non_empty_elements"] > 0 and not force:
         child_note = (
             f" and its {info['child_tab_count']} child tab(s)"
             if info["child_tab_count"]
+            else ""
+        )
+        first_tab_clause = (
+            f" Also note: {first_tab_note}"
+            if info["is_first_root_tab"]
             else ""
         )
         raise ToolError(
@@ -835,7 +855,7 @@ def gdocs_delete_tab(
             f"Tab deletion is permanent - no trash, no undo. Read the "
             f"tab first (gdocs_read_doc with this tab_id) to confirm "
             f"nothing is lost, then pass force=true to delete anyway. "
-            f"(non_empty_tab_guard)"
+            f"(non_empty_tab_guard){first_tab_clause}"
         )
     _delete_tab(creds, doc_id, tab_id)
     result: dict = {"doc_id": doc_id, "deleted_tab_id": tab_id}
@@ -843,12 +863,7 @@ def gdocs_delete_tab(
         result["forced"] = True
     if info["is_first_root_tab"]:
         result["warnings"] = [
-            "You deleted this document's first tab. A known Google "
-            "Docs API defect makes every later tab rename / icon "
-            "change (updateDocumentTabProperties) on this document "
-            "fail with a permanent 500. Set titles and icons BEFORE "
-            "deleting a first tab; new tabs can still be added with "
-            "their icon_emoji at creation. (first_tab_deleted_500)"
+            f"You deleted this document's first tab - {first_tab_note}"
         ]
     return result
 
