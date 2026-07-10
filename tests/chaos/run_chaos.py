@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import statistics
 import sys
 import tempfile
@@ -111,6 +112,15 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------
 
 
+# Issue #234 flake tolerance: bounded retries for the one error class
+# that is a CI-runner IO artifact rather than a store defect. sqlite's
+# "database is locked" at the 5s busy_timeout boundary reproduced ~1 op
+# in ~39k ONLY under the 16-worker CI hammer and vanished on re-run;
+# prod never sees that contention profile and its callers retry anyway.
+_LOCK_RETRY_ATTEMPTS = 3
+_LOCK_RETRY_SLEEP_SECONDS = 0.05
+
+
 def _run_s1(
     *,
     max_duration: float,
@@ -142,19 +152,36 @@ def _run_s1(
     latencies_ms: list[float] = []
     errors: list[str] = []
     ops_total = 0
+    ops_lock_retried = 0
     _final_values: dict[str, str] = {}  # populated by workers in finally
-    lock = threading.Lock()  # guards latencies_ms / errors / ops_total
+    lock = threading.Lock()  # guards the shared tallies above
 
     stop_at = time.monotonic() + max_duration
     deadline_reached = threading.Event()
 
     def worker(idx: int) -> None:
-        nonlocal ops_total
+        nonlocal ops_total, ops_lock_retried
         user_id = f"chaos-s1-user-{idx:04d}"
         local_ops = 0
+        local_lock_retries = 0
         local_lat: list[float] = []
         local_errs: list[str] = []
         last_value = ""
+
+        def attempt_op(value: str) -> None:
+            """One save+readback; the stale-read check records a REAL
+            defect (never retried)."""
+            user_store.save_state(user_id, {"apps_script_url": value})
+            state = user_store.get_state(user_id)
+            if state.get("apps_script_url") != value:
+                # Worker just wrote `value` and read back something
+                # else — that's the torn-write/cross-worker bleed
+                # we're hunting for.
+                local_errs.append(
+                    f"worker {idx} read back stale or cross-worker "
+                    f"value: wrote={value!r} got={state.get('apps_script_url')!r}"
+                )
+
         try:
             while time.monotonic() < stop_at:
                 local_ops += 1
@@ -164,16 +191,33 @@ def _run_s1(
                 )
                 start = time.perf_counter()
                 try:
-                    user_store.save_state(user_id, {"apps_script_url": value})
-                    state = user_store.get_state(user_id)
-                    if state.get("apps_script_url") != value:
-                        # Worker just wrote `value` and read back something
-                        # else — that's the torn-write/cross-worker bleed
-                        # we're hunting for.
-                        local_errs.append(
-                            f"worker {idx} read back stale or cross-worker "
-                            f"value: wrote={value!r} got={state.get('apps_script_url')!r}"
-                        )
+                    # Flake tolerance (issue #234): under the CI runner's
+                    # 16-worker IO contention, ~1 op in ~39k trips
+                    # sqlite's 5s busy_timeout and raises "database is
+                    # locked" — a runner IO stall at the timeout
+                    # boundary, not a lock-ordering bug (re-runs pass
+                    # clean; a logging-only diff tripped it). Mirror
+                    # prod's retry posture: retry ONLY that error, a
+                    # bounded number of times, and COUNT the retries in
+                    # the report so a regression from "vanishingly rare
+                    # stall" to "systemic contention" stays visible. A
+                    # REAL deadlock persists through retries and still
+                    # fails the run; every other exception records
+                    # immediately, as before.
+                    for retry in range(1 + _LOCK_RETRY_ATTEMPTS):
+                        try:
+                            attempt_op(value)
+                            break
+                        except sqlite3.OperationalError as e:
+                            if (
+                                "database is locked" not in str(e)
+                                or retry == _LOCK_RETRY_ATTEMPTS
+                            ):
+                                raise
+                            local_lock_retries += 1
+                            time.sleep(
+                                _LOCK_RETRY_SLEEP_SECONDS * (retry + 1)
+                            )
                     last_value = value
                 except Exception as e:  # noqa: BLE001 — record-all by design
                     local_errs.append(
@@ -184,6 +228,7 @@ def _run_s1(
         finally:
             with lock:
                 ops_total += local_ops
+                ops_lock_retried += local_lock_retries
                 latencies_ms.extend(local_lat)
                 errors.extend(local_errs)
             # Stash the final value for post-run verification.
@@ -247,6 +292,9 @@ def _run_s1(
     summary: dict[str, Any] = {
         "ops_total": ops_total,
         "ops_failed": ops_failed,
+        # Lock-timeout retries served (issue #234): expected ~0; a jump
+        # here means real contention growth even while the run passes.
+        "ops_lock_retried": ops_lock_retried,
         "workers": workers,
         "duration_seconds": round(duration, 3),
         "errors": errors[:20],  # cap the report so it doesn't grow unbounded
