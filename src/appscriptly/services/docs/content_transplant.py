@@ -50,7 +50,9 @@ exported for reuse by any future channel that closes the tail.
 from __future__ import annotations
 
 import logging
+import os
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -118,6 +120,95 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
         isinstance(exc, HttpError)
         and getattr(exc, "status_code", None) == 429
     )
+
+
+# ---------------------------------------------------------------------
+# Per-user cross-job WRITE GOVERNOR (A2 root fix, 2026-07-10 retest 3)
+#
+# The 60-writes/min Docs quota is PER USER, but concurrent convert jobs
+# each ran their own writes flat out: under an 8-job storm they competed
+# each other into 429s until one job's retry budget bled dry and it died
+# terminally (7/8). The governor paces batchUpdate SENDS across every
+# concurrent job of the same user so the aggregate stays under quota -
+# the 429s (and their budget burn) largely stop happening at the source.
+#
+# Mechanics: one pacer per user key, shared across the worker THREADS
+# that run converts (asyncio.to_thread). acquire() reserves the next
+# send slot under a lock and sleeps outside it, so concurrent writers
+# space themselves ~MIN_INTERVAL apart in reservation order. Waiting on
+# the governor is ordinary pacing, NOT a 429 retry: it consumes no
+# _RateLimitBudget.
+#
+# Interval: 60/min quota -> ~1.09s floor for a 55/min target; 1.1s
+# default leaves headroom for the few ungoverned writes elsewhere
+# (icons, tab deletes). Override with DOCS_WRITE_MIN_INTERVAL_SECONDS
+# (0 disables - the test suites do this to stay fast).
+# ---------------------------------------------------------------------
+
+_WRITE_GOVERNOR_DEFAULT_INTERVAL_SECONDS = 1.1
+_WRITE_GOVERNOR_ENV = "DOCS_WRITE_MIN_INTERVAL_SECONDS"
+
+
+def _write_governor_interval() -> float:
+    raw = os.environ.get(_WRITE_GOVERNOR_ENV, "")
+    if not raw:
+        return _WRITE_GOVERNOR_DEFAULT_INTERVAL_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        _log.warning(
+            "invalid %s=%r; using default %.2fs",
+            _WRITE_GOVERNOR_ENV, raw,
+            _WRITE_GOVERNOR_DEFAULT_INTERVAL_SECONDS,
+        )
+        return _WRITE_GOVERNOR_DEFAULT_INTERVAL_SECONDS
+
+
+class _WriteGovernor:
+    """Minimum-interval pacer for one user's Docs write requests.
+
+    Thread-safe: the reservation (compute my wait, book the next free
+    slot) happens under the lock; the sleep happens outside it, so N
+    threads queue up in reservation order without serializing their
+    sleeps. The interval is re-read from the env per acquire so tests
+    and operators can tune without restarting."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_free = 0.0  # time.monotonic() when the next send may go
+
+    def acquire(self) -> float:
+        """Block until this thread's send slot; return the wait served."""
+        interval = _write_governor_interval()
+        if interval <= 0:
+            return 0.0
+        with self._lock:
+            now = time.monotonic()
+            wait = max(0.0, self._next_free - now)
+            self._next_free = max(now, self._next_free) + interval
+        if wait > 0:
+            time.sleep(wait)
+        return wait
+
+
+_GOVERNORS: dict[str, _WriteGovernor] = {}
+_GOVERNORS_LOCK = threading.Lock()
+
+
+def _governor_for(key: str | None) -> _WriteGovernor:
+    """The (created-on-demand) pacer for one user key.
+
+    ``None`` maps to the operator/single-tenant bucket - the quota is
+    per Google user either way, and bearer-path converts all run as the
+    operator."""
+    resolved = key or "operator"
+    with _GOVERNORS_LOCK:
+        governor = _GOVERNORS.get(resolved)
+        if governor is None:
+            governor = _WriteGovernor()
+            _GOVERNORS[resolved] = governor
+        return governor
+
 
 # ---------------------------------------------------------------------
 # Fidelity registry - the honest non-representable tail
@@ -972,18 +1063,32 @@ def _batch_update(
     doc_id: str,
     requests: list[dict],
     budget: _RateLimitBudget | None = None,
+    governor: "_WriteGovernor | None" = None,
 ) -> None:
     # Content writes are single-shot for everything EXCEPT 429:
     # replaying a partially-applied mutation risks duplicate inserts
     # (same convention as make_doc_with_tabs / insert_markdown_table),
     # but a 429 was rejected before execution, so backing off and
     # re-sending the SAME chunk is safe (see the N2 block up top).
+    #
+    # Every SEND (first try and each 429 retry alike) first takes the
+    # per-user governor slot, so concurrent jobs pace each other under
+    # the shared quota instead of colliding into 429s. Governor waits
+    # are ordinary pacing and consume no retry budget.
     if budget is None:
         budget = _RateLimitBudget()
     for start in range(0, len(requests), _MAX_REQUESTS_PER_BATCH):
         chunk = requests[start : start + _MAX_REQUESTS_PER_BATCH]
         while True:
             try:
+                if governor is not None:
+                    paced = governor.acquire()
+                    if paced > 0.5:
+                        _log.info(
+                            "docs write paced %.1fs by the per-user "
+                            "write governor for doc %s",
+                            paced, doc_id,
+                        )
                 execute_with_retry(
                     lambda chunk=chunk: docs.documents().batchUpdate(
                         documentId=doc_id, body={"requests": chunk}
@@ -1140,6 +1245,7 @@ def _execute_table_phase(
     phase: TablePhase,
     base: int,
     budget: _RateLimitBudget | None = None,
+    governor: "_WriteGovernor | None" = None,
 ) -> int:
     """Create, fill, and style one table at ``base``; return the index
     just after the finished table (the next append position)."""
@@ -1158,6 +1264,7 @@ def _execute_table_phase(
             }
         ],
         budget=budget,
+        governor=governor,
     )
     # Sync-point: cell indices are server-assigned, so re-fetch and
     # locate the just-created table (first table at/after base).
@@ -1180,12 +1287,14 @@ def _execute_table_phase(
             )
         _execute_phases(
             docs, doc_id, tab_id, phase.cell_plans[key].phases, starts[key],
-            budget=budget,
+            budget=budget, governor=governor,
         )
 
     style_requests = _table_style_requests(phase, table_element["startIndex"])
     if style_requests:
-        _batch_update(docs, doc_id, style_requests, budget=budget)
+        _batch_update(
+            docs, doc_id, style_requests, budget=budget, governor=governor
+        )
 
     # Fills and merges moved the table's end; re-anchor from the live
     # document rather than trusting arithmetic.
@@ -1205,18 +1314,20 @@ def _execute_phases(
     phases: list[SegmentPhase | TablePhase],
     base: int,
     budget: _RateLimitBudget | None = None,
+    governor: "_WriteGovernor | None" = None,
 ) -> int:
     for phase in phases:
         if isinstance(phase, SegmentPhase):
             if phase.requests:
                 _batch_update(
                     docs, doc_id, _rebase_requests(phase.requests, base),
-                    budget=budget,
+                    budget=budget, governor=governor,
                 )
             base += phase.length
         else:
             base = _execute_table_phase(
-                docs, doc_id, tab_id, phase, base, budget=budget
+                docs, doc_id, tab_id, phase, base,
+                budget=budget, governor=governor,
             )
     return base
 
@@ -1228,6 +1339,7 @@ def execute_tab_transplant(
     plan: TabTransplantPlan,
     *,
     document: dict | None = None,
+    governor_key: str | None = None,
 ) -> int:
     """Run a planned transplant against the live document.
 
@@ -1239,12 +1351,20 @@ def execute_tab_transplant(
     Writes hitting the per-user Docs rate limit (HTTP 429) back off and
     retry against a shared per-call budget (N2); exhaustion propagates
     the 429 into the caller's keep-the-doc failure handling.
+
+    ``governor_key`` identifies whose write quota this transplant
+    consumes (the Google user id; None = the operator). Every write is
+    paced by that user's shared cross-job governor so concurrent
+    converts stop competing each other into 429s (A2 root fix).
     """
     if document is None:
         document = _get_document(docs, doc_id)
     base = _append_base(document, dest_tab_id)
     budget = _RateLimitBudget()
-    _execute_phases(docs, doc_id, dest_tab_id, plan.phases, base, budget=budget)
+    _execute_phases(
+        docs, doc_id, dest_tab_id, plan.phases, base,
+        budget=budget, governor=_governor_for(governor_key),
+    )
     return plan.block_count
 
 
@@ -1270,6 +1390,7 @@ def carve_source_ranges(
     tab_id: str,
     docapp_children: list[dict],
     ranges: list[tuple[int, int]],
+    governor_key: str | None = None,
 ) -> None:
     """Delete the transplanted element ranges from the source tab.
 
@@ -1303,4 +1424,10 @@ def carve_source_ranges(
         # Own 429 budget: the carve is one bounded write burst and its
         # failure path (placeholder warnings / keep semantics) is the
         # caller's, so it should not drain a transplant's allowance.
-        _batch_update(docs, doc_id, requests, budget=_RateLimitBudget())
+        # Same per-user governor as the transplant writes, though - the
+        # quota does not care which phase a write belongs to.
+        _batch_update(
+            docs, doc_id, requests,
+            budget=_RateLimitBudget(),
+            governor=_governor_for(governor_key),
+        )

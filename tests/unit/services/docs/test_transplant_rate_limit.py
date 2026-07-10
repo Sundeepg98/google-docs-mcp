@@ -126,15 +126,22 @@ def test_non_429_write_errors_stay_single_shot(recorded_sleeps):
     assert recorded_sleeps == []
 
 
-def test_execute_tab_transplant_threads_one_budget(monkeypatch, recorded_sleeps):
-    """The public entry creates ONE budget and pushes it through the
-    phase executor into every _batch_update call."""
+def test_execute_tab_transplant_threads_one_budget_and_governor(
+    monkeypatch, recorded_sleeps
+):
+    """The public entry creates ONE budget and resolves ONE per-user
+    governor, pushing both through the phase executor into every
+    _batch_update call."""
     seen_budgets: list[object] = []
+    seen_governors: list[object] = []
     real_batch_update = ct._batch_update
 
-    def spying_batch_update(docs, doc_id, requests, budget=None):
+    def spying_batch_update(docs, doc_id, requests, budget=None, governor=None):
         seen_budgets.append(budget)
-        return real_batch_update(docs, doc_id, requests, budget=budget)
+        seen_governors.append(governor)
+        return real_batch_update(
+            docs, doc_id, requests, budget=budget, governor=governor
+        )
 
     monkeypatch.setattr(ct, "_batch_update", spying_batch_update)
 
@@ -154,8 +161,94 @@ def test_execute_tab_transplant_threads_one_budget(monkeypatch, recorded_sleeps)
             ]}},
         }],
     }
-    ct.execute_tab_transplant(docs, "DOC1", "t1", plan, document=document)
+    ct.execute_tab_transplant(
+        docs, "DOC1", "t1", plan, document=document, governor_key="user-G",
+    )
 
     assert len(seen_budgets) == 2
     assert seen_budgets[0] is not None
     assert seen_budgets[0] is seen_budgets[1], "one shared budget per transplant"
+    assert seen_governors[0] is not None
+    assert seen_governors[0] is seen_governors[1], "one governor per transplant"
+    assert seen_governors[0] is ct._governor_for("user-G"), (
+        "the governor must be the per-user shared instance"
+    )
+
+
+# ---------------------------------------------------------------------
+# Per-user cross-job write governor (A2 root fix)
+# ---------------------------------------------------------------------
+
+
+def _fresh_key() -> str:
+    import uuid
+    return f"gov-test-{uuid.uuid4()}"
+
+
+def test_governor_paces_concurrent_threads(monkeypatch):
+    """N threads writing through ONE user's governor space themselves at
+    least the configured interval apart (reservation under a lock,
+    sleep outside it)."""
+    import threading
+    import time as time_mod
+
+    monkeypatch.setenv(ct._WRITE_GOVERNOR_ENV, "0.05")
+    governor = ct._governor_for(_fresh_key())
+    stamps: list[float] = []
+    stamp_lock = threading.Lock()
+
+    def write():
+        governor.acquire()
+        with stamp_lock:
+            stamps.append(time_mod.monotonic())
+
+    threads = [threading.Thread(target=write) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    stamps.sort()
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    # Generous scheduling slop: every gap must show real pacing.
+    assert all(gap >= 0.03 for gap in gaps), gaps
+
+
+def test_governor_keys_are_isolated_and_zero_interval_disables(monkeypatch):
+    """Different users never pace each other, and interval 0 (the test
+    suite's global default via conftest) makes acquire a no-op."""
+    import time as time_mod
+
+    monkeypatch.setenv(ct._WRITE_GOVERNOR_ENV, "5.0")
+    a = ct._governor_for(_fresh_key())
+    b = ct._governor_for(_fresh_key())
+    assert a.acquire() == 0.0  # first slot is always free
+    start = time_mod.monotonic()
+    assert b.acquire() == 0.0, "user B must not inherit user A's reservation"
+    assert time_mod.monotonic() - start < 1.0
+
+    monkeypatch.setenv(ct._WRITE_GOVERNOR_ENV, "0")
+    # Even a governor with a pending reservation stops pacing at 0.
+    assert a.acquire() == 0.0
+    assert a.acquire() == 0.0
+
+
+def test_batch_update_takes_a_governor_slot_per_send(recorded_sleeps):
+    """Every SEND acquires the governor - the first try AND each 429
+    retry - so retries cannot stampede the shared quota either."""
+
+    class _SpyGovernor:
+        def __init__(self):
+            self.acquires = 0
+
+        def acquire(self):
+            self.acquires += 1
+            return 0.0
+
+    governor = _SpyGovernor()
+    docs = _FlakyDocs(failures=2)
+    ct._batch_update(
+        docs, "DOC1", [{"insertText": {}}], governor=governor,
+    )
+    assert docs.execute_calls == 3
+    assert governor.acquires == 3, "one slot per send, retries included"

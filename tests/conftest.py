@@ -78,6 +78,13 @@ def isolated_db(tmp_path, monkeypatch):
     db_file = tmp_path / "user_state.db"
     monkeypatch.setenv("GOOGLE_DOCS_USER_STORE_PATH", str(db_file))
     monkeypatch.setenv("GOOGLE_DOCS_DATA_DIR", str(tmp_path))
+    # Disable the per-user Docs write governor's pacing suite-wide: at
+    # its production default (1.1s per write) every transplant-touching
+    # test would sleep for real, and the per-key pacer state is module-
+    # global (a prior test's reservation would delay the next test's).
+    # Governor tests that WANT pacing set this env var themselves and
+    # use fresh per-test keys.
+    monkeypatch.setenv("DOCS_WRITE_MIN_INTERVAL_SECONDS", "0")
 
     _reset_shared_module_state()
     yield db_file

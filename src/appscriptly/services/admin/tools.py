@@ -1547,8 +1547,10 @@ def gdrive_get_signed_upload_url(
         "Conversion survives client disconnects (job model): re-POSTing the identical request "
         "within 15 min attaches to the same in-flight or succeeded job instead of duplicating "
         "docs, even though the URL is single-use. If a status poll reads 'stalled' (server "
-        "redeployed mid-run), the same re-POST resumes that job. FAILED attempts are not "
-        "deduplicated: re-POST with a fresh signed URL to run a new conversion."
+        "redeployed mid-run), the same re-POST resumes that job. Transient Google write rate "
+        "limits requeue the job automatically (status returns to 'queued'; keep polling). "
+        "FAILED attempts are not deduplicated: re-POST with a fresh signed URL to run a new "
+        "conversion."
     )
     return minted
 
