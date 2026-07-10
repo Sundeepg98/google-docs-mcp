@@ -26,6 +26,7 @@ from collections import defaultdict
 from typing import Any
 
 from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
 
 from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
@@ -483,6 +484,15 @@ def read_tab_content(
 
     from appscriptly.services.drive.api import is_file_trashed
     return {
+        # BUG 3 / S2.1 (2026-07-10): the tool-level output schema
+        # (GDOCS_READ_DOC_OUTPUT_SCHEMA) requires ``doc_id`` on every
+        # gdocs_read_doc response, but this single-tab payload never
+        # carried it — so BOTH single-tab modes (tab_id and tab_title)
+        # failed MCP output validation ("'doc_id' is a required
+        # property") while the whole-doc mode (read_all_tabs, which
+        # does include doc_id) passed. Echoing doc_id here makes all
+        # three modes satisfy the declared schema.
+        "doc_id": doc_id,
         "tab_id": tab["tabProperties"]["tabId"],
         "title": tab["tabProperties"]["title"],
         "trashed": is_file_trashed(creds, doc_id),
@@ -1433,6 +1443,187 @@ def _summarize_body_paragraphs(content: list[dict]) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------
+# S2.3 (2026-07-10): known Google-side defect around tab-property updates
+# ---------------------------------------------------------------------
+#
+# Live-reproduced against the production Docs API (session-2 bug report
+# + controlled experiment on scratch docs): once a document's ORIGINAL
+# FIRST TAB (the implicitly created tab, id "t.0") has been deleted,
+# EVERY subsequent ``updateDocumentTabProperties`` batchUpdate on that
+# document fails with a deterministic HTTP 500 ("Internal error
+# encountered.") - single request or batch, icon or title, root or
+# child target, including tabs created AFTER the delete. The state is
+# durable (persists across minutes; adding tabs does not clear it).
+# Deleting a NON-first tab does not trigger it, and the same requests
+# succeed on the same doc BEFORE the first-tab delete, so the request
+# shape is not at fault. Reads, addDocumentTab, deleteTab, and content
+# edits keep working on the poisoned doc.
+#
+# We cannot fix Google's backend; what we CAN do is stop reporting the
+# failure as a mystery transient. When an updateDocumentTabProperties
+# batch 500s AND the fetched tab list shows no root tab with id "t.0",
+# the classifier below produces a specific, honest, non-retryable
+# error instead of the generic "transient 500, retry" guidance (which
+# provably wastes callers' time here - operator hit it 3/3).
+
+_FIRST_TAB_DELETED_500_MESSAGE = (
+    "Google returned 500 for a tab-properties update on a document "
+    "whose original first tab (id \"t.0\") has been deleted. This "
+    "matches a known Google Docs API defect: after the original first "
+    "tab is deleted, every updateDocumentTabProperties request (tab "
+    "renames and icon changes) on that document fails with 500, "
+    "durably.\n"
+    "Retryable: false - retrying the same call will keep failing.\n"
+    "Workarounds: set icons and titles BEFORE deleting the original "
+    "first tab; give new tabs their icon_emoji at creation time "
+    "(gdocs_make_tabbed_doc / gdocs_add_tabs still work on this "
+    "document); or rebuild the document. (first_tab_deleted_500)"
+)
+
+
+def _classify_tab_props_500(root_tabs: list[dict], e: HttpError) -> str | None:
+    """Return the defect diagnosis when a tabProperties 500 matches it.
+
+    ``root_tabs`` is the document's CURRENT root-level ``tabs`` list
+    (fetched fresh). Returns the enriched message when (a) the error is
+    an HTTP 500 and (b) no root tab carries the implicit first-tab id
+    ``"t.0"`` - the observed signature of the defect. Returns None for
+    anything else so the caller falls back to the generic envelope
+    (which correctly marks a plain 500 as retryable).
+
+    Only ever runs on the ERROR path; a healthy call never pays for
+    this check.
+    """
+    status = getattr(e, "status_code", None)
+    if status is None:
+        status = getattr(getattr(e, "resp", None), "status", None)
+    if status != 500:
+        return None
+    has_original_first_tab = any(
+        (t.get("tabProperties") or {}).get("tabId") == "t.0"
+        for t in root_tabs
+    )
+    if has_original_first_tab:
+        return None
+    return _FIRST_TAB_DELETED_500_MESSAGE
+
+
+def _count_meaningful_body_elements(body_content: list[dict]) -> dict:
+    """Count content a user would regret losing in one tab body.
+
+    Returns ``{"paragraphs": n, "tables": n, "images": n, "other": n}``
+    where ``paragraphs`` counts paragraphs carrying non-whitespace text
+    or an inline object / person chip / rich link, ``tables`` counts
+    tables, ``images`` counts inline objects, and ``other`` counts
+    tables-of-contents. A freshly created tab (one empty NORMAL_TEXT
+    paragraph) counts zero everywhere.
+    """
+    paragraphs = tables = images = other = 0
+    for elem in body_content:
+        if "paragraph" in elem:
+            para = elem["paragraph"]
+            text = "".join(
+                pe.get("textRun", {}).get("content", "")
+                for pe in para.get("elements", [])
+            )
+            inline = sum(
+                1
+                for pe in para.get("elements", [])
+                if "inlineObjectElement" in pe
+                or "person" in pe
+                or "richLink" in pe
+            )
+            images += sum(
+                1
+                for pe in para.get("elements", [])
+                if "inlineObjectElement" in pe
+            )
+            if text.strip() or inline:
+                paragraphs += 1
+        elif "table" in elem:
+            tables += 1
+        elif "tableOfContents" in elem:
+            other += 1
+    return {
+        "paragraphs": paragraphs,
+        "tables": tables,
+        "images": images,
+        "other": other,
+    }
+
+
+def inspect_tab_content(creds: Credentials, doc_id: str, tab_id: str) -> dict:
+    """Summarize one tab (plus its descendants) for the delete guard.
+
+    S2.5 defense (2026-07-10): ``deleteTab`` is permanent - no trash,
+    no undo - and the session-2 data-loss incident was a placeholder
+    delete that silently destroyed the only copy of four sections
+    still sitting inside "Tab 1". Before deleting, the tool layer
+    calls this to learn whether the target (INCLUDING child tabs,
+    which ``deleteTab`` cascades to) still holds meaningful content.
+
+    Returns::
+
+        {"found": bool,
+         "title": str,                # target tab's title ("" if not found)
+         "is_first_root_tab": bool,   # target is the doc's first root tab
+         "child_tab_count": int,      # descendants (cascade-deleted too)
+         "non_empty_elements": int,   # total meaningful elements, tab+descendants
+         "counts": {"paragraphs", "tables", "images", "other"}}
+    """
+    docs = get_service("docs", "v1", credentials=creds)
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.inspect_tab",
+    )
+    root_tabs = fetched.get("tabs") or []
+    tab = _find_tab_by_id(root_tabs, tab_id)
+    if tab is None:
+        return {
+            "found": False,
+            "title": "",
+            "is_first_root_tab": False,
+            "child_tab_count": 0,
+            "non_empty_elements": 0,
+            "counts": {"paragraphs": 0, "tables": 0, "images": 0, "other": 0},
+        }
+
+    first_root_id = (
+        (root_tabs[0].get("tabProperties") or {}).get("tabId")
+        if root_tabs
+        else None
+    )
+
+    totals = {"paragraphs": 0, "tables": 0, "images": 0, "other": 0}
+    child_count = 0
+
+    def accumulate(node: dict, *, is_target: bool) -> None:
+        nonlocal child_count
+        if not is_target:
+            child_count += 1
+        body = (node.get("documentTab") or {}).get("body") or {}
+        counts = _count_meaningful_body_elements(body.get("content") or [])
+        for key in totals:
+            totals[key] += counts[key]
+        for child in node.get("childTabs") or []:
+            accumulate(child, is_target=False)
+
+    accumulate(tab, is_target=True)
+
+    return {
+        "found": True,
+        "title": (tab.get("tabProperties") or {}).get("title", ""),
+        "is_first_root_tab": first_root_id == tab_id,
+        "child_tab_count": child_count,
+        "non_empty_elements": sum(totals.values()),
+        "counts": totals,
+    }
+
+
 def delete_tab(creds: Credentials, doc_id: str, tab_id: str) -> None:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
@@ -1479,25 +1670,53 @@ def rename_tab(
     if not fields:
         return
     docs = get_service("docs", "v1", credentials=creds)
-    # PR-Δ3.5: gdocs_rename_tab is idempotent=True (renaming to the same
-    # name twice yields the same end state).
-    execute_with_retry(
-        lambda: docs.documents().batchUpdate(
-            documentId=doc_id,
-            body={
-                "requests": [
-                    {
-                        "updateDocumentTabProperties": {
-                            "tabProperties": props,
-                            "fields": ",".join(fields),
+    try:
+        # PR-Δ3.5: gdocs_rename_tab is idempotent=True (renaming to the same
+        # name twice yields the same end state).
+        execute_with_retry(
+            lambda: docs.documents().batchUpdate(
+                documentId=doc_id,
+                body={
+                    "requests": [
+                        {
+                            "updateDocumentTabProperties": {
+                                "tabProperties": props,
+                                "fields": ",".join(fields),
+                            }
                         }
-                    }
-                ]
-            },
-        ).execute(),
-        idempotent=True,
-        op_name="docs.documents.batchUpdate.updateTabProperties",
-    )
+                    ]
+                },
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.batchUpdate.updateTabProperties",
+        )
+    except HttpError as e:
+        # S2.3: rename shares set_tab_icons' failure mode (live-proven:
+        # a title-only update 500s identically on a poisoned doc). This
+        # path has no pre-fetched tab list, so fetch one now - error
+        # path only, and only for a 500 - to run the same classifier.
+        status = getattr(e, "status_code", None)
+        if status == 500:
+            try:
+                # includeTabsContent=True is what reliably populates
+                # ``tabs`` (without it Docs serves the legacy first-tab
+                # body shape); the fields filter keeps this error-path
+                # fetch to root tab ids only.
+                fetched = execute_with_retry(
+                    lambda: docs.documents().get(
+                        documentId=doc_id,
+                        includeTabsContent=True,
+                        fields="tabs(tabProperties(tabId))",
+                    ).execute(),
+                    idempotent=True,
+                    op_name="docs.documents.get.classify_500",
+                )
+            except HttpError:
+                raise e from None
+            diagnosis = _classify_tab_props_500(fetched.get("tabs") or [], e)
+            if diagnosis is not None:
+                raise ValueError(diagnosis) from e
+        raise
 
 
 def set_tab_icons(
@@ -1567,14 +1786,27 @@ def set_tab_icons(
                 break
 
     if requests:
-        # PR-Δ3.5: same idempotence rationale as the fetch above.
-        execute_with_retry(
-            lambda: docs.documents().batchUpdate(
-                documentId=doc_id, body={"requests": requests}
-            ).execute(),
-            idempotent=True,
-            op_name="docs.documents.batchUpdate.set_icons",
-        )
+        try:
+            # PR-Δ3.5: same idempotence rationale as the fetch above.
+            execute_with_retry(
+                lambda: docs.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": requests}
+                ).execute(),
+                idempotent=True,
+                op_name="docs.documents.batchUpdate.set_icons",
+            )
+        except HttpError as e:
+            # S2.3: reclassify the deterministic post-first-tab-delete
+            # 500 (see _classify_tab_props_500) so callers get a real
+            # diagnosis + "don't retry" instead of the generic
+            # transient-500 guidance. ValueError is the tool layer's
+            # "diagnosed condition" channel (mapped to ToolError there).
+            diagnosis = _classify_tab_props_500(
+                fetched.get("tabs") or [], e
+            )
+            if diagnosis is not None:
+                raise ValueError(diagnosis) from e
+            raise
 
     unmatched = [k for k in icons_by_title if k not in matched]
     return {
@@ -1812,6 +2044,7 @@ __all__ = [
     "edit_range",
     "get_doc_outline",
     "insert_image",
+    "inspect_tab_content",
     "list_comments",
     "make_doc_with_tabs",
     "read_all_tabs",

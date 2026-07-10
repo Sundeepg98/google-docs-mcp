@@ -120,6 +120,11 @@ GDOCS_DELETE_TAB_OUTPUT_SCHEMA = _object(
     properties={
         "doc_id": {"type": "string"},
         "deleted_tab_id": {"type": "string"},
+        # S2.5 defense (2026-07-10, optional/additive): ``forced`` is
+        # present (true) only when force=true overrode the non-empty-tab
+        # guard; ``warnings`` carries the first-tab-deleted defect note.
+        "forced": {"type": "boolean"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
     },
     required=["doc_id", "deleted_tab_id"],
 )
@@ -358,6 +363,23 @@ GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA = _object(
         # Same shape variance as gdocs_trash_file.
     },
     required=[],
+)
+
+
+# BUG 2b (2026-07-10) — gdrive_rename_file. Success echoes the file's
+# new + previous names; soft-failures (not_found / app_not_authorized)
+# return {file_id, reason, message} as data, matching the trash/untrash
+# convention. ``file_id`` is the one key present on every shape.
+GDRIVE_RENAME_FILE_OUTPUT_SCHEMA = _object(
+    properties={
+        "file_id": {"type": "string"},
+        "name": {"type": "string"},
+        "previous_name": {"type": "string"},
+        "mimeType": {"type": "string"},
+        "reason": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    required=["file_id"],
 )
 
 
@@ -2020,6 +2042,44 @@ GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA = _object(
 )
 
 
+# T1.2 (2026-07-10) — server_health. Three-layer health report:
+# the MCP server itself, the Google API credential path, and the
+# per-user Apps Script automation runtime (/exec web app).
+# ``exec`` includes "unknown" beyond the contract's four states for
+# the case where the liveness probe is transport-inconclusive
+# (timeout / DNS) - reporting "serving" or "needs_activation" on no
+# evidence would prompt wrong user action.
+SERVER_HEALTH_OUTPUT_SCHEMA = _object(
+    properties={
+        "server": {"type": "string", "const": "ok"},
+        "google_api": {
+            "type": "string",
+            "enum": ["ok", "unauthorized", "error"],
+        },
+        "google_api_detail": {"type": ["string", "null"]},
+        "automation_runtime": _object(
+            properties={
+                "installed": {"type": "boolean"},
+                "exec": {
+                    "type": "string",
+                    "enum": [
+                        "serving",
+                        "needs_activation",
+                        "api_disabled",
+                        "not_installed",
+                        "unknown",
+                    ],
+                },
+                "remediation_url": {"type": ["string", "null"]},
+                "detail": {"type": ["string", "null"]},
+            },
+            required=["installed", "exec", "remediation_url"],
+        ),
+    },
+    required=["server", "google_api", "automation_runtime"],
+)
+
+
 # ---------------------------------------------------------------------
 # Registry — name -> schema. Used by the iteration guard test.
 # ---------------------------------------------------------------------
@@ -2225,11 +2285,16 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdrive_export_file": GDOCS_EXPORT_DOC_OUTPUT_SCHEMA,
     "gdrive_find_file": GDOCS_FIND_FILE_OUTPUT_SCHEMA,
     "gdrive_get_signed_upload_url": GDOCS_GET_SIGNED_UPLOAD_URL_OUTPUT_SCHEMA,
+    # BUG 2b (2026-07-10) — canonical-only (no gdocs_ alias; the tool
+    # never existed under the legacy prefix).
+    "gdrive_rename_file": GDRIVE_RENAME_FILE_OUTPUT_SCHEMA,
     # admin / introspection / auth.
     "server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "server_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,
     "server_guide": GDOCS_GUIDE_OUTPUT_SCHEMA,
     "server_help": GDOCS_HELP_OUTPUT_SCHEMA,
+    # T1.2 (2026-07-10) — canonical-only new tool.
+    "server_health": SERVER_HEALTH_OUTPUT_SCHEMA,
     "admin_audit": GDOCS_ADMIN_AUDIT_OUTPUT_SCHEMA,
     "account_reset_authorization": GDOCS_RESET_AUTHORIZATION_OUTPUT_SCHEMA,
     # Apps Script installer (3rd registration; shares the installer schema).

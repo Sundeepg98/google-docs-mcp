@@ -80,6 +80,7 @@
   "gdrive_get_signed_upload_url",
   "gdrive_list_permissions",
   "gdrive_move_to_folder",
+  "gdrive_rename_file",
   "gdrive_revoke_permission",
   "gdrive_share_file",
   "gdrive_trash_file",
@@ -130,6 +131,7 @@
   "gtasks_list_tasks",
   "gtasks_update_task",
   "server_guide",
+  "server_health",
   "server_help",
   "server_info",
   "server_test_manifest"

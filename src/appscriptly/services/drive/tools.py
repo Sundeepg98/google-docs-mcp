@@ -19,7 +19,7 @@ names are module-level attrs (the location witnesses require it) and both
 register (the declared==registered witness requires it). Planned alias
 removal: v3.0.
 
-**Tools registered here** (10 drive-service tools — canonical name →
+**Tools registered here** (11 drive-service tools — canonical name →
 deprecated alias):
 
 1. ``gdrive_find_doc_by_title``  (alias ``gdocs_find_doc_by_title``)   — look up a Google Doc / .docx by title
@@ -32,6 +32,7 @@ deprecated alias):
 8. ``gdrive_revoke_permission``  (alias ``gdocs_revoke_permission``)   — revoke a previously-granted share
 9. ``gdrive_export_file``        (alias ``gdocs_export_doc``)          — export a Google-native file to PDF/Office/etc.
 10. ``gdrive_find_file``         (alias ``gdocs_find_file``)           — find app-accessible files of ANY type (filters)
+11. ``gdrive_rename_file``       (NO alias; new in the 2026-07 wave)   — rename a file in place (files.update name)
 
 The trash/untrash tools accept either a single ``file_id: str`` or a
 ``list[str]``; the list form delegates to ``_run_batch`` (also lives
@@ -66,6 +67,7 @@ from appscriptly.services.drive.api import (
     find_doc_by_title as _find_doc_by_title,
     find_file as _find_file,
     move_to_folder as _move_to_folder,
+    rename_file as _rename_file,
     trash_drive_file as _trash_drive_file,
     untrash_drive_file as _untrash_drive_file,
 )
@@ -86,6 +88,7 @@ from appscriptly.tool_schemas import (
     GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+    GDRIVE_RENAME_FILE_OUTPUT_SCHEMA,
 )
 
 
@@ -491,6 +494,59 @@ def gdocs_trash_file(creds, file_id: str | list[str]) -> dict:
     if isinstance(file_id, list):
         return _run_batch(file_id, _trash_drive_file, "trashed")
     return _trash_drive_file(creds, file_id)
+
+
+# ---------------------------------------------------------------------
+# gdrive_rename_file (BUG 2b, 2026-07-10) — canonical only, NO alias
+# (the tool never existed under the legacy gdocs_ prefix).
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Rename a Drive file",
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDRIVE_RENAME_FILE_OUTPUT_SCHEMA,
+)
+def gdrive_rename_file(creds, file_id: str, new_name: str) -> dict:
+    """Rename a Drive file (Google Doc, .docx, folder, anything) in place.
+
+    USE WHEN: a file carries the wrong name - most commonly a doc left
+    behind by an interrupted convert under its temporary import name
+    (e.g. "tmpjgehtmo2") - and you want to fix the name WITHOUT
+    copying, moving, or re-creating anything.
+
+    Uses ``files.update`` on the ``name`` field only. Metadata-only
+    PATCH: the file id, content, comments, sharing, and folder location
+    are untouched, so existing links keep working. Same ``drive.file``
+    scope surface as ``gdrive_trash_file`` - no additional permission.
+
+    Idempotent: renaming to the name the file already has succeeds and
+    simply reports ``previous_name`` equal to ``name``.
+
+    Args:
+        file_id: The Drive file ID (from a create call,
+            ``gdrive_find_file``, or ``gdrive_find_doc_by_title``).
+        new_name: The full new name. For non-Google-native files keep
+            the extension in the name (Drive does not add one).
+
+    Returns:
+        Success: ``{"file_id", "name", "previous_name", "mimeType"}``.
+        Soft-failure (returned as data, not raised): ``{"file_id",
+        "reason", "message"}`` with ``reason`` in {``"not_found"``,
+        ``"app_not_authorized"``}.
+
+    Choreography: pair with ``gdrive_find_doc_by_title`` /
+    ``gdrive_find_file`` to locate stray temp-named files. To relocate
+    a file use ``gdrive_move_to_folder``; to remove it use
+    ``gdrive_trash_file``.
+
+    NOTE: only works on files THIS app created (``drive.file`` scope).
+    Files created by other apps / users return
+    ``reason: "app_not_authorized"``.
+    """
+    return _rename_file(creds, file_id, new_name)
 
 
 # ---------------------------------------------------------------------
@@ -979,6 +1035,17 @@ def gdrive_export_file(
     drive tools — only files THIS app can access are exportable; a file
     the app didn't create/open returns ``reason: "app_not_authorized"``
     (the owner can export via the Drive UI: File → Download).
+
+    AUTH LIMITATION (S2.4): ``download_url`` is Drive's
+    ``webContentLink`` - it only serves the bytes to a browser SIGNED
+    IN to a Google account that can read the file. An unauthenticated
+    client (curl, a sandbox, any server-side fetch without the user's
+    cookies) receives a Google sign-in HTML page instead of the file.
+    Treat ``download_url`` as a link to hand to the USER, never as a
+    machine-fetchable URL. For programmatic access to the CONTENT:
+    use ``gdocs_read_doc`` to read a Doc's text directly, or
+    ``gdrive_share_file`` (role "reader") so a signed-in account can
+    fetch it.
     """
     return _export_doc(
         creds,

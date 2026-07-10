@@ -165,12 +165,17 @@ EXPECTED_TOOLS = {
     "gdrive_export_file",         # was gdocs_export_doc
     "gdrive_find_file",           # was gdocs_find_file
     "gdrive_get_signed_upload_url",  # was gdocs_get_signed_upload_url (admin folder)
+    # 2026-07 next wave: rename-in-place (BUG 2b). Canonical-only -
+    # never had a gdocs_ name, so no alias entry accompanies it.
+    "gdrive_rename_file",
     # admin / introspection / auth.
     "server_info",                # was gdocs_server_info
     "server_test_manifest",       # was gdocs_test_manifest
     "server_guide",               # was gdocs_guide
     "server_help",                # was gdocs_help
     "admin_audit",                # was gdocs_admin_audit
+    # 2026-07 next wave: three-layer health report (T1.2). Canonical-only.
+    "server_health",
     "account_reset_authorization",  # was gdocs_reset_authorization
     # Apps Script installer (3rd name; gdocs_install_automation +
     # gdocs_setup_apps_script remain as aliases).
@@ -412,6 +417,9 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
         # signal. Same no-arg posture as server_info / gtasks has no no-arg
         # tool because gtasks_list_tasklists has max_results.
         "gmail_list_labels",
+        # 2026-07 next wave: the health report takes no args by design
+        # (it reports on the CALLING identity; nothing to parameterize).
+        "server_health",
     }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these

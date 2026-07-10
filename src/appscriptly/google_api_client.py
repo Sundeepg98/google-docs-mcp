@@ -53,8 +53,10 @@ import hashlib
 import logging
 import math
 import os
+import random
 import socket
 import threading
+import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator, Protocol, TypeVar, runtime_checkable
@@ -202,6 +204,12 @@ def _build_authorized_http(credentials: Credentials) -> object:
     applies to every request the resulting Resource issues (and to the
     discovery-document fetch ``build`` itself performs).
 
+    The AuthorizedHttp is additionally wrapped in ``_GetRetryHttp``
+    (next-wave polish, 2026-07-10): ONE bounded transport-level retry
+    for GET requests answered with 429/5xx, so read paths that never
+    adopted ``execute_with_retry`` still absorb a single Google blip.
+    Non-GET methods pass through untouched.
+
     Imports are local so module import stays light and the dependency
     surface is explicit at the one place it's used. Both libraries are
     hard transitive deps of ``google-api-python-client`` (already
@@ -212,7 +220,105 @@ def _build_authorized_http(credentials: Credentials) -> object:
 
     timeout = _resolve_http_timeout_seconds()
     base_http = httplib2.Http(timeout=timeout)
-    return google_auth_httplib2.AuthorizedHttp(credentials, http=base_http)
+    return _GetRetryHttp(
+        google_auth_httplib2.AuthorizedHttp(credentials, http=base_http)
+    )
+
+
+class _GetRetryHttp:
+    """Transport wrapper: ONE bounded retry for GET requests on 429/5xx.
+
+    Sits around the ``AuthorizedHttp`` every Resource built by this
+    module uses, so EVERY call site gets the floor policy without
+    per-site adoption:
+
+    - ``GET`` answered with a status in ``_RETRYABLE_STATUS`` → sleep
+      (exponential-style base with Google's ``Retry-After`` as the
+      floor, capped) and re-issue the request ONCE. GETs are
+      idempotent by HTTP semantics, so the blind transport-level
+      retry is safe.
+    - Any other method → single passthrough, byte-identical behavior.
+      Mutating calls keep their safety at the ``execute_with_retry``
+      layer, where the caller declares idempotence.
+
+    Interplay with ``RetryingGoogleApiClientAdapter`` (the tenacity
+    layer above): call sites that already wrap reads in
+    ``execute_with_retry(idempotent=True)`` may observe up to
+    ``tenacity_attempts * 2`` wire requests in the worst case — still
+    strictly bounded, and only on requests Google is actively failing.
+    The win is the long tail of read paths that never adopted the
+    explicit wrapper (docs fetches inside creation flows, discovery
+    fetches, probes): they now absorb a single transient blip instead
+    of surfacing it.
+
+    Attribute access other than ``request`` is delegated verbatim to
+    the wrapped http object (googleapiclient introspects attributes
+    like ``connections`` / ``credentials`` on the transport it's
+    handed).
+    """
+
+    #: One retry — the "ONE bounded retry" contract. Not configurable
+    #: on purpose; anything smarter belongs to the tenacity layer.
+    _MAX_GET_RETRIES = 1
+    #: Base sleep before the single retry; Retry-After can raise it.
+    _BASE_SLEEP_SECONDS = 1.0
+    #: Never honor a Retry-After above this (a health probe shouldn't
+    #: wedge a tool call for minutes because Google said "3600").
+    _MAX_SLEEP_SECONDS = 8.0
+
+    def __init__(self, http: object) -> None:
+        self._http = http
+
+    @staticmethod
+    def _retry_after_from_headers(resp: object) -> float | None:
+        """Delta-seconds ``Retry-After`` from an httplib2 Response.
+
+        httplib2 lowercases header keys and the Response is dict-like.
+        HTTP-date form is skipped (rare from Google; same trade-off as
+        ``_retry_after_seconds`` above).
+        """
+        raw = resp.get("retry-after") if hasattr(resp, "get") else None
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _sleep_before_retry(self, resp: object) -> None:
+        retry_after = self._retry_after_from_headers(resp)
+        wait = max(self._BASE_SLEEP_SECONDS, retry_after or 0.0)
+        wait = min(wait, self._MAX_SLEEP_SECONDS)
+        # Full jitter fraction so simultaneous callers don't re-sync.
+        wait += random.uniform(0.0, 0.25)
+        time.sleep(wait)
+
+    def request(
+        self,
+        uri: str,
+        method: str = "GET",
+        body: object = None,
+        headers: object = None,
+        **kwargs: object,
+    ):
+        resp, content = self._http.request(  # type: ignore[attr-defined]
+            uri, method, body=body, headers=headers, **kwargs
+        )
+        status = getattr(resp, "status", None)
+        if method.upper() != "GET" or status not in _RETRYABLE_STATUS:
+            return resp, content
+        _log.info(
+            "transient_google_transport_get_retry status=%s uri_host=%s",
+            status,
+            uri.split("/", 3)[2] if "//" in uri else "?",
+        )
+        self._sleep_before_retry(resp)
+        return self._http.request(  # type: ignore[attr-defined]
+            uri, method, body=body, headers=headers, **kwargs
+        )
+
+    def __getattr__(self, name: str):
+        return getattr(self._http, name)
 
 
 def _make_request_builder(credentials: Credentials) -> type[HttpRequest]:

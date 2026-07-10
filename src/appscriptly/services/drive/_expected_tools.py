@@ -29,6 +29,10 @@ EXPECTED: frozenset[str] = frozenset({
     # (files.list with optional mime/fullText/folder filters). The
     # type-agnostic generalization of find_doc_by_title.
     "gdrive_find_file",
+    # File-CRUD: rename in place (files.update name). BUG 2b of the
+    # 2026-07 wave; canonical-only - never had a gdocs_ name, so NO
+    # deprecated alias is registered for it.
+    "gdrive_rename_file",
     # sharing sub-module (tools live in drive/tools.py, delegating to
     # drive/sharing.py).
     "gdrive_share_file",

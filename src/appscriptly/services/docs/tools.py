@@ -69,6 +69,7 @@ from appscriptly.services.docs.api import (
     format_range as _format_range,
     get_doc_outline as _get_doc_outline,
     insert_image as _insert_image,
+    inspect_tab_content as _inspect_tab_content,
     insert_markdown_table as _insert_markdown_table,
     insert_table as _insert_table,
     list_comments as _list_comments,
@@ -376,11 +377,13 @@ def gdocs_read_doc(
             decide. Omit to use Docs' default.
 
     Returns:
-        Single-tab mode: ``{"tab_id", "title", "paragraph_count",
-        "table_count", "image_count", "paragraphs": [{"style", "text"},
-        ...]}``.
+        Single-tab mode: ``{"doc_id", "tab_id", "title",
+        "paragraph_count", "table_count", "image_count",
+        "paragraphs": [{"style", "text"}, ...]}``.
         All-tabs mode: ``{"doc_id", "tabs": [{tab_id, title, depth,
         paragraph_count, paragraphs: [...]}, ...]}``.
+        (Every mode echoes ``doc_id`` - it is required by the declared
+        output schema.)
 
     ``paragraphs[].style`` is a Docs namedStyleType (``HEADING_1``,
     ``NORMAL_TEXT``, etc.) or ``"TABLE"`` / ``"TOC"`` placeholders.
@@ -709,7 +712,13 @@ def gdocs_rename_tab(
         _validate_title(title)
     if icon_emoji is not None and len(icon_emoji.encode("utf-8")) > 8:
         raise ToolError("icon_emoji must be a single emoji (≤8 UTF-8 bytes)")
-    _rename_tab(creds, doc_id, tab_id, title=title, icon_emoji=icon_emoji)
+    try:
+        _rename_tab(creds, doc_id, tab_id, title=title, icon_emoji=icon_emoji)
+    except ValueError as e:
+        # S2.3: the api layer reclassifies the known post-first-tab-
+        # delete Google 500 into a diagnosed ValueError; surface it as
+        # a clear ToolError instead of a masked internal error.
+        raise ToolError(str(e)) from e
     updated = []
     if title is not None:
         updated.append("title")
@@ -767,26 +776,81 @@ def gdocs_get_tab_url(doc_id: str, tab_id: str) -> dict:
     creds=True,
     output_schema=GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
 )
-def gdocs_delete_tab(creds, doc_id: str, tab_id: str) -> dict:
+def gdocs_delete_tab(
+    creds, doc_id: str, tab_id: str, force: bool = False
+) -> dict:
     """Delete a single tab (and its child tabs) from a Google Doc.
 
     Use ``gdocs_get_doc_outline`` first to find the ``tab_id``. If the tab
     has child tabs they are deleted with it (per the Google Docs API
     contract for ``deleteTab``).
 
+    SAFETY GUARD (non_empty_tab_guard): ``deleteTab`` is permanent -
+    there is no trash and no undo for a tab. If the target tab (or any
+    of its child tabs) still contains meaningful content (non-empty
+    paragraphs, tables, images), the call is REFUSED unless
+    ``force=true``. This exists because deleting a "placeholder" tab
+    that secretly still held the only copy of unmoved sections has
+    destroyed real data before. Verify with ``gdocs_read_doc``
+    (single-tab mode) before forcing.
+
     Args:
         doc_id: The document ID.
         tab_id: The tab's ID.
+        force: Pass ``true`` to delete a tab even though it still
+            contains content. Default ``false``: only empty tabs are
+            deleted.
 
     Returns:
-        ``{"doc_id", "deleted_tab_id"}``.
+        ``{"doc_id", "deleted_tab_id"}`` plus ``"forced": true`` when
+        the guard was overridden, and a ``"warnings"`` list when the
+        deleted tab was the document's FIRST tab (a known Google-side
+        defect then breaks all later tab renames / icon changes on the
+        document - see the warning text).
 
     Choreography: get the tab_id from ``gdocs_get_doc_outline`` first.
     To delete an entire DOCUMENT (not just one tab) use
     ``gdocs_trash_file`` instead.
     """
+    info = _inspect_tab_content(creds, doc_id, tab_id)
+    if not info["found"]:
+        raise ToolError(
+            f"Tab {tab_id!r} not found in document {doc_id}. Use "
+            f"gdocs_get_doc_outline to list the current tab ids "
+            f"(the tab may already have been deleted)."
+        )
+    counts = info["counts"]
+    if info["non_empty_elements"] > 0 and not force:
+        child_note = (
+            f" and its {info['child_tab_count']} child tab(s)"
+            if info["child_tab_count"]
+            else ""
+        )
+        raise ToolError(
+            f"Refusing to delete tab {info['title']!r} ({tab_id}): it"
+            f"{child_note} still contain(s) "
+            f"{info['non_empty_elements']} meaningful element(s) "
+            f"({counts['paragraphs']} paragraph(s), "
+            f"{counts['tables']} table(s), {counts['images']} image(s)). "
+            f"Tab deletion is permanent - no trash, no undo. Read the "
+            f"tab first (gdocs_read_doc with this tab_id) to confirm "
+            f"nothing is lost, then pass force=true to delete anyway. "
+            f"(non_empty_tab_guard)"
+        )
     _delete_tab(creds, doc_id, tab_id)
-    return {"doc_id": doc_id, "deleted_tab_id": tab_id}
+    result: dict = {"doc_id": doc_id, "deleted_tab_id": tab_id}
+    if force and info["non_empty_elements"] > 0:
+        result["forced"] = True
+    if info["is_first_root_tab"]:
+        result["warnings"] = [
+            "You deleted this document's first tab. A known Google "
+            "Docs API defect makes every later tab rename / icon "
+            "change (updateDocumentTabProperties) on this document "
+            "fail with a permanent 500. Set titles and icons BEFORE "
+            "deleting a first tab; new tabs can still be added with "
+            "their icon_emoji at creation. (first_tab_deleted_500)"
+        ]
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -874,6 +938,13 @@ def gdocs_set_tab_icons(creds, doc_id: str, icons_by_title: dict[str, str]) -> d
         ``{"updated_count": int,
            "matched": {requested_title: tab_id, ...},
            "unmatched_titles": [...]}``.
+
+    KNOWN GOOGLE DEFECT (first_tab_deleted_500): on a document whose
+    ORIGINAL FIRST TAB has been deleted, Google fails every tab
+    property update with a permanent 500 - this tool cannot succeed
+    on such a document and will return a diagnosed, non-retryable
+    error naming the defect. Set icons BEFORE deleting a first tab
+    (e.g. a placeholder), or give tabs their icons at creation.
 
     Choreography: get the current tab titles from
     ``gdocs_get_doc_outline`` first so your keys actually match.

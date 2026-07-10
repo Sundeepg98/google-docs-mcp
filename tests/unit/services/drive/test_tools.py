@@ -616,3 +616,103 @@ def test_gdocs_find_file_invokes_get_credentials_fn(with_drive_stub, monkeypatch
     monkeypatch.setattr(decorators, "_get_credentials_fn", counting_creds_fn)
     tools.gdocs_find_file(query="x", verify_writable=False)
     assert call_count["n"] == 1
+
+
+# ---------------------------------------------------------------------
+# 11. gdrive_rename_file (BUG 2b, 2026-07-10) — files.update on name
+# ---------------------------------------------------------------------
+
+
+def _rename_http_error(status: int, content: bytes = b"") -> "HttpError":
+    from googleapiclient.errors import HttpError
+
+    class _Resp(dict):
+        def __init__(self, status: int) -> None:
+            super().__init__()
+            self.status = status
+            self.reason = "Synthetic"
+
+    return HttpError(
+        resp=_Resp(status),
+        content=content,
+        uri="https://www.googleapis.com/drive/v3/files/F1",
+    )
+
+
+def test_gdrive_rename_file_updates_name_and_echoes_previous(with_drive_stub):
+    """Happy path: files.update called with body={'name': new}; the
+    response carries name + previous_name and validates against the
+    declared output schema."""
+    import jsonschema
+
+    from appscriptly.tool_schemas import GDRIVE_RENAME_FILE_OUTPUT_SCHEMA
+
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "F1", "name": "tmpjgehtmo2",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    with_drive_stub.files().update().execute.return_value = {
+        "id": "F1", "name": "Networking Handbook",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+
+    result = tools.gdrive_rename_file(
+        file_id="F1", new_name="Networking Handbook"
+    )
+
+    jsonschema.validate(result, GDRIVE_RENAME_FILE_OUTPUT_SCHEMA)
+    assert result == {
+        "file_id": "F1",
+        "name": "Networking Handbook",
+        "previous_name": "tmpjgehtmo2",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    update_calls = [
+        c
+        for c in with_drive_stub.files().update.call_args_list
+        if c.kwargs.get("body") == {"name": "Networking Handbook"}
+    ]
+    assert update_calls, "files.update never received body={'name': ...}"
+    assert update_calls[-1].kwargs.get("fileId") == "F1"
+
+
+def test_gdrive_rename_file_not_found_returns_soft_failure(with_drive_stub):
+    """404 on the pre-read comes back as data (reason: not_found), not
+    an exception — matching the trash/untrash soft-failure convention."""
+    import jsonschema
+
+    from appscriptly.tool_schemas import GDRIVE_RENAME_FILE_OUTPUT_SCHEMA
+
+    with_drive_stub.files().get().execute.side_effect = _rename_http_error(404)
+
+    result = tools.gdrive_rename_file(file_id="F_GONE", new_name="X")
+
+    jsonschema.validate(result, GDRIVE_RENAME_FILE_OUTPUT_SCHEMA)
+    assert result["reason"] == "not_found"
+    assert result["file_id"] == "F_GONE"
+    assert not with_drive_stub.files().update().execute.called
+
+
+def test_gdrive_rename_file_app_not_authorized_returns_soft_failure(
+    with_drive_stub,
+):
+    """403 appNotAuthorizedToFile on the update comes back as data —
+    drive.file scope cannot rename files the app didn't create."""
+    with_drive_stub.files().get().execute.return_value = {
+        "id": "F1", "name": "someone-elses.pdf", "mimeType": "application/pdf",
+    }
+    content = (
+        b'{"error": {"errors": [{"reason": "appNotAuthorizedToFile",'
+        b' "message": "The user has not granted the app access"}],'
+        b' "code": 403, "message": "The user has not granted the app'
+        b' access to the file"}}'
+    )
+    with_drive_stub.files().update().execute.side_effect = _rename_http_error(
+        403, content
+    )
+
+    result = tools.gdrive_rename_file(file_id="F1", new_name="X")
+
+    assert result["reason"] == "app_not_authorized"
+    assert result["file_id"] == "F1"
+    assert result["name"] == "someone-elses.pdf"

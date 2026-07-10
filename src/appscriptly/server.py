@@ -362,8 +362,10 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # then 97 → 100 with the 3 apps_script GAS-automation tools giving
 # Calendar / Tasks / Contacts their second (automation) lever
 # (as_install_calendar_sync, as_install_task_rollover,
-# as_install_contact_sync — sensitive scope in the GENERATED manifest only).
-_MIN_EXPECTED_TOOL_COUNT = 134
+# as_install_contact_sync — sensitive scope in the GENERATED manifest only);
+# then 134 → 136 with the 2026-07 next-wave tools (gdrive_rename_file +
+# server_health — both canonical-only, no deprecated aliases).
+_MIN_EXPECTED_TOOL_COUNT = 136
 
 _discovery_failures: list[tuple[str, str]] = []
 
