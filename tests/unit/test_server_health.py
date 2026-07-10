@@ -125,6 +125,10 @@ def test_every_payload_states_what_the_runtime_gates(monkeypatch, google_stubs):
     # PR-D: the gating set was derived from code and is EMPTY - the
     # field must say so, not merely scope the blast radius to as_*.
     assert "nothing at runtime" in gates
+    # Operator decision (2026-07-10, brief header): the web app is KEPT
+    # as dormant infrastructure - the field carries that framing so the
+    # empty gating set reads as deliberate, not as an obsolete leftover.
+    assert "dormant" in gates
 
     # The not_installed early return carries it too.
     result, _ = _run_health(

@@ -1243,7 +1243,9 @@ def server_health() -> dict:
         (timeout / DNS); says nothing about the deployment - retry.
 
     SCOPE OF IMPACT (PR-D correction of the R3 text): the central
-    automation runtime gates NOTHING at runtime today - no tool calls
+    automation runtime is DORMANT INFRASTRUCTURE kept for future
+    features (operator decision 2026-07-10) and gates NOTHING at
+    runtime today - no tool calls
     its /exec since the pure-REST transplant (#222), and the as_*
     installers drive the Apps Script API with their own per-automation
     scripts (live-proven: as_* installs succeeded while this runtime's
@@ -1281,13 +1283,18 @@ def server_health() -> dict:
     # is the Apps Script API TOGGLE (the api_disabled state below) and
     # the OAuth scopes. The R3 text claimed "gates as_* tools only" -
     # overbroad; corrected to the derived reality so nobody blocks any
-    # tool on this runtime's state.
+    # tool on this runtime's state. The operator ruled (2026-07-10,
+    # brief header) to KEEP the web app as dormant infrastructure
+    # reserved for future features - the text below frames it that way.
     runtime: dict = {
         "gates": (
-            "nothing at runtime today: no tool calls this web app since "
-            "the pure-REST transplant (#222). as_* installers depend on "
-            "the Apps Script API toggle and OAuth scopes (see "
-            "api_disabled), not on this runtime; convert (/api/convert, "
+            "nothing at runtime today: this web app is dormant "
+            "infrastructure reserved for future features (operator "
+            "decision 2026-07-10) - no tool has called it since the "
+            "pure-REST transplant (#222) and no current tool depends on "
+            "its activation state. as_* tools require the Apps Script "
+            "API toggle and granted OAuth scopes (see api_disabled), "
+            "not this runtime; convert (/api/convert, "
             "gdocs_tab_existing_doc, gdocs_make_tabbed_doc) and all "
             "gdocs/gdrive/gsheets/gslides tools are unaffected"
         ),
