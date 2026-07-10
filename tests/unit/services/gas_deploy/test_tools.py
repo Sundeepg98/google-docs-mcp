@@ -684,3 +684,73 @@ def test_installed_payload_gone_raises_retryable_tool_error(monkeypatch):
     except ToolError as e:
         assert "reused" in str(e)
         assert "consent" in str(e)
+
+
+def test_install_tool_stdio_branch_routes_through_payload_classifier(
+    monkeypatch,
+):
+    """WIRING pin (stdio branch): the tool body must hand the fresh
+    deployment to _installed_runtime_payload — a regression back to
+    returning an inline "ready" dict would silently re-lie about
+    consent-gated endpoints."""
+    import jsonschema
+
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+    from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+
+    monkeypatch.setattr(tools, "current_user_id_or_none", lambda: None)
+    monkeypatch.setattr(
+        tools, "setup_apps_script_auto", lambda: _fresh_deployment()
+    )
+    monkeypatch.setattr(
+        tools,
+        "probe_webapp_health",
+        lambda url: WebAppHealth.CONSENT_GATED,
+    )
+
+    payload = tools._install_automation_runtime()
+    jsonschema.validate(payload, GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    assert payload["status"] == "needs_activation"
+    assert payload["activation_url"] == (
+        "https://script.google.com/d/SCRIPT_X/edit"
+    )
+
+
+def test_install_tool_cloud_branch_routes_through_payload_classifier(
+    monkeypatch,
+):
+    """WIRING pin (cloud branch): same guarantee for the multi-tenant
+    path — creds resolve fine, provisioning succeeds, and the consent
+    door still comes back as needs_activation DATA."""
+    import jsonschema
+    from unittest.mock import MagicMock
+
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+    from appscriptly.tool_schemas import GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA
+
+    monkeypatch.setattr(tools, "current_user_id_or_none", lambda: "user-1")
+    monkeypatch.setattr(tools, "resolve_runtime_oauth_config", lambda: {})
+    monkeypatch.setattr(
+        tools,
+        "get_credentials_for_user",
+        lambda user_id, required_scopes, **kw: MagicMock(name="creds"),
+    )
+    captured: dict = {}
+
+    def fake_setup(creds, user_id):
+        captured["user_id"] = user_id
+        return _fresh_deployment()
+
+    monkeypatch.setattr(tools, "setup_apps_script_for_user", fake_setup)
+    monkeypatch.setattr(
+        tools,
+        "probe_webapp_health",
+        lambda url: WebAppHealth.CONSENT_GATED,
+    )
+
+    payload = tools._install_automation_runtime()
+    jsonschema.validate(payload, GDOCS_SETUP_APPS_SCRIPT_OUTPUT_SCHEMA)
+    assert payload["status"] == "needs_activation"
+    assert captured["user_id"] == "user-1"
