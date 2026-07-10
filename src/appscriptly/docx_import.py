@@ -15,9 +15,13 @@ Pipeline:
      (equations, drawings, floating objects - see ``DROPPED_KINDS``).
   5. Only after every new tab is built AND verified does the source
      content leave the primary tab (tab delete, or range carve for the
-     rename/keep placeholder policies). A failed transplant rolls the
-     new shells back and trashes the working copy - the source document
-     is never left half-converted.
+     rename/keep placeholder policies). Failure cleanup is phase-aware
+     (BUG 1d, 2026-07-10): a failure BEFORE any transplant write rolls
+     the shells back and trashes the working copy (no orphans, source
+     untouched); a failure AT or AFTER the first transplant write KEEPS
+     the working copy and reports doc_id plus a completed/pending tab
+     manifest in the error - content that may exist only in that doc is
+     never trashed by cleanup code.
 
 History: steps 4-5 used to POST the split spec to a per-user Apps
 Script web app (``Element.copy()`` moves). That path never worked for
@@ -167,87 +171,103 @@ def convert_docx_to_tabbed_doc(
         source_label = f"drive file {drive_file_id}"
     doc_id = converted["doc_id"]
 
-    # 2. Find split points in the converted doc's primary tab body.
-    docs = get_service("docs", "v1", credentials=creds)
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
-    source_tab = fetched["tabs"][0]["documentTab"]
-    body_content = source_tab["body"]["content"]
-
-    splits, strategy_used = _detect_splits(body_content, split_by)
-    if not splits:
-        return {
-            "doc_id": doc_id,
-            "url": converted["url"],
-            "action": "replaced" if replace_doc_id else "created",
-            "tabs": [],
-            "split_strategy_used": strategy_used,
-            "note": (
-                "No split points found; doc is left as a single-tab "
-                f"conversion of {source_label}."
-            ),
-        }
-
-    # Assign optional icons in detected-split order.
-    if tab_icons:
-        for i, split in enumerate(splits):
-            if i < len(tab_icons) and tab_icons[i]:
-                split["icon_emoji"] = tab_icons[i]
-
-    # 3. Cap nesting depth defensively - _detect_splits won't currently
-    # produce nested splits, but a future strategy might.
-    max_depth = _max_depth(splits)
-    if max_depth >= MAX_NESTING_DEPTH:
-        raise RuntimeError(
-            f"Detected {max_depth + 1} nesting levels; "
-            f"Google Docs UI allows at most {MAX_NESTING_DEPTH}."
-        )
-
-    # 4. REST creates the empty tab shells at root level - siblings of
-    # the placeholder primary tab, not children of it. Gives the user a
-    # sidebar of top-level section tabs instead of one collapsed root.
-    primary_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
-    shell_specs = [_split_to_tabspec(s) for s in splits]
-    created_tabs = add_tabs_to_doc(creds, doc_id, shell_specs)["tabs"]
-
-    # 5. Content transplant: plan every tab first (pure - planning IS
-    # the fidelity preflight, so the warning list is complete before
-    # any write), then execute, then VERIFY. Split ranges are
-    # DocApp-child indices, so they slice the same sectionBreak-
-    # filtered list _detect_splits walked.
-    docapp_children = _docapp_children(body_content)
-    flat_splits = _flatten_splits(splits)
-    if len(flat_splits) != len(created_tabs):
-        raise RuntimeError(
-            f"shell creation returned {len(created_tabs)} tabs for "
-            f"{len(flat_splits)} split points"
-        )
-
-    report = FidelityReport()
-    if sum(1 for e in body_content if "sectionBreak" in e) > 1:
-        report.count("multi_section")
-
-    plans: list[tuple[dict, TabTransplantPlan]] = []
-    for split, tab in zip(flat_splits, created_tabs):
-        elements = [
-            element
-            for lo, hi in split["ranges"]
-            for element in docapp_children[lo : hi + 1]
-        ]
-        plan = plan_tab_transplant(
-            elements,
-            lists=source_tab.get("lists") or {},
-            inline_objects=source_tab.get("inlineObjects") or {},
-            dest_tab_id=tab["tab_id"],
-            named_styles=source_tab.get("namedStyles"),
-            document_style=source_tab.get("documentStyle"),
-            report=report,
-        )
-        plans.append((tab, plan))
-
+    # Steps 2-5 (fetch, split detection, shells, transplant, verify)
+    # run under phase-aware failure cleanup (BUG 1d):
+    #   - failure BEFORE any transplant write: the staging copy holds
+    #     nothing unique (the source is untouched), so delete any
+    #     shells and trash the copy - failed conversions must not
+    #     orphan working copies in Drive.
+    #   - failure AT or AFTER the first transplant write: content may
+    #     already live in the new tabs and a batch whose response was
+    #     lost may have landed server-side - the copy is KEPT and the
+    #     error carries doc_id plus a completed/pending manifest.
+    #     Cleanup code must never trash a doc that could hold the only
+    #     copy of anything.
+    transplant_write_attempted = False
+    completed_tab_titles: list[str] = []
+    created_tabs: list[dict] = []
     moved_blocks = 0
     try:
+        # 2. Find split points in the converted doc's primary tab body.
+        docs = get_service("docs", "v1", credentials=creds)
+        fetched = docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute()
+        source_tab = fetched["tabs"][0]["documentTab"]
+        body_content = source_tab["body"]["content"]
+
+        splits, strategy_used = _detect_splits(body_content, split_by)
+        if not splits:
+            return {
+                "doc_id": doc_id,
+                "url": converted["url"],
+                "action": "replaced" if replace_doc_id else "created",
+                "tabs": [],
+                "split_strategy_used": strategy_used,
+                "note": (
+                    "No split points found; doc is left as a single-tab "
+                    f"conversion of {source_label}."
+                ),
+            }
+
+        # Assign optional icons in detected-split order.
+        if tab_icons:
+            for i, split in enumerate(splits):
+                if i < len(tab_icons) and tab_icons[i]:
+                    split["icon_emoji"] = tab_icons[i]
+
+        # 3. Cap nesting depth defensively - _detect_splits won't
+        # currently produce nested splits, but a future strategy might.
+        max_depth = _max_depth(splits)
+        if max_depth >= MAX_NESTING_DEPTH:
+            raise RuntimeError(
+                f"Detected {max_depth + 1} nesting levels; "
+                f"Google Docs UI allows at most {MAX_NESTING_DEPTH}."
+            )
+
+        # 4. REST creates the empty tab shells at root level - siblings
+        # of the placeholder primary tab, not children of it. Gives the
+        # user a sidebar of top-level section tabs instead of one
+        # collapsed root.
+        primary_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
+        shell_specs = [_split_to_tabspec(s) for s in splits]
+        created_tabs = add_tabs_to_doc(creds, doc_id, shell_specs)["tabs"]
+
+        # 5. Content transplant: plan every tab first (pure - planning
+        # IS the fidelity preflight, so the warning list is complete
+        # before any write), then execute, then VERIFY. Split ranges
+        # are DocApp-child indices, so they slice the same
+        # sectionBreak-filtered list _detect_splits walked.
+        docapp_children = _docapp_children(body_content)
+        flat_splits = _flatten_splits(splits)
+        if len(flat_splits) != len(created_tabs):
+            raise RuntimeError(
+                f"shell creation returned {len(created_tabs)} tabs for "
+                f"{len(flat_splits)} split points"
+            )
+
+        report = FidelityReport()
+        if sum(1 for e in body_content if "sectionBreak" in e) > 1:
+            report.count("multi_section")
+
+        plans: list[tuple[dict, TabTransplantPlan]] = []
+        for split, tab in zip(flat_splits, created_tabs):
+            elements = [
+                element
+                for lo, hi in split["ranges"]
+                for element in docapp_children[lo : hi + 1]
+            ]
+            plan = plan_tab_transplant(
+                elements,
+                lists=source_tab.get("lists") or {},
+                inline_objects=source_tab.get("inlineObjects") or {},
+                dest_tab_id=tab["tab_id"],
+                named_styles=source_tab.get("namedStyles"),
+                document_style=source_tab.get("documentStyle"),
+                report=report,
+            )
+            plans.append((tab, plan))
+
         # One fetch covers every shell's starting state: each tab has
         # its own index space, so writing into one tab does not move
         # another tab's insertion point (table sync-points inside the
@@ -256,22 +276,40 @@ def convert_docx_to_tabbed_doc(
             documentId=doc_id, includeTabsContent=True
         ).execute()
         for tab, plan in plans:
+            transplant_write_attempted = True
             moved_blocks += execute_tab_transplant(
                 docs, doc_id, tab["tab_id"], plan, document=shells_doc
             )
+            completed_tab_titles.append(tab["title"])
         verify_doc = docs.documents().get(
             documentId=doc_id, includeTabsContent=True
         ).execute()
         for tab, plan in plans:
             verify_tab_transplant(verify_doc, tab["tab_id"], plan)
     except Exception as e:
-        _rollback_failed_transplant(
-            creds, docs, doc_id, [t["tab_id"] for t, _ in plans]
+        if transplant_write_attempted:
+            pending_titles = [
+                t["title"] for t in created_tabs[len(completed_tab_titles):]
+            ]
+            raise RuntimeError(
+                f"Conversion of {source_label} failed mid-transplant: {e}. "
+                f"The working copy was KEPT to avoid any risk of losing "
+                f"moved content: doc_id={doc_id} url={converted['url']}. "
+                f"The first tab still holds the complete source content. "
+                f"Tabs fully transplanted: "
+                f"{', '.join(completed_tab_titles) or 'none'}. "
+                f"Tabs pending or possibly partial: "
+                f"{', '.join(pending_titles) or 'none'}. "
+                "Verify the document in Google Docs, then retry the "
+                "conversion or remove the copy manually."
+            ) from e
+        _cleanup_failed_staging_copy(
+            creds, doc_id, [t["tab_id"] for t in created_tabs]
         )
         raise RuntimeError(
-            f"Tab transplant failed while converting {source_label}: {e}. "
-            "The partially-built tabs were removed and the working copy "
-            "was trashed; the source document is untouched."
+            f"Conversion of {source_label} failed before any content "
+            f"moved: {e}. The staging copy was removed; the source "
+            "document is untouched."
         ) from e
 
     # 6. Apply post-transplant icons by title match. MUST run BEFORE
@@ -384,10 +422,16 @@ def convert_docx_to_tabbed_doc(
     return result
 
 
-def _rollback_failed_transplant(
-    creds: Credentials, docs, doc_id: str, shell_tab_ids: list[str]
+def _cleanup_failed_staging_copy(
+    creds: Credentials, doc_id: str, shell_tab_ids: list[str]
 ) -> None:
-    """Best-effort cleanup after a mid-transplant failure.
+    """Best-effort cleanup after a PRE-transplant pipeline failure.
+
+    Only safe to call while no transplant write has been attempted -
+    at that point the working copy holds nothing that does not also
+    exist in the source, so removing it cannot lose content (the
+    keep-if-partial branch in ``convert_docx_to_tabbed_doc`` guards
+    the other case).
 
     Order matters for the failure story: deleting the shells first
     restores the working copy to a plain single-tab conversion (so
@@ -396,12 +440,17 @@ def _rollback_failed_transplant(
     user's original file was never touched). Every step swallows its
     own errors - the caller re-raises the original failure.
     """
-    for tab_id in shell_tab_ids:
+    if shell_tab_ids:
         try:
-            docs.documents().batchUpdate(
-                documentId=doc_id,
-                body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
-            ).execute()
+            docs = get_service("docs", "v1", credentials=creds)
+            for tab_id in shell_tab_ids:
+                try:
+                    docs.documents().batchUpdate(
+                        documentId=doc_id,
+                        body={"requests": [{"deleteTab": {"tabId": tab_id}}]},
+                    ).execute()
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
     try:
