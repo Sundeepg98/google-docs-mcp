@@ -76,6 +76,7 @@ from .services.docs.content_transplant import (
     TabTransplantPlan,
     carve_source_ranges,
     execute_tab_transplant,
+    has_named_style_content,
     plan_tab_transplant,
     verify_tab_transplant,
 )
@@ -442,6 +443,20 @@ def convert_docx_to_tabbed_doc(
         if sum(1 for e in body_content if "sectionBreak" in e) > 1:
             report.count("multi_section")
 
+        # Named styles carry the source's custom heading / text looks
+        # (navy bold headings, a monospace body font, ...). Under
+        # includeTabsContent the sheet lives at
+        # tabs[].documentTab.namedStyles; fall back to the legacy
+        # top-level document.namedStyles so an unexpected response shape
+        # cannot silently strand it. If the sheet did not reach the
+        # planner at all, the custom look CANNOT be re-emitted - surface
+        # that as a fidelity warning rather than letting the new tabs
+        # default silently (the E2 field report: custom-styled headings
+        # rendered as plain defaults with no signal to the user).
+        named_styles = source_tab.get("namedStyles") or fetched.get("namedStyles")
+        if not has_named_style_content(named_styles):
+            report.count("named_styles_not_carried")
+
         for split, tab in zip(flat_splits, created_tabs):
             elements = [
                 element
@@ -453,7 +468,7 @@ def convert_docx_to_tabbed_doc(
                 lists=source_tab.get("lists") or {},
                 inline_objects=source_tab.get("inlineObjects") or {},
                 dest_tab_id=tab["tab_id"],
-                named_styles=source_tab.get("namedStyles"),
+                named_styles=named_styles,
                 document_style=source_tab.get("documentStyle"),
                 report=report,
             )

@@ -662,6 +662,64 @@ def test_document_style_margins_carried_page_fields_only():
     assert set(req["documentStyle"]) == {"marginTop", "pageSize"}
 
 
+def test_custom_heading_named_style_and_monospace_run_both_carry():
+    # E2 machinery pin: when the source read surfaces a custom Heading1
+    # named style (navy, bold, 32pt) AND a run carries direct monospace
+    # formatting, the transplant re-emits BOTH - the sheet definition via
+    # updateNamedStyle and the run look via updateTextStyle. This is the
+    # #223 path, never live-proved with REAL custom styling until the E2
+    # field report; it passes when the sheet reaches the planner (the E2
+    # break is upstream: the sheet not reaching the planner at all).
+    named_styles = {
+        "styles": [
+            {
+                "namedStyleType": "HEADING_1",
+                "textStyle": {
+                    "foregroundColor": {
+                        "color": {"rgbColor": {"red": 0.118, "green": 0.227, "blue": 0.372}}
+                    },
+                    "bold": True,
+                    "fontSize": {"magnitude": 32, "unit": "PT"},
+                },
+                "paragraphStyle": {},
+            }
+        ]
+    }
+    mono = _para(
+        "code()\n", text_style={"weightedFontFamily": {"fontFamily": "Courier New"}}
+    )
+    plan = _plan(
+        [_para("Chapter\n", style="HEADING_1"), mono], named_styles=named_styles
+    )
+    (named_req,) = _requests_of_kind(plan, "updateNamedStyle")
+    assert named_req["namedStyle"]["namedStyleType"] == "HEADING_1"
+    assert named_req["namedStyle"]["textStyle"]["bold"] is True
+    assert named_req["namedStyle"]["textStyle"]["fontSize"]["magnitude"] == 32
+    assert "foregroundColor" in named_req["namedStyle"]["textStyle"]
+    assert "textStyle.foregroundColor" in named_req["fields"]
+    # The run-level monospace override rides too (a character-style look
+    # Drive import bakes into direct run formatting).
+    text_reqs = _requests_of_kind(plan, "updateTextStyle")
+    assert any(
+        tr["textStyle"].get("weightedFontFamily", {}).get("fontFamily") == "Courier New"
+        for tr in text_reqs
+    )
+
+
+def test_has_named_style_content_flags_a_missing_or_empty_sheet():
+    # The predicate the convert caller uses to decide whether to warn:
+    # a real sheet -> True; None / empty / unspecified-only -> False.
+    assert ct.has_named_style_content(
+        {"styles": [{"namedStyleType": "HEADING_1", "textStyle": {"bold": True}}]}
+    )
+    assert not ct.has_named_style_content(None)
+    assert not ct.has_named_style_content({})
+    assert not ct.has_named_style_content({"styles": []})
+    assert not ct.has_named_style_content(
+        {"styles": [{"namedStyleType": "NAMED_STYLE_TYPE_UNSPECIFIED", "textStyle": {"bold": True}}]}
+    )
+
+
 # ---------------------------------------------------------------------
 # Fidelity preflight
 # ---------------------------------------------------------------------

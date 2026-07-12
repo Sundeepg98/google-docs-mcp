@@ -226,6 +226,12 @@ DROPPED_KINDS: dict[str, str] = {
     "unsupported_object": "embedded object(s) with no readable image content omitted",
     "unknown_inline": "unrecognized inline element(s) omitted",
     "unknown_block": "unrecognized structural element(s) omitted",
+    "named_styles_not_carried": (
+        "custom document styling not carried: the source's named-style "
+        "sheet was unavailable to the converter, so headings and body "
+        "text may render with Google's default styling instead of the "
+        "document's custom look"
+    ),
 }
 
 # Elements that ARE carried, with a visible downgrade.
@@ -899,6 +905,20 @@ def _named_style_requests(named_styles: dict | None, tab_id: str) -> list[dict]:
             }
         )
     return requests
+
+
+def has_named_style_content(named_styles: dict | None) -> bool:
+    """True when a source tab's named-style sheet carries at least one
+    writable style definition the transplant can re-emit (the custom
+    heading / text looks). A source read that surfaced no ``namedStyles``
+    - or only empty / unspecified entries - yields False: the destination
+    tabs fall back to Google's defaults and the caller must warn, because
+    the custom look would otherwise vanish SILENTLY (the E2 defect). Real
+    Google Docs always carry Google's own built-in style definitions
+    (HEADING_1..6 etc. with real font sizes / colors), so this returns
+    False only when the sheet genuinely did not reach the planner - never
+    for an ordinary clean document."""
+    return bool(_named_style_requests(named_styles, "probe"))
 
 
 def _document_style_request(document_style: dict | None, tab_id: str) -> list[dict]:
