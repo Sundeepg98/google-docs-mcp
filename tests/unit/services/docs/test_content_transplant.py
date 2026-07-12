@@ -557,6 +557,70 @@ def test_nested_table_plans_recursively():
 
 
 # ---------------------------------------------------------------------
+# E1 - pageBreakBefore must never ride a table-overlapping range
+#
+# updateParagraphStyle rejects pageBreakBefore on any range containing
+# table paragraphs ("Cannot update page-break-before when the range
+# contains paragraphs in a table"), and documents.get reports the field
+# (usually false) on cell paragraphs - so the cell's own style replay
+# used to 400 the whole batch, killing every H1 section carrying a
+# table (bug report 2026-07-12, job b47927c4).
+# ---------------------------------------------------------------------
+
+
+def _has_page_break_before(value) -> bool:
+    """True if ``pageBreakBefore`` appears as a key anywhere in a request
+    tree (a style dict); the ``fields`` mask is a string value, so this
+    catches the style-dict occurrence that drives the 400."""
+    if isinstance(value, dict):
+        if "pageBreakBefore" in value:
+            return True
+        return any(_has_page_break_before(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_page_break_before(v) for v in value)
+    return False
+
+
+def test_table_cell_paragraph_style_drops_page_break_before():
+    # The discriminating unit: a table cell whose paragraph carries
+    # pageBreakBefore must emit its paragraph-style request WITHOUT the
+    # field (or its fields mask). Fails on pre-fix main, which passes it
+    # straight through into a table-range updateParagraphStyle.
+    cell = _para("Cell body\n", style="NORMAL_TEXT")
+    cell["paragraph"]["paragraphStyle"]["pageBreakBefore"] = True
+    cell["paragraph"]["paragraphStyle"]["alignment"] = "CENTER"
+    plan = _plan([_table([[[cell]]])])
+    (phase,) = plan.phases
+    assert isinstance(phase, TablePhase)
+    cell_plan = phase.cell_plans[(0, 0)]
+    para_reqs = _requests_of_kind(cell_plan, "updateParagraphStyle")
+    assert para_reqs, "expected a paragraph-style request in the cell"
+    for req in para_reqs:
+        assert "pageBreakBefore" not in req["paragraphStyle"]
+        assert "pageBreakBefore" not in req["fields"].split(",")
+    # The rest of the cell paragraph's styling still rides.
+    assert para_reqs[0]["paragraphStyle"]["alignment"] == "CENTER"
+
+
+def test_off_table_paragraph_keeps_page_break_before_only_when_true():
+    # Off a table pageBreakBefore is legal and meaningful (a section's
+    # first paragraph starting a new page), so a true value is preserved;
+    # but documents.get reports pageBreakBefore=false on ordinary
+    # paragraphs and re-emitting that default is pure bloat, so false is
+    # dropped. Pre-fix main keeps the false value in the mask.
+    truthy = _para("Break\n", style="HEADING_1")
+    truthy["paragraph"]["paragraphStyle"]["pageBreakBefore"] = True
+    falsy = _para("Plain\n", style="HEADING_1")
+    falsy["paragraph"]["paragraphStyle"]["pageBreakBefore"] = False
+    plan = _plan([truthy, falsy])
+    kept, dropped = _requests_of_kind(plan, "updateParagraphStyle")
+    assert kept["paragraphStyle"].get("pageBreakBefore") is True
+    assert "pageBreakBefore" in kept["fields"].split(",")
+    assert "pageBreakBefore" not in dropped["paragraphStyle"]
+    assert "pageBreakBefore" not in dropped["fields"].split(",")
+
+
+# ---------------------------------------------------------------------
 # Planner - per-tab style sheets (named styles / document style)
 # ---------------------------------------------------------------------
 
@@ -874,6 +938,32 @@ def test_table_phase_creates_syncs_fills_reverse_then_styles():
     assert "updateTableCellStyle" in style_batch[0]
     cell_loc = style_batch[0]["updateTableCellStyle"]["tableRange"]["tableCellLocation"]
     assert cell_loc["tableStartLocation"] == {"index": 2, "tabId": TAB}
+
+
+def test_table_cell_page_break_never_reaches_the_live_batch():
+    """E1 end to end through the executor: a cell paragraph carrying
+    pageBreakBefore (the shape documents.get returns) must never appear
+    in a sent batchUpdate - Google 400s pageBreakBefore on any table
+    range, which is what killed every table-bearing H1 section convert.
+    Pre-fix, the cell's own style replay sends it and the batch dies."""
+    cell = _para("cell\n", style="NORMAL_TEXT")
+    cell["paragraph"]["paragraphStyle"]["pageBreakBefore"] = True
+    cell["paragraph"]["paragraphStyle"]["alignment"] = "CENTER"
+    plan = _plan([_table([[[cell]]])])
+    shell = _doc_with_tabs((TAB, _empty_tab_content()))
+    grid = _fresh_grid_doc(TAB, base=1, rows=1, cols=1)
+    fake = _FakeDocs([grid])
+    execute_tab_transplant(fake, "DOC", TAB, plan, document=shell)
+    # No request in any sent batch carries pageBreakBefore.
+    assert not _has_page_break_before(fake.batches)
+    # The cell paragraph's non-hostile styling still lands.
+    para_styles = [
+        r["updateParagraphStyle"]["paragraphStyle"]
+        for batch in fake.batches
+        for r in batch
+        if "updateParagraphStyle" in r
+    ]
+    assert any(ps.get("alignment") == "CENTER" for ps in para_styles)
 
 
 def test_verify_passes_when_blocks_present_and_fails_when_short():
