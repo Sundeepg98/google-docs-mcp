@@ -102,6 +102,27 @@ def _para(text: str, style: str = "NORMAL_TEXT", start: int = 0, end: int = 0) -
     }
 
 
+def _named_styles_sheet() -> dict:
+    """A realistic named-style sheet. Every real Google Doc carries the
+    built-in style definitions, so a source read always surfaces one; the
+    converter re-emits it per destination tab (updateNamedStyle) to carry
+    custom heading / text looks. Its ABSENCE is the E2 silent-loss signal
+    the fidelity warning now guards, so the pipeline fixtures include a
+    sheet to stay faithful to the real documents.get shape."""
+    return {
+        "styles": [
+            {
+                "namedStyleType": "HEADING_1",
+                "textStyle": {
+                    "bold": True,
+                    "fontSize": {"magnitude": 20, "unit": "PT"},
+                },
+                "paragraphStyle": {},
+            },
+        ]
+    }
+
+
 def _source_doc() -> dict:
     content = [
         {"startIndex": 0, "endIndex": 1, "sectionBreak": {}},
@@ -118,6 +139,7 @@ def _source_doc() -> dict:
                     "body": {"content": content},
                     "lists": {},
                     "inlineObjects": {},
+                    "namedStyles": _named_styles_sheet(),
                 },
             }
         ]
@@ -980,6 +1002,7 @@ def test_drive_doc_with_preamble_keeps_placeholder_with_explicit_veto(
             ]},
             "lists": {},
             "inlineObjects": {},
+            "namedStyles": _named_styles_sheet(),
         },
     }
     src = {"tabs": [src_tab]}
@@ -1136,6 +1159,7 @@ def _nested_source_doc() -> dict:
                     "body": {"content": content},
                     "lists": {},
                     "inlineObjects": {},
+                    "namedStyles": _named_styles_sheet(),
                 },
             }
         ]
@@ -1354,6 +1378,75 @@ def test_nest_by_invalid_value_rejected(pipeline):
         _convert(nest_by="heading_3")
     assert pipeline["docs"].batches == []
     assert pipeline["events"] == []
+
+
+# ---------------------------------------------------------------------
+# E2 (2026-07-12): custom docx styling - visible loss + robust read
+# ---------------------------------------------------------------------
+
+
+def test_missing_named_styles_sheet_warns_instead_of_silent_default(pipeline):
+    """When the source read surfaces NO named-style sheet, the custom
+    heading / text look cannot be re-emitted and the new tabs fall back
+    to Google's defaults. That loss must be VISIBLE - a fidelity warning,
+    not a silent default (the field crime). Pre-fix nothing is emitted;
+    the user only discovers the plain look by eye."""
+    bare = _source_doc()
+    bare["tabs"][0]["documentTab"].pop("namedStyles", None)
+    pipeline["docs"]._gets = [bare, _shells_doc(), _verify_doc()]
+
+    result = _convert()
+
+    assert any(
+        "custom document styling not carried" in w for w in result["warnings"]
+    )
+    # The conversion itself still succeeds - the warning is advisory, not
+    # fatal; content moves, tabs are created.
+    assert result["completion"]["moved_sections"] == ["Intro", "Methods"]
+
+
+def test_named_styles_read_falls_back_to_legacy_top_level(pipeline):
+    """Robust read: under includeTabsContent the sheet normally lives at
+    tabs[].documentTab.namedStyles, but if a response instead carries it
+    at the legacy top-level document.namedStyles, the converter must
+    still find it and carry the custom look into the new tabs. Pre-fix
+    the tab-only read drops it: no updateNamedStyle is emitted."""
+    src = _source_doc()
+    sheet = src["tabs"][0]["documentTab"].pop("namedStyles")
+    src["namedStyles"] = sheet  # legacy top-level location
+    pipeline["docs"]._gets = [src, _shells_doc(), _verify_doc()]
+
+    result = _convert()
+
+    named_reqs = [
+        r
+        for batch in pipeline["docs"].batches
+        for r in batch
+        if "updateNamedStyle" in r
+    ]
+    assert named_reqs, "the sheet must be carried from the legacy top-level location"
+    # It WAS carried, so no styling-loss warning fires.
+    assert not any(
+        "custom document styling not carried" in w for w in result["warnings"]
+    )
+
+
+def test_clean_doc_with_named_styles_emits_no_styling_warning(pipeline):
+    """A normal doc (the enriched fixture carries a named-style sheet, as
+    every real Google Doc does) must NOT trip the styling warning - it
+    fires only on a genuinely absent sheet, never on ordinary content."""
+    result = _convert()
+    assert not any(
+        "custom document styling not carried" in w for w in result["warnings"]
+    )
+    # The sheet is re-emitted onto each new tab.
+    named_reqs = [
+        r
+        for batch in pipeline["docs"].batches
+        for r in batch
+        if "updateNamedStyle" in r
+    ]
+    assert named_reqs
 
 
 # ---------------------------------------------------------------------
