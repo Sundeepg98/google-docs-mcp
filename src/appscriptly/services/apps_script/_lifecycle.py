@@ -31,6 +31,7 @@ the GENERATED per-script manifest, never appscriptly's own consent.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
@@ -43,6 +44,7 @@ from appscriptly.services.apps_script.api import (
     create_bound_project as _create_bound_project,
     create_deployment as _create_deployment,
     delete_deployment as _delete_deployment,
+    get_project_content as _get_project_content,
     list_deployments as _list_deployments,
     set_project_content as _set_project_content,
 )
@@ -96,6 +98,26 @@ def _ledger_user_id() -> str:
 
 def validate_on_conflict(on_conflict: str) -> str:
     """Return ``on_conflict`` if valid, else raise a clear ValueError.
+
+    The canonical definition of the three policies, with their edge-case
+    caveats (both non-blocking review riders on the Stream-2 PR):
+
+    - ``new``: always install a fresh automation (may leave duplicates).
+    - ``replace``: uninstall any prior install of the same (tool, container)
+      FIRST, then install fresh. TRANSIENT WINDOW: between the disarm of the
+      old install and the new one becoming live there is a gap where NEITHER
+      works, and for the trigger / menu-action classes the new install still
+      needs its one-time activation (Run + Allow) before it fires, so the
+      automation is dormant from the disarm until the user activates the
+      replacement. Prefer ``new`` if you need zero-downtime overlap.
+    - ``skip``: if a prior install of the same (tool, container) exists,
+      return it UNCHANGED instead of installing a duplicate. NO LIVENESS
+      CHECK: ``skip`` trusts the ledger row and does NOT probe whether that
+      prior install is still deployed / activated / healthy (there is no
+      cheap per-automation liveness signal, a bound automation has no /exec
+      to GET, and a processes read needs its own API call). If the prior
+      install may have been deleted or broken, use ``replace`` (or ``new``)
+      to force a fresh, known-good install rather than ``skip``.
 
     Raised as ``ValueError`` so the ``@workspace_tool`` envelope renders it
     as a user-facing ``ToolError`` (pre-validation, before any API call).
@@ -275,6 +297,165 @@ def mint_bound_automation(
         deployment_id=deployment_id,
         reused=False,
         replaced=replaced,
+    )
+
+
+# ---------------------------------------------------------------------
+# Update path (Stream 5): re-push current codegen to the EXISTING project
+# ---------------------------------------------------------------------
+
+# A top-level ``function NAME(`` declaration (for naming the re-activation
+# function when an update adds a scope). Same shape sheet_dashboard uses.
+_JS_FUNCTION_DECL_RE = re.compile(r"\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
+
+
+def _manifest_scopes(content: dict[str, Any]) -> set[str]:
+    """Extract the ``oauthScopes`` set from a projects.getContent payload.
+
+    Reads the manifest file (name ``appsscript``, type ``JSON``) out of the
+    live content and returns its declared scopes. A missing / unparseable
+    manifest yields an empty set (treated as "no scopes known", so the update
+    reports every new scope as an addition, the safe over-warn direction).
+    """
+    for f in content.get("files", []):
+        if f.get("name") == "appsscript" and f.get("type") == "JSON":
+            try:
+                manifest = json.loads(f.get("source") or "{}")
+            except (ValueError, TypeError):
+                return set()
+            scopes = manifest.get("oauthScopes")
+            return set(scopes) if isinstance(scopes, list) else set()
+    return set()
+
+
+def _reactivation_function(script_body: str) -> str:
+    """Name the function the user runs once to re-Allow an added scope.
+
+    Prefers ``installTrigger`` (the trigger classes define it, and re-running
+    it re-authorizes + re-installs the trigger); otherwise the first
+    top-level function declaration in the pushed body; otherwise a generic
+    placeholder. Used only to fill the activation instructions when an update
+    adds a scope (the editor exposes no function-level deep link, per
+    activation.py).
+    """
+    if "function installTrigger(" in script_body:
+        return "installTrigger"
+    m = _JS_FUNCTION_DECL_RE.search(script_body)
+    return m.group(1) if m else "any function"
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    """Outcome of ``update_automation``.
+
+    ``status`` is ``updated`` when the content changed and was re-pushed, or
+    ``unchanged`` when the new content hashed identically to what is deployed
+    (no re-push). ``added_scopes`` lists OAuth scopes the new manifest
+    declares that the live deployment did not, and ``needs_reactivation`` is
+    True exactly when that list is non-empty (the user must Run + Allow once
+    to grant them).
+    """
+
+    script_id: str
+    deployment_id: str
+    status: str
+    content_hash_before: str | None
+    content_hash_after: str
+    added_scopes: list[str]
+    needs_reactivation: bool
+
+
+def update_automation(
+    creds: Credentials,
+    script_id: str,
+    *,
+    script_body: str,
+    manifest_dict: dict[str, Any],
+    handler_functions: Sequence[str],
+    row: dict[str, Any],
+) -> UpdateResult:
+    """Re-push CURRENT codegen to the EXISTING project (consent-preserving).
+
+    Closes gap #6 (stale generated-code drift): when the caller regenerates a
+    bound automation's ``.gs`` (a codegen fix, a scope correction, an added
+    step), this pushes the new content + a fresh version + deployment onto
+    the SAME ``script_id``. It NEVER mints a new project, so the user's
+    existing per-script authorization (and any installed trigger) is
+    preserved, exactly like PR-D's GONE-heal redeploys on the surviving
+    project.
+
+    Refreshes the ledger row's ``content_hash`` + ``handler_functions`` +
+    ``deployment_id`` (keeping ``tool`` / ``container`` / ``created_at``).
+
+    Scope-change detection: reads the LIVE manifest (``projects.getContent``)
+    before pushing and compares its scopes to the new manifest's. Any scope
+    the new content ADDS means the user must Run + Allow once to grant it,
+    surfaced as ``needs_reactivation`` + ``added_scopes`` (the tool layer
+    turns that into the shared activation fields).
+
+    No-op fast path: if the new content hashes identically to what is
+    deployed, returns ``status='unchanged'`` WITHOUT re-pushing.
+
+    ``row`` is the ledger row for ``script_id`` (already fetched +
+    ownership-checked by the caller).
+    """
+    old_hash = row.get("content_hash")
+    new_hash = compute_automation_hash(script_body, manifest_dict)
+    new_scopes = set(manifest_dict.get("oauthScopes") or [])
+
+    # Read the live manifest scopes BEFORE any push, to detect an addition.
+    # A gone project (404) or a read blip yields an empty old set, which
+    # reports every new scope as added (the safe over-warn direction).
+    try:
+        old_scopes = _manifest_scopes(_get_project_content(creds, script_id))
+    except HttpError:
+        old_scopes = set()
+    added_scopes = sorted(new_scopes - old_scopes)
+
+    if new_hash == old_hash:
+        # Identical content already deployed, nothing to push. (Same hash
+        # implies the same manifest, so added_scopes is empty here.)
+        return UpdateResult(
+            script_id=script_id,
+            deployment_id=row.get("deployment_id") or "",
+            status="unchanged",
+            content_hash_before=old_hash,
+            content_hash_after=new_hash,
+            added_scopes=added_scopes,
+            needs_reactivation=bool(added_scopes),
+        )
+
+    # Push the new content + cut a fresh version + deployment on the SAME
+    # project (consent-preserving; no new scriptId).
+    _set_project_content(creds, script_id, script_body, manifest_dict)
+    deployment = _create_deployment(
+        creds, script_id, description="appscriptly update"
+    )
+    new_deployment_id = deployment["deploymentId"]
+
+    # Refresh the ledger row (UPSERT on script_id preserves created_at).
+    automation_ledger.record_automation(
+        user_id=row["user_id"],
+        script_id=script_id,
+        tool=row["tool"],
+        container_id=row.get("container_id"),
+        container_kind=row.get("container_kind"),
+        deployment_id=new_deployment_id,
+        project_url=row.get("project_url")
+        or f"https://script.google.com/d/{script_id}/edit",
+        exec_url=row.get("exec_url"),
+        content_hash=new_hash,
+        handler_functions=handler_functions,
+    )
+
+    return UpdateResult(
+        script_id=script_id,
+        deployment_id=new_deployment_id,
+        status="updated",
+        content_hash_before=old_hash,
+        content_hash_after=new_hash,
+        added_scopes=added_scopes,
+        needs_reactivation=bool(added_scopes),
     )
 
 

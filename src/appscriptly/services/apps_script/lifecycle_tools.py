@@ -1,7 +1,7 @@
-"""Automation lifecycle MCP tools: inventory + uninstall.
+"""Automation lifecycle MCP tools: inventory + uninstall + update.
 
-Two tools that close the "install-only, no lifecycle" gap (inventory gaps
-#1/#2; Stream-0 findings S0-1..S0-4). Both are ``as_*`` (appscriptly-native)
+Three tools that close the "install-only, no lifecycle" gap (inventory gaps
+#1/#2/#6; Stream-0 findings S0-1..S0-4). All are ``as_*`` (appscriptly-native)
 and register via auto-discovery (this module is a non-underscore leaf under
 ``services/apps_script/``; the orchestration logic lives in the
 discovery-skipped ``_lifecycle.py``).
@@ -16,7 +16,13 @@ discovery-skipped ``_lifecycle.py``).
   the Apps Script API, so ``creds=True`` with the baseline
   ``GAS_BOUND_SCOPES``.
 
-Both feed the observability tool the ledger was designed to unblock:
+- ``as_update_automation(script_id, script_body, ...)`` — re-push CURRENT
+  codegen to the EXISTING project (consent-preserving: same script_id, new
+  content + version + deployment; never a new project). Closes gap #6
+  (stale generated-code drift). Detects a scope addition and surfaces
+  ``needs_reactivation`` + the shared activation fields.
+
+All feed the observability tool the ledger was designed to unblock:
 ``as_list_script_processes`` needs a ``script_id`` the user must already
 hold (S0-2); the inventory is where those ids now come from.
 """
@@ -25,15 +31,20 @@ from __future__ import annotations
 from fastmcp.exceptions import ToolError
 
 from appscriptly import automation_ledger
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     _ledger_user_id,
+    _reactivation_function,
     uninstall_automation as _uninstall_automation,
+    update_automation as _update_automation,
 )
+from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import (
     AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA,
     AS_UNINSTALL_AUTOMATION_OUTPUT_SCHEMA,
+    AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA,
 )
 
 # Imported for parity with the sibling apps_script tools; not used on the
@@ -240,3 +251,182 @@ def as_uninstall_automation(creds, script_id: str) -> dict:
             "uninstalled by id anyway (undeploy + disarm attempted)."
         )
     return result
+
+
+@workspace_tool(
+    title="Update an installed automation in place (re-push current codegen)",
+    service="apps_script",
+    readonly=False,
+    # Replaces the automation's code with a NEW version rather than removing
+    # it; an update is not a delete, so it is not marked destructive (same
+    # posture as as_generate_bound_script / gsheets_write_range).
+    destructive=False,
+    # Re-running with identical content returns status="unchanged" and
+    # re-pushes nothing.
+    idempotent=True,
+    external=True,
+    creds=True,
+    scopes=GAS_BOUND_SCOPES,
+    output_schema=AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA,
+)
+def as_update_automation(
+    creds,
+    script_id: str,
+    script_body: str,
+    manifest: dict | None = None,
+    handler_functions: list[str] | None = None,
+    allow_restricted_scopes: bool = False,
+) -> dict:
+    """Update an installed bound automation in place, preserving its consent.
+
+    USE WHEN: you have improved the generated code of an automation you
+    installed earlier (a codegen fix, a scope correction, an added step) and
+    want to roll it out to the EXISTING automation WITHOUT making the user
+    re-do setup. Get ``script_id`` from ``as_list_installed_automations``.
+
+    This re-pushes your regenerated ``.gs`` + manifest to the SAME Apps
+    Script project (a new version + deployment on the same ``script_id``). It
+    NEVER mints a new project, so the user's per-script authorization and any
+    installed trigger are PRESERVED, unlike uninstalling and re-installing
+    (which would create a fresh project and require a fresh Allow).
+
+    You regenerate and pass the CURRENT code: the server does not store the
+    original inputs, so Claude re-authors ``script_body`` (and ``manifest``)
+    the same way the original installer does TODAY, at the current codegen.
+    This is how an update FIXES an old automation: re-running the current
+    installer logic now threads the container data scope
+    (``*.currentonly``, the N-S3V-1 / PR-G fix) into the manifest and wraps
+    the handler body with the failure reporter (Stream 4), so passing that
+    regenerated content refreshes a stale script to the corrected manifest.
+    Idempotent: if the regenerated content is identical to what is deployed,
+    the tool returns ``status: "unchanged"`` and re-pushes nothing.
+
+    SCOPE-CHANGE / RE-ACTIVATION: if the new manifest declares an OAuth scope
+    the deployed version did not carry, the user must Run + Allow once to
+    grant it. The response then sets ``needs_reactivation: true`` with
+    ``added_scopes`` and the shared activation fields
+    (``activation_url`` / ``activation_instructions`` / ``activation_function``).
+    A pure content change with no new scope needs NO re-Allow. (Note: an
+    update does not itself activate a never-activated automation; if the
+    original install still needed a one-time activation, that is still true
+    after the update.)
+
+    Args:
+        script_id: the automation to update (from
+            ``as_list_installed_automations``). Must be a BOUND automation;
+            standalone web apps are updated with ``as_deploy_web_app``
+            (``on_conflict="replace"``), which handles the new ``/exec`` URL
+            + HMAC guard.
+        script_body: the regenerated ``.gs`` source (the current codegen).
+            Claude authors it. Required.
+        manifest: OPTIONAL high-level manifest description (same shape as
+            ``as_generate_bound_script``: ``menu`` / ``triggers`` /
+            ``sidebar_html`` / ``oauth_scopes``). Omit for a bare manifest.
+            The restricted-scope guard applies.
+        handler_functions: OPTIONAL updated installable-trigger handler names
+            (for the self-disarm on a later uninstall). Omit to keep the
+            recorded ones.
+        allow_restricted_scopes: OPTIONAL opt-in to permit a Google RESTRICTED
+            scope in the manifest (default False rejects them), same as
+            ``as_generate_bound_script``.
+
+    Returns:
+        ``{script_id, status, content_hash_before, content_hash_after,
+        deployment_id, needs_reactivation, added_scopes, message}`` plus the
+        activation fields when ``needs_reactivation`` is true. ``status`` is
+        ``updated`` or ``unchanged``.
+
+    Raises:
+        ToolError: the automation is not in your inventory, is recorded under
+            a different account, or is a standalone web app; or any Apps
+            Script API error.
+    """
+    if not script_id or not script_id.strip():
+        raise ValueError(
+            "script_id cannot be empty - pass the id of the automation to "
+            "update (from as_list_installed_automations)."
+        )
+    script_id = script_id.strip()
+    if not script_body or not script_body.strip():
+        raise ValueError(
+            "script_body cannot be empty - pass the regenerated .gs source "
+            "for the automation."
+        )
+
+    row = automation_ledger.get_automation(script_id)
+    me = _ledger_user_id()
+    if row is None:
+        raise ToolError(
+            "That automation is not in your appscriptly inventory, so there "
+            "is nothing to update. Create one with an installer "
+            "(as_generate_bound_script / as_install_*) first; updates apply "
+            "to automations this connector recorded."
+        )
+    if row.get("user_id") != me:
+        raise ToolError(
+            "That automation is recorded under a different account and "
+            "cannot be updated from here."
+        )
+    if row.get("container_kind") == "webapp" or row.get("tool") == "as_deploy_web_app":
+        raise ToolError(
+            "That automation is a standalone web app. Update it with "
+            "as_deploy_web_app (on_conflict='replace'), which handles the new "
+            "/exec URL and the HMAC guard. as_update_automation updates bound "
+            "(container) automations."
+        )
+
+    # Build the manifest (reuses the restricted-scope guard).
+    manifest_dict = _build_manifest(
+        manifest, allow_restricted_scopes=allow_restricted_scopes
+    )
+    handlers = (
+        handler_functions
+        if handler_functions is not None
+        else (row.get("handler_functions") or [])
+    )
+
+    result = _update_automation(
+        creds,
+        script_id,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        handler_functions=handlers,
+        row=row,
+    )
+
+    response: dict = {
+        "script_id": result.script_id,
+        "status": result.status,
+        "content_hash_before": result.content_hash_before,
+        "content_hash_after": result.content_hash_after,
+        "deployment_id": result.deployment_id,
+        "needs_reactivation": result.needs_reactivation,
+        "added_scopes": result.added_scopes,
+    }
+    if result.status == "unchanged":
+        response["message"] = (
+            "No change: the regenerated code is identical to what is already "
+            "deployed, so nothing was re-pushed."
+        )
+    elif result.needs_reactivation:
+        fn = _reactivation_function(script_body)
+        instructions = (
+            f"This update added OAuth scope(s) {result.added_scopes} that the "
+            f"deployed version did not carry, so it needs a one-time re-Allow. "
+            f"Open the activation URL as the Google user who owns the script, "
+            f"select `{fn}` in the editor's function dropdown, click Run once, "
+            f"then click Allow. The updated code is already deployed; it can "
+            f"use the new scope(s) only after that one-time grant."
+        )
+        response["message"] = (
+            "Automation updated. One step remains: a newly added OAuth scope "
+            "needs a one-time re-Allow (see activation_instructions)."
+        )
+        response.update(build_activation_fields(script_id, fn, instructions))
+    else:
+        response["message"] = (
+            "Automation updated in place: new code and deployment on the same "
+            "project, so your existing authorization and any installed trigger "
+            "are preserved. No re-Allow is needed."
+        )
+    return response

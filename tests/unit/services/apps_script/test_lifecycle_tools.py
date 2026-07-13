@@ -13,15 +13,19 @@ the tool + orchestration + real ledger, not the Google API plumbing.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastmcp.exceptions import ToolError
 
 from appscriptly import auth, automation_ledger, decorators
+from appscriptly.services.apps_script.api import container_data_scope
 from appscriptly.services.apps_script import _lifecycle
 from appscriptly.services.apps_script._lifecycle import _ledger_user_id
 from appscriptly.services.apps_script.lifecycle_tools import (
     as_list_installed_automations,
     as_uninstall_automation,
+    as_update_automation,
 )
 from appscriptly.services.apps_script.sheet_menu import as_install_sheet_menu
 
@@ -41,6 +45,7 @@ class _FakeApi:
         self.created: list = []
         self.pushed: list = []
         self.deleted: list = []
+        self.content_by_script: dict = {}
 
     def create_bound_project(self, creds, container_id, name):
         self._n += 1
@@ -62,6 +67,14 @@ class _FakeApi:
     def delete_deployment(self, creds, script_id, deployment_id):
         self.deleted.append((script_id, deployment_id))
 
+    def get_project_content(self, creds, script_id):
+        import json
+        return self.content_by_script.get(
+            script_id,
+            {"files": [{"name": "appsscript", "type": "JSON",
+                        "source": json.dumps({"oauthScopes": []})}]},
+        )
+
 
 @pytest.fixture
 def fake_api(monkeypatch):
@@ -71,6 +84,7 @@ def fake_api(monkeypatch):
     monkeypatch.setattr(_lifecycle, "_create_deployment", api.create_deployment)
     monkeypatch.setattr(_lifecycle, "_list_deployments", api.list_deployments)
     monkeypatch.setattr(_lifecycle, "_delete_deployment", api.delete_deployment)
+    monkeypatch.setattr(_lifecycle, "_get_project_content", api.get_project_content)
     return api
 
 
@@ -219,6 +233,8 @@ def test_deploy_web_app_writes_a_ledger_row(monkeypatch):
     assert row["tool"] == "as_deploy_web_app"
     assert row["container_kind"] == "webapp"
     assert row["exec_url"].endswith("/exec")
+    # Rider 1: the web-app mint records a content_hash (drift baseline) too.
+    assert row["content_hash"]
     # And it shows up in the inventory as a web app.
     listed = _list()
     assert any(a["script_id"] == "WSID" and a["activation_model"] == "web_app"
@@ -235,3 +251,106 @@ def test_deploy_web_app_rejects_skip(monkeypatch):
             access="MYSELF",
             on_conflict="skip",
         )
+
+
+# ---------------------------------------------------------------------
+# as_update_automation
+# ---------------------------------------------------------------------
+
+
+def _install_menu():
+    return as_install_sheet_menu(
+        sheet_id="SHEET1", menu_title="Tools",
+        items=[{"label": "Go", "function_name": "go", "function_body": ""}],
+    )
+
+
+def test_update_tool_repushes_and_reports_updated(fake_api):
+    sid = _install_menu()["script_id"]
+    out = as_update_automation(
+        script_id=sid, script_body="function onOpen(e){ /* v2 menu */ }",
+    )
+    assert out["status"] == "updated"
+    assert out["needs_reactivation"] is False
+    assert out["content_hash_before"] != out["content_hash_after"]
+    row = automation_ledger.get_automation(sid)
+    assert row["content_hash"] == out["content_hash_after"]
+
+
+def test_update_tool_surfaces_needs_reactivation_with_activation_fields(fake_api):
+    sid = _install_menu()["script_id"]
+    # The live manifest has no scopes (fake default); the update adds one.
+    out = as_update_automation(
+        script_id=sid,
+        script_body="function refresh(e){ SpreadsheetApp.getActive(); }",
+        manifest={"oauth_scopes": ["https://www.googleapis.com/auth/spreadsheets"]},
+    )
+    assert out["status"] == "updated"
+    assert out["needs_reactivation"] is True
+    assert out["added_scopes"] == ["https://www.googleapis.com/auth/spreadsheets"]
+    # The shared activation fields are merged in.
+    assert out["activation_required"] is True
+    assert out["activation_url"].endswith(f"/d/{sid}/edit")
+    assert "Run once" in out["activation_instructions"]
+
+
+def test_update_tool_rejects_an_id_not_in_inventory(fake_api):
+    with pytest.raises(ToolError, match="not in your appscriptly inventory"):
+        as_update_automation(script_id="UNKNOWN", script_body="function f(){}")
+
+
+def test_update_tool_refuses_cross_tenant(fake_api):
+    automation_ledger.record_automation(
+        user_id="someone-else", script_id="S1", tool="as_install_sheet_menu",
+        container_id="X", container_kind="sheets",
+    )
+    with pytest.raises(ToolError, match="different account"):
+        as_update_automation(script_id="S1", script_body="function f(){}")
+
+
+def test_update_tool_rejects_a_web_app(fake_api):
+    me = _ledger_user_id()
+    automation_ledger.record_automation(
+        user_id=me, script_id="W1", tool="as_deploy_web_app",
+        container_id="hook", container_kind="webapp",
+    )
+    with pytest.raises(ToolError, match="web app"):
+        as_update_automation(script_id="W1", script_body="function doGet(e){}")
+
+
+def test_update_tool_rejects_blank_script_body(fake_api):
+    sid = _install_menu()["script_id"]
+    with pytest.raises(ValueError, match="script_body cannot be empty"):
+        as_update_automation(script_id=sid, script_body="   ")
+
+
+def test_update_refreshes_a_pre_g_script_to_the_data_scoped_manifest(fake_api):
+    """Wave-defining refresh (PR-G / N-S3V-1): updating a PRE-PR-G script
+    (whose LIVE manifest lacks the container data scope) to the CURRENT
+    codegen (which threads container_data_scope) is a scope ADDITION, so the
+    tool surfaces needs_reactivation and the exact added data scope, telling
+    the user to re-Allow so the fixed automation can finally touch its data.
+    This is the update tool's whole point after PR-G."""
+    data_scope = container_data_scope("sheets")  # spreadsheets.currentonly
+
+    sid = _install_menu()["script_id"]
+    # Simulate a pre-PR-G live manifest: only the UI scope, NO data scope.
+    fake_api.content_by_script[sid] = {
+        "files": [{"name": "appsscript", "type": "JSON", "source": json.dumps(
+            {"oauthScopes": [
+                "https://www.googleapis.com/auth/script.container.ui"]}
+        )}]
+    }
+    out = as_update_automation(
+        script_id=sid,
+        # The current-codegen body (would carry S4's failure reporter too).
+        script_body="function onOpen(e){ SpreadsheetApp.getActive(); }",
+        # The current-codegen manifest threads the container data scope.
+        manifest={"oauth_scopes": [data_scope]},
+    )
+    assert out["status"] == "updated"
+    assert out["needs_reactivation"] is True
+    assert data_scope in out["added_scopes"]
+    # The user is handed the exact re-Allow step.
+    assert out["activation_required"] is True
+    assert out["activation_url"].endswith(f"/d/{sid}/edit")
