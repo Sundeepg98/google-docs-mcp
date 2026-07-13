@@ -19,6 +19,10 @@ EXPECTED: frozenset[str] = frozenset({
     # observability over script.processes (SENSITIVE, no CASA); companion
     # to the create+deploy levers.
     "as_list_script_processes",
+    # Stream 3 — activation verification (check_activation.py). Read-only:
+    # answers "is this deployed automation live yet?" via a web-app probe
+    # or an execution-history read. Same script.processes scope.
+    "as_check_activation",
     # PR-Δ8 — doc-menu installer (doc_menu.py).
     "as_install_doc_menu",
     # PR-Δ10 — custom =FUNCTION() installer (custom_function.py).

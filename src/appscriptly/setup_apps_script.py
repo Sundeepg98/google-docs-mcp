@@ -256,7 +256,10 @@ _PROBE_MAX_BODY_BYTES = 65536
 
 
 def probe_webapp_health(
-    url: str, *, timeout: float = _PROBE_TIMEOUT_SECONDS
+    url: str,
+    *,
+    timeout: float = _PROBE_TIMEOUT_SECONDS,
+    require_json: bool = True,
 ) -> WebAppHealth:
     """GET a deployment's ``/exec`` URL and classify what answered.
 
@@ -273,19 +276,29 @@ def probe_webapp_health(
     Classification (the single source of truth - server_health and the
     installer both consume THIS verdict):
 
-    - ``HEALTHY`` — HTTP 200 and the body parses as JSON (the script ran).
+    - ``HEALTHY`` — HTTP 200 and (when ``require_json``) the body parses
+      as JSON (the script ran).
     - ``CONSENT_GATED`` — HTTP 403 (Google's consent-door page answers
-      before the script), or a 200 whose body is HTML/non-JSON (a
-      Google sign-in interstitial, the same door in a different dress).
-      The deployment EXISTS; the user's one-time Run + Allow in the
-      script editor opens it. Re-provisioning cannot fix this and makes
-      it worse (a new project = a new consent gate).
+      before the script), or (when ``require_json``) a 200 whose body is
+      HTML/non-JSON (a Google sign-in interstitial, the same door in a
+      different dress). The deployment EXISTS; the user's one-time
+      Run + Allow in the script editor opens it. Re-provisioning cannot
+      fix this and makes it worse (a new project = a new consent gate).
     - ``GONE`` — 404 (deleted/archived deployment) or another
       non-consent definitive 4xx. Will not recover on its own; the
       remediation is a REDEPLOY (on the existing project when possible).
     - ``UNKNOWN`` — transport trouble (timeout, DNS/connection failure)
       or a retryable server-side status (5xx / 429). Says nothing about
       the deployment; callers must treat it as "reuse the cache."
+
+    ``require_json`` (default True) is the restructure.gs contract: its
+    ``doGet`` is guaranteed to return JSON, so a 200-non-JSON is the
+    consent interstitial. Set it False for an ARBITRARY user web app
+    (``as_deploy_web_app`` / ``as_check_activation``), whose ``doGet``
+    may return HTML/text or which may be ``doPost``-only: there ANY 200
+    means the script executed past Google's consent door (HEALTHY), and
+    only the unambiguous 403 is the consent gate. Requiring JSON there
+    would false-positive every non-JSON endpoint as CONSENT_GATED.
 
     Stdlib-only (urllib) so it works identically in the slim container
     and the local stdio install. Redirects are followed (urllib's
@@ -314,6 +327,11 @@ def probe_webapp_health(
         # OSError subclasses; HTTPException covers protocol-level
         # garbage (e.g. BadStatusLine) urlopen can leak through.
         return WebAppHealth.UNKNOWN
+    if not require_json:
+        # Arbitrary user web app: we passed the 403 door (this is a 200),
+        # so the script ran. We cannot assume its body shape - do NOT
+        # read a non-JSON 200 as the consent gate here.
+        return WebAppHealth.HEALTHY
     try:
         json.loads(body)
     except ValueError:

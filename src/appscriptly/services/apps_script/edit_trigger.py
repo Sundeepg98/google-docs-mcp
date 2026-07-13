@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import re
 
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script.api import (
     build_manifest as _build_manifest,
@@ -399,15 +400,20 @@ def as_install_edit_trigger(
         "trigger_handler": handler,
         "project_url": f"https://script.google.com/d/{script_id}/edit",
         # HONEST trigger state: the deploy wires the trigger but does NOT
-        # run installTrigger, so the reaction is not live yet. See the
-        # docstring's activation note.
+        # run installTrigger, so the reaction is not live yet. trigger_active
+        # is the legacy alias; the unified activation_* fields carry the
+        # canonical shape (build_activation_fields).
         "trigger_active": False,
-        "activation_required": True,
-        "activation_instructions": (
-            f"Open the script editor ({project_name}) at the project_url "
-            f"and run the `installTrigger` function once (Run button), then "
-            f"approve the authorization prompt. That activates the onEdit "
-            f"reaction for `{handler}`; it then runs on Google's "
-            f"infrastructure on every edit with no further action."
+        **build_activation_fields(
+            script_id,
+            "installTrigger",
+            (
+                f"Open the script editor ({project_name}) at the "
+                f"activation_url, select `installTrigger` in the function "
+                f"dropdown and click Run once, then approve the "
+                f"authorization prompt. That activates the onEdit reaction "
+                f"for `{handler}`; it then runs on Google's infrastructure "
+                f"on every edit with no further action."
+            ),
         ),
     }

@@ -1,6 +1,7 @@
 [
   "account_reset_authorization",
   "admin_audit",
+  "as_check_activation",
   "as_deploy_web_app",
   "as_encode_video",
   "as_generate_bound_script",
