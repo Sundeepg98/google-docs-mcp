@@ -403,6 +403,11 @@ _FUNCTION_DECL_RE = re.compile(r"\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
 # validated JS identifier, always quoted, immediately before the ')'. The
 # non-greedy label match tolerates commas / quotes inside the label literal,
 # and the anchor on the closing paren means only the true second arg matches.
+# BOUNDARY: this is a textual scan, so a handler body that literally contained
+# a `.addItem(x, "fn")` call would also be read as a menu target. No generated
+# shape does that (handler bodies here don't build menus), so it is a
+# theoretical false-positive, not a real one; if a future generator emits
+# nested .addItem calls inside a handler, scope this to the onOpen block.
 _ADDITEM_TARGET_RE = re.compile(
     r"\.addItem\(.+?,\s*(['\"])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*\)"
 )
