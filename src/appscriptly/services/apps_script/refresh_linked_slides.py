@@ -52,6 +52,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script.api import (
     build_manifest as _build_manifest,
@@ -329,5 +330,23 @@ def as_refresh_linked_slides(
             f"the editor Run button — approving the one-time authorization "
             f"prompt. That pulls the latest content from each linked "
             f"slide's source deck. Re-run it whenever you want to re-sync."
+        ),
+        # Unified activation contract (Stream 3): run_required /
+        # run_instructions are the legacy aliases; these carry the canonical
+        # shape. This is an on-demand action, so activation = running the
+        # function once.
+        **build_activation_fields(
+            script_id,
+            _REFRESH_FUNCTION,
+            (
+                f"Open the presentation (or the script editor at the "
+                f"activation_url) and run `{_REFRESH_FUNCTION}` once: use the "
+                f"\"{_MENU_ITEM_LABEL}\" menu item under \"{menu_title}\", or "
+                f"select `{_REFRESH_FUNCTION}` in the editor's function "
+                f"dropdown and click Run, then approve the one-time "
+                f"authorization prompt. That pulls the latest content from "
+                f"each linked slide's source deck. Re-run it whenever you "
+                f"want to re-sync."
+            ),
         ),
     }

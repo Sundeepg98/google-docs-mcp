@@ -107,6 +107,9 @@ READONLY_TOOLS = {
     # read of a script project's execution history (script.processes is
     # read-only; the tool runs nothing and mutates nothing).
     "as_list_script_processes",
+    # Stream 3: as_check_activation — a pure read (a web-app GET probe and/or
+    # an execution-history read); runs nothing and mutates nothing.
+    "as_check_activation",
     # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
     # Sister tools gtasks_create_* / gtasks_update_task /
     # gtasks_complete_task (mutations) and gtasks_delete_task

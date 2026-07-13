@@ -1374,6 +1374,20 @@ AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA = _object(
         # plus the header scheme the caller must use. (v2.0c.)
         "hmac_key": {"type": "string"},
         "hmac_instructions": {"type": "string"},
+        # Activation UX (Stream 3 / gap #7). Present ONLY for a public
+        # deploy (access in {ANYONE_ANONYMOUS, ANYONE}), which is probed
+        # post-deploy. ``status`` is "ready" | "needs_activation" |
+        # "deployed"; the four unified activation_* fields ride along only
+        # when status == "needs_activation" (the per-script consent door
+        # answered). additionalProperties stays True so this is additive.
+        "status": {
+            "type": "string",
+            "enum": ["ready", "needs_activation", "deployed"],
+        },
+        "activation_required": {"type": "boolean"},
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
+        "activation_instructions": {"type": "string"},
     },
     required=["script_id", "deployment_id", "version", "exec_url"],
 )
@@ -1445,6 +1459,37 @@ AS_LIST_SCRIPT_PROCESSES_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_check_activation`` (Stream 3) answers "is this deployed automation
+# live yet?" via one of two methods, auto-selected by whether ``exec_url``
+# is supplied. ``webapp_probe`` GETs a web app's /exec and reads the health
+# verdict; ``process_history`` reads the project's execution history for the
+# activation function. ``activated`` is tri-state: True (evidence it is
+# live) / False (evidence it is not yet) / null (indeterminate - a run is in
+# progress, or the probe was inconclusive). additionalProperties stays True
+# (the _object default) so a future field is additive.
+AS_CHECK_ACTIVATION_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": ["string", "null"]},
+        "activated": {"type": ["boolean", "null"]},
+        "method": {
+            "type": "string",
+            "enum": ["webapp_probe", "process_history"],
+        },
+        "activation_function": {"type": ["string", "null"]},
+        "activation_url": {"type": ["string", "null"], "format": "uri"},
+        # webapp_probe only: "serving" | "needs_activation" | "gone" |
+        # "unknown" (mirrors the WebAppHealth verdict).
+        "exec_state": {"type": ["string", "null"]},
+        # process_history only: the matched activation run's status + when.
+        "last_status": {"type": ["string", "null"]},
+        "last_run_time": {"type": ["string", "null"]},
+        "matched_processes": {"type": "array"},
+        "message": {"type": "string"},
+    },
+    required=["activated", "method", "message"],
+)
+
+
 # ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
 # the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
 # user types) and the echoed ``function_name`` / ``sheet_id``.
@@ -1492,6 +1537,11 @@ AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3): the editor deep link +
+        # the exact function to run. trigger_active stays as the legacy
+        # alias. See appscriptly/activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
     },
     required=[
         "script_id",
@@ -1503,6 +1553,8 @@ AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
     ],
 )
 
@@ -1551,6 +1603,9 @@ AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3). See activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
     },
     required=[
         "script_id",
@@ -1562,6 +1617,8 @@ AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
     ],
 )
 
@@ -1584,6 +1641,9 @@ AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3). See activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
     },
     required=[
         "script_id",
@@ -1595,6 +1655,8 @@ AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
     ],
 )
 
@@ -1680,6 +1742,14 @@ AS_REFRESH_LINKED_SLIDES_OUTPUT_SCHEMA = _object(
         "refreshed_count": {"type": ["integer", "null"], "minimum": 0},
         "run_required": {"type": "boolean"},
         "run_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3): run_required /
+        # run_instructions stay as the legacy aliases; these four carry the
+        # canonical shape (an on-demand action, so activation = one run).
+        # See appscriptly/activation.py.
+        "activation_required": {"type": "boolean"},
+        "activation_function": {"type": "string"},
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_instructions": {"type": "string"},
     },
     required=[
         "script_id",
@@ -1689,6 +1759,10 @@ AS_REFRESH_LINKED_SLIDES_OUTPUT_SCHEMA = _object(
         "project_url",
         "run_required",
         "run_instructions",
+        "activation_required",
+        "activation_function",
+        "activation_url",
+        "activation_instructions",
     ],
 )
 
@@ -1719,6 +1793,14 @@ AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA = _object(
         "graded_count": {"type": ["integer", "null"], "minimum": 0},
         "run_required": {"type": "boolean"},
         "run_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3): run_required /
+        # run_instructions stay as the legacy aliases; these four carry the
+        # canonical shape (an on-demand action, so activation = one run).
+        # See appscriptly/activation.py.
+        "activation_required": {"type": "boolean"},
+        "activation_function": {"type": "string"},
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_instructions": {"type": "string"},
         "manifest_scope": {"type": "string"},
     },
     required=[
@@ -1729,6 +1811,10 @@ AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA = _object(
         "project_url",
         "run_required",
         "run_instructions",
+        "activation_required",
+        "activation_function",
+        "activation_url",
+        "activation_instructions",
         "manifest_scope",
     ],
 )
@@ -1756,6 +1842,14 @@ AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
         "frames_expected": {"type": ["integer", "null"], "minimum": 0},
         "render_function": {"type": "string"},
         "activation_note": {"type": "string"},
+        # Unified activation contract (Stream 3): activation_note stays as
+        # the legacy alias (it carries the extra batch/encode/token detail);
+        # these four carry the canonical shape (activation = one renderFrames
+        # run). See appscriptly/activation.py.
+        "activation_required": {"type": "boolean"},
+        "activation_function": {"type": "string"},
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_instructions": {"type": "string"},
         "project_url": {"type": "string", "format": "uri"},
     },
     required=[
@@ -1765,6 +1859,10 @@ AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA = _object(
         "frames_batch_id",
         "render_function",
         "activation_note",
+        "activation_required",
+        "activation_function",
+        "activation_url",
+        "activation_instructions",
         "project_url",
     ],
 )
@@ -1818,6 +1916,9 @@ AS_INSTALL_CALENDAR_SYNC_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3). See activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
         "manifest_scope": {"type": "string"},
     },
     required=[
@@ -1830,6 +1931,8 @@ AS_INSTALL_CALENDAR_SYNC_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
         "manifest_scope",
     ],
 )
@@ -1859,6 +1962,9 @@ AS_INSTALL_TASK_ROLLOVER_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3). See activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
         "manifest_scope": {"type": "string"},
         # The Tasks advanced service must be enabled in the generated
         # script's manifest (dependencies.enabledAdvancedServices) for
@@ -1876,6 +1982,8 @@ AS_INSTALL_TASK_ROLLOVER_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
         "manifest_scope",
         "advanced_service",
     ],
@@ -1904,6 +2012,9 @@ AS_INSTALL_CONTACT_SYNC_OUTPUT_SCHEMA = _object(
         "trigger_active": {"type": "boolean"},
         "activation_required": {"type": "boolean"},
         "activation_instructions": {"type": "string"},
+        # Unified activation contract (Stream 3). See activation.py.
+        "activation_url": {"type": "string", "format": "uri"},
+        "activation_function": {"type": "string"},
         "manifest_scope": {"type": "string"},
     },
     required=[
@@ -1916,6 +2027,8 @@ AS_INSTALL_CONTACT_SYNC_OUTPUT_SCHEMA = _object(
         "trigger_active",
         "activation_required",
         "activation_instructions",
+        "activation_url",
+        "activation_function",
         "manifest_scope",
     ],
 )
@@ -2289,6 +2402,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # processes.listScriptProcesses. Observability companion to the
     # create+deploy levers above.
     "as_list_script_processes": AS_LIST_SCRIPT_PROCESSES_OUTPUT_SCHEMA,
+    # Stream 3 — verify a deployed automation is activated yet (web-app
+    # probe or execution-history read; companion to the activation UX).
+    "as_check_activation": AS_CHECK_ACTIVATION_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)
     "as_install_doc_menu": AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)

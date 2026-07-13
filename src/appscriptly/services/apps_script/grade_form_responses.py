@@ -58,6 +58,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script.api import (
     build_manifest as _build_manifest,
@@ -442,6 +443,24 @@ def as_grade_form_responses(
             f"prompt (the full `forms` scope, needed to write grades). "
             f"That pushes the computed scores onto the submitted "
             f"responses. Re-run to re-grade."
+        ),
+        # Unified activation contract (Stream 3): run_required /
+        # run_instructions are the legacy aliases; these carry the canonical
+        # shape. This is an on-demand action, so activation = running the
+        # function once.
+        **build_activation_fields(
+            script_id,
+            _GRADE_FUNCTION,
+            (
+                f"Open the form (or the script editor at the activation_url) "
+                f"and run `{_GRADE_FUNCTION}` once: use the "
+                f"\"{_MENU_ITEM_LABEL}\" menu item under \"{menu_title}\", or "
+                f"select `{_GRADE_FUNCTION}` in the editor's function "
+                f"dropdown and click Run, then approve the one-time "
+                f"authorization prompt (the full `forms` scope, needed to "
+                f"write grades). That pushes the computed scores onto the "
+                f"submitted responses. Re-run to re-grade."
+            ),
         ),
         # Transparency: the scope the GENERATED bound script declares to
         # write grades. It is the bound script's manifest scope, NOT a

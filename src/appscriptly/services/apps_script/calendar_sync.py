@@ -53,6 +53,7 @@ HONEST: ``trigger_active`` is ``False`` and ``activation_required`` is
 """
 from __future__ import annotations
 
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script.api import (
     build_manifest as _build_manifest,
@@ -293,17 +294,22 @@ def as_install_calendar_sync(
         "trigger_handler": handler,
         "project_url": f"https://script.google.com/d/{script_id}/edit",
         # HONEST trigger state: the deploy wires the trigger but does NOT
-        # run installTrigger, so the schedule is not live yet. See the
-        # docstring's activation note.
+        # run installTrigger, so the schedule is not live yet. trigger_active
+        # is the legacy alias; the unified activation_* fields carry the
+        # canonical shape (build_activation_fields).
         "trigger_active": False,
-        "activation_required": True,
-        "activation_instructions": (
-            f"Open the script editor ({project_name}) at the project_url "
-            f"and run the `installTrigger` function once (Run button), then "
-            f"approve the authorization prompt (it includes the `calendar` "
-            f"scope the sync needs). That activates the {schedule} schedule "
-            f"for `{handler}`; it then runs on Google's clock with no "
-            f"further action."
+        **build_activation_fields(
+            script_id,
+            "installTrigger",
+            (
+                f"Open the script editor ({project_name}) at the "
+                f"activation_url, select `installTrigger` in the function "
+                f"dropdown and click Run once, then approve the "
+                f"authorization prompt (it includes the `calendar` scope the "
+                f"sync needs). That activates the {schedule} schedule for "
+                f"`{handler}`; it then runs on Google's clock with no "
+                f"further action."
+            ),
         ),
         # Transparency: the scope the GENERATED bound script declares to
         # write Calendar events. It is the bound script's manifest scope,

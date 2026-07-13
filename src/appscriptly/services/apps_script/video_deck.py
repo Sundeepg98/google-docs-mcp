@@ -71,6 +71,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script.api import (
     auto_detect_container_kind as _auto_detect_container_kind,
@@ -453,6 +454,26 @@ def as_generate_video_deck(
             f"render in a single pass (Apps Script's ~6-minute execution "
             f"cap); much larger decks may need chunking. The upload token "
             f"expires in ~30 minutes — run the render promptly."
+        ),
+        # Unified activation contract (Stream 3): activation_note is the
+        # legacy alias (it carries the extra batch/encode/token detail);
+        # these carry the canonical shape. Activation = running renderFrames
+        # once.
+        **build_activation_fields(
+            script_id,
+            "renderFrames",
+            (
+                f"Frames are NOT generated yet. Open the deck and click "
+                f"'Video > Render frames' (the menu this tool installed), or "
+                f"open the script editor at the activation_url, select "
+                f"'renderFrames' in the function dropdown and click Run once, "
+                f"then approve the authorization prompt. That renders each "
+                f"slide and uploads it to the appscriptly server. When it "
+                f"finishes, call as_encode_video with "
+                f"frames_batch_id='{batch_id}' to get the MP4. The upload "
+                f"token expires in about 30 minutes, so run the render "
+                f"promptly."
+            ),
         ),
         "project_url": f"https://script.google.com/d/{script_id}/edit",
     }

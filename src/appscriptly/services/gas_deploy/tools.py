@@ -70,11 +70,13 @@ is unchanged.
 """
 from __future__ import annotations
 
+import re
 import warnings
 
 from fastmcp.exceptions import ToolError
 
 from appscriptly._deprecation import warn_deprecated_alias
+from appscriptly.activation import build_activation_fields
 from appscriptly.apps_script_hmac import generate_hmac_key
 from appscriptly.credentials import (
     NeedsReauthError,
@@ -107,6 +109,25 @@ _WEB_APP_DEPLOY_SCOPES = [
     "https://www.googleapis.com/auth/script.projects",
     "https://www.googleapis.com/auth/script.deployments",
 ]
+
+# Matches a top-level ``function doGet(...)`` declaration (mirrors
+# api.py::_DOPOST_DECL_RE). Used only to NAME the function the user runs
+# once to clear the per-script consent gate.
+_DOGET_DECL_RE = re.compile(r"\bfunction\s+doGet\s*\(")
+
+
+def _primary_entry_point(script_body: str) -> str:
+    """Name the entry point the user runs once to clear the consent gate.
+
+    A GET-reachable webhook defines ``doGet``; a POST-only webhook defines
+    ``doPost``. Prefer ``doGet`` (the entry the activation probe hits);
+    fall back to ``doPost``. The deploy already guaranteed at least one of
+    the two exists, so this always names a real function in the project.
+    Detected from the caller's ORIGINAL body (before any HMAC wrapping).
+    """
+    if _DOGET_DECL_RE.search(script_body):
+        return "doGet"
+    return "doPost"
 
 
 # ---------------------------------------------------------------------
@@ -468,6 +489,20 @@ def as_deploy_web_app(
         is the live endpoint; ``project_url`` deep-links to the editor so
         the user can inspect / tweak the code.
 
+        ACTIVATION (``ANYONE_ANONYMOUS`` deploys only). A world-reachable
+        web app that carries a sensitive scope serves Google's per-script
+        403 consent door until the deploying user runs any function once and
+        clicks Allow. For ``access="ANYONE_ANONYMOUS"`` this tool probes the
+        fresh ``/exec`` and adds a ``status``: ``ready`` (already reachable),
+        ``needs_activation`` (the consent door answered — the result then
+        also carries ``activation_required``, ``activation_url``,
+        ``activation_function``, ``activation_instructions``: relay them so
+        the user does the one-time Run + Allow), or ``deployed`` (the deploy
+        succeeded but the probe was inconclusive). ANYONE / DOMAIN / MYSELF
+        deploys are not probed and carry no ``status`` (they require a Google
+        sign-in, so an anonymous probe cannot tell a consent gate from
+        Google's own sign-in requirement).
+
     Raises:
         ToolError: blank / handler-less ``script_body``, blank ``title``,
             an invalid ``execute_as`` / ``access``, an ANYONE_ANONYMOUS
@@ -540,4 +575,47 @@ def as_deploy_web_app(
             "minutes) signature are rejected. Store hmac_key as a secret; "
             "it is shown only once."
         )
+
+    # Post-deploy activation probe (gap #7 / S0-5). A world-reachable web
+    # app carrying a sensitive scope serves Google's per-script 403 consent
+    # door until the deploying user runs any function once and clicks Allow.
+    # Detect that and hand it back as DATA (the Class I pattern) instead of
+    # returning a URL that silently 403s. ONLY ANYONE_ANONYMOUS is probed:
+    # it is the sole access mode reachable WITHOUT a Google sign-in, so an
+    # anonymous GET's 403 is unambiguously the consent door. For ANYONE /
+    # DOMAIN / MYSELF an anonymous probe hits Google's sign-in wall (not the
+    # script), which cannot be told apart from a missing activation, so
+    # probing there would mislabel a perfectly deployed endpoint.
+    # require_json=False: this is an arbitrary user endpoint, so any 200
+    # means it ran (see probe_webapp_health) and only the 403 is the gate.
+    if access == "ANYONE_ANONYMOUS":
+        health = probe_webapp_health(deployment.url, require_json=False)
+        if health is WebAppHealth.CONSENT_GATED:
+            activation_function = _primary_entry_point(script_body)
+            result["status"] = "needs_activation"
+            result.update(
+                build_activation_fields(
+                    deployment.script_id,
+                    activation_function,
+                    (
+                        "This endpoint is deployed but not reachable yet: "
+                        "Google gates every Apps Script web app behind a "
+                        "ONE-TIME consent from its deploying owner. Open the "
+                        "activation_url as the Google user who deployed it, "
+                        f"select `{activation_function}` (or any function) in "
+                        "the editor's function dropdown, click Run once, then "
+                        "click Allow on the authorization prompt. The /exec "
+                        "URL serves immediately after that; re-deploying does "
+                        "not replace this step."
+                    ),
+                )
+            )
+        elif health is WebAppHealth.HEALTHY:
+            # Reachable already (a no-scope or pre-consented endpoint).
+            result["status"] = "ready"
+        else:
+            # GONE (a 404 right after creation) or UNKNOWN (a probe blip):
+            # the deploy itself succeeded, so never fail it on the probe -
+            # we just could not confirm the activation state from here.
+            result["status"] = "deployed"
     return result

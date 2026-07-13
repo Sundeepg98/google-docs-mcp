@@ -364,8 +364,10 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # (as_install_calendar_sync, as_install_task_rollover,
 # as_install_contact_sync — sensitive scope in the GENERATED manifest only);
 # then 134 → 136 with the 2026-07 next-wave tools (gdrive_rename_file +
-# server_health — both canonical-only, no deprecated aliases).
-_MIN_EXPECTED_TOOL_COUNT = 136
+# server_health — both canonical-only, no deprecated aliases); then
+# 136 → 137 with the Stream 3 activation-verification tool
+# (as_check_activation — canonical-only, apps_script service).
+_MIN_EXPECTED_TOOL_COUNT = 137
 
 _discovery_failures: list[tuple[str, str]] = []
 

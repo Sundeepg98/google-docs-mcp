@@ -178,6 +178,24 @@ def test_validation_failure_makes_no_api_call(with_script_client):
     assert not create_body_calls
 
 
+def test_grade_returns_unified_activation_contract(with_script_client):
+    """Stream 3: the legacy run_required / run_instructions aliases survive
+    AND the unified activation_* fields are present, naming gradeResponses
+    (an on-demand action, so activation = one run)."""
+    result = gfr.as_grade_form_responses(
+        form_id="FORM1", scoring_function_body=_SCORER,
+    )
+    # Legacy aliases preserved (back-compat).
+    assert result["run_required"] is True
+    assert "run_instructions" in result
+    # Unified canonical fields (build_activation_fields).
+    assert result["activation_required"] is True
+    assert result["activation_function"] == "gradeResponses"
+    assert result["activation_url"] == result["project_url"]
+    assert result["activation_url"].endswith("/edit")
+    assert "gradeResponses" in result["activation_instructions"]
+
+
 # ---------------------------------------------------------------------
 # SCOPE GUARD (load-bearing) — full forms scope in GENERATED manifest only
 # ---------------------------------------------------------------------

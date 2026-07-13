@@ -271,6 +271,25 @@ def test_install_dashboard_reports_honest_trigger_state(with_sheet_container):
     assert "installTrigger" in result["activation_instructions"]
 
 
+def test_install_dashboard_returns_unified_activation_contract(
+    with_sheet_container,
+):
+    """Stream 3: the legacy trigger_active alias survives AND the unified
+    activation_* fields are present (activation_url = editor root, no
+    function-level deep link exists; activation_function names installTrigger)."""
+    result = sheet_dashboard.as_install_sheet_dashboard(
+        sheet_id="SHEET-1", refresh_function_body=_REFRESH_FN,
+    )
+    # Legacy alias preserved (back-compat).
+    assert result["trigger_active"] is False
+    # Unified canonical fields (build_activation_fields).
+    assert result["activation_required"] is True
+    assert result["activation_function"] == "installTrigger"
+    assert result["activation_url"] == result["project_url"]
+    assert result["activation_url"] == "https://script.google.com/d/SCRIPT-1/edit"
+    assert "installTrigger" in result["activation_instructions"]
+
+
 def test_install_dashboard_binds_via_parent_id(with_sheet_container):
     """The create call must bind to the Sheet via parentId=sheet_id."""
     sheet_dashboard.as_install_sheet_dashboard(

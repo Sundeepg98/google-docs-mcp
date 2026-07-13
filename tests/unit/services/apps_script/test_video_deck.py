@@ -198,6 +198,20 @@ def test_tool_happy_path_returns_envelope(with_slides_container):
     assert isinstance(result["frames_batch_id"], str) and result["frames_batch_id"]
 
 
+def test_tool_returns_unified_activation_contract(with_slides_container):
+    """Stream 3: the legacy activation_note alias survives (it carries the
+    extra batch/encode/token detail) AND the unified activation_* fields are
+    present, naming renderFrames."""
+    result = video_deck.as_generate_video_deck(presentation_id="DECK1")
+    # Legacy alias preserved (back-compat, richer detail).
+    assert "activation_note" in result
+    # Unified canonical fields (build_activation_fields).
+    assert result["activation_required"] is True
+    assert result["activation_function"] == "renderFrames"
+    assert result["activation_url"] == result["project_url"]
+    assert "renderFrames" in result["activation_instructions"]
+
+
 def test_tool_binds_via_parent_id(with_slides_container):
     _drive, script = with_slides_container
     video_deck.as_generate_video_deck(presentation_id="DECK1")

@@ -128,6 +128,7 @@ EXPECTED_TOOLS = {
     "as_deploy_web_app",  # ROADMAP 59: deploy a doGet/doPost project as a Web App (webhook)
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_list_script_processes",  # CASA-free growth: processes.listScriptProcesses — execution-history read (script.processes, SENSITIVE → no CASA)
+    "as_check_activation",  # Stream 3: verify a deployed automation is activated yet (web-app probe or execution-history read)
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc

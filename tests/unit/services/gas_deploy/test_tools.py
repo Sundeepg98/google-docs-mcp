@@ -39,6 +39,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+import pytest
+
 
 def test_gdocs_setup_apps_script_preserves_creds_false_opt_out():
     """The tool's REGISTERED signature must be zero-arg.
@@ -458,6 +460,15 @@ def _stub_creds_and_script_svc(monkeypatch):
     # to patch there.)
     monkeypatch.setattr(auth, "load_credentials", lambda *a, **k: _creds)
     monkeypatch.setattr(decorators, "_get_credentials_fn", lambda: _creds)
+    # Stream 3: as_deploy_web_app probes the fresh /exec after a public
+    # deploy. Default it HEALTHY so the deploy tests stay HERMETIC (no real
+    # network GET to the fake exec URL); tests that exercise the activation
+    # branch override this stub with the verdict they want.
+    from appscriptly.services.gas_deploy import tools as _gd_tools
+    from appscriptly.setup_apps_script import WebAppHealth as _WAH
+    monkeypatch.setattr(
+        _gd_tools, "probe_webapp_health", lambda url, **kw: _WAH.HEALTHY
+    )
     svc = MagicMock(name="script-v1")
     svc.projects().create().execute.return_value = {"scriptId": "SID-9"}
     svc.projects().updateContent().execute.return_value = {}
@@ -592,6 +603,136 @@ def test_as_deploy_web_app_non_public_validation_propagates(monkeypatch):
                 title="No handler",
                 access="MYSELF",
             )
+
+
+# ---------------------------------------------------------------------
+# Stream 3 — as_deploy_web_app post-deploy activation probe (gap #7 /
+# S0-5). A public web app carrying a sensitive scope serves Google's
+# per-script 403 consent door until a one-time Run + Allow; the tool must
+# surface that as needs_activation DATA rather than a silently-403ing URL.
+# ---------------------------------------------------------------------
+
+
+def _deploy_public_with_health(monkeypatch, verdict, *, script_body):
+    """Deploy an ANYONE_ANONYMOUS web app with the probe forced to ``verdict``."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    monkeypatch.setattr(
+        tools, "probe_webapp_health", lambda url, **kw: verdict
+    )
+    with with_client(InMem({("script", "v1"): svc})):
+        return tools.as_deploy_web_app(
+            script_body=script_body,
+            title="Public webhook",
+            access="ANYONE_ANONYMOUS",
+        )
+
+
+def test_as_deploy_web_app_consent_gated_returns_needs_activation(monkeypatch):
+    """The 403 consent door on a fresh public deploy must come back as
+    needs_activation DATA (the Class I pattern), not a silently-403ing URL.
+    A doGet+doPost body names doGet as the function to run (probe hits GET)."""
+    import jsonschema
+
+    from appscriptly.setup_apps_script import WebAppHealth
+    from appscriptly.tool_schemas import AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA
+
+    result = _deploy_public_with_health(
+        monkeypatch,
+        WebAppHealth.CONSENT_GATED,
+        script_body=(
+            "function doGet(e){ return ContentService.createTextOutput('hi'); }"
+            " function doPost(e){ return ContentService.createTextOutput('ok'); }"
+        ),
+    )
+    jsonschema.validate(result, AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA)
+    assert result["status"] == "needs_activation"
+    assert result["activation_required"] is True
+    # The deploy still travels — the user needs the URL for AFTER activation.
+    assert result["exec_url"] == "https://script.google.com/macros/s/z/exec"
+    # Deep-link is the editor root (no function-level deep link exists).
+    assert result["activation_url"] == "https://script.google.com/d/SID-9/edit"
+    # doGet preferred (the probe hits GET); instructions name it + Allow.
+    assert result["activation_function"] == "doGet"
+    assert "doGet" in result["activation_instructions"]
+    assert "Allow" in result["activation_instructions"]
+    assert "Run" in result["activation_instructions"]
+
+
+def test_as_deploy_web_app_consent_gated_dopost_only_names_dopost(monkeypatch):
+    """A doPost-only webhook (no doGet) names doPost as the function to run."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    result = _deploy_public_with_health(
+        monkeypatch,
+        WebAppHealth.CONSENT_GATED,
+        script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+    )
+    assert result["status"] == "needs_activation"
+    assert result["activation_function"] == "doPost"
+    assert "doPost" in result["activation_instructions"]
+
+
+def test_as_deploy_web_app_healthy_returns_ready(monkeypatch):
+    """A reachable endpoint (past the consent door) reports ready, no
+    activation fields."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    result = _deploy_public_with_health(
+        monkeypatch,
+        WebAppHealth.HEALTHY,
+        script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+    )
+    assert result["status"] == "ready"
+    assert "activation_required" not in result
+    assert "activation_url" not in result
+
+
+@pytest.mark.parametrize(
+    "verdict", ["GONE", "UNKNOWN"], ids=["gone", "unknown"]
+)
+def test_as_deploy_web_app_inconclusive_probe_returns_deployed(
+    monkeypatch, verdict
+):
+    """A 404 right after creation, or a probe network blip, must NEVER fail
+    an otherwise successful deploy: report ``deployed`` and still hand back
+    the exec_url, with no activation claim we cannot substantiate."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    result = _deploy_public_with_health(
+        monkeypatch,
+        getattr(WebAppHealth, verdict),
+        script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+    )
+    assert result["status"] == "deployed"
+    assert result["exec_url"] == "https://script.google.com/macros/s/z/exec"
+    assert "activation_required" not in result
+
+
+def test_as_deploy_web_app_non_public_is_not_probed(monkeypatch):
+    """MYSELF / DOMAIN deploys are never probed (an anonymous probe cannot
+    tell a consent gate from Google's sign-in requirement there): the probe
+    is not called and no ``status`` field is added."""
+    from appscriptly.services.gas_deploy import tools
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    called = {"n": 0}
+
+    def _spy(url, **kw):
+        called["n"] += 1
+        from appscriptly.setup_apps_script import WebAppHealth
+        return WebAppHealth.HEALTHY
+
+    monkeypatch.setattr(tools, "probe_webapp_health", _spy)
+    with with_client(InMem({("script", "v1"): svc})):
+        result = tools.as_deploy_web_app(
+            script_body="function doGet(e){ return ContentService.createTextOutput('hi'); }",
+            title="Domain-only",
+            access="DOMAIN",
+        )
+    assert called["n"] == 0, "non-public deploy must not probe /exec"
+    assert "status" not in result
 
 
 # ---------------------------------------------------------------------
