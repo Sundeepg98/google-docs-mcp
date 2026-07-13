@@ -113,6 +113,9 @@ READONLY_TOOLS = {
     # Stream-2 lifecycle: the automation inventory is a pure read of the
     # per-user ledger (no Google API, mutates nothing).
     "as_list_installed_automations",
+    # Wave 2 (S4): the recipe catalog is a pure read of the in-process
+    # registry (no Google API, mutates nothing).
+    "as_list_recipes",
     # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
     # Sister tools gtasks_create_* / gtasks_update_task /
     # gtasks_complete_task (mutations) and gtasks_delete_task
@@ -217,6 +220,9 @@ NOT_OPEN_WORLD_TOOLS = {
     # Stream-2 lifecycle: the automation inventory reads only the local
     # per-user ledger; no Google API call (openWorldHint=False).
     "as_list_installed_automations",
+    # Wave 2 (S4): the recipe catalog reads only the in-process registry;
+    # no Google API call (openWorldHint=False).
+    "as_list_recipes",
 }
 
 

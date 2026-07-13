@@ -19,6 +19,7 @@
   "as_install_slides_menu",
   "as_install_task_rollover",
   "as_list_installed_automations",
+  "as_list_recipes",
   "as_list_script_processes",
   "as_refresh_linked_slides",
   "as_uninstall_automation",

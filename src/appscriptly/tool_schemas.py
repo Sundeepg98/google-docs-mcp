@@ -1581,6 +1581,59 @@ AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_list_recipes`` - the read-only install catalog projected from the
+# internal recipe registry (services/apps_script/_recipes.py). Pure-local (no
+# Google API). Each entry names the typed installer tool to CALL
+# (``installer_tool`` == ``name`` today) so a caller can list then install;
+# ``params`` is a per-arg summary (the installer tool carries the full typed
+# input schema). ``activation_models`` is a legend: each model present in the
+# catalog mapped to one honest line about activation. additionalProperties
+# stays True (the _object default) so a future per-entry field is additive.
+_AS_RECIPE_PARAM_SCHEMA = _object(
+    properties={
+        "name": {"type": "string"},
+        "type": {"type": "string"},
+        "required": {"type": "boolean"},
+    },
+    required=["name", "required"],
+)
+
+_AS_RECIPE_ENTRY_SCHEMA = _object(
+    properties={
+        "name": {"type": "string"},
+        "installer_tool": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "version": {"type": "string"},
+        "container_kind": {"type": "string"},
+        "activation_model": {"type": "string"},
+        "params": {"type": "array", "items": _AS_RECIPE_PARAM_SCHEMA},
+    },
+    required=[
+        "name",
+        "installer_tool",
+        "title",
+        "summary",
+        "version",
+        "container_kind",
+        "activation_model",
+        "params",
+    ],
+)
+
+AS_LIST_RECIPES_OUTPUT_SCHEMA = _object(
+    properties={
+        "recipes": {"type": "array", "items": _AS_RECIPE_ENTRY_SCHEMA},
+        "count": {"type": "integer", "minimum": 0},
+        "activation_models": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+    },
+    required=["recipes", "count", "activation_models"],
+)
+
+
 # ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
 # the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
 # user types) and the echoed ``function_name`` / ``sheet_id``.
@@ -2496,6 +2549,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # Stream 3 — verify a deployed automation is activated yet (web-app
     # probe or execution-history read; companion to the activation UX).
     "as_check_activation": AS_CHECK_ACTIVATION_OUTPUT_SCHEMA,
+    # Wave 2 (S4) - read-only install catalog projected from the recipe
+    # registry (_recipes.py); the discovery surface for the as_install_* family.
+    "as_list_recipes": AS_LIST_RECIPES_OUTPUT_SCHEMA,
     # Automation lifecycle — forward-only inventory + honest partial
     # uninstall (ledger-backed; closes the install-only gap, S0-1..S0-4).
     "as_list_installed_automations": AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA,
