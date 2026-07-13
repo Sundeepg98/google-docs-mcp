@@ -89,12 +89,14 @@ from appscriptly.oauth_google import resolve_runtime_oauth_config
 from appscriptly.server import workspace_tool
 from appscriptly.services.gas_deploy import GAS_DEPLOY_SCOPES
 from appscriptly.services.gas_deploy.api import (
+    build_webapp_manifest as _build_webapp_manifest,
     deploy_web_app_project as _deploy_web_app_project,
     inject_error_reporting as _inject_error_reporting,
     inject_webapp_hmac_guard as _inject_webapp_hmac_guard,
 )
 from appscriptly.services.apps_script._lifecycle import (
     _ledger_user_id,
+    compute_automation_hash as _compute_automation_hash,
     resolve_install_conflict as _resolve_install_conflict,
 )
 from appscriptly.setup_apps_script import (
@@ -650,6 +652,13 @@ def as_deploy_web_app(
         deployment_id=deployment.deployment_id,
         project_url=result["project_url"],
         exec_url=deployment.url,
+        # Content hash of what was actually pushed (the effective body, HMAC
+        # guard included, + the web-app manifest) so the inventory records a
+        # drift baseline like the bound installers do.
+        content_hash=_compute_automation_hash(
+            effective_body,
+            _build_webapp_manifest(execute_as=execute_as, access=access),
+        ),
         handler_functions=(),
     )
     if hmac_key is not None:

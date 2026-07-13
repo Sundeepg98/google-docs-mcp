@@ -531,6 +531,32 @@ def create_deployment(
     )
 
 
+def get_project_content(creds: Credentials, script_id: str) -> dict[str, Any]:
+    """Read a project's current files via ``projects.getContent``.
+
+    Returns the raw ``Content`` resource (``{scriptId, files: [...]}`` where
+    each file has ``name`` / ``type`` / ``source``). Used by
+    ``as_update_automation`` to read the LIVE manifest before re-pushing, so
+    it can tell whether the new content ADDS an OAuth scope the deployed
+    version did not carry (a scope addition means the user must re-Allow).
+
+    Pure read — wrapped ``idempotent=True`` so a transient 429/5xx retries
+    rather than failing an update.
+
+    Raises:
+        HttpError: from the Apps Script SDK on 4xx / 5xx — propagated (a 404
+            means the project was deleted; the caller handles that).
+    """
+    script = get_service("script", "v1", credentials=creds)
+    return execute_with_retry(
+        lambda: script.projects().getContent(
+            scriptId=script_id,
+        ).execute(),
+        idempotent=True,
+        op_name="script.projects.getContent",
+    )
+
+
 def list_deployments(creds: Credentials, script_id: str) -> list[dict[str, Any]]:
     """List a project's deployments via ``projects.deployments.list``.
 

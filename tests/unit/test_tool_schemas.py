@@ -182,9 +182,11 @@ EXPECTED_TOOLS = {
     # gdocs_setup_apps_script remain as aliases).
     "as_install_automation",      # was gdocs_install_automation
     # Automation lifecycle — forward-only inventory + honest partial
-    # uninstall (ledger-backed; closes the install-only gap S0-1..S0-4).
+    # uninstall + consent-preserving update (ledger-backed; closes the
+    # install-only gap S0-1..S0-4 + stale-drift gap #6).
     "as_list_installed_automations",
     "as_uninstall_automation",
+    "as_update_automation",
 }
 
 

@@ -369,7 +369,7 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # (as_check_activation — canonical-only, apps_script service); then
 # 137 -> 139 with the Stream 2 automation-lifecycle tools
 # (as_list_installed_automations + as_uninstall_automation).
-_MIN_EXPECTED_TOOL_COUNT = 139
+_MIN_EXPECTED_TOOL_COUNT = 140
 
 _discovery_failures: list[tuple[str, str]] = []
 

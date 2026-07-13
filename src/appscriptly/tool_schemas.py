@@ -1552,6 +1552,35 @@ AS_UNINSTALL_AUTOMATION_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_update_automation`` — re-push current codegen to the EXISTING project
+# (consent-preserving). ``status`` is ``updated`` or ``unchanged``.
+# ``needs_reactivation`` is True only when the new manifest ADDS an OAuth
+# scope the deployed version lacked; the activation fields
+# (``activation_required`` / ``activation_function`` / ``activation_url`` /
+# ``activation_instructions``, from the shared activation contract) are then
+# present too. additionalProperties stays True (the _object default).
+AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "status": {"type": "string"},
+        "content_hash_before": {"type": ["string", "null"]},
+        "content_hash_after": {"type": "string"},
+        "deployment_id": {"type": ["string", "null"]},
+        "needs_reactivation": {"type": "boolean"},
+        "added_scopes": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string"},
+        # Present only when needs_reactivation is True (shared activation shape).
+        "activation_required": {"type": "boolean"},
+        "activation_function": {"type": ["string", "null"]},
+        "activation_url": {"type": ["string", "null"], "format": "uri"},
+        "activation_instructions": {"type": ["string", "null"]},
+    },
+    required=[
+        "script_id", "status", "content_hash_after", "needs_reactivation",
+    ],
+)
+
+
 # ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
 # the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
 # user types) and the echoed ``function_name`` / ``sheet_id``.
@@ -2471,6 +2500,7 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # uninstall (ledger-backed; closes the install-only gap, S0-1..S0-4).
     "as_list_installed_automations": AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA,
     "as_uninstall_automation": AS_UNINSTALL_AUTOMATION_OUTPUT_SCHEMA,
+    "as_update_automation": AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)
     "as_install_doc_menu": AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)

@@ -22,6 +22,7 @@
   "as_list_script_processes",
   "as_refresh_linked_slides",
   "as_uninstall_automation",
+  "as_update_automation",
   "gcal_create_event",
   "gcal_delete_event",
   "gcal_freebusy",
