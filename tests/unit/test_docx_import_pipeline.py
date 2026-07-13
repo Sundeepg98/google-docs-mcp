@@ -431,6 +431,60 @@ def test_keep_policy_reports_kept_without_veto_marker(pipeline):
     assert ("delete_tab", PRIMARY) not in pipeline["events"]
 
 
+# ---------------------------------------------------------------------
+# N11 - native multi-tab Google Doc source: shell titles must not
+# collide with the tabs the working copy already carries
+# ---------------------------------------------------------------------
+
+
+def test_native_multitab_source_dedupes_colliding_shell_titles(pipeline, monkeypatch):
+    """N11: converting a native Google Doc that ALREADY has tabs. Its
+    working copy (a drive.files.copy) carries those tabs, so a shell
+    whose title matches an existing tab - the primary, a sibling, or an
+    earlier shell - 400s addDocumentTab ('Tab title must be unique').
+    Shell titles are de-duped against every pre-existing tab; nothing is
+    deleted, so the source's other tabs are preserved and only the first
+    tab's Heading 1 sections drive new tabs."""
+    monkeypatch.setattr(
+        docx_import, "classify_drive_file", lambda creds, fid: docx_import.GDOC_MIME
+    )
+    monkeypatch.setattr(
+        docx_import,
+        "copy_google_doc",
+        lambda creds, fid, title=None: {
+            "doc_id": DOC_ID,
+            "url": f"https://docs.google.com/document/d/{DOC_ID}/edit",
+            "title": title or "Copy of Src",
+        },
+    )
+
+    # The copy's fetched shape: the first tab (split source) has Heading 1
+    # sections "Intro" and "Methods"; the copy ALSO carries a primary tab
+    # titled "Intro" and a sibling tab titled "Methods" - both collide.
+    primary = _source_doc()["tabs"][0]
+    primary["tabProperties"]["title"] = "Intro"
+    sibling = _tab("t.src1", _empty_shell())
+    sibling["tabProperties"]["title"] = "Methods"
+    existing = [primary, sibling]
+    pipeline["docs"]._gets = [
+        {"tabs": existing},
+        {"tabs": [*existing, _tab("t.1", _empty_shell()), _tab("t.2", _empty_shell())]},
+        {"tabs": [*existing, _tab("t.1", _filled(3)), _tab("t.2", _filled(3))]},
+    ]
+
+    convert_docx_to_tabbed_doc(
+        object(), drive_file_id="SRC_DOC", placeholder_behavior="keep"
+    )
+
+    add_tabs = [e for e in pipeline["events"] if e[0] == "add_tabs"]
+    assert add_tabs, "shells were never created"
+    titles = add_tabs[0][1]
+    # Suffixed to stay unique; count and order preserved (no shell
+    # dropped, no title left colliding).
+    assert titles == ["Intro (2)", "Methods (2)"]
+    assert "Intro" not in titles and "Methods" not in titles
+
+
 def test_no_splits_returns_single_tab_note_without_touching_tabs(pipeline, monkeypatch):
     doc = _source_doc()
     for elem in doc["tabs"][0]["documentTab"]["body"]["content"]:

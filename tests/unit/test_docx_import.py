@@ -33,13 +33,17 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from appscriptly.docx_import import (
+    _MAX_TAB_TITLE,
     _SplitPoint,
+    _dedupe_split_titles,
     _detect_splits,
     _docapp_children,
+    _existing_tab_titles,
     _extract_paragraph_text,
     _flatten_splits,
     _max_depth,
     _split_to_tabspec,
+    _unique_tab_title,
 )
 
 # ---------------------------------------------------------------------
@@ -765,3 +769,50 @@ def test_property_flatten_splits_preserves_node_count_and_parents_first(splits):
             check_parents_first(node["children"])
 
     check_parents_first(splits)
+
+
+# ---------------------------------------------------------------------
+# N11 - tab-title de-dup helpers (native multi-tab source collision)
+# ---------------------------------------------------------------------
+
+
+def _sp(title: str, children: list | None = None) -> _SplitPoint:
+    return _SplitPoint(
+        title=title, icon_emoji=None, ranges=[(0, 0)], children=children or []
+    )
+
+
+def test_existing_tab_titles_collects_all_nesting_levels():
+    tabs = [
+        {
+            "tabProperties": {"title": "A"},
+            "childTabs": [{"tabProperties": {"title": "A1"}}],
+        },
+        {"tabProperties": {"title": "B"}},
+        {"tabProperties": {}},  # an untitled tab contributes nothing
+    ]
+    assert _existing_tab_titles(tabs) == {"A", "A1", "B"}
+
+
+def test_unique_tab_title_suffixes_only_on_collision():
+    assert _unique_tab_title("Fresh", {"Taken"}) == "Fresh"
+    assert _unique_tab_title("Dup", {"Dup"}) == "Dup (2)"
+    assert _unique_tab_title("Dup", {"Dup", "Dup (2)"}) == "Dup (3)"
+
+
+def test_unique_tab_title_suffix_stays_within_length_limit():
+    base = "X" * _MAX_TAB_TITLE  # already at the API limit
+    out = _unique_tab_title(base, {base})
+    assert out != base
+    assert len(out) <= _MAX_TAB_TITLE
+    assert out.endswith(" (2)")
+
+
+def test_dedupe_split_titles_makes_titles_unique_in_preorder():
+    # Two shells collide with pre-existing tabs and the third collides
+    # within the batch; in-place pre-order de-dup yields all-unique titles.
+    splits = [_sp("Intro"), _sp("Methods"), _sp("Intro")]
+    _dedupe_split_titles(splits, {"Intro", "Methods"})
+    titles = [s["title"] for s in splits]
+    assert titles == ["Intro (2)", "Methods (2)", "Intro (3)"]
+    assert len(set(titles)) == 3
