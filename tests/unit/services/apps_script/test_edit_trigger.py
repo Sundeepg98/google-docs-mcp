@@ -160,9 +160,12 @@ def test_build_script_body_includes_handler_function_verbatim():
 def test_build_script_body_defines_install_trigger_function():
     body, _ = build_edit_trigger_script_body(_HANDLER_FN, "SHEET-1")
     assert "function installTrigger()" in body
-    # It wires the trigger to OUR handler by name.
+    # It wires the trigger to OUR handler by name. The handler is now a
+    # guarded wrapper (observability: emails the owner on failure, then
+    # rethrows) that delegates to the caller's onSheetEdit.
     assert "ScriptApp.newTrigger(handlerName)" in body
-    assert 'var handlerName = "onSheetEdit"' in body
+    assert 'var handlerName = "__appscriptlyGuarded_onSheetEdit__"' in body
+    assert "return onSheetEdit(e);" in body
 
 
 def test_build_script_body_wires_for_spreadsheet_on_edit():
@@ -279,6 +282,11 @@ def test_install_edit_trigger_manifest_declares_trigger_scope(with_sheet_contain
     )
     manifest = _pushed_manifest(with_sheet_container)
     assert _TRIGGER_SCOPE in manifest["oauthScopes"]
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 
@@ -378,3 +386,36 @@ def test_install_edit_trigger_resolves_creds_via_scope_aware_path(
 
     assert len(calls) == 1
     assert calls[0].get("extra_scopes") == GAS_BOUND_SCOPES
+
+
+def test_ledger_records_guarded_trigger_target_matching_installtrigger(
+    with_sheet_container, monkeypatch,
+):
+    """S2 reconcile (the sharp edge): the ledger handler name MUST equal the
+    function installTrigger actually wires (the observability GUARD wrapper),
+    not the caller's semantic handler onSheetEdit. Uninstall's self-disarm
+    reaper redefines exactly the recorded name, so a mismatch would leave the
+    onEdit trigger firing forever without self-disarming. Pin: recorded ==
+    ScriptApp.newTrigger target == guard_name_for('onSheetEdit')."""
+    from appscriptly import automation_ledger
+    from appscriptly.services.apps_script._observability import guard_name_for
+
+    captured: dict = {}
+
+    def spy_record(**kwargs):
+        captured["handler_functions"] = list(
+            kwargs.get("handler_functions") or []
+        )
+        return None  # capture only; don't touch the ledger DB
+
+    monkeypatch.setattr(automation_ledger, "record_automation", spy_record)
+
+    edit_trigger.as_install_edit_trigger(
+        sheet_id="SHEET-1", handler_function_body=_HANDLER_FN,
+    )
+
+    guard = guard_name_for("onSheetEdit")
+    assert captured["handler_functions"] == [guard]
+    pushed = _pushed_code_source(with_sheet_container)
+    assert f'var handlerName = "{guard}"' in pushed
+    assert 'var handlerName = "onSheetEdit"' not in pushed

@@ -540,6 +540,12 @@ def test_as_deploy_web_app_anonymous_injects_hmac_guard(monkeypatch):
     assert "computeHmacSha256Signature" in pushed
     assert "e.parameter" in pushed
     assert "e.headers" not in pushed
+    # Observability (gap #5): the failure reporter is injected too, and the
+    # HMAC guard composes ON TOP of it (the HMAC doPost stays outermost,
+    # delegating through the reporter-guarded __mcpUserDoPost to the caller,
+    # renamed __appscriptlyUserDoPost).
+    assert "__appscriptlyReportError__" in pushed
+    assert "function __appscriptlyUserDoPost(e)" in pushed
     # compute_signature is the server-side counterpart used by docx_import;
     # its presence here is a cross-check that the scheme name is stable.
     assert compute_signature(key, timestamp="0", body="{}")  # no raise
@@ -569,9 +575,15 @@ def test_as_deploy_web_app_non_public_access_no_hmac_key(monkeypatch):
         "replaced_count": 0,
         "project_url": "https://script.google.com/d/SID-9/edit",
     }
-    # Original body shipped verbatim (no wrapper) for a non-public deploy.
+    # No HMAC guard for a non-public deploy (Google's own access control
+    # suffices), so no __mcpUserDoPost rename. But the failure reporter (gap
+    # #5) still wraps the handler: a new doPost delegates to
+    # __appscriptlyUserDoPost inside a try / report / rethrow.
     pushed = _captured_pushed_source(svc)
     assert "__mcpUserDoPost" not in pushed
+    assert "__appscriptlyReportError__" in pushed
+    assert "function __appscriptlyUserDoPost(e)" in pushed
+    assert "function doPost(e)" in pushed
 
 
 def test_as_deploy_web_app_validation_propagates(monkeypatch):

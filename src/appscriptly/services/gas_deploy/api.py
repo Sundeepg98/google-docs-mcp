@@ -19,6 +19,10 @@ from typing import Any
 
 from google.auth.credentials import Credentials  # base type: covers oauth2 + service-account flows
 from appscriptly.google_clients import get_service
+from appscriptly.services.apps_script._observability import (
+    guarded_entry_point as _guarded_entry_point,
+    reporter_helper_source as _reporter_helper_source,
+)
 from googleapiclient.errors import HttpError
 
 # Apps Script's manifest file is conventionally named "appsscript" with
@@ -44,6 +48,10 @@ _WEBAPP_ACCESS = frozenset({"ANYONE_ANONYMOUS", "ANYONE", "DOMAIN", "MYSELF"})
 # the caller's handler and wrap it with an HMAC guard. Captures the param
 # list so the renamed function keeps the caller's signature.
 _DOPOST_DECL_RE = re.compile(r"\bfunction\s+doPost\s*\(([^)]*)\)")
+
+# Same, for ``doGet`` — the failure-reporter wrapper (inject_error_reporting)
+# guards both entry points; the HMAC guard only covers doPost.
+_DOGET_DECL_RE = re.compile(r"\bfunction\s+doGet\s*\(([^)]*)\)")
 
 # The HMAC-verify preamble injected ahead of a caller's ``doPost`` when an
 # ANYONE_ANONYMOUS web app is deployed. ``{key}`` is the baked per-deployment
@@ -168,6 +176,74 @@ def inject_webapp_hmac_guard(script_body: str, key: str) -> str:
         count=1,
     )
     return _WEBAPP_HMAC_GUARD_TEMPLATE.format(key=key) + renamed
+
+
+def inject_error_reporting(script_body: str) -> str:
+    """Wrap a web app's ``doGet`` / ``doPost`` so a throw emails the owner.
+
+    The Class-H arm of the generated-code observability pass (gap #5): a
+    failing webhook otherwise surfaces only as an HTTP 500 to the external
+    caller, a silent black hole for the DEPLOYING user. This mirrors
+    ``inject_webapp_hmac_guard``'s rename-and-delegate shape: each present
+    top-level entry point (``doGet`` / ``doPost``) is renamed to
+    ``__appscriptlyUser<Entry>`` and a new ``doGet`` / ``doPost`` (the exact
+    name Apps Script invokes) delegates to it inside a try / report /
+    rethrow. The appscriptly failure reporter (MailApp, best-effort) is
+    prepended once; it NEVER swallows the error (it rethrows, so the 500 and
+    the execution-log FAILED row are unchanged).
+
+    **Composition with the HMAC guard.** Apply THIS first (on the caller's
+    body), then ``inject_webapp_hmac_guard`` for a public app: the HMAC
+    ``doPost`` then wraps this reporting ``doPost`` (renamed by HMAC to
+    ``__mcpUserDoPost``) which wraps the caller's ``__appscriptlyUserDoPost``
+    — so the HMAC check stays the OUTERMOST thing on every request.
+
+    **Scope.** The web-app manifest declares no explicit ``oauthScopes``, so
+    Apps Script AUTO-DETECTS scopes from the code at authorization; the
+    injected ``MailApp.sendEmail`` is auto-detected too, so
+    ``script.send_mail`` rides the SAME per-script consent the user already
+    grants for the deployed app — nothing is added to the connector's
+    consent, and no explicit manifest scope is needed (adding one would
+    suppress auto-detection of the caller's own scopes).
+
+    Pure (returns new source). A no-op (returns the input unchanged) if
+    neither entry point is present — ``deploy_web_app_project`` already
+    rejects a body with neither ``doGet`` nor ``doPost``.
+
+    Args:
+        script_body: the caller-supplied ``.gs`` web-app source.
+
+    Returns:
+        The wrapped source: reporter helper + the guard(s) + the renamed
+        caller body.
+    """
+    entries = [
+        ("doPost", _DOPOST_DECL_RE, "__appscriptlyUserDoPost"),
+        ("doGet", _DOGET_DECL_RE, "__appscriptlyUserDoGet"),
+    ]
+    wrapped = script_body
+    guards: list[str] = []
+    for entry_name, regex, user_name in entries:
+        if not regex.search(wrapped):
+            continue
+        # Rename only the FIRST declaration (the entry point); a textual
+        # match inside a comment/string is left alone (the regex targets the
+        # ``function <entry>(`` declaration form).
+        wrapped = regex.sub(
+            lambda m, un=user_name: f"function {un}({m.group(1)})",
+            wrapped,
+            count=1,
+        )
+        guards.append(_guarded_entry_point(entry_name, user_name))
+    if not guards:
+        return script_body
+    return (
+        _reporter_helper_source().rstrip("\n")
+        + "\n\n"
+        + "\n\n".join(guards)
+        + "\n\n"
+        + wrapped
+    )
 
 
 @dataclass(frozen=True)

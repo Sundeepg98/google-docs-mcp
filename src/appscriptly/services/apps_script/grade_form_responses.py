@@ -63,6 +63,11 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._observability import (
+    add_mail_scope as _add_mail_scope,
+    reporter_helper_source as _reporter_helper_source,
+    wrap_generated_body as _wrap_generated_body,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA
@@ -180,32 +185,13 @@ def build_grade_script_body(
     title_literal = json.dumps(menu_title)
     item_literal = json.dumps(_MENU_ITEM_LABEL)
 
-    grade_fn = f"""\
-/**
- * Adds a "{menu_title}" menu with a one-click "{_MENU_ITEM_LABEL}" item.
- * Runs automatically when the form editor is opened.
- */
-function onOpen(e) {{
-  FormApp.getUi()
-    .createMenu({title_literal})
-    .addItem({item_literal}, "{_GRADE_FUNCTION}")
-    .addToUi();
-}}
-
-/**
- * Computes per-question scores for every submitted response and pushes
- * them onto the responses via Form.submitGrades(). Run this (via the
- * "{_MENU_ITEM_LABEL}" menu item, or the editor Run button) once the quiz
- * has responses — deploying the script does not run it. Re-run to
- * re-grade after changing the scorer/key.
- *
- * Calls {scorer}(itemResponse, item) per gradable item; that function
- * (you authored it) sets the score on the itemResponse via setScore(...).
- *
- * Returns the number of responses graded (handy when run from the
- * editor).
- */
-function {_GRADE_FUNCTION}() {{
+    # The gradeResponses body. Wrapped (below) in the appscriptly failure
+    # reporter so a grading error (a throw from the caller's scorer or from
+    # submitGrades) is emailed to the owner, not just buried in the
+    # execution log; the wrapper rethrows so the run still records as
+    # failed (gap #5). onOpen is NOT wrapped: it is a simple trigger that
+    # runs in the limited-auth context where MailApp is unavailable.
+    grade_inner = f"""\
   var form = FormApp.getActiveForm();
   var responses = form.getResponses();
   var items = form.getItems();
@@ -236,11 +222,43 @@ function {_GRADE_FUNCTION}() {{
   // Persist the grades onto the submitted responses in one call.
   form.submitGrades(responses);
   Logger.log("Graded " + graded + " response(s).");
-  return graded;
+  return graded;"""
+
+    grade_fn = f"""\
+/**
+ * Adds a "{menu_title}" menu with a one-click "{_MENU_ITEM_LABEL}" item.
+ * Runs automatically when the form editor is opened.
+ */
+function onOpen(e) {{
+  FormApp.getUi()
+    .createMenu({title_literal})
+    .addItem({item_literal}, "{_GRADE_FUNCTION}")
+    .addToUi();
 }}
+
+/**
+ * Computes per-question scores for every submitted response and pushes
+ * them onto the responses via Form.submitGrades(). Run this (via the
+ * "{_MENU_ITEM_LABEL}" menu item, or the editor Run button) once the quiz
+ * has responses — deploying the script does not run it. Re-run to
+ * re-grade after changing the scorer/key. A failure is emailed to you
+ * (best-effort) then rethrown.
+ *
+ * Calls {scorer}(itemResponse, item) per gradable item; that function
+ * (you authored it) sets the score on the itemResponse via setScore(...).
+ *
+ * Returns the number of responses graded (handy when run from the
+ * editor).
+ */
+function {_GRADE_FUNCTION}() {{
+{_wrap_generated_body(_GRADE_FUNCTION, grade_inner)}}}
 """
 
-    body = f"{scoring_function_body.rstrip()}\n\n{grade_fn}"
+    body = (
+        f"{scoring_function_body.rstrip()}\n\n"
+        f"{grade_fn}\n"
+        f"{_reporter_helper_source().rstrip()}\n"
+    )
     return body, scorer
 
 
@@ -405,12 +423,15 @@ def as_grade_form_responses(
     #    submitGrades needs the FULL forms scope, declared via oauth_scopes.
     #    Both land in the GENERATED manifest only — never in appscriptly's
     #    own consent (the load-bearing verify-LAST guarantee).
+    #    add_mail_scope adds script.send_mail so the injected failure
+    #    reporter can email the owner on a grading error (gap #5); it lands
+    #    ONLY in this generated manifest, never in appscriptly's consent.
     manifest_dict = _build_manifest(
         {
             "menu": [
                 {"name": _MENU_ITEM_LABEL, "function_name": _GRADE_FUNCTION}
             ],
-            "oauth_scopes": [_FORMS_SCOPE],
+            "oauth_scopes": _add_mail_scope([_FORMS_SCOPE]),
         }
     )
 

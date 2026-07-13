@@ -194,9 +194,12 @@ def test_build_script_body_includes_refresh_function_verbatim():
 def test_build_script_body_defines_install_trigger_function():
     body, _ = build_dashboard_script_body(_REFRESH_FN, "daily", 6)
     assert "function installTrigger()" in body
-    # It wires the trigger to OUR handler by name.
+    # It wires the trigger to OUR handler by name. The handler is now a
+    # guarded wrapper (observability: emails the owner on failure, then
+    # rethrows) that delegates to the caller's refreshDashboard.
     assert 'ScriptApp.newTrigger(handlerName)' in body
-    assert 'var handlerName = "refreshDashboard"' in body
+    assert 'var handlerName = "__appscriptlyGuarded_refreshDashboard__"' in body
+    assert "return refreshDashboard(e);" in body
 
 
 def test_build_script_body_dedupes_existing_triggers_before_create():
@@ -322,6 +325,11 @@ def test_install_dashboard_manifest_declares_trigger_scope(with_sheet_container)
     )
     manifest = _pushed_manifest(with_sheet_container)
     assert _TRIGGER_SCOPE in manifest["oauthScopes"]
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 
@@ -442,3 +450,41 @@ def test_install_dashboard_resolves_creds_via_scope_aware_path(
 
     assert len(calls) == 1
     assert calls[0].get("extra_scopes") == GAS_BOUND_SCOPES
+
+
+def test_ledger_records_guarded_trigger_target_matching_installtrigger(
+    with_sheet_container, monkeypatch,
+):
+    """S2 reconcile (the sharp edge): the ledger handler name MUST equal the
+    function installTrigger actually wires (the observability GUARD wrapper),
+    not the caller's semantic handler. Uninstall's self-disarm reaper
+    (_lifecycle.build_disarm_script) redefines exactly the recorded name to
+    delete all triggers on the next fire; if it recorded 'refreshDashboard'
+    while the trigger targets the guard, the trigger would never self-disarm.
+    Pin: recorded == ScriptApp.newTrigger target == guard_name_for(handler)."""
+    from appscriptly import automation_ledger
+    from appscriptly.services.apps_script._observability import guard_name_for
+
+    captured: dict = {}
+
+    def spy_record(**kwargs):
+        captured["handler_functions"] = list(
+            kwargs.get("handler_functions") or []
+        )
+        return None  # capture only; don't touch the ledger DB
+
+    monkeypatch.setattr(automation_ledger, "record_automation", spy_record)
+
+    sheet_dashboard.as_install_sheet_dashboard(
+        sheet_id="SHEET-1", refresh_function_body=_REFRESH_FN,
+    )
+
+    guard = guard_name_for("refreshDashboard")
+    # The ledger recorded the GUARD name, not the raw handler.
+    assert captured["handler_functions"] == [guard]
+    # installTrigger in the deployed body wires that SAME guard name.
+    pushed = _pushed_code_source(with_sheet_container)
+    assert f'var handlerName = "{guard}"' in pushed
+    assert "ScriptApp.newTrigger(handlerName)" in pushed
+    # The bug this prevents: the trigger must NOT target the raw handler.
+    assert 'var handlerName = "refreshDashboard"' not in pushed

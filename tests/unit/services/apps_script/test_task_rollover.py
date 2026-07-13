@@ -236,6 +236,11 @@ def test_generated_manifest_declares_tasks_and_trigger_scopes(
     manifest = _pushed_manifest(with_sheet_container)
     assert _TASKS_SCOPE in manifest["oauthScopes"]
     assert _TRIGGER_SCOPE in manifest["oauthScopes"]
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

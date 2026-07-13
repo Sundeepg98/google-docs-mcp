@@ -333,6 +333,11 @@ def test_manifest_declares_ui_scope(with_script_client):
         "https://www.googleapis.com/auth/script.container.ui"
         in parsed["oauthScopes"]
     )
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in parsed["oauthScopes"]
+    )
     assert "__plan__" not in parsed
 
 

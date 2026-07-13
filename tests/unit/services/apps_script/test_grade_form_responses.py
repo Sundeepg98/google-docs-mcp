@@ -215,6 +215,11 @@ def test_generated_manifest_declares_full_forms_scope(with_script_client):
     manifest_file = next(f for f in files if f["type"] == "JSON")
     parsed = json.loads(manifest_file["source"])
     assert _FORMS_SCOPE in parsed["oauthScopes"]
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in parsed["oauthScopes"]
+    )
     # the onOpen menu also derives the UI scope
     assert (
         "https://www.googleapis.com/auth/script.container.ui"
