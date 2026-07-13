@@ -35,12 +35,12 @@ keep their historical names. This is the first ``as_*`` tool.
 from __future__ import annotations
 
 from appscriptly.decorators import workspace_tool
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
+)
 from appscriptly.services.apps_script.api import (
     auto_detect_container_kind as _auto_detect_container_kind,
     build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_GENERATE_BOUND_SCRIPT_OUTPUT_SCHEMA
@@ -79,6 +79,7 @@ def as_generate_bound_script(
     container_kind: str | None = None,
     name: str | None = None,
     allow_restricted_scopes: bool = False,
+    on_conflict: str = "new",
 ) -> dict:
     """Generate + deploy a *bound* Apps Script inside a Doc / Sheet / Slides.
 
@@ -153,6 +154,14 @@ def as_generate_bound_script(
             it triggers Google's restricted-scope / CASA verification). The
             built-in ``as_install_*`` tools never need this; it's an escape
             hatch for an explicit, user-acknowledged restricted use case.
+        on_conflict: what to do when a bound automation from THIS tool
+            already exists on this container. "new" (the default) always
+            installs a fresh one (which can leave duplicates); "replace"
+            uninstalls the prior install(s) on this container first (no
+            duplicate, no orphan); "skip" returns the existing install
+            unchanged instead of adding a duplicate. Keyed by (this tool,
+            this container) via appscriptly's automation ledger; the
+            response adds ``reused_existing`` / ``replaced_count``.
 
     Returns:
         ``{script_id, deployment_id, container_id, container_kind,
@@ -187,22 +196,27 @@ def as_generate_bound_script(
         manifest, allow_restricted_scopes=allow_restricted_scopes
     )
 
-    # 4. Create the bound project (binds via parentId=container_id).
-    project = _create_bound_project(creds, container_id, project_name)
-    script_id = project["scriptId"]
-
-    # 5. Push the .gs body + manifest into the project.
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    # 6. Cut a version + deploy it.
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} — initial deploy"
+    # 4-6. Mint the bound project (create -> push -> deploy) and record it
+    #      in the automation ledger, honoring on_conflict.
+    result = _mint_bound_automation(
+        creds,
+        tool="as_generate_bound_script",
+        container_id=container_id,
+        container_kind=kind,
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "container_id": container_id,
         "container_kind": kind,
         "project_url": f"https://script.google.com/d/{script_id}/edit",

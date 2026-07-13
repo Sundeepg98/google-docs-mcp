@@ -75,6 +75,7 @@ import warnings
 
 from fastmcp.exceptions import ToolError
 
+from appscriptly import automation_ledger
 from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.activation import build_activation_fields
 from appscriptly.apps_script_hmac import generate_hmac_key
@@ -89,6 +90,10 @@ from appscriptly.services.gas_deploy import GAS_DEPLOY_SCOPES
 from appscriptly.services.gas_deploy.api import (
     deploy_web_app_project as _deploy_web_app_project,
     inject_webapp_hmac_guard as _inject_webapp_hmac_guard,
+)
+from appscriptly.services.apps_script._lifecycle import (
+    _ledger_user_id,
+    resolve_install_conflict as _resolve_install_conflict,
 )
 from appscriptly.setup_apps_script import (
     WebAppHealth,
@@ -441,6 +446,7 @@ def as_deploy_web_app(
     title: str,
     execute_as: str = "USER_DEPLOYING",
     access: str = "ANYONE_ANONYMOUS",
+    on_conflict: str = "new",
 ) -> dict:
     """Deploy an Apps Script Web App — expose automation as an HTTP endpoint.
 
@@ -481,6 +487,16 @@ def as_deploy_web_app(
             Google user), ``"DOMAIN"`` (your Workspace domain only), or
             ``"MYSELF"`` (only you). For a public webhook keep the
             default; tighten it if the endpoint shouldn't be world-callable.
+        on_conflict: what to do when a web app from THIS tool with the same
+            ``title`` already exists. "new" (the default) always deploys a
+            fresh endpoint (a NEW /exec URL); "replace" undeploys the prior
+            web app(s) of this title first (removing their /exec URLs and
+            disarming their code) so old endpoints stop accumulating. "skip"
+            is NOT supported for a standalone web app (it is identified only
+            by title and the live /exec URL of a prior deploy is not
+            re-derivable here). Every deploy is recorded in your automation
+            inventory (``as_list_installed_automations``) and can be removed
+            later with ``as_uninstall_automation``.
 
     Returns:
         ``{script_id, deployment_id, version, exec_url, execute_as,
@@ -544,6 +560,24 @@ def as_deploy_web_app(
         hmac_key = generate_hmac_key()
         effective_body = _inject_webapp_hmac_guard(script_body, hmac_key)
 
+    # on_conflict for a standalone web app: 'new' (default) or 'replace'.
+    # 'skip' is not offered - a web app is identified only by its title, and
+    # the live /exec URL + version of a prior deploy are not re-derivable
+    # here, so a fresh deploy is the honest behavior.
+    if on_conflict not in ("new", "replace"):
+        raise ToolError(
+            "on_conflict for as_deploy_web_app must be 'new' or 'replace' "
+            "('skip' is not supported for a standalone web app). 'new' "
+            "deploys a fresh endpoint; 'replace' undeploys the prior web "
+            "app(s) of the same title first."
+        )
+    _skip, replaced = _resolve_install_conflict(
+        creds,
+        tool="as_deploy_web_app",
+        container_id=title,
+        on_conflict=on_conflict,
+    )
+
     deployment = _deploy_web_app_project(
         creds,
         script_body=effective_body,
@@ -558,10 +592,26 @@ def as_deploy_web_app(
         "exec_url": deployment.url,
         "execute_as": execute_as,
         "access": access,
+        "on_conflict": on_conflict,
+        "replaced_count": replaced,
         "project_url": (
             f"https://script.google.com/d/{deployment.script_id}/edit"
         ),
     }
+    # Record the mint in the per-user automation ledger so the web app shows
+    # up in as_list_installed_automations and can be uninstalled (undeploy +
+    # disarm) later. Standalone deploy: keyed on the title, kind "webapp".
+    automation_ledger.record_automation(
+        user_id=_ledger_user_id(),
+        script_id=deployment.script_id,
+        tool="as_deploy_web_app",
+        container_id=title,
+        container_kind="webapp",
+        deployment_id=deployment.deployment_id,
+        project_url=result["project_url"],
+        exec_url=deployment.url,
+        handler_functions=(),
+    )
     if hmac_key is not None:
         result["hmac_key"] = hmac_key
         result["hmac_instructions"] = (

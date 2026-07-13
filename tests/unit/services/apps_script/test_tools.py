@@ -110,6 +110,9 @@ def test_generate_bound_script_happy_path_returns_envelope(with_docs_container):
     assert result == {
         "script_id": "SCRIPT-1",
         "deployment_id": "DEPLOY-1",
+        "on_conflict": "new",
+        "reused_existing": False,
+        "replaced_count": 0,
         "container_id": "C1",
         "container_kind": "docs",
         "project_url": "https://script.google.com/d/SCRIPT-1/edit",

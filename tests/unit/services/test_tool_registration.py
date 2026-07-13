@@ -404,6 +404,13 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_list_script_processes": "appscriptly.services.apps_script.processes",
     # Stream 3 — activation verification tool in its own feature file.
     "as_check_activation": "appscriptly.services.apps_script.check_activation",
+    # Automation lifecycle — inventory + uninstall (both in lifecycle_tools).
+    "as_list_installed_automations": (
+        "appscriptly.services.apps_script.lifecycle_tools"
+    ),
+    "as_uninstall_automation": (
+        "appscriptly.services.apps_script.lifecycle_tools"
+    ),
     "as_install_doc_menu": "appscriptly.services.apps_script.doc_menu",
     "as_install_custom_function": (
         "appscriptly.services.apps_script.custom_function"

@@ -158,6 +158,9 @@ def test_happy_path_returns_envelope(with_script_client):
     assert result == {
         "script_id": "SCRIPT-1",
         "deployment_id": "DEPLOY-1",
+        "on_conflict": "new",
+        "reused_existing": False,
+        "replaced_count": 0,
         "presentation_id": "PRES1",
         "menu_title": "Deck Tools",
         "item_count": 1,

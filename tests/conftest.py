@@ -99,9 +99,19 @@ def _reset_shared_module_state() -> None:
     can call it explicitly. Imports are inside so importing conftest
     doesn't drag the package in for live-test-only collection.
     """
-    from appscriptly import _tool_helpers, credentials, keys, user_store
+    from appscriptly import (
+        _tool_helpers,
+        automation_ledger,
+        credentials,
+        keys,
+        user_store,
+    )
 
     user_store._initialized_paths.clear()
+    # The per-user automation ledger (Stream-2 lifecycle) mirrors
+    # user_store's per-path WAL init guard; reset it too so each test's
+    # fresh tmp DB re-runs schema init.
+    automation_ledger._initialized_paths.clear()
     credentials._per_user_locks.clear()
     # keys.py exposes a public test helper that takes the right lock —
     # don't reach into the dict directly here.

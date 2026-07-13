@@ -53,12 +53,12 @@ from __future__ import annotations
 import re
 
 from appscriptly.decorators import workspace_tool
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
+)
 from appscriptly.services.apps_script.api import (
     auto_detect_container_kind as _auto_detect_container_kind,
     build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA
@@ -279,6 +279,7 @@ def as_install_custom_function(
     function_body: str,
     description: str | None = None,
     name: str | None = None,
+    on_conflict: str = "new",
 ) -> dict:
     """Install a custom spreadsheet function usable as =FUNCTION_NAME(...) in cells.
 
@@ -328,10 +329,20 @@ def as_install_custom_function(
             shows up in the Sheets formula autocomplete help.
         name: OPTIONAL title for the new Apps Script project. Defaults to
             a generated name referencing the function.
+        on_conflict: what to do when an automation from THIS tool already
+            exists on this Sheet. "new" (the default) always installs a
+            fresh one (which can leave duplicates); "replace" uninstalls
+            the prior install(s) on this Sheet first (no duplicate, no
+            orphan); "skip" returns the existing install unchanged instead
+            of adding a duplicate. The match is keyed by (this tool, this
+            container) via appscriptly's automation ledger.
 
     Returns:
         ``{script_id, deployment_id, sheet_id, function_name,
-        usage_hint, project_url}``. ``usage_hint`` is the literal
+        usage_hint, project_url}`` plus ``on_conflict`` (echoed),
+        ``reused_existing`` (True when ``on_conflict="skip"`` returned a
+        prior install), and ``replaced_count`` (prior installs removed for
+        ``on_conflict="replace"``). ``usage_hint`` is the literal
         ``"=FUNCTION_NAME(...)"`` the user types; ``project_url``
         deep-links to the script editor
         (``https://script.google.com/d/{script_id}/edit``) so the user
@@ -381,19 +392,25 @@ def as_install_custom_function(
 
     # 5. Deploy via the SAME machinery as_generate_bound_script uses:
     #    create bound project → push content → cut version + deploy.
-    project = _create_bound_project(creds, sheet_id, project_name)
-    script_id = project["scriptId"]
-
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} — initial deploy"
+    result = _mint_bound_automation(
+        creds,
+        tool="as_install_custom_function",
+        container_id=sheet_id,
+        container_kind="sheets",
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "sheet_id": sheet_id,
         "function_name": function_name,
         "usage_hint": f"={function_name}(...)",

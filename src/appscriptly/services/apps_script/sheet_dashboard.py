@@ -57,12 +57,10 @@ import re
 
 from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA
 
@@ -297,6 +295,7 @@ def as_install_sheet_dashboard(
     hour: int = 6,
     dashboard_note: str | None = None,
     name: str | None = None,
+    on_conflict: str = "new",
 ) -> dict:
     """Install a time-driven dashboard-refresh automation into a Google Sheet.
 
@@ -352,6 +351,15 @@ def as_install_sheet_dashboard(
             anyone who opens the editor). Does not affect behavior.
         name: OPTIONAL title for the new Apps Script project. Defaults to
             a generated dashboard-automation name.
+        on_conflict: what to do when a dashboard automation from THIS tool
+            already exists on this Sheet. "new" (the default) always
+            installs a fresh one (which can leave duplicate schedules);
+            "replace" uninstalls the prior install(s) on this Sheet first
+            (no duplicate, no orphan); "skip" returns the existing install
+            unchanged instead of adding a duplicate. The match is keyed by
+            (this tool, this container) via appscriptly's automation ledger.
+            The response echoes ``on_conflict`` and adds ``reused_existing``
+            / ``replaced_count``.
 
     Returns:
         ``{script_id, deployment_id, sheet_id, schedule, trigger_handler,
@@ -419,19 +427,26 @@ def as_install_sheet_dashboard(
     #    bound project (parentId=sheet_id), push the body + manifest, cut
     #    a version + deploy. (We bind directly to the Sheet ID; no Drive
     #    mimeType round-trip — this tool only ever targets a Sheet.)
-    project = _create_bound_project(creds, sheet_id, project_name)
-    script_id = project["scriptId"]
-
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} — initial deploy"
+    result = _mint_bound_automation(
+        creds,
+        tool="as_install_sheet_dashboard",
+        container_id=sheet_id,
+        container_kind="sheets",
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
+        handler_functions=[handler],
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "sheet_id": sheet_id,
         "schedule": schedule,
         "trigger_handler": handler,

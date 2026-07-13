@@ -488,6 +488,65 @@ def create_deployment(
     )
 
 
+def list_deployments(creds: Credentials, script_id: str) -> list[dict[str, Any]]:
+    """List a project's deployments via ``projects.deployments.list``.
+
+    Returns the raw ``Deployment`` resources (each carries ``deploymentId``
+    and ``deploymentConfig``). The list always includes an implicit
+    ``@HEAD`` deployment (its ``deploymentConfig`` has NO ``versionNumber``
+    — it tracks the latest saved content rather than a cut version); that
+    one is NOT independently deletable and callers should skip it (see
+    ``_lifecycle.uninstall_automation``).
+
+    Pure read — wrapped ``idempotent=True`` so a transient 429/5xx during
+    the listing retries rather than failing an uninstall.
+
+    Raises:
+        HttpError: from the Apps Script SDK on 4xx / 5xx — propagated.
+    """
+    script = get_service("script", "v1", credentials=creds)
+    resp = execute_with_retry(
+        lambda: script.projects().deployments().list(
+            scriptId=script_id,
+        ).execute(),
+        idempotent=True,
+        op_name="script.projects.deployments.list",
+    )
+    return list(resp.get("deployments", []))
+
+
+def delete_deployment(
+    creds: Credentials, script_id: str, deployment_id: str
+) -> None:
+    """Delete one deployment via ``projects.deployments.delete``.
+
+    Used by uninstall to UNDEPLOY an automation (remove its live
+    endpoints / published versions). Undeploying is the strongest reap the
+    connector's ``script.deployments`` scope allows — the project FILE
+    itself cannot be deleted (the Apps Script API has no ``projects.delete``
+    and the connector's ``drive.file`` grant cannot see or trash a script
+    project; Stream-0 finding S0-4).
+
+    Wrapped ``idempotent=True``: re-deleting after a transient blip is
+    safe (a definitive 404 for an already-gone deployment is not retried
+    and propagates for the caller's best-effort handling).
+
+    Raises:
+        HttpError: from the Apps Script SDK on 4xx / 5xx — propagated
+            (the ``@HEAD`` deployment refuses deletion with a 4xx; callers
+            skip it rather than attempt it).
+    """
+    script = get_service("script", "v1", credentials=creds)
+    execute_with_retry(
+        lambda: script.projects().deployments().delete(
+            scriptId=script_id,
+            deploymentId=deployment_id,
+        ).execute(),
+        idempotent=True,
+        op_name="script.projects.deployments.delete",
+    )
+
+
 # ---------------------------------------------------------------------
 # Private validation helpers (pure)
 # ---------------------------------------------------------------------

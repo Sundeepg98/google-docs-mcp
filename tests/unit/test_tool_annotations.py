@@ -110,6 +110,9 @@ READONLY_TOOLS = {
     # Stream 3: as_check_activation — a pure read (a web-app GET probe and/or
     # an execution-history read); runs nothing and mutates nothing.
     "as_check_activation",
+    # Stream-2 lifecycle: the automation inventory is a pure read of the
+    # per-user ledger (no Google API, mutates nothing).
+    "as_list_installed_automations",
     # Tasks (services/tasks/): tasklists.list / tasks.list — pure reads.
     # Sister tools gtasks_create_* / gtasks_update_task /
     # gtasks_complete_task (mutations) and gtasks_delete_task
@@ -140,6 +143,10 @@ READONLY_TOOLS = {
 
 
 DESTRUCTIVE_TOOLS = {
+    # Stream-2 lifecycle: undeploys + overwrites the script with an inert
+    # stub, so the automation no longer runs. Destructive so MCP clients
+    # can prompt for confirmation before removing a live automation.
+    "as_uninstall_automation",
     "gdocs_delete_tab",
     "gdocs_trash_file",
     "gdocs_reset_authorization",
@@ -207,6 +214,9 @@ NOT_OPEN_WORLD_TOOLS = {
     # gdocs_* aliases above remain pure-local too.
     "server_help",   # was gdocs_help
     "server_guide",  # was gdocs_guide
+    # Stream-2 lifecycle: the automation inventory reads only the local
+    # per-user ledger; no Google API call (openWorldHint=False).
+    "as_list_installed_automations",
 }
 
 
