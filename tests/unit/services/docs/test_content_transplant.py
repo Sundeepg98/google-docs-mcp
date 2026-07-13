@@ -296,6 +296,40 @@ def test_horizontal_rule_becomes_bottom_border_paragraph():
     assert report.counts["horizontal_rule"] == 1
 
 
+def test_transparent_paragraph_border_hidden_as_width_zero():
+    # A paragraph whose border reads back with a transparent (absent)
+    # color: Google 400s a transparent border, so it must be re-emitted
+    # as Google's prescribed hidden form (width 0), never verbatim.
+    elem = _para("x\n", style="NORMAL_TEXT")
+    elem["paragraph"]["paragraphStyle"]["borderTop"] = {
+        "color": {},  # OptionalColor with no concrete color = transparent
+        "width": {"magnitude": 1, "unit": "PT"},
+        "padding": {"magnitude": 1, "unit": "PT"},
+        "dashStyle": "SOLID",
+    }
+    plan = _plan([elem])
+    (para_req,) = _requests_of_kind(plan, "updateParagraphStyle")
+    border = para_req["paragraphStyle"]["borderTop"]
+    assert border["width"] == {"magnitude": 0, "unit": "PT"}
+    # No transparent color survives to the write.
+    assert border["color"]["color"]["rgbColor"] is not None
+    assert "borderTop" in para_req["fields"]
+
+
+def test_visible_paragraph_border_passes_through_unchanged():
+    visible = {
+        "color": {"color": {"rgbColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}},
+        "width": {"magnitude": 1, "unit": "PT"},
+        "padding": {"magnitude": 1, "unit": "PT"},
+        "dashStyle": "SOLID",
+    }
+    elem = _para("x\n", style="NORMAL_TEXT")
+    elem["paragraph"]["paragraphStyle"]["borderBottom"] = {**visible}
+    plan = _plan([elem])
+    (para_req,) = _requests_of_kind(plan, "updateParagraphStyle")
+    assert para_req["paragraphStyle"]["borderBottom"] == visible
+
+
 def test_person_chip_reinserted_by_email():
     elem = {
         "paragraph": {
@@ -524,6 +558,57 @@ def test_cell_styles_whitelisted_and_spans_become_merges():
     assert "rowSpan" not in style and "backgroundColor" in style
     assert phase.merges == [(0, 0, 2, 1)]
     assert report.counts["merged_cells"] == 1
+
+
+def test_transparent_cell_border_becomes_width_zero():
+    # N10: a docx cell with no visible border reads back as a border with
+    # a transparent (absent) color. Emitting it verbatim 400s the whole
+    # transplant ("Table cell borders cannot be transparent. To hide a
+    # table cell border, make its width 0."), so it must become a width-0
+    # hidden border with no transparent color.
+    table = _table([[[_para("a\n")], [_para("b\n")]]])
+    cell = table["table"]["tableRows"][0]["tableCells"][0]
+    cell["tableCellStyle"] = {
+        "borderLeft": {
+            "color": {},  # transparent OptionalColor
+            "width": {"magnitude": 1, "unit": "PT"},
+            "dashStyle": "SOLID",
+        },
+        "borderTop": {  # color key entirely absent - also transparent
+            "width": {"magnitude": 1, "unit": "PT"},
+            "dashStyle": "DOT",
+        },
+    }
+    plan = _plan([table])
+    phase = plan.phases[0]
+    assert isinstance(phase, TablePhase)
+    ((r, c, style),) = phase.cell_styles
+    for key in ("borderLeft", "borderTop"):
+        border = style[key]
+        assert border["width"] == {"magnitude": 0, "unit": "PT"}
+        # An opaque color so nothing transparent reaches the write.
+        assert border["color"]["color"]["rgbColor"] is not None
+    # dashStyle is preserved through the normalization.
+    assert style["borderTop"]["dashStyle"] == "DOT"
+    # A hidden TABLE CELL border must never carry a padding field
+    # (TableCellBorder has none; adding one is itself a 400).
+    assert "padding" not in style["borderLeft"]
+
+
+def test_visible_cell_border_passes_through_unchanged():
+    visible = {
+        "color": {"color": {"rgbColor": {"red": 0.2, "green": 0.2, "blue": 0.2}}},
+        "width": {"magnitude": 1, "unit": "PT"},
+        "dashStyle": "SOLID",
+    }
+    table = _table([[[_para("a\n")]]])
+    cell = table["table"]["tableRows"][0]["tableCells"][0]
+    cell["tableCellStyle"] = {"borderBottom": {**visible}}
+    plan = _plan([table])
+    phase = plan.phases[0]
+    assert isinstance(phase, TablePhase)
+    ((r, c, style),) = phase.cell_styles
+    assert style["borderBottom"] == visible
 
 
 def test_pinned_header_rows_and_column_widths_carried():
@@ -996,6 +1081,40 @@ def test_table_phase_creates_syncs_fills_reverse_then_styles():
     assert "updateTableCellStyle" in style_batch[0]
     cell_loc = style_batch[0]["updateTableCellStyle"]["tableRange"]["tableCellLocation"]
     assert cell_loc["tableStartLocation"] == {"index": 2, "tabId": TAB}
+
+
+def test_transparent_cell_border_never_reaches_the_live_batch():
+    """N10 end to end through the executor: a cell whose border reads
+    back transparent (the shape documents.get returns for a borderless
+    docx cell) must never appear in a sent updateTableCellStyle - Google
+    400s a transparent table cell border, which killed every
+    table-bearing H1 section convert. The table still creates and styles;
+    only the border shape is corrected to width 0."""
+    table = _table([[[_para("A\n")], [_para("B\n")]]])
+    table["table"]["tableRows"][0]["tableCells"][0]["tableCellStyle"] = {
+        "borderLeft": {"color": {}, "width": {"magnitude": 1, "unit": "PT"}},
+        "borderRight": {"color": {}, "width": {"magnitude": 1, "unit": "PT"}},
+        "borderTop": {"color": {}, "width": {"magnitude": 1, "unit": "PT"}},
+        "borderBottom": {"color": {}, "width": {"magnitude": 1, "unit": "PT"}},
+    }
+    plan = _plan([table])
+    shell = _doc_with_tabs((TAB, _empty_tab_content()))
+    grid = _fresh_grid_doc(TAB, base=1, rows=1, cols=2)
+    fake = _FakeDocs([grid])
+    execute_tab_transplant(fake, "DOC", TAB, plan, document=shell)
+
+    styled = [
+        req["updateTableCellStyle"]
+        for batch in fake.batches
+        for req in batch
+        if "updateTableCellStyle" in req
+    ]
+    assert styled, "the cell style was dropped entirely"
+    for req in styled:
+        for key, border in req["tableCellStyle"].items():
+            if key.startswith("border"):
+                assert border["width"] == {"magnitude": 0, "unit": "PT"}
+                assert border["color"]["color"]["rgbColor"] is not None
 
 
 def test_table_cell_page_break_never_reaches_the_live_batch():
