@@ -159,8 +159,11 @@ def test_build_script_body_includes_handler_function_verbatim():
 def test_build_script_body_defines_install_trigger_function():
     body, _ = build_form_handler_script_body(_HANDLER_FN, "FORM-1")
     assert "function installTrigger()" in body
+    # The handler is now a guarded wrapper (observability: emails the owner
+    # on failure, then rethrows) that delegates to the caller's onSubmit.
     assert "ScriptApp.newTrigger(handlerName)" in body
-    assert 'var handlerName = "onSubmit"' in body
+    assert 'var handlerName = "__appscriptlyGuarded_onSubmit__"' in body
+    assert "return onSubmit(e);" in body
 
 
 def test_build_script_body_wires_for_form_on_form_submit():
@@ -290,6 +293,11 @@ def test_install_form_handler_manifest_declares_trigger_scope(with_form_containe
     )
     manifest = _pushed_manifest(with_form_container)
     assert _TRIGGER_SCOPE in manifest["oauthScopes"]
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert (
+        "https://www.googleapis.com/auth/script.send_mail"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

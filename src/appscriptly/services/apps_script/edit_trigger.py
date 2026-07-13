@@ -71,6 +71,12 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._observability import (
+    add_mail_scope as _add_mail_scope,
+    guard_name_for as _guard_name_for,
+    guarded_delegator as _guarded_delegator,
+    reporter_helper_source as _reporter_helper_source,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA
@@ -182,6 +188,11 @@ def build_edit_trigger_script_body(
             declaration (from ``_extract_handler_name``).
     """
     handler = _extract_handler_name(handler_function_body)
+    # The trigger targets a guarded wrapper (not the caller's handler
+    # directly) so a failure on an edit that fires while no one is watching
+    # is emailed to the owner and then rethrown, instead of only landing in
+    # the execution log (gap #5). The caller's handler stays verbatim.
+    guard_src, guard_name = _guarded_delegator(handler)
 
     note_comment = ""
     if handler_note:
@@ -207,11 +218,12 @@ def build_edit_trigger_script_body(
  * Installs the installable onEdit trigger that runs {handler}(e) whenever
  * this spreadsheet is edited. Run this ONCE to activate the automation
  * (the deploy wires the code but does not run it). Re-running is safe: it
- * removes any prior {handler} trigger before creating a new one, so
- * triggers never stack.
+ * removes any prior trigger for this handler before creating a new one, so
+ * triggers never stack. The trigger targets a guarded wrapper that emails
+ * you if {handler} throws, then rethrows.
  */
 function installTrigger() {{
-  var handlerName = "{handler}";
+  var handlerName = "{guard_name}";
   var existing = ScriptApp.getProjectTriggers();
   for (var i = 0; i < existing.length; i++) {{
     if (existing[i].getHandlerFunction() === handlerName) {{
@@ -228,6 +240,8 @@ function installTrigger() {{
     body = (
         f"{note_comment}"
         f"{handler_function_body.rstrip()}\n\n"
+        f"{guard_src}\n\n"
+        f"{_reporter_helper_source().rstrip()}\n\n"
         f"{install_trigger}"
     )
     return body, handler
@@ -378,7 +392,10 @@ def as_install_edit_trigger(
     manifest_dict = _build_manifest(
         {
             "triggers": [{"type": "edit"}],
-            "oauth_scopes": [_TRIGGER_SCOPE],
+            # add_mail_scope adds script.send_mail so the injected failure
+            # reporter can email the owner if an onEdit reaction throws (gap
+            # #5); GENERATED manifest only, never appscriptly's consent.
+            "oauth_scopes": _add_mail_scope([_TRIGGER_SCOPE]),
         }
     )
 
@@ -398,7 +415,9 @@ def as_install_edit_trigger(
         script_body=script_body,
         manifest_dict=manifest_dict,
         on_conflict=on_conflict,
-        handler_functions=[handler],
+        # Record the GUARD name (installTrigger's actual target) so
+        # uninstall's self-disarm reaper redefines the right function.
+        handler_functions=[_guard_name_for(handler)],
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

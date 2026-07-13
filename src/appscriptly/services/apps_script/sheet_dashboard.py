@@ -60,6 +60,12 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._observability import (
+    add_mail_scope as _add_mail_scope,
+    guard_name_for as _guard_name_for,
+    guarded_delegator as _guarded_delegator,
+    reporter_helper_source as _reporter_helper_source,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA
@@ -228,6 +234,11 @@ def build_dashboard_script_body(
     """
     handler = _extract_handler_name(refresh_function_body)
     builder_tail = _trigger_builder_expr(schedule, hour)
+    # The trigger targets a guarded wrapper (not the caller's handler
+    # directly) so an unattended failure is emailed to the owner and then
+    # rethrown, instead of only landing in the execution log (gap #5). The
+    # caller's handler function stays verbatim.
+    guard_src, guard_name = _guarded_delegator(handler)
 
     note_comment = ""
     if dashboard_note:
@@ -243,18 +254,19 @@ def build_dashboard_script_body(
 
     # installTrigger(): dedup existing handlers, then install the new one.
     # ScriptApp.getProjectTriggers() lists installable triggers; we delete
-    # the ones whose handler function matches OUR refresh handler so a
+    # the ones whose handler function matches OUR guarded wrapper so a
     # re-run is idempotent (one trigger, not a growing stack).
     install_trigger = f"""\
 /**
  * Installs the time-driven trigger that runs {handler}() on the
  * configured schedule ({schedule}). Run this ONCE to activate the
  * automation (the deploy wires the code but does not run it). Re-running
- * is safe: it removes any prior {handler} trigger before creating a new
- * one, so triggers never stack.
+ * is safe: it removes any prior trigger for this handler before creating
+ * a new one, so triggers never stack. The trigger targets a guarded
+ * wrapper that emails you if {handler} throws, then rethrows.
  */
 function installTrigger() {{
-  var handlerName = "{handler}";
+  var handlerName = "{guard_name}";
   var existing = ScriptApp.getProjectTriggers();
   for (var i = 0; i < existing.length; i++) {{
     if (existing[i].getHandlerFunction() === handlerName) {{
@@ -268,6 +280,8 @@ function installTrigger() {{
     body = (
         f"{note_comment}"
         f"{refresh_function_body.rstrip()}\n\n"
+        f"{guard_src}\n\n"
+        f"{_reporter_helper_source().rstrip()}\n\n"
         f"{install_trigger}"
     )
     return body, handler
@@ -416,8 +430,15 @@ def as_install_sheet_dashboard(
     #    oauthScope; we get it by handing build_manifest a time-trigger
     #    plan (the manifest can't declare the trigger itself — that's the
     #    #138 manifest-reality finding — but it derives the scope).
+    #    add_mail_scope adds script.send_mail so the injected failure
+    #    reporter can email the owner if a scheduled run throws (gap #5);
+    #    it lands ONLY in this generated manifest, never in appscriptly's
+    #    own consent.
     manifest_dict = _build_manifest(
-        {"triggers": [{"type": "time", "schedule": schedule}]}
+        {
+            "triggers": [{"type": "time", "schedule": schedule}],
+            "oauth_scopes": _add_mail_scope(None),
+        }
     )
 
     # 4. Default the project name from the schedule when not supplied.
@@ -436,7 +457,11 @@ def as_install_sheet_dashboard(
         script_body=script_body,
         manifest_dict=manifest_dict,
         on_conflict=on_conflict,
-        handler_functions=[handler],
+        # Record the GUARD wrapper name (what installTrigger actually
+        # targets), not the caller's semantic handler: uninstall's
+        # self-disarm reaper redefines exactly this name, so the ledger
+        # value must equal the wired trigger target.
+        handler_functions=[_guard_name_for(handler)],
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

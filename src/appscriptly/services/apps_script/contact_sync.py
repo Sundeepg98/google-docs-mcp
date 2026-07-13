@@ -61,6 +61,10 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._observability import (
+    add_mail_scope as _add_mail_scope,
+    guard_name_for as _guard_name_for,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.form_handler import (
     build_form_handler_script_body as _build_form_handler_script_body,
@@ -260,8 +264,11 @@ def as_install_contact_sync(
     #    build_manifest's _validate_triggers only knows "time"/"edit", and a
     #    form-submit trigger needs no plan echo beyond the scopes it
     #    requires (which we supply directly).
+    #    add_mail_scope adds script.send_mail so the injected failure
+    #    reporter can email the owner if a submission handler throws (gap
+    #    #5); GENERATED manifest only, never appscriptly's consent.
     manifest_dict = _build_manifest(
-        {"oauth_scopes": [_TRIGGER_SCOPE, _CONTACTS_SCOPE]}
+        {"oauth_scopes": _add_mail_scope([_TRIGGER_SCOPE, _CONTACTS_SCOPE])}
     )
 
     # 4. Default the project name when not supplied.
@@ -281,7 +288,9 @@ def as_install_contact_sync(
         script_body=script_body,
         manifest_dict=manifest_dict,
         on_conflict=on_conflict,
-        handler_functions=[handler],
+        # Record the GUARD name (installTrigger's actual target) so
+        # uninstall's self-disarm reaper redefines the right function.
+        handler_functions=[_guard_name_for(handler)],
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

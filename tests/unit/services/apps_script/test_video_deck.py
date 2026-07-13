@@ -260,6 +260,8 @@ def test_tool_pushes_manifest_without_drive_scope(with_slides_container):
     parsed = json.loads(manifest_file["source"])
     scopes = parsed["oauthScopes"]
     assert "https://www.googleapis.com/auth/script.external_request" in scopes
+    # Observability (gap #5): the failure reporter's send-only mail scope.
+    assert "https://www.googleapis.com/auth/script.send_mail" in scopes
     assert "https://www.googleapis.com/auth/drive.readonly" not in scopes
     assert "https://www.googleapis.com/auth/drive.file" not in scopes
     assert "__plan__" not in parsed

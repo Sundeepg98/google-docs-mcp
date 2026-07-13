@@ -89,6 +89,7 @@ from appscriptly.server import workspace_tool
 from appscriptly.services.gas_deploy import GAS_DEPLOY_SCOPES
 from appscriptly.services.gas_deploy.api import (
     deploy_web_app_project as _deploy_web_app_project,
+    inject_error_reporting as _inject_error_reporting,
     inject_webapp_hmac_guard as _inject_webapp_hmac_guard,
 )
 from appscriptly.services.apps_script._lifecycle import (
@@ -551,14 +552,20 @@ def as_deploy_web_app(
     use ``access="ANYONE"``.
     """
     hmac_key: str | None = None
-    effective_body = script_body
+    # Wrap doGet/doPost with the appscriptly failure reporter FIRST (gap #5):
+    # a failing webhook otherwise surfaces only as an HTTP 500 to the caller,
+    # a silent black hole for the deploying user. This emails the owner on a
+    # throw, then rethrows (500 + execution-log FAILED unchanged). The HMAC
+    # guard (added next for a public app) then composes on top, staying the
+    # OUTERMOST thing on every request.
+    effective_body = _inject_error_reporting(script_body)
     if access == "ANYONE_ANONYMOUS":
         # World-reachable: don't ship the handler unguarded. Generate a
         # per-deploy key and wrap doPost with an HMAC verify gate. Injection
         # raises (→ ToolError) if there's no guardable doPost, so we never
         # silently deploy an unauthenticated public endpoint.
         hmac_key = generate_hmac_key()
-        effective_body = _inject_webapp_hmac_guard(script_body, hmac_key)
+        effective_body = _inject_webapp_hmac_guard(effective_body, hmac_key)
 
     # on_conflict for a standalone web app: 'new' (default) or 'replace'.
     # 'skip' is not offered - a web app is identified only by its title, and

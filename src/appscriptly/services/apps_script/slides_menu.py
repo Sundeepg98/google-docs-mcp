@@ -52,6 +52,11 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._observability import (
+    add_mail_scope as _add_mail_scope,
+    guarded_function_block as _guarded_function_block,
+    reporter_helper_source as _reporter_helper_source,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SLIDES_MENU_OUTPUT_SCHEMA
@@ -133,16 +138,21 @@ def build_menu_script(menu_title: str, items: list[dict[str, str]]) -> str:
     lines.append("    .addToUi();")
     lines.append("}")
 
-    # Emit each handler function. The body is the caller-authored .gs the
-    # menu item runs — inserted verbatim inside the function braces.
+    # Emit each handler function, WRAPPED in the appscriptly failure
+    # reporter: a menu-item handler that throws emails the owner
+    # (best-effort) then rethrows, so the failure is not lost (gap #5). The
+    # caller-authored body runs inside the try. onOpen is left unwrapped —
+    # it is a simple trigger (limited-auth, no MailApp) that only builds
+    # the menu.
     for item in items:
-        fn = item["function_name"]
-        body = item["function_body"]
         lines.append("")
-        lines.append(f"function {fn}() {{")
-        for body_line in body.splitlines():
-            lines.append(f"  {body_line}" if body_line.strip() else "")
-        lines.append("}")
+        lines.append(
+            _guarded_function_block(item["function_name"], item["function_body"])
+        )
+
+    # Define the failure reporter once — every wrapped handler calls it.
+    lines.append("")
+    lines.append(_reporter_helper_source().rstrip("\n"))
 
     return "\n".join(lines) + "\n"
 
@@ -335,12 +345,17 @@ def as_install_slides_menu(
     # 3. Build the manifest — reuse build_manifest with the menu key so
     #    the script.container.ui scope is derived (menus are code; the
     #    manifest only carries the scope).
+    #    add_mail_scope adds script.send_mail so the injected failure
+    #    reporter can email the owner when a menu handler throws (gap #5);
+    #    it lands ONLY in this generated manifest, never in appscriptly's
+    #    own consent.
     manifest_dict = _build_manifest(
         {
             "menu": [
                 {"name": it["label"], "function_name": it["function_name"]}
                 for it in validated_items
-            ]
+            ],
+            "oauth_scopes": _add_mail_scope(None),
         }
     )
 
