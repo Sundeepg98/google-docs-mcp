@@ -64,6 +64,17 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      # Node powers the generated-.gs static-validation harness that runs as
+      # part of `pytest tests/unit` below
+      # (tests/unit/services/test_generated_gs_syntax.py -> `node --check`).
+      # This is the PRODUCTION DEPLOY GATE, so the node dependency is pinned
+      # explicitly here too: the harness fails loud (not silent) without node,
+      # and a deploy gate must carry no unpinned hard dependency.
+      - name: setup Node (for the generated-.gs syntax harness)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: install package + test deps
         run: pip install -e ".[test]"
 
@@ -117,6 +128,16 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+
+      # scripts/mutation_check.py re-runs the FULL `pytest tests/unit` suite
+      # once per mutation (to tell a clean guard-catch from collateral damage),
+      # and that suite now includes the node-backed generated-.gs harness. Pin
+      # node so this deploy-gate job carries no unpinned hard dependency either
+      # (without node the harness fails loud, which would redden this gate).
+      - name: setup Node (for the generated-.gs syntax harness)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: install package + test deps
         run: pip install -e ".[test]"

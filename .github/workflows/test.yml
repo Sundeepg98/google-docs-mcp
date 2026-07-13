@@ -25,6 +25,17 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # Node powers the generated-.gs static-validation harness
+      # (tests/unit/services/test_generated_gs_syntax.py runs `node --check`
+      # over every as_* generator's output). ubuntu-latest already ships
+      # Node, but pinning it here makes the gate's dependency explicit so it
+      # can never silently degrade to skipped on a future runner image (the
+      # harness FAILS rather than skips when CI has no node).
+      - name: setup Node (for the generated-.gs syntax harness)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: install package + test deps
         run: pip install -e ".[test]"
 
