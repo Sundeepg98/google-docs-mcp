@@ -65,7 +65,10 @@ from appscriptly.services.apps_script._observability import (
     add_mail_scope as _add_mail_scope,
     guard_name_for as _guard_name_for,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.form_handler import (
     build_form_handler_script_body as _build_form_handler_script_body,
 )
@@ -266,9 +269,16 @@ def as_install_contact_sync(
     #    requires (which we supply directly).
     #    add_mail_scope adds script.send_mail so the injected failure
     #    reporter can email the owner if a submission handler throws (gap
-    #    #5); GENERATED manifest only, never appscriptly's consent.
+    #    #5). container_data_scope("forms") = forms.currentonly so the handler
+    #    can read THIS Form's responses via FormApp (an explicit oauthScopes
+    #    block suppresses auto-detection - N-S3V-1). GENERATED manifest only,
+    #    never appscriptly's consent.
     manifest_dict = _build_manifest(
-        {"oauth_scopes": _add_mail_scope([_TRIGGER_SCOPE, _CONTACTS_SCOPE])}
+        {
+            "oauth_scopes": _add_mail_scope(
+                [_TRIGGER_SCOPE, _CONTACTS_SCOPE, _container_data_scope("forms")]
+            )
+        }
     )
 
     # 4. Default the project name when not supplied.

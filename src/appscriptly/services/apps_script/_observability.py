@@ -87,6 +87,15 @@ function __appscriptlyReportError__(context, err) {
       return;
     }
     var detail = (err && err.stack) ? err.stack : String(err);
+    var footer = 'The automation is still installed. Open its Apps Script project to review or fix it.';
+    try {
+      footer = 'The automation is still installed. Open it to review or fix it:\\n'
+        + 'https://script.google.com/d/' + ScriptApp.getScriptId() + '/edit';
+    } catch (idErr) {
+      // ScriptApp.getScriptId() should need no scope, but if a minimal
+      // manifest ever makes it throw, fall back to the generic footer so
+      // the failure email still sends.
+    }
     MailApp.sendEmail(
       recipient,
       '[appscriptly] Automation error in ' + context,
@@ -94,7 +103,7 @@ function __appscriptlyReportError__(context, err) {
         + 'Function: ' + context + '\\n'
         + 'Time: ' + (new Date()) + '\\n'
         + 'Error: ' + detail + '\\n\\n'
-        + 'The automation is still installed. Open its Apps Script project to review or fix it.'
+        + footer
     );
   } catch (reportErr) {
     // Best-effort only: a reporting failure (missing mail scope, send

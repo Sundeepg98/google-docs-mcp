@@ -330,6 +330,13 @@ def test_install_dashboard_manifest_declares_trigger_scope(with_sheet_container)
         "https://www.googleapis.com/auth/script.send_mail"
         in manifest["oauthScopes"]
     )
+    # N-S3V-1: the bound Sheet's .currentonly data scope so the scheduled
+    # refresh handler can read/write THIS Sheet via SpreadsheetApp (an explicit
+    # oauthScopes block suppresses auto-detection - proven live to fail here).
+    assert (
+        "https://www.googleapis.com/auth/spreadsheets.currentonly"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

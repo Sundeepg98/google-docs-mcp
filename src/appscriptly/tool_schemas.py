@@ -1374,15 +1374,16 @@ AS_DEPLOY_WEB_APP_OUTPUT_SCHEMA = _object(
         # plus the header scheme the caller must use. (v2.0c.)
         "hmac_key": {"type": "string"},
         "hmac_instructions": {"type": "string"},
-        # Activation UX (Stream 3 / gap #7). Present ONLY for a public
-        # deploy (access in {ANYONE_ANONYMOUS, ANYONE}), which is probed
-        # post-deploy. ``status`` is "ready" | "needs_activation" |
-        # "deployed"; the four unified activation_* fields ride along only
-        # when status == "needs_activation" (the per-script consent door
-        # answered). additionalProperties stays True so this is additive.
+        # Activation UX (Stream 3 / gap #7; prior fixed for N-S3V-1). Present
+        # ONLY for an ANYONE_ANONYMOUS deploy, which is probed post-deploy.
+        # ``status`` is "ready" (positively reachable) | "needs_activation"
+        # (the PRIOR - the consent door, or a probe still inconclusive after
+        # the settle retries); the four unified activation_* fields ride along
+        # when status == "needs_activation". additionalProperties stays True
+        # so this is additive.
         "status": {
             "type": "string",
-            "enum": ["ready", "needs_activation", "deployed"],
+            "enum": ["ready", "needs_activation"],
         },
         "activation_required": {"type": "boolean"},
         "activation_url": {"type": "string", "format": "uri"},

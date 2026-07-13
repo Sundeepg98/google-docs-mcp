@@ -66,7 +66,10 @@ from appscriptly.services.apps_script._observability import (
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA
 
@@ -434,10 +437,14 @@ def as_install_sheet_dashboard(
     #    reporter can email the owner if a scheduled run throws (gap #5);
     #    it lands ONLY in this generated manifest, never in appscriptly's
     #    own consent.
+    #    container_data_scope("sheets") = spreadsheets.currentonly so the
+    #    refresh handler can read/write THIS Sheet (an explicit oauthScopes
+    #    block suppresses auto-detection - N-S3V-1); the time trigger derives
+    #    script.scriptapp from the "triggers" key.
     manifest_dict = _build_manifest(
         {
             "triggers": [{"type": "time", "schedule": schedule}],
-            "oauth_scopes": _add_mail_scope(None),
+            "oauth_scopes": _add_mail_scope([_container_data_scope("sheets")]),
         }
     )
 

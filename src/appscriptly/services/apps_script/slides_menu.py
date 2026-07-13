@@ -57,7 +57,10 @@ from appscriptly.services.apps_script._observability import (
     guarded_function_block as _guarded_function_block,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SLIDES_MENU_OUTPUT_SCHEMA
 
@@ -355,12 +358,17 @@ def as_install_slides_menu(
                 {"name": it["label"], "function_name": it["function_name"]}
                 for it in validated_items
             ],
-            "oauth_scopes": _add_mail_scope(None),
+            # container_data_scope("slides") = presentations.currentonly, so
+            # the menu handlers can touch THIS presentation (an explicit
+            # oauthScopes block suppresses auto-detection - N-S3V-1).
+            # add_mail_scope adds the failure reporter's send scope. Both land
+            # ONLY in this generated manifest, never in appscriptly's consent.
+            "oauth_scopes": _add_mail_scope([_container_data_scope("slides")]),
         }
     )
 
     # 4. Default the project name from the menu title when not supplied.
-    project_name = name or f"appscriptly slides menu — {menu_title}"
+    project_name = name or f"appscriptly slides menu - {menu_title}"
 
     # 5. Deploy via the SAME machinery as as_generate_bound_script:
     #    create bound project → push content → cut version + deploy.

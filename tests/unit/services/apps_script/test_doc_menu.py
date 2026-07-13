@@ -338,6 +338,13 @@ def test_manifest_declares_ui_scope(with_script_client):
         "https://www.googleapis.com/auth/script.send_mail"
         in parsed["oauthScopes"]
     )
+    # N-S3V-1: the bound Doc's .currentonly data scope so a menu handler can
+    # touch THIS Doc via DocumentApp (an explicit oauthScopes block suppresses
+    # Apps Script's auto-detection - without it the handler fails at runtime).
+    assert (
+        "https://www.googleapis.com/auth/documents.currentonly"
+        in parsed["oauthScopes"]
+    )
     assert "__plan__" not in parsed
 
 
