@@ -270,6 +270,13 @@ def test_manifest_declares_ui_scope(with_script_client):
         "https://www.googleapis.com/auth/script.send_mail"
         in parsed["oauthScopes"]
     )
+    # N-S3V-1: the bound Sheet's .currentonly data scope so a menu handler can
+    # touch THIS Sheet via SpreadsheetApp (an explicit oauthScopes block
+    # suppresses auto-detection - proven live to fail here).
+    assert (
+        "https://www.googleapis.com/auth/spreadsheets.currentonly"
+        in parsed["oauthScopes"]
+    )
     assert "__plan__" not in parsed
 
 

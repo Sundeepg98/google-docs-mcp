@@ -71,6 +71,7 @@ is unchanged.
 from __future__ import annotations
 
 import re
+import time
 import warnings
 
 from fastmcp.exceptions import ToolError
@@ -134,6 +135,35 @@ def _primary_entry_point(script_body: str) -> str:
     if _DOGET_DECL_RE.search(script_body):
         return "doGet"
     return "doPost"
+
+
+# Post-deploy probe settle policy (N-S3V-3). A freshly-cut /exec is
+# transiently not-ready (a redirect / 404) for the first few seconds before
+# it stabilizes to its real state - for a scope-carrying anonymous app, that
+# real state is Google's 403 consent door. A single immediate probe races
+# that propagation and can read the door as inconclusive; so we probe a few
+# times with a short backoff, returning as soon as a DEFINITIVE verdict lands.
+_PROBE_SETTLE_ATTEMPTS = 3
+_PROBE_SETTLE_BACKOFF_SECONDS = 1.0
+
+
+def _probe_webapp_settled(url: str) -> WebAppHealth:
+    """Probe ``/exec`` until it settles or the attempts run out (N-S3V-3).
+
+    Returns as soon as a DEFINITIVE verdict lands - ``HEALTHY`` (positively
+    reachable) or ``CONSENT_GATED`` (the 403 door) - and only retries the
+    inconclusive ``GONE`` / ``UNKNOWN`` states (a just-deployed endpoint that
+    has not propagated). The caller treats anything that is not a positive
+    ``HEALTHY`` as needs_activation, so an unsettled probe defaults to the
+    safe prior rather than a silently-403ing "deployed".
+    """
+    health = probe_webapp_health(url, require_json=False)
+    for _ in range(_PROBE_SETTLE_ATTEMPTS - 1):
+        if health in (WebAppHealth.HEALTHY, WebAppHealth.CONSENT_GATED):
+            return health
+        time.sleep(_PROBE_SETTLE_BACKOFF_SECONDS)
+        health = probe_webapp_health(url, require_json=False)
+    return health
 
 
 # ---------------------------------------------------------------------
@@ -510,15 +540,18 @@ def as_deploy_web_app(
         web app that carries a sensitive scope serves Google's per-script
         403 consent door until the deploying user runs any function once and
         clicks Allow. For ``access="ANYONE_ANONYMOUS"`` this tool probes the
-        fresh ``/exec`` and adds a ``status``: ``ready`` (already reachable),
-        ``needs_activation`` (the consent door answered — the result then
-        also carries ``activation_required``, ``activation_url``,
-        ``activation_function``, ``activation_instructions``: relay them so
-        the user does the one-time Run + Allow), or ``deployed`` (the deploy
-        succeeded but the probe was inconclusive). ANYONE / DOMAIN / MYSELF
-        deploys are not probed and carry no ``status`` (they require a Google
-        sign-in, so an anonymous probe cannot tell a consent gate from
-        Google's own sign-in requirement).
+        fresh ``/exec`` and adds a ``status``: ``ready`` (positively
+        reachable) or ``needs_activation``. ``needs_activation`` is the PRIOR
+        - a brand-new scope-carrying anonymous web app can never be
+        pre-consented, so anything that is not a positive ``ready`` (the
+        consent door, or a probe still inconclusive after a short-backoff
+        settle) is reported as ``needs_activation``, with
+        ``activation_required``, ``activation_url``, ``activation_function``,
+        ``activation_instructions`` (relay them so the user does the one-time
+        Run + Allow). ANYONE / DOMAIN / MYSELF deploys are not probed and
+        carry no ``status`` (they require a Google sign-in, so an anonymous
+        probe cannot tell a consent gate from Google's own sign-in
+        requirement).
 
     Raises:
         ToolError: blank / handler-less ``script_body``, blank ``title``,
@@ -633,21 +666,33 @@ def as_deploy_web_app(
             "it is shown only once."
         )
 
-    # Post-deploy activation probe (gap #7 / S0-5). A world-reachable web
-    # app carrying a sensitive scope serves Google's per-script 403 consent
-    # door until the deploying user runs any function once and clicks Allow.
-    # Detect that and hand it back as DATA (the Class I pattern) instead of
-    # returning a URL that silently 403s. ONLY ANYONE_ANONYMOUS is probed:
-    # it is the sole access mode reachable WITHOUT a Google sign-in, so an
-    # anonymous GET's 403 is unambiguously the consent door. For ANYONE /
-    # DOMAIN / MYSELF an anonymous probe hits Google's sign-in wall (not the
+    # Post-deploy activation probe (gap #7 / S0-5, prior fixed for N-S3V-3).
+    # A world-reachable web app carrying a sensitive scope serves Google's
+    # per-script 403 consent door until the deploying user runs any function
+    # once and clicks Allow. Surface that as DATA (the Class I pattern)
+    # instead of returning a URL that silently 403s. ONLY ANYONE_ANONYMOUS is
+    # probed: it is the sole access mode reachable WITHOUT a Google sign-in,
+    # so an anonymous GET's 403 is unambiguously the consent door. For ANYONE
+    # / DOMAIN / MYSELF an anonymous probe hits Google's sign-in wall (not the
     # script), which cannot be told apart from a missing activation, so
     # probing there would mislabel a perfectly deployed endpoint.
-    # require_json=False: this is an arbitrary user endpoint, so any 200
-    # means it ran (see probe_webapp_health) and only the 403 is the gate.
+    # require_json=False: this is an arbitrary user endpoint, so any 200 means
+    # it ran (see probe_webapp_health) and only the 403 is the gate.
+    #
+    # needs_activation is the PRIOR (N-S3V-3): a brand-new scope-carrying
+    # anonymous web app can NEVER be pre-consented, and a fresh /exec is
+    # transiently not-ready for a few seconds before it stabilizes to the 403
+    # door - so the probe SETTLES (short-backoff retry) and only a positive
+    # HEALTHY upgrades out of needs_activation. The consent door AND an
+    # unsettled/inconclusive probe both surface as needs_activation, never a
+    # silently-403ing "deployed".
     if access == "ANYONE_ANONYMOUS":
-        health = probe_webapp_health(deployment.url, require_json=False)
-        if health is WebAppHealth.CONSENT_GATED:
+        health = _probe_webapp_settled(deployment.url)
+        if health is WebAppHealth.HEALTHY:
+            # Positively reachable (a no-scope or already-consented endpoint)
+            # is the ONLY verdict that upgrades out of the prior.
+            result["status"] = "ready"
+        else:
             activation_function = _primary_entry_point(script_body)
             result["status"] = "needs_activation"
             result.update(
@@ -667,12 +712,4 @@ def as_deploy_web_app(
                     ),
                 )
             )
-        elif health is WebAppHealth.HEALTHY:
-            # Reachable already (a no-scope or pre-consented endpoint).
-            result["status"] = "ready"
-        else:
-            # GONE (a 404 right after creation) or UNKNOWN (a probe blip):
-            # the deploy itself succeeded, so never fail it on the probe -
-            # we just could not confirm the activation state from here.
-            result["status"] = "deployed"
     return result

@@ -193,6 +193,13 @@ def test_generated_manifest_declares_contacts_and_trigger_scopes(
         "https://www.googleapis.com/auth/script.send_mail"
         in manifest["oauthScopes"]
     )
+    # N-S3V-1: the bound Form's .currentonly data scope so the onFormSubmit
+    # handler can read this Form's responses via FormApp (ContactsApp uses the
+    # full contacts scope; an explicit oauthScopes block suppresses auto-detect).
+    assert (
+        "https://www.googleapis.com/auth/forms.currentonly"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

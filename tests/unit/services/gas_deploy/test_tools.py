@@ -628,13 +628,26 @@ def test_as_deploy_web_app_non_public_validation_propagates(monkeypatch):
 
 
 def _deploy_public_with_health(monkeypatch, verdict, *, script_body):
-    """Deploy an ANYONE_ANONYMOUS web app with the probe forced to ``verdict``."""
+    """Deploy an ANYONE_ANONYMOUS web app with the settle-probe forced.
+
+    ``verdict`` is a single WebAppHealth (returned on every probe) OR a list
+    of them returned in order (the last value repeats once exhausted) - lets a
+    test drive the N-S3V-3 settle retry, e.g. ``[UNKNOWN, HEALTHY]``. The
+    backoff ``time.sleep`` is stubbed so the retry is instant + hermetic.
+    """
     from appscriptly.services.gas_deploy import tools
 
     svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
-    monkeypatch.setattr(
-        tools, "probe_webapp_health", lambda url, **kw: verdict
-    )
+    verdicts = list(verdict) if isinstance(verdict, (list, tuple)) else [verdict]
+    calls = {"i": 0}
+
+    def _probe(url, **kw):
+        v = verdicts[min(calls["i"], len(verdicts) - 1)]
+        calls["i"] += 1
+        return v
+
+    monkeypatch.setattr(tools, "probe_webapp_health", _probe)
+    monkeypatch.setattr(tools.time, "sleep", lambda *_a, **_k: None)
     with with_client(InMem({("script", "v1"): svc})):
         return tools.as_deploy_web_app(
             script_body=script_body,
@@ -706,12 +719,14 @@ def test_as_deploy_web_app_healthy_returns_ready(monkeypatch):
 @pytest.mark.parametrize(
     "verdict", ["GONE", "UNKNOWN"], ids=["gone", "unknown"]
 )
-def test_as_deploy_web_app_inconclusive_probe_returns_deployed(
+def test_as_deploy_web_app_inconclusive_probe_defaults_to_needs_activation(
     monkeypatch, verdict
 ):
-    """A 404 right after creation, or a probe network blip, must NEVER fail
-    an otherwise successful deploy: report ``deployed`` and still hand back
-    the exec_url, with no activation claim we cannot substantiate."""
+    """N-S3V-3: needs_activation is the PRIOR. A probe that stays inconclusive
+    (a fresh /exec still 404ing / a network blip) even after the settle
+    retries must NOT report a reachable-sounding "deployed" - a brand-new
+    scope-carrying anonymous web app can never be pre-consented, so it is
+    surfaced as needs_activation with the activation guidance."""
     from appscriptly.setup_apps_script import WebAppHealth
 
     result = _deploy_public_with_health(
@@ -719,9 +734,59 @@ def test_as_deploy_web_app_inconclusive_probe_returns_deployed(
         getattr(WebAppHealth, verdict),
         script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
     )
-    assert result["status"] == "deployed"
+    assert result["status"] == "needs_activation"
+    assert result["activation_required"] is True
+    # The deploy still succeeded - the exec_url still travels.
     assert result["exec_url"] == "https://script.google.com/macros/s/z/exec"
+    # "deployed" must never be emitted any more (the S0-5 under-fire).
+    assert result["status"] != "deployed"
+
+
+def test_as_deploy_web_app_settle_upgrades_to_ready_on_late_healthy(monkeypatch):
+    """DISCRIMINATING (N-S3V-3): the probe only UPGRADES out of the
+    needs_activation prior on a POSITIVE HEALTHY. A first inconclusive probe
+    (UNKNOWN, propagation lag) followed by a HEALTHY on retry must settle as
+    ready - proving (a) the retry actually re-probes, and (b) a transient
+    first read does not lock in the wrong verdict either way."""
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    result = _deploy_public_with_health(
+        monkeypatch,
+        [WebAppHealth.UNKNOWN, WebAppHealth.HEALTHY],
+        script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+    )
+    assert result["status"] == "ready"
     assert "activation_required" not in result
+
+
+def test_as_deploy_web_app_consent_gated_stops_early_no_retry(monkeypatch):
+    """The settle probe returns as soon as a DEFINITIVE verdict lands: a
+    first-probe CONSENT_GATED (the stable 403 door) settles immediately as
+    needs_activation without burning the retry budget."""
+    from appscriptly.services.gas_deploy import tools
+    from appscriptly.setup_apps_script import WebAppHealth
+
+    svc, with_client, InMem = _stub_creds_and_script_svc(monkeypatch)
+    calls = {"n": 0}
+
+    def _probe(url, **kw):
+        calls["n"] += 1
+        return WebAppHealth.CONSENT_GATED
+
+    monkeypatch.setattr(tools, "probe_webapp_health", _probe)
+    slept = {"n": 0}
+    monkeypatch.setattr(
+        tools.time, "sleep", lambda *_a, **_k: slept.__setitem__("n", slept["n"] + 1)
+    )
+    with with_client(InMem({("script", "v1"): svc})):
+        result = tools.as_deploy_web_app(
+            script_body="function doPost(e){ return ContentService.createTextOutput('ok'); }",
+            title="Public webhook",
+            access="ANYONE_ANONYMOUS",
+        )
+    assert result["status"] == "needs_activation"
+    assert calls["n"] == 1, "a definitive CONSENT_GATED must stop the settle loop"
+    assert slept["n"] == 0, "no backoff sleep on an immediate definitive verdict"
 
 
 def test_as_deploy_web_app_non_public_is_not_probed(monkeypatch):

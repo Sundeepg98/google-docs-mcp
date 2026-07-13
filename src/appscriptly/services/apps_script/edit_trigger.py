@@ -77,7 +77,10 @@ from appscriptly.services.apps_script._observability import (
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA
 
@@ -392,10 +395,15 @@ def as_install_edit_trigger(
     manifest_dict = _build_manifest(
         {
             "triggers": [{"type": "edit"}],
-            # add_mail_scope adds script.send_mail so the injected failure
-            # reporter can email the owner if an onEdit reaction throws (gap
-            # #5); GENERATED manifest only, never appscriptly's consent.
-            "oauth_scopes": _add_mail_scope([_TRIGGER_SCOPE]),
+            # _TRIGGER_SCOPE (script.scriptapp) for the installable trigger;
+            # container_data_scope("sheets") = spreadsheets.currentonly so the
+            # onEdit handler can touch THIS Sheet (an explicit oauthScopes
+            # block suppresses auto-detection - N-S3V-1); add_mail_scope adds
+            # the failure reporter's send scope. GENERATED manifest only,
+            # never appscriptly's consent.
+            "oauth_scopes": _add_mail_scope(
+                [_TRIGGER_SCOPE, _container_data_scope("sheets")]
+            ),
         }
     )
 

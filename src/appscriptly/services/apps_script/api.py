@@ -84,6 +84,49 @@ _MIMETYPE_TO_KIND: dict[str, str] = {
 _UI_SCOPE = "https://www.googleapis.com/auth/script.container.ui"
 _TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
 
+# Per-container ".currentonly" DATA scope (N-S3V-1). A capability scope
+# (container.ui / scriptapp) authorizes the menu/trigger machinery but NOT
+# the handler's access to the container's own data: a bound handler that
+# touches the file it lives in (SpreadsheetApp / DocumentApp / SlidesApp /
+# FormApp) also needs the data scope. And because an EXPLICIT oauthScopes
+# block SUPPRESSES Apps Script's automatic scope detection, the data scope
+# must be DECLARED or the handler dies at runtime with "Specified permissions
+# are not sufficient" (proven live on a menu + a dashboard refresh). Every
+# ".currentonly" scope is NON-restricted and, on its own, raises NO consent
+# warning, so the generated automation stays no-CASA and consent-clean; it is
+# also least-privilege (the CURRENT file only, not the user's Drive). A tool
+# whose handler must reach OTHER files (e.g. refresh_linked_slides reads the
+# LINKED source decks) declares the FULL scope via ``oauth_scopes`` instead of
+# using this. NOTE: ".currentonly" is NOT honored alongside an ADVANCED
+# service (e.g. task_rollover's Tasks advanced service needs the full tasks
+# scope) - the container-data scope still applies to the handler's
+# SpreadsheetApp/etc. access on the bound file.
+CONTAINER_DATA_SCOPES: dict[str, str] = {
+    "sheets": "https://www.googleapis.com/auth/spreadsheets.currentonly",
+    "docs": "https://www.googleapis.com/auth/documents.currentonly",
+    "slides": "https://www.googleapis.com/auth/presentations.currentonly",
+    "forms": "https://www.googleapis.com/auth/forms.currentonly",
+}
+
+
+def container_data_scope(container_kind: str) -> str:
+    """Return the ``.currentonly`` data scope for a bound container kind (PURE).
+
+    ``container_kind`` is one of ``sheets`` / ``docs`` / ``slides`` /
+    ``forms``. Raises ``ValueError`` on an unknown kind (a codegen bug, not a
+    user error). Bound installers pass the result through their existing
+    ``oauth_scopes`` list (union'd + guarded by ``build_manifest``), the same
+    way the failure reporter's mail scope is threaded via ``add_mail_scope``.
+    """
+    try:
+        return CONTAINER_DATA_SCOPES[container_kind]
+    except KeyError:
+        raise ValueError(
+            f"no container-data scope for kind {container_kind!r}; expected "
+            f"one of {sorted(CONTAINER_DATA_SCOPES)}"
+        ) from None
+
+
 # Google's RESTRICTED OAuth scopes that this generic generator REFUSES to
 # bake into a manifest unless the caller explicitly opts in. Restricted
 # scopes (full Gmail + broad Drive) trigger Google's CASA security

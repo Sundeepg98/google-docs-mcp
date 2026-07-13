@@ -211,6 +211,13 @@ def test_generated_manifest_declares_calendar_and_trigger_scopes(
         "https://www.googleapis.com/auth/script.send_mail"
         in manifest["oauthScopes"]
     )
+    # N-S3V-1: the bound Sheet's .currentonly data scope so the sync handler
+    # can READ this Sheet's rows via SpreadsheetApp (CalendarApp uses the full
+    # calendar scope; an explicit oauthScopes block suppresses auto-detection).
+    assert (
+        "https://www.googleapis.com/auth/spreadsheets.currentonly"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

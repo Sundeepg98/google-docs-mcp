@@ -241,6 +241,14 @@ def test_generated_manifest_declares_tasks_and_trigger_scopes(
         "https://www.googleapis.com/auth/script.send_mail"
         in manifest["oauthScopes"]
     )
+    # N-S3V-1: the bound Sheet's .currentonly data scope so the rollover
+    # handler can read this Sheet via SpreadsheetApp. The Tasks ADVANCED
+    # service keeps the FULL tasks scope (.currentonly is not honored for
+    # advanced services); an explicit oauthScopes block suppresses auto-detect.
+    assert (
+        "https://www.googleapis.com/auth/spreadsheets.currentonly"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 

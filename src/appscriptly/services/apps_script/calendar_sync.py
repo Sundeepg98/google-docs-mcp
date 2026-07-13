@@ -62,7 +62,10 @@ from appscriptly.services.apps_script._observability import (
     add_mail_scope as _add_mail_scope,
     guard_name_for as _guard_name_for,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.services.apps_script.sheet_dashboard import (
     VALID_SCHEDULES,
@@ -276,10 +279,15 @@ def as_install_calendar_sync(
     manifest_dict = _build_manifest(
         {
             "triggers": [{"type": "time", "schedule": schedule}],
-            # add_mail_scope adds script.send_mail so the injected failure
-            # reporter can email the owner if a scheduled sync throws (gap
-            # #5); GENERATED manifest only, never appscriptly's consent.
-            "oauth_scopes": _add_mail_scope([_CALENDAR_SCOPE]),
+            # _CALENDAR_SCOPE writes Calendar; container_data_scope("sheets") =
+            # spreadsheets.currentonly so the sync handler can READ the bound
+            # Sheet's rows via SpreadsheetApp (an explicit oauthScopes block
+            # suppresses auto-detection - N-S3V-1); add_mail_scope adds the
+            # failure reporter's send scope. GENERATED manifest only, never
+            # appscriptly's consent.
+            "oauth_scopes": _add_mail_scope(
+                [_CALENDAR_SCOPE, _container_data_scope("sheets")]
+            ),
         }
     )
 

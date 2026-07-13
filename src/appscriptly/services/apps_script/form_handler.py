@@ -74,7 +74,10 @@ from appscriptly.services.apps_script._observability import (
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script.api import (
+    build_manifest as _build_manifest,
+    container_data_scope as _container_data_scope,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA
 
@@ -386,11 +389,18 @@ def as_install_form_handler(
     #    pass a triggers entry: build_manifest's _validate_triggers only
     #    knows "time"/"edit", and a form-submit trigger needs no plan echo
     #    beyond the scope it requires (which we supply directly).
-    # add_mail_scope adds script.send_mail so the injected failure reporter
-    # can email the owner if a submission handler throws (gap #5); GENERATED
-    # manifest only, never appscriptly's consent.
+    # _TRIGGER_SCOPE (script.scriptapp) for the installable onFormSubmit
+    # trigger; container_data_scope("forms") = forms.currentonly so the
+    # handler can read THIS Form's responses via FormApp (an explicit
+    # oauthScopes block suppresses auto-detection - N-S3V-1); add_mail_scope
+    # adds the failure reporter's send scope. GENERATED manifest only, never
+    # appscriptly's consent.
     manifest_dict = _build_manifest(
-        {"oauth_scopes": _add_mail_scope([_TRIGGER_SCOPE])}
+        {
+            "oauth_scopes": _add_mail_scope(
+                [_TRIGGER_SCOPE, _container_data_scope("forms")]
+            )
+        }
     )
 
     # 4. Default the project name when not supplied.

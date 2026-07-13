@@ -125,6 +125,22 @@ def test_reporter_uses_mailapp_to_the_effective_user():
     assert "Session.getEffectiveUser().getEmail()" in src
 
 
+def test_reporter_email_carries_the_one_click_editor_url():
+    """Rider (a): the failure email ends with a one-click editor link derived
+    from ``ScriptApp.getScriptId()`` so the owner jumps straight to the
+    project. Derived DEFENSIVELY (its own try) so a getScriptId() failure on a
+    minimal manifest degrades to the generic footer rather than dropping the
+    whole email (best-effort is preserved)."""
+    src = obs.reporter_helper_source()
+    assert "ScriptApp.getScriptId()" in src
+    assert "https://script.google.com/d/" in src
+    assert "/edit" in src
+    # The URL derivation is guarded by its own catch so it can never abort the
+    # send (a menu class has no scriptapp scope; if getScriptId() ever threw
+    # there, the email must still go out).
+    assert "catch (idErr)" in src
+
+
 def test_reporter_is_best_effort_and_never_throws():
     """The reporter body is itself wrapped in try/catch so a reporting
     failure (no scope, quota) can never mask the original error."""

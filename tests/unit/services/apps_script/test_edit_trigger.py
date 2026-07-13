@@ -287,6 +287,13 @@ def test_install_edit_trigger_manifest_declares_trigger_scope(with_sheet_contain
         "https://www.googleapis.com/auth/script.send_mail"
         in manifest["oauthScopes"]
     )
+    # N-S3V-1: the bound Sheet's .currentonly data scope so the onEdit handler
+    # can touch THIS Sheet (an explicit oauthScopes block suppresses Apps
+    # Script's auto-detection - without it the handler dies at runtime).
+    assert (
+        "https://www.googleapis.com/auth/spreadsheets.currentonly"
+        in manifest["oauthScopes"]
+    )
     assert "__plan__" not in manifest
 
 
