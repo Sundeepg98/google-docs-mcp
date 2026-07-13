@@ -58,12 +58,10 @@ from __future__ import annotations
 
 from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.form_handler import (
     build_form_handler_script_body as _build_form_handler_script_body,
 )
@@ -113,6 +111,7 @@ def as_install_contact_sync(
     handler_function_body: str,
     handler_note: str | None = None,
     name: str | None = None,
+    on_conflict: str = "new",
 ) -> dict:
     """Install a reactive contact-sync automation into a Google Form.
 
@@ -194,6 +193,14 @@ def as_install_contact_sync(
             editor). Does not affect behavior.
         name: OPTIONAL title for the new Apps Script project. Defaults to a
             generated contact-sync name.
+        on_conflict: what to do when a contact-sync automation from THIS
+            tool already exists on this Form. "new" (the default) always
+            installs a fresh one (which can leave duplicate handlers);
+            "replace" uninstalls the prior install(s) on this Form first
+            (no duplicate, no orphan); "skip" returns the existing install
+            unchanged instead of adding a duplicate. Keyed by (this tool,
+            this container) via appscriptly's automation ledger; the
+            response adds ``reused_existing`` / ``replaced_count``.
 
     Returns:
         ``{script_id, deployment_id, form_id, trigger_type, trigger_handler,
@@ -265,19 +272,26 @@ def as_install_contact_sync(
     #    version + deploy. We bind DIRECTLY to the Form ID and never call
     #    auto_detect_container_kind (which rejects Forms) - same
     #    Forms-rejection lift as form_handler / grade_form_responses.
-    project = _create_bound_project(creds, form_id, project_name)
-    script_id = project["scriptId"]
-
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} - initial deploy"
+    result = _mint_bound_automation(
+        creds,
+        tool="as_install_contact_sync",
+        container_id=form_id,
+        container_kind="forms",
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
+        handler_functions=[handler],
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "form_id": form_id,
         "trigger_type": "onFormSubmit",
         "trigger_handler": handler,

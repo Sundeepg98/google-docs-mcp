@@ -1490,6 +1490,67 @@ AS_CHECK_ACTIVATION_OUTPUT_SCHEMA = _object(
 )
 
 
+# One entry in the ``automations`` array returned by
+# ``as_list_installed_automations`` (the forward-only lifecycle inventory).
+# ``script_id`` + ``tool`` are the load-bearing keys (the id the other
+# lifecycle/observability tools take, and which installer minted it);
+# ``container_id`` is null for a standalone web app. additionalProperties
+# stays True so a future field is additive.
+_AS_AUTOMATION_ENTRY_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "tool": {"type": "string"},
+        "container_id": {"type": ["string", "null"]},
+        "container_kind": {"type": ["string", "null"]},
+        "deployment_id": {"type": ["string", "null"]},
+        "project_url": {"type": ["string", "null"]},
+        "exec_url": {"type": ["string", "null"]},
+        "content_hash": {"type": ["string", "null"]},
+        "created_at": {"type": ["integer", "null"]},
+        "activation_model": {"type": "string"},
+        "handler_functions": {"type": "array", "items": {"type": "string"}},
+    },
+    required=["script_id", "tool"],
+)
+
+
+# ``as_list_installed_automations`` — the ledger-backed inventory. Minted
+# Apps Script projects are invisible to drive.file (S0-1), so this is the
+# only discovery surface; it is forward-only (nothing backfills it).
+AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA = _object(
+    properties={
+        "automations": {
+            "type": "array", "items": _AS_AUTOMATION_ENTRY_SCHEMA,
+        },
+        "count": {"type": "integer", "minimum": 0},
+    },
+    required=["automations", "count"],
+)
+
+
+# ``as_uninstall_automation`` — undeploy + disarm + ledger-forget. HONESTLY
+# PARTIAL (S0-4): the project FILE always lingers (no projects.delete;
+# drive.file cannot trash a script project), so ``project_file_removed`` is
+# always False and ``message`` states what remains. ``status`` is
+# ``uninstalled`` normally or ``already_gone`` if the project was deleted
+# already. additionalProperties stays True (a ``note`` field appears when an
+# unrecorded id is uninstalled).
+AS_UNINSTALL_AUTOMATION_OUTPUT_SCHEMA = _object(
+    properties={
+        "script_id": {"type": "string"},
+        "status": {"type": "string"},
+        "undeployed_count": {"type": "integer", "minimum": 0},
+        "undeploy_errors": {"type": "array", "items": {"type": "string"}},
+        "content_disarmed": {"type": "boolean"},
+        "ledger_forgotten": {"type": "boolean"},
+        "project_file_removed": {"type": "boolean"},
+        "project_url": {"type": "string", "format": "uri"},
+        "message": {"type": "string"},
+    },
+    required=["script_id", "status"],
+)
+
+
 # ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
 # the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
 # user types) and the echoed ``function_name`` / ``sheet_id``.
@@ -2405,6 +2466,10 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # Stream 3 — verify a deployed automation is activated yet (web-app
     # probe or execution-history read; companion to the activation UX).
     "as_check_activation": AS_CHECK_ACTIVATION_OUTPUT_SCHEMA,
+    # Automation lifecycle — forward-only inventory + honest partial
+    # uninstall (ledger-backed; closes the install-only gap, S0-1..S0-4).
+    "as_list_installed_automations": AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA,
+    "as_uninstall_automation": AS_UNINSTALL_AUTOMATION_OUTPUT_SCHEMA,
     # PR-Δ8 — install a custom menu into a Doc (composes the Δ7 primitive)
     "as_install_doc_menu": AS_INSTALL_DOC_MENU_OUTPUT_SCHEMA,
     # PR-Δ10 — custom spreadsheet function installer (composes PR-Δ7)

@@ -49,12 +49,10 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from appscriptly.decorators import workspace_tool
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SLIDES_MENU_OUTPUT_SCHEMA
 
@@ -246,6 +244,7 @@ def as_install_slides_menu(
     items: list[dict[str, str]],
     menu_title: str = _DEFAULT_MENU_TITLE,
     name: str | None = None,
+    on_conflict: str = "new",
 ) -> dict:
     """Install a persistent custom menu into a Google Slides presentation.
 
@@ -288,10 +287,21 @@ def as_install_slides_menu(
             bar. Defaults to ``"Presentation Tools"``. Non-empty.
         name: OPTIONAL title for the new Apps Script project. Defaults to
             a generated name derived from the menu title.
+        on_conflict: what to do when an automation from THIS tool already
+            exists on this presentation. "new" (the default) always
+            installs a fresh one (which can leave duplicate menus);
+            "replace" uninstalls the prior install(s) on this presentation
+            first (no duplicate, no orphan); "skip" returns the existing
+            install unchanged instead of adding a duplicate. The match is
+            keyed by (this tool, this container) via appscriptly's
+            automation ledger.
 
     Returns:
         ``{script_id, deployment_id, presentation_id, menu_title,
-        item_count, project_url}``. ``project_url`` deep-links to the
+        item_count, project_url}`` plus ``on_conflict`` (echoed),
+        ``reused_existing`` (True when ``on_conflict="skip"`` returned a
+        prior install), and ``replaced_count`` (prior installs removed for
+        ``on_conflict="replace"``). ``project_url`` deep-links to the
         script editor (``https://script.google.com/d/{script_id}/edit``)
         so the user can inspect / tweak the generated menu + handlers.
 
@@ -342,19 +352,25 @@ def as_install_slides_menu(
     #    The binding (parentId=presentation_id) attaches the menu to THIS
     #    deck. container_kind is known ("slides") — a SlidesApp menu is
     #    Slides-specific — so no auto-detection round-trip is needed.
-    project = _create_bound_project(creds, presentation_id, project_name)
-    script_id = project["scriptId"]
-
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} — initial deploy"
+    result = _mint_bound_automation(
+        creds,
+        tool="as_install_slides_menu",
+        container_id=presentation_id,
+        container_kind="slides",
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "presentation_id": presentation_id,
         "menu_title": menu_title,
         "item_count": len(validated_items),

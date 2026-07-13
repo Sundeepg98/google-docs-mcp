@@ -84,6 +84,7 @@ from appscriptly.services.apps_script.slides_menu import (
     build_menu_script as build_slides_menu_script,
 )
 from appscriptly.services.apps_script.video_deck import build_video_deck_script
+from appscriptly.services.apps_script._lifecycle import build_disarm_script
 from appscriptly.services.gas_deploy.api import inject_webapp_hmac_guard
 
 _NODE = shutil.which("node")
@@ -384,6 +385,27 @@ def _cases() -> list[GsCase]:
             id="H-webapp-hmac-extras",
             label="as_deploy_web_app HMAC guard (doGet + helper + doPost)",
             source=inject_webapp_hmac_guard(_DOPOST_WITH_EXTRAS, _HMAC_KEY),
+        )
+    )
+
+    # LIFECYCLE -- the inert stub as_uninstall_automation pushes over a
+    # disarmed automation (Stream 2). It redefines each recorded trigger
+    # handler as a self-reaper (deletes all project triggers on next fire),
+    # so a broken stub would leave an installed trigger firing-and-erroring
+    # forever. No menu (its onOpen is a deliberate no-op), so expect_menu
+    # stays False. Two shapes: with recorded handlers (Class D/E) and none.
+    cases.append(
+        GsCase(
+            id="X-uninstall-disarm-handlers",
+            label="as_uninstall_automation disarm stub (self-disarm handlers)",
+            source=build_disarm_script(["refreshDashboard", "onSubmitHandler"]),
+        )
+    )
+    cases.append(
+        GsCase(
+            id="X-uninstall-disarm-nohandlers",
+            label="as_uninstall_automation disarm stub (no handlers)",
+            source=build_disarm_script(),
         )
     )
 

@@ -565,6 +565,8 @@ def test_as_deploy_web_app_non_public_access_no_hmac_key(monkeypatch):
         "exec_url": "https://script.google.com/macros/s/z/exec",
         "execute_as": "USER_DEPLOYING",
         "access": "MYSELF",
+        "on_conflict": "new",
+        "replaced_count": 0,
         "project_url": "https://script.google.com/d/SID-9/edit",
     }
     # Original body shipped verbatim (no wrapper) for a non-public deploy.

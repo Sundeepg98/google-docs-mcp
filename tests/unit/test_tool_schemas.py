@@ -181,6 +181,10 @@ EXPECTED_TOOLS = {
     # Apps Script installer (3rd name; gdocs_install_automation +
     # gdocs_setup_apps_script remain as aliases).
     "as_install_automation",      # was gdocs_install_automation
+    # Automation lifecycle — forward-only inventory + honest partial
+    # uninstall (ledger-backed; closes the install-only gap S0-1..S0-4).
+    "as_list_installed_automations",
+    "as_uninstall_automation",
 }
 
 
@@ -295,6 +299,9 @@ def test_tool_discoverability_via_server_info(all_tools):
 _DOES_NOT_NEED_OAUTH = {
     "gdocs_get_signed_upload_url",  # deprecated alias
     "gdrive_get_signed_upload_url",  # namespace-cleanup canonical name
+    # Reads only the local per-user automation ledger — no Google API call,
+    # no OAuth grant (the caller is known from the auth context).
+    "as_list_installed_automations",
 }
 
 _MISLEADING_PHRASES = [
@@ -421,6 +428,10 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
         # 2026-07 next wave: the health report takes no args by design
         # (it reports on the CALLING identity; nothing to parameterize).
         "server_health",
+        # Stream-2 lifecycle: the inventory lists the CALLING user's
+        # automations (identified via the auth context); nothing to
+        # parameterize.
+        "as_list_installed_automations",
     }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these

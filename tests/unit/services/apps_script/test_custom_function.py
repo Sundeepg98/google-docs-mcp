@@ -272,6 +272,9 @@ def test_install_custom_function_happy_path_returns_envelope(with_sheet_containe
     assert result == {
         "script_id": "SCRIPT-1",
         "deployment_id": "DEPLOY-1",
+        "on_conflict": "new",
+        "reused_existing": False,
+        "replaced_count": 0,
         "sheet_id": "SHEET1",
         "function_name": "BRAND_CHECK",
         "usage_hint": "=BRAND_CHECK(...)",

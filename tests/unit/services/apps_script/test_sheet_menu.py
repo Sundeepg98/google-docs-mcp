@@ -225,6 +225,9 @@ def test_happy_path_returns_envelope(with_script_client):
     assert result == {
         "script_id": "SCRIPT-1",
         "deployment_id": "DEPLOY-1",
+        "on_conflict": "new",
+        "reused_existing": False,
+        "replaced_count": 0,
         "sheet_id": "SHEET1",
         "menu_title": "Budget Tools",
         "item_count": 2,

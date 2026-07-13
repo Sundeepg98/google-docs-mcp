@@ -23,6 +23,11 @@ EXPECTED: frozenset[str] = frozenset({
     # answers "is this deployed automation live yet?" via a web-app probe
     # or an execution-history read. Same script.processes scope.
     "as_check_activation",
+    # Automation lifecycle (lifecycle_tools.py) — the forward-only
+    # inventory + honest partial uninstall, backed by the per-user
+    # automation ledger. Closes the install-only gap (Stream-0 S0-1..S0-4).
+    "as_list_installed_automations",
+    "as_uninstall_automation",
     # PR-Δ8 — doc-menu installer (doc_menu.py).
     "as_install_doc_menu",
     # PR-Δ10 — custom =FUNCTION() installer (custom_function.py).

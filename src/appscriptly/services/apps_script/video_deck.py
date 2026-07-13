@@ -73,12 +73,12 @@ from typing import TYPE_CHECKING
 
 from appscriptly.activation import build_activation_fields
 from appscriptly.decorators import workspace_tool
+from appscriptly.services.apps_script._lifecycle import (
+    mint_bound_automation as _mint_bound_automation,
+)
 from appscriptly.services.apps_script.api import (
     auto_detect_container_kind as _auto_detect_container_kind,
     build_manifest as _build_manifest,
-    create_bound_project as _create_bound_project,
-    create_deployment as _create_deployment,
-    set_project_content as _set_project_content,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA
@@ -277,6 +277,7 @@ def as_generate_video_deck(
     creds: Credentials,
     presentation_id: str,
     name: str | None = None,
+    on_conflict: str = "new",
 ) -> dict:
     """Render each slide of a Google Slides deck to a PNG frame.
 
@@ -330,6 +331,14 @@ def as_generate_video_deck(
             is rejected with a clear error.
         name: OPTIONAL title for the new Apps Script project. Defaults to
             a generated video-deck name.
+        on_conflict: what to do when a video-deck renderer from THIS tool
+            already exists on this presentation. "new" (the default) always
+            installs a fresh one (which can leave duplicate menus);
+            "replace" uninstalls the prior install(s) on this presentation
+            first (no duplicate, no orphan); "skip" returns the existing
+            install unchanged instead of adding a duplicate. Keyed by (this
+            tool, this container) via appscriptly's automation ledger; the
+            response adds ``reused_existing`` / ``replaced_count``.
 
     Returns:
         ``{script_id, deployment_id, presentation_id, frames_batch_id,
@@ -420,19 +429,25 @@ def as_generate_video_deck(
     # 7. Deploy via the SAME machinery as as_generate_bound_script: create
     #    the bound project (parentId=presentation_id), push the body +
     #    manifest, cut a version + deploy.
-    project = _create_bound_project(creds, presentation_id, project_name)
-    script_id = project["scriptId"]
-
-    _set_project_content(creds, script_id, script_body, manifest_dict)
-
-    deployment = _create_deployment(
-        creds, script_id, description=f"{project_name} — initial deploy"
+    result = _mint_bound_automation(
+        creds,
+        tool="as_generate_video_deck",
+        container_id=presentation_id,
+        container_kind="slides",
+        project_name=project_name,
+        script_body=script_body,
+        manifest_dict=manifest_dict,
+        on_conflict=on_conflict,
     )
-    deployment_id = deployment["deploymentId"]
+    script_id = result.script_id
+    deployment_id = result.deployment_id
 
     return {
         "script_id": script_id,
         "deployment_id": deployment_id,
+        "on_conflict": on_conflict,
+        "reused_existing": result.reused,
+        "replaced_count": result.replaced,
         "presentation_id": presentation_id,
         # The batch id ties the render to the encode. Pass it to
         # as_encode_video once renderFrames has run.
