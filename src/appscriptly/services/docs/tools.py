@@ -530,7 +530,12 @@ def gdocs_tab_existing_doc(
     Args:
         docx_path: Absolute path to a local ``.docx`` (local MCP only).
         drive_file_id: Drive file ID of an existing .docx or Google Doc.
-            Accepts both mime types and routes automatically.
+            Accepts both mime types and routes automatically. If it points
+            at a Google Doc that ALREADY has multiple native tabs, only
+            the first tab's Heading 1 sections are split into new tabs;
+            the other existing tabs are left in place, and any new tab
+            whose title would duplicate an existing one is given a numeric
+            suffix to keep tab titles unique.
         docx_drive_file_id: Deprecated alias for ``drive_file_id``.
             Kept for backward compatibility.
         split_by: How to identify tab boundaries in the converted doc.

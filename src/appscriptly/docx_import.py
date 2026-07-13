@@ -124,6 +124,11 @@ _STYLE_FOR_SPLIT = {
     "heading_2": "HEADING_2",
 }
 
+# Google Docs rejects a tab title longer than this ("The tab title cannot
+# be longer than 50 characters"), so detected titles are truncated to it
+# and any de-dup suffix must keep the result within it.
+_MAX_TAB_TITLE = 50
+
 # Advisory appended whenever the placeholder tab is actually deleted:
 # a live-proven Google-side defect makes updateDocumentTabProperties
 # (icon sets AND tab renames) return 500 permanently on a document
@@ -425,6 +430,15 @@ def convert_docx_to_tabbed_doc(
         # user a sidebar of top-level section tabs instead of one
         # collapsed root.
         primary_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
+        # N11: the working copy of a native multi-tab Google Doc carries
+        # the source's existing tabs. A shell whose title matches one of
+        # them (or the primary tab, or an earlier shell) 400s
+        # addDocumentTab ("Tab title must be unique"), so de-dupe every
+        # detected title against what already exists. Nothing is deleted:
+        # the source's other tabs are preserved; only the first tab's
+        # Heading 1 sections drive new tabs (see the drive_file_id note in
+        # gdocs_tab_existing_doc).
+        _dedupe_split_titles(flat_splits, _existing_tab_titles(fetched.get("tabs") or []))
         shell_specs = [_split_to_tabspec(s) for s in splits]
         created_tabs = add_tabs_to_doc(creds, doc_id, shell_specs)["tabs"]
 
@@ -1101,11 +1115,9 @@ def _detect_splits(
         node_count += 1
         fallback = f"Section {node_count}"
         return _SplitPoint(
-            # Google Docs API rejects tab titles >50 chars with a 400
-            # ("The tab title cannot be longer than 50 characters").
-            # Truncate to match the API limit so we don't fail at
-            # addDocumentTab time.
-            title=(title_text or fallback)[:50].strip() or fallback,
+            # Truncate to the API limit so we don't fail at addDocumentTab
+            # time (see _MAX_TAB_TITLE).
+            title=(title_text or fallback)[:_MAX_TAB_TITLE].strip() or fallback,
             icon_emoji=None,
             ranges=[(child_idx, child_idx)],
             children=[],
@@ -1167,6 +1179,47 @@ def _max_depth(splits: list[_SplitPoint]) -> int:
     return 1 + max(
         (_max_depth(s["children"]) for s in splits), default=-1
     )
+
+
+def _existing_tab_titles(tabs: list[dict]) -> set[str]:
+    """Every tab title already present in a document, at all nesting
+    levels. The working copy of a native multi-tab Google Doc carries the
+    source's tabs, whose titles a new shell must not duplicate."""
+    titles: set[str] = set()
+    for tab in tabs or []:
+        title = (tab.get("tabProperties") or {}).get("title")
+        if title:
+            titles.add(title)
+        titles |= _existing_tab_titles(tab.get("childTabs") or [])
+    return titles
+
+
+def _unique_tab_title(base: str, taken: set[str]) -> str:
+    """``base`` if free, else the first ``base (2)`` / ``base (3)`` / ...
+    not in ``taken``, kept within the tab-title length limit. Tab titles
+    must be unique across a document or addDocumentTab 400s."""
+    if base not in taken:
+        return base
+    n = 2
+    while True:
+        suffix = f" ({n})"
+        candidate = base[: _MAX_TAB_TITLE - len(suffix)].rstrip() + suffix
+        if candidate not in taken:
+            return candidate
+        n += 1
+
+
+def _dedupe_split_titles(flat_splits: list[_SplitPoint], existing: set[str]) -> None:
+    """In place: rename each split's title so it is unique against the
+    document's pre-existing tabs AND every earlier split. Pre-order
+    (``flat_splits``) means a parent claims its title before its
+    children. Mutates the shared _SplitPoint dicts, so the shell specs
+    built from the split tree pick up the unique titles."""
+    taken = set(existing)
+    for split in flat_splits:
+        unique = _unique_tab_title(split["title"], taken)
+        split["title"] = unique
+        taken.add(unique)
 
 
 def _split_to_tabspec(split: _SplitPoint) -> TabSpec:

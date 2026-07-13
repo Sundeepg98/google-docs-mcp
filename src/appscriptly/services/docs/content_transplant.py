@@ -369,6 +369,58 @@ def _filtered_style(style: dict, allowed: tuple[str, ...]) -> dict:
     return {k: v for k, v in style.items() if k in allowed and v is not None}
 
 
+# Google 400s a TABLE CELL border whose color is transparent/absent
+# ("Table cell borders cannot be transparent. To hide a table cell
+# border, make its width 0."). A docx cell or paragraph with no visible
+# border reads back from documents.get as exactly such a border - an
+# OptionalColor with no concrete color - so re-emitting it verbatim
+# killed every table-bearing convert (N10). Any colorless border is
+# rewritten to Google's prescribed hidden form (width 0, plus an
+# explicit opaque color so nothing transparent survives to the write);
+# a border carrying a real color passes through untouched.
+_TABLE_CELL_BORDER_FIELDS = ("borderLeft", "borderRight", "borderTop", "borderBottom")
+_PARAGRAPH_BORDER_FIELDS = (
+    "borderTop",
+    "borderBottom",
+    "borderLeft",
+    "borderRight",
+    "borderBetween",
+)
+
+
+def _border_color_is_visible(border: dict) -> bool:
+    optional_color = border.get("color")
+    if not isinstance(optional_color, dict):
+        return False
+    color = optional_color.get("color")
+    if not isinstance(color, dict):
+        return False
+    return color.get("rgbColor") is not None or color.get("themeColor") is not None
+
+
+def _hidden_border(dash_style: str | None, padding: dict | None) -> dict:
+    hidden: dict = {
+        "width": {"magnitude": 0, "unit": "PT"},
+        "dashStyle": dash_style or "SOLID",
+        "color": {"color": {"rgbColor": {}}},
+    }
+    # Paragraph borders carry a padding field; TableCellBorder does not,
+    # so preserve it only where the source border actually had one
+    # (adding padding to a table cell border is itself a 400).
+    if padding is not None:
+        hidden["padding"] = padding
+    return hidden
+
+
+def _normalize_borders(style: dict, keys: tuple[str, ...]) -> None:
+    """In place: rewrite each transparent/absent-color border to a
+    width-0 hidden border. Real-color borders are left exactly as read."""
+    for key in keys:
+        border = style.get(key)
+        if isinstance(border, dict) and not _border_color_is_visible(border):
+            style[key] = _hidden_border(border.get("dashStyle"), border.get("padding"))
+
+
 def _writable_text_style(style: dict, report: FidelityReport) -> dict:
     out = _filtered_style(style, _TEXT_STYLE_FIELDS)
     link = out.get("link")
@@ -383,6 +435,7 @@ def _writable_text_style(style: dict, report: FidelityReport) -> dict:
 
 def _writable_paragraph_style(style: dict, *, in_table: bool = False) -> dict:
     out = _filtered_style(style, _PARAGRAPH_STYLE_FIELDS)
+    _normalize_borders(out, _PARAGRAPH_BORDER_FIELDS)
     # pageBreakBefore is rejected by updateParagraphStyle on ANY range
     # that overlaps a table ("Cannot update page-break-before when the
     # range contains paragraphs in a table"), and documents.get reports
@@ -849,6 +902,7 @@ def _plan_table(
                     _in_table_cell=True,
                 )
             cell_style = _filtered_style(cell_style_raw, _TABLE_CELL_STYLE_FIELDS)
+            _normalize_borders(cell_style, _TABLE_CELL_BORDER_FIELDS)
             if cell_style:
                 phase.cell_styles.append((r, c, cell_style))
             c += col_span
