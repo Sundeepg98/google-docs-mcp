@@ -29,6 +29,7 @@ hold (S0-2); the inventory is where those ids now come from.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastmcp.exceptions import ToolError
 
@@ -41,7 +42,11 @@ from appscriptly.services.apps_script._lifecycle import (
     uninstall_automation as _uninstall_automation,
     update_automation as _update_automation,
 )
-from appscriptly.services.apps_script._recipes import RECIPES, render as _render
+from appscriptly.services.apps_script._recipes import (
+    RECIPES,
+    RecipeSpec,
+    render as _render,
+)
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import (
@@ -127,6 +132,59 @@ def _stored_recipe_params(row: dict) -> dict:
     except (ValueError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _param_type_ok(value: Any, declared: str | None) -> bool:
+    """True if ``value`` satisfies the JSON-schema ``declared`` type.
+
+    Returns True for an unknown / unmapped type (only the primitives the
+    recipe input schemas actually use are checked; presence + non-null are
+    enforced separately). ``integer`` / ``number`` reject ``bool`` explicitly
+    because ``bool`` is a subclass of ``int``.
+    """
+    if declared == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if declared == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    simple: dict[str, type] = {
+        "string": str, "array": list, "object": dict, "boolean": bool,
+    }
+    expected = simple.get(declared) if declared else None
+    return expected is None or isinstance(value, expected)
+
+
+def _validate_recipe_regeneration_params(spec: RecipeSpec, params: dict) -> None:
+    """Reject a recipe regeneration whose params null / wrong-type a required
+    input, with a clean ValueError instead of a cryptic template TypeError.
+
+    A ``params`` override that sets a REQUIRED recipe input to null (or the
+    wrong JSON type) would otherwise surface as a raw ``TypeError`` from deep
+    inside a generator builder (atomic, but cryptic). This checks the recipe's
+    required inputs against its ``input_schema`` FIRST -- each must be present,
+    non-null, and match the declared JSON type -- and names the offending
+    key(s) + the recipe. Optional params may legitimately be absent or null,
+    so only required inputs are checked. Runs BEFORE render (and thus before
+    any Apps Script push or ledger write): a bad override changes nothing.
+    """
+    schema = spec.input_schema
+    required = schema.get("required", [])
+    props = schema.get("properties", {})
+    offenders: list[str] = []
+    for key in required:
+        declared = props.get(key, {}).get("type")
+        if key not in params or params[key] is None:
+            offenders.append(f"{key} (required, must not be null)")
+        elif not _param_type_ok(params[key], declared):
+            offenders.append(
+                f"{key} (expected {declared}, got {type(params[key]).__name__})"
+            )
+    if offenders:
+        raise ValueError(
+            f"Cannot regenerate the '{spec.name}' automation: a params "
+            f"override left required recipe input(s) invalid: "
+            f"{'; '.join(offenders)}. Fix the override, or omit it to reuse "
+            f"the recorded install params."
+        )
 
 
 @workspace_tool(
@@ -334,7 +392,10 @@ def as_update_automation(
       code the same way the original call did. The response reports
       ``regenerated_from_recipe: false``. (You may also pass ``script_body``
       for a recipe automation to push one-off custom code; that takes the
-      caller-body path too.)
+      caller-body path too. The one exception is the video-deck renderer,
+      which is refused even WITH a body: each install mints a fresh single-use
+      upload token that cannot be reproduced or re-authored, so re-install it
+      instead.)
 
     SCOPE-CHANGE / RE-ACTIVATION: if the new manifest declares an OAuth scope
     the deployed version did not carry, the user must Run + Allow once to grant
@@ -365,7 +426,12 @@ def as_update_automation(
         params: OPTIONAL per-key overrides for a RECIPE regeneration (e.g.
             ``{"schedule": "weekly"}``). Merged over the recorded install
             params and re-stored. Only valid when the server regenerates
-            (``script_body`` omitted on a recipe automation).
+            (``script_body`` omitted on a recipe automation). Changing a
+            trigger's SCHEDULE regenerates the code, but a trigger already
+            installed in the user's account keeps its original schedule until
+            they re-run the activation (Run installTrigger + Allow), which
+            re-wires it cleanly (installTrigger de-dups, so no duplicate).
+            A null or wrong-typed required input here is rejected up front.
         allow_restricted_scopes: OPTIONAL opt-in to permit a Google RESTRICTED
             scope in a CALLER-BODY manifest (default False rejects them), same
             as ``as_generate_bound_script``.
@@ -456,6 +522,11 @@ def as_update_automation(
                 f"to update it directly."
             )
         merged_params = {**stored_params, **(params or {})}
+        # Reject a null / wrong-typed required input from the params override
+        # BEFORE render, so a bad override raises a clean ValueError naming the
+        # key + recipe instead of a cryptic TypeError from the template (and
+        # touches no Apps Script API and no ledger row).
+        _validate_recipe_regeneration_params(spec, merged_params)
         rendered = _render(spec, merged_params)
         effective_body = rendered.script_body
         manifest_dict = rendered.manifest
