@@ -47,8 +47,16 @@ _GUIDANCE: list[tuple[str, str]] = [
     ),
     (
         "insufficient permission",
-        "The OAuth scopes granted to this server don't cover this operation. "
-        "Re-authenticate to grant the needed scopes (documents + drive.file).",
+        "The OAuth scopes granted to this server do not cover this operation. "
+        "For most tools, re-authenticating to grant the documents + drive.file "
+        "scopes resolves it. If you hit this while converting an existing Drive "
+        "file by id (drive_file_id / docx_drive_file_id), note that path needs "
+        "read access to a file this app did not create, which the base tier "
+        "intentionally does not request (to stay CASA-free); re-authenticating "
+        "will NOT grant it. For that case, upload the .docx bytes to the URL "
+        "from gdrive_get_signed_upload_url instead (that flow needs no Drive "
+        "read scope), or open or copy the file with this app first so it "
+        "becomes app-visible under drive.file.",
     ),
     (
         "rate limit exceeded",
@@ -101,3 +109,42 @@ def friendly_http_error_message(error: Any) -> str:
             return f"{base}\nGuidance: {guidance}"
 
     return base
+
+
+def friendly_transport_error_message(
+    error: Any, *, request_id: str | None = None
+) -> str:
+    """Convert a transient network/transport failure into a caller-facing message.
+
+    Companion to ``friendly_http_error_message`` for the failures that
+    never produced an HTTP response at all: socket read/connect timeout,
+    connection reset / refused, and the other retryable transport errno
+    (see ``google_api_client.is_retryable_transport_error``). These are
+    NOT ``HttpError``, so without an explicit boundary mapping they escape
+    the ``@workspace_tool`` envelope and reach the framework's generic
+    tool-error string stripped of any actionable detail.
+
+    The message mirrors the HTTP formatter's ``Retryable:`` contract:
+    a transport blip is transient by definition (the request did not
+    complete), so a retry can plausibly succeed. ``request_id`` (when
+    supplied and not the ``"-"`` ContextVar placeholder) is appended for
+    operator log correlation.
+    """
+    reason = str(error).strip()
+    detail = (
+        type(error).__name__
+        if not reason
+        else f"{type(error).__name__}: {reason}"
+    )
+    lines = [
+        "Transient network error contacting the Google API "
+        f"(no response was received): {detail}.",
+        "This is almost always a temporary connectivity blip. Retry the "
+        "tool; if it keeps failing, wait a few seconds and try again.",
+        "Retryable: true",
+    ]
+    if request_id and request_id != "-":
+        lines.append(
+            f"Request ID (quote this when reporting the issue): {request_id}"
+        )
+    return "\n".join(lines)

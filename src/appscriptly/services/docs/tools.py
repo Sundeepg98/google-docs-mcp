@@ -507,11 +507,15 @@ def gdocs_tab_existing_doc(
        headings are added.
 
     Input paths:
-    - ``drive_file_id``: any .docx or Google Doc already on Drive.
-      Auto-routes by mime type. PREFERRED.
+    - ``drive_file_id``: a .docx or Google Doc already on Drive that is
+      APP-ACCESSIBLE (created by this app, or shared with it under the
+      drive.file scope). Auto-routes by mime type. DEPRECATED and capped
+      by scope: a file this app has never touched returns an
+      insufficient-scope error (see the arg note). Prefer the
+      signed-upload flow below.
     - ``docx_path``: absolute path on the SERVER's filesystem. Only
       works for local stdio MCP (Claude Code / Claude Desktop). Does
-      NOT work from claude.ai cloud chat — the server cannot see your
+      NOT work from claude.ai cloud chat; the server cannot see your
       sandbox.
     - Sandbox-built .docx in cloud chat: call ``gdocs_get_signed_upload_url``
       then POST. Only do this if you genuinely have an existing .docx
@@ -536,6 +540,14 @@ def gdocs_tab_existing_doc(
             the other existing tabs are left in place, and any new tab
             whose title would duplicate an existing one is given a numeric
             suffix to keep tab titles unique.
+            CONSTRAINT (drive.file scope): this can only read a file this
+            app created or that was explicitly shared with it. An arbitrary
+            Drive file the app has never touched returns an insufficient-
+            scope error, because reading it would need the drive.readonly
+            scope the base tier intentionally does not request. This input
+            is also DEPRECATED (removed next minor). For a file the app
+            cannot see, or from cloud chat, upload the .docx via
+            gdocs_get_signed_upload_url instead (no Drive read scope needed).
         docx_drive_file_id: Deprecated alias for ``drive_file_id``.
             Kept for backward compatibility.
         split_by: How to identify tab boundaries in the converted doc.
@@ -693,12 +705,15 @@ def gdocs_tab_existing_doc(
     if drive_file_id is not None:
         deprecation = (
             "drive_file_id / docx_drive_file_id is deprecated and will be "
-            "removed in the next minor version: it requires the "
-            "drive.readonly scope, which the base tier no longer requests. "
-            "Switch to the signed-upload flow — call "
-            "gdocs_get_signed_upload_url, POST the .docx to the returned "
-            "URL, then convert. (Local stdio callers can keep using "
-            "docx_path.)"
+            "removed in the next minor version. WHY: it reads a Drive file "
+            "this app may not have created, which requires the "
+            "drive.readonly scope; the base tier dropped drive.readonly to "
+            "stay CASA-free, so this path works only for older tokens that "
+            "still carry that grant and returns an insufficient-scope error "
+            "for everyone else. WORKAROUND: call gdrive_get_signed_upload_url, "
+            "POST the .docx to the returned URL, then convert; that flow "
+            "stages the bytes server-side and needs no Drive read scope. "
+            "(Local stdio callers can keep using docx_path.)"
         )
         _log.warning(
             "gdocs_tab_existing_doc: drive_file_id path is DEPRECATED "

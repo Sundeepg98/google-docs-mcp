@@ -82,13 +82,38 @@ remove"). New code should use ``@workspace_tool`` directly.
 from __future__ import annotations
 
 import functools
+import sys
 from typing import Any, Callable, TypeVar
 
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
+from .errors import friendly_transport_error_message
+from .google_api_client import is_retryable_transport_error
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _current_request_id() -> str | None:
+    """Best-effort active HTTP request_id for error correlation, or None.
+
+    Reads the ASGI-layer request_id ContextVar ONLY when the HTTP stack is
+    already imported (i.e. HTTP mode, where an inbound request came through
+    ``RequestIdMiddleware`` and therefore populated the ContextVar). In
+    stdio mode the ``http_server`` package is never loaded and there is no
+    request in scope, so we skip it entirely via a ``sys.modules`` probe
+    rather than importing the ASGI stack just to read the ``"-"`` default.
+    Returns None outside an HTTP request or when no id is set.
+    """
+    module = sys.modules.get("appscriptly.http_server.middleware")
+    if module is None:
+        return None
+    try:
+        rid = module.get_request_id()
+    except Exception:  # pragma: no cover - defensive; never let this raise
+        return None
+    return rid if rid and rid != "-" else None
 
 
 # Bound late to avoid a circular import — server.py imports decorators
@@ -362,6 +387,24 @@ def workspace_tool(
                 return fn(creds_obj, *args, **kwargs)
             except HttpError as e:
                 raise ToolError(_format_http_error_fn(e)) from e
+            except OSError as e:
+                # Transient transport failures (socket timeout, connection
+                # reset/refused, retryable errno) are NOT HttpError, so
+                # without this they escape the envelope to the framework's
+                # generic tool-error string stripped of detail (the
+                # gdrive_trash_file "flake"). Map ONLY the transient set
+                # (the same one the retry chokepoint treats as retryable)
+                # into a ToolError carrying a cause summary + request id.
+                # Re-raise every other OSError untouched so a real bug (bad
+                # cert path, EACCES, disk error) is never mislabeled as a
+                # transient blip -- map, do not swallow.
+                if not is_retryable_transport_error(e):
+                    raise
+                raise ToolError(
+                    friendly_transport_error_message(
+                        e, request_id=_current_request_id()
+                    )
+                ) from e
 
         # Trim the leading ``creds`` parameter from the visible signature
         # so FastMCP's input-schema generator doesn't expose it as a
