@@ -38,8 +38,10 @@ out.txt
 *.log
 
 # Local session/agent artifacts (never commit: _audit holds verification-thread
-# message IDs + reply addresses; repo is public)
+# message IDs + reply addresses; repo is public. runs/ holds browser-verify
+# screenshots and per-run scratch.)
 _audit/
+runs/
 .playwright-mcp/
 .claude/
 gcp-verification-center-*.png
