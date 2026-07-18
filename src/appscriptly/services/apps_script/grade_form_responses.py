@@ -64,11 +64,13 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
     reporter_helper_source as _reporter_helper_source,
     wrap_generated_body as _wrap_generated_body,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_GRADE_FORM_RESPONSES_OUTPUT_SCHEMA
 
@@ -412,45 +414,37 @@ def as_grade_form_responses(
             "(e.g. `function scoreItem(itemResponse, item) { ... }`)."
         )
 
-    # 2. Synthesize the .gs body (caller's scorer + onOpen menu +
-    #    gradeResponses loop). _extract_handler_name (inside) also rejects
-    #    an unnamed function.
-    script_body, scorer = build_grade_script_body(
-        scoring_function_body, menu_title
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest. render() runs the same
+    #    build_grade_script_body (caller's scorer + onOpen menu +
+    #    gradeResponses loop; it validates the scorer is a NAMED function) and
+    #    threads the same manifest plan (script.container.ui from the onOpen
+    #    menu + the FULL forms scope for submitGrades + add_mail_scope for the
+    #    failure reporter); the byte-identity pins guarantee the output is
+    #    unchanged. The grader exposes a fixed gradeResponses entry point, so
+    #    there is no per-call handler name to record.
+    spec = _RECIPES["as_grade_form_responses"]
+    params = {
+        "form_id": form_id,
+        "scoring_function_body": scoring_function_body,
+        "menu_title": menu_title,
+        "name": name,
+    }
+    rendered = _render(spec, params)
 
-    # 3. Build the manifest. The onOpen menu derives script.container.ui;
-    #    submitGrades needs the FULL forms scope, declared via oauth_scopes.
-    #    Both land in the GENERATED manifest only — never in appscriptly's
-    #    own consent (the load-bearing verify-LAST guarantee).
-    #    add_mail_scope adds script.send_mail so the injected failure
-    #    reporter can email the owner on a grading error (gap #5); it lands
-    #    ONLY in this generated manifest, never in appscriptly's consent.
-    manifest_dict = _build_manifest(
-        {
-            "menu": [
-                {"name": _MENU_ITEM_LABEL, "function_name": _GRADE_FUNCTION}
-            ],
-            "oauth_scopes": _add_mail_scope([_FORMS_SCOPE]),
-        }
-    )
-
-    # 4. Default the project name when not supplied.
-    project_name = name or "appscriptly form grader"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=form_id), push the body + manifest, cut a
     #    version + deploy. We bind DIRECTLY to the Form ID and never call
     #    auto_detect_container_kind (which rejects Forms) — same
     #    Forms-rejection lift as form_handler.
     result = _mint_bound_automation(
         creds,
-        tool="as_grade_form_responses",
+        tool=spec.name,
         container_id=form_id,
-        container_kind="forms",
-        project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        container_kind=spec.container_kind,
+        project_name=spec.project_name(params),
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
     )
     script_id = result.script_id

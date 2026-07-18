@@ -58,18 +58,14 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
-from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
-    guard_name_for as _guard_name_for,
-)
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.services.apps_script.sheet_dashboard import (
     VALID_SCHEDULES,
-    build_dashboard_script_body as _build_time_trigger_script_body,
+    _extract_handler_name,
 )
 from appscriptly.tool_schemas import AS_INSTALL_CALENDAR_SYNC_OUTPUT_SCHEMA
 
@@ -261,55 +257,45 @@ def as_install_calendar_sync(
             "(e.g. `function syncEvents() { ... }`)."
         )
 
-    # 2. Synthesize the full .gs body (caller's sync fn + dedup'd
-    #    installTrigger wiring the schedule). We reuse sheet_dashboard's
-    #    time-trigger body builder verbatim - it does exactly the right
-    #    thing (named-function extraction + dedup-then-create time trigger);
-    #    the only Calendar-specific piece is the manifest scope, added next.
-    #    _extract_handler_name (inside the builder) rejects an unnamed fn.
-    script_body, handler = _build_time_trigger_script_body(
-        sync_function_body, schedule, hour, sync_note
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest + recorded handler. render()
+    #    reuses sheet_dashboard's time-trigger builder (via the registry's
+    #    build callable) and threads the Calendar manifest plan (the full
+    #    calendar scope + script.scriptapp from the trigger +
+    #    container_data_scope("sheets") + add_mail_scope) — BOTH the scope and
+    #    the trigger land in the GENERATED manifest only, never appscriptly's
+    #    consent. The byte-identity pins guarantee the output is unchanged. We
+    #    still parse the RAW handler name here for the return payload +
+    #    activation instructions (render records the GUARD-wrapped name).
+    handler = _extract_handler_name(sync_function_body)
+    spec = _RECIPES["as_install_calendar_sync"]
+    params = {
+        "sheet_id": sheet_id,
+        "sync_function_body": sync_function_body,
+        "schedule": schedule,
+        "hour": hour,
+        "sync_note": sync_note,
+        "name": name,
+    }
+    rendered = _render(spec, params)
+    project_name = spec.project_name(params)
 
-    # 3. Build the manifest. A time trigger needs script.scriptapp (derived
-    #    from the triggers plan), and CalendarApp needs the full calendar
-    #    scope (supplied via oauth_scopes). BOTH land in the GENERATED
-    #    manifest only - never in appscriptly's own consent (the
-    #    load-bearing verify-LAST guarantee).
-    manifest_dict = _build_manifest(
-        {
-            "triggers": [{"type": "time", "schedule": schedule}],
-            # _CALENDAR_SCOPE writes Calendar; container_data_scope("sheets") =
-            # spreadsheets.currentonly so the sync handler can READ the bound
-            # Sheet's rows via SpreadsheetApp (an explicit oauthScopes block
-            # suppresses auto-detection - N-S3V-1); add_mail_scope adds the
-            # failure reporter's send scope. GENERATED manifest only, never
-            # appscriptly's consent.
-            "oauth_scopes": _add_mail_scope(
-                [_CALENDAR_SCOPE, _container_data_scope("sheets")]
-            ),
-        }
-    )
-
-    # 4. Default the project name from the schedule when not supplied.
-    project_name = name or f"appscriptly calendar sync ({schedule})"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=sheet_id), push the body + manifest, cut a
     #    version + deploy. (We bind directly to the Sheet ID; no Drive
     #    mimeType round-trip - this tool only ever targets a Sheet.)
     result = _mint_bound_automation(
         creds,
-        tool="as_install_calendar_sync",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
+        container_kind=spec.container_kind,
         project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
-        # Record the GUARD name (installTrigger's actual target) so
-        # uninstall's self-disarm reaper redefines the right function.
-        handler_functions=[_guard_name_for(handler)],
+        # render's handler_derivation records the GUARD name (installTrigger's
+        # actual target), matching the prior inline [_guard_name_for(handler)].
+        handler_functions=rendered.handler_functions,
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

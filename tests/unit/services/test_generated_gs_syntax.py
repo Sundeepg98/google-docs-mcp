@@ -29,16 +29,21 @@ variant) and enforces two gates:
      that points at a function it never defines throws "Script function not
      found" the moment the user clicks the item.
 
-DRIVEN OFF THE RECIPE REGISTRY (Stream S2): the cases are the UNION of two
-sources -- the hand-written generator cases (``_cases``, which exercise the
-pure ``build_*`` builders directly) AND a set derived by iterating the recipe
-registry (``_registry_cases``: every ``RECIPES`` entry rendered through the
-registry's pure ``render`` for each of its ``example_params``). Iterating the
-registry is the structural close of this gap: a new recipe row is parse-gated +
-menu-integrity-gated with ZERO edits here, ``expect_menu`` is DERIVED from the
-entry's ``activation_model`` (never hand-flagged), and
-``test_every_recipe_is_covered_by_the_harness`` fails if a registered recipe
-escapes the collection (empty ``example_params`` or a dropped entry).
+DRIVEN OFF THE RECIPE REGISTRY (Stream S2/S3): the cases are the UNION of two
+sources -- a set derived by iterating the recipe registry (``_registry_cases``:
+every ``RECIPES`` entry rendered through the registry's pure ``render`` for each
+of its ``example_params``) AND a small set of hand-written cases (``_cases``)
+for the two generators that are NOT recipes (the standalone ``as_deploy_web_app``
+HMAC guard + the ``as_uninstall_automation`` disarm stub -- see the note above
+``_cases``). Iterating the registry is the structural close of this gap: a new
+recipe row is parse-gated + menu-integrity-gated with ZERO edits here,
+``expect_menu`` is DERIVED from the entry's ``activation_model`` (never
+hand-flagged), and ``test_every_recipe_is_covered_by_the_harness`` fails if a
+registered recipe escapes the collection (empty ``example_params`` or a dropped
+entry). Since Stream S3 the recipe wrappers delegate to ``render``, so the
+former hand-written Class B-G cases would only re-exercise the same ``build_*``
+the registry cases already cover; they were dropped, leaving the registry as the
+single source for every recipe generator's ``.gs``.
 
 WHAT IS OUT OF SCOPE (deliberately, not an omission):
   * Class A ``as_generate_bound_script`` emits NO server-generated ``.gs``
@@ -65,36 +70,12 @@ from pathlib import Path
 
 import pytest
 
-# The generator builders under test. All are PURE (params -> .gs string), so
-# the harness renders them DIRECTLY -- no Google API, no mocking, no deploy.
-from appscriptly.services.apps_script.custom_function import (
-    build_custom_function_script,
-)
-from appscriptly.services.apps_script.doc_menu import (
-    build_menu_script as build_doc_menu_script,
-)
-from appscriptly.services.apps_script.edit_trigger import (
-    build_edit_trigger_script_body,
-)
-from appscriptly.services.apps_script.form_handler import (
-    build_form_handler_script_body,
-)
-from appscriptly.services.apps_script.grade_form_responses import (
-    build_grade_script_body,
-)
-from appscriptly.services.apps_script.refresh_linked_slides import (
-    build_refresh_script_body,
-)
-from appscriptly.services.apps_script.sheet_dashboard import (
-    build_dashboard_script_body,
-)
-from appscriptly.services.apps_script.sheet_menu import (
-    build_menu_script as build_sheet_menu_script,
-)
-from appscriptly.services.apps_script.slides_menu import (
-    build_menu_script as build_slides_menu_script,
-)
-from appscriptly.services.apps_script.video_deck import build_video_deck_script
+# The two NON-recipe generators still hand-written here (see the note above
+# ``_cases``): ``as_deploy_web_app``'s HMAC guard (a deploy PRIMITIVE, not a
+# bound recipe) and the uninstall disarm stub. Both are PURE (params -> .gs
+# string). Every RECIPE generator's ``.gs`` (Classes B-G) is covered via the
+# registry (``_registry_cases``), whose ``render`` lazily imports the
+# ``build_*`` builders -- so they are no longer imported directly here.
 from appscriptly.services.apps_script._lifecycle import build_disarm_script
 from appscriptly.services.gas_deploy.api import inject_webapp_hmac_guard
 
@@ -129,38 +110,12 @@ def _require_node() -> str:
     pytest.skip(reason)
 
 
-# --- representative caller-authored bodies (the "trusted" inputs the tools
-# accept from Claude; the trigger/dashboard/grade builders REQUIRE a named
-# function declaration, and the custom-function builder requires the body to
-# define its named function). ---
+# --- the caller-authored web-app bodies for the Class H HMAC-guard cases (the
+# "trusted" doPost / doGet source as_deploy_web_app wraps with a signed-request
+# guard). The recipe generators' inputs (menus, triggers, dashboards, scorers,
+# ...) now live on each RecipeSpec's ``example_params`` and reach this harness
+# through ``_registry_cases``. ---
 
-_REFRESH_BODY = (
-    "function refreshDashboard() {\n"
-    "  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];\n"
-    "  sheet.getRange('A1').setValue(new Date());\n"
-    "}"
-)
-_EDIT_BODY = (
-    "function onEditHandler(e) {\n"
-    "  if (e && e.range) { e.range.setNote('edited ' + new Date()); }\n"
-    "}"
-)
-_SUBMIT_BODY = (
-    "function onSubmitHandler(e) {\n"
-    "  Logger.log('submission: ' + JSON.stringify(e && e.namedValues));\n"
-    "}"
-)
-_SCORER_BODY = (
-    "function scoreItem(itemResponse, item) {\n"
-    "  if (itemResponse.getResponse() === '42') { itemResponse.setScore(1); }\n"
-    "  return itemResponse;\n"
-    "}"
-)
-_CUSTOM_FN_BODY = (
-    "function BRAND_CHECK(input) {\n"
-    "  return String(input).toUpperCase().indexOf('ACME') >= 0;\n"
-    "}"
-)
 _DOPOST_BODY = (
     "function doPost(e) {\n"
     "  var data = JSON.parse((e && e.postData && e.postData.contents) || '{}');\n"
@@ -180,42 +135,6 @@ _DOPOST_WITH_EXTRAS = (
 )
 # 64 lowercase hex chars -- the shape generate_hmac_key() mints.
 _HMAC_KEY = "ab" * 32
-
-# Multi-item menu with escaping stress: a comma INSIDE a label (exercises the
-# non-greedy addItem-target extraction), embedded double-quotes + '<' + a
-# backslash + a non-ASCII char (exercises the JSON string escaping in the
-# generator), an empty body (a no-op handler is legal), and a '$' in an
-# identifier (a valid JS identifier char).
-_MENU_ITEMS_MULTI = [
-    {
-        "label": "Insert name, date",
-        "function_name": "sayHi",
-        "function_body": "DocumentApp.getUi().alert('hi');",
-    },
-    {
-        "label": 'Quote "block" & <b> \\ café',
-        "function_name": "insertBlock",
-        "function_body": "var s = 'ok';\nLogger.log(s);",
-    },
-    {
-        "label": "Empty handler",
-        "function_name": "third_item$",
-        "function_body": "",
-    },
-]
-_MENU_ITEMS_SINGLE = [
-    {
-        "label": "Refresh",
-        "function_name": "refreshData",
-        "function_body": "SpreadsheetApp.getActive().toast('done');",
-    },
-]
-
-# Realistic-shaped Drive / Slides IDs (embedded as JS string literals by the
-# builders). Content is [A-Za-z0-9_-] like real Drive IDs.
-_SHEET_ID = "1AbC_dEfG-hIjKlMnOpQrStUvWxYz0123456789"
-_FORM_ID = "1FoRm_iD-abcdefghijklmnopqrstuvwxyz01234"
-_PRES_ID = "1PrEs_iD-abcdefghijklmnopqrstuvwxyz01234"
 
 
 @dataclass(frozen=True)
@@ -239,158 +158,16 @@ class GsCase:
 
 
 def _cases() -> list[GsCase]:
-    """Render every generator once per representative param set (PURE)."""
+    """Render the two NON-recipe generators (Class H + LIFECYCLE).
+
+    Every RECIPE generator's ``.gs`` (Classes B-G) is covered by
+    ``_registry_cases`` -- the wrappers delegate to the registry's ``render``
+    (Stream S3), so a hand-written case here would exercise the same ``build_*``
+    twice. What remains are the two generators that are NOT recipes (no
+    ``RECIPES`` entry) and so are unreachable via the registry: the standalone
+    web-app HMAC guard (a deploy PRIMITIVE) and the uninstall disarm stub.
+    """
     cases: list[GsCase] = []
-
-    # CLASS B -- custom-menu installers. Same builder shape, three UI
-    # namespaces (DocumentApp / SpreadsheetApp / SlidesApp). Multi-item (with
-    # escaping stress) + single item.
-    for svc, builder in (
-        ("doc", build_doc_menu_script),
-        ("sheet", build_sheet_menu_script),
-        ("slides", build_slides_menu_script),
-    ):
-        cases.append(
-            GsCase(
-                id=f"B-{svc}_menu-multi",
-                label=f"as_install_{svc}_menu (multi-item menu)",
-                source=builder("appscriptly Tools", _MENU_ITEMS_MULTI),
-                expect_menu=True,
-            )
-        )
-        cases.append(
-            GsCase(
-                id=f"B-{svc}_menu-single",
-                label=f"as_install_{svc}_menu (single item)",
-                source=builder("Tools", _MENU_ITEMS_SINGLE),
-                expect_menu=True,
-            )
-        )
-
-    # CLASS C -- custom spreadsheet function (@customfunction JSDoc prepend).
-    # Second case stresses the JSDoc description escaping with a literal '*/'
-    # and embedded quotes (a naive prepend would close the comment early and
-    # deploy the rest as live code -> node --check would catch it).
-    cases.append(
-        GsCase(
-            id="C-custom_function-nodesc",
-            label="as_install_custom_function (no description)",
-            source=build_custom_function_script("BRAND_CHECK", _CUSTOM_FN_BODY),
-        )
-    )
-    cases.append(
-        GsCase(
-            id="C-custom_function-desc-escape",
-            label="as_install_custom_function (description with */ escape)",
-            source=build_custom_function_script(
-                "BRAND_CHECK",
-                _CUSTOM_FN_BODY,
-                description='Checks brand mention. Edge: */ and "quotes".',
-            ),
-        )
-    )
-
-    # CLASS D -- time-driven installers. build_dashboard_script_body is SHARED
-    # VERBATIM by as_install_sheet_dashboard / as_install_calendar_sync /
-    # as_install_task_rollover (they import it as _build_time_trigger_script_body
-    # and differ only in generated-MANIFEST scope, not in the .gs). One case
-    # per schedule kind, with hour boundaries (0 / 9 / 23).
-    for schedule, hour in (("daily", 9), ("hourly", 0), ("weekly", 23)):
-        body, _handler = build_dashboard_script_body(
-            _REFRESH_BODY,
-            schedule,
-            hour,
-            dashboard_note="Rebuilds the dashboard tab.\nEdge */ in a note.",
-        )
-        cases.append(
-            GsCase(
-                id=f"D-dashboard-{schedule}",
-                label=(
-                    "as_install_sheet_dashboard/calendar_sync/task_rollover "
-                    f"({schedule})"
-                ),
-                source=body,
-            )
-        )
-
-    # CLASS E -- reactive-trigger installers. edit_trigger (onEdit) +
-    # form_handler (onFormSubmit; the body is also REUSED VERBATIM by
-    # as_install_contact_sync).
-    edit_body, _ = build_edit_trigger_script_body(
-        _EDIT_BODY, _SHEET_ID, handler_note="React to edits."
-    )
-    cases.append(
-        GsCase(
-            id="E-edit_trigger",
-            label="as_install_edit_trigger (onEdit)",
-            source=edit_body,
-        )
-    )
-    form_body, _ = build_form_handler_script_body(
-        _SUBMIT_BODY, _FORM_ID, handler_note="React to submissions."
-    )
-    cases.append(
-        GsCase(
-            id="E-form_handler",
-            label="as_install_form_handler / as_install_contact_sync",
-            source=form_body,
-        )
-    )
-
-    # CLASS F -- on-demand run tools (onOpen menu + action). grade + refresh,
-    # each with the default and a custom (quote-bearing) menu title.
-    grade_default, _ = build_grade_script_body(_SCORER_BODY)
-    cases.append(
-        GsCase(
-            id="F-grade-default-menu",
-            label="as_grade_form_responses (default menu)",
-            source=grade_default,
-            expect_menu=True,
-        )
-    )
-    grade_custom, _ = build_grade_script_body(
-        _SCORER_BODY, menu_title='Quiz "Pro" Tools'
-    )
-    cases.append(
-        GsCase(
-            id="F-grade-custom-menu",
-            label="as_grade_form_responses (custom menu title)",
-            source=grade_custom,
-            expect_menu=True,
-        )
-    )
-    cases.append(
-        GsCase(
-            id="F-refresh-default-menu",
-            label="as_refresh_linked_slides (default menu)",
-            source=build_refresh_script_body(),
-            expect_menu=True,
-        )
-    )
-    cases.append(
-        GsCase(
-            id="F-refresh-custom-menu",
-            label="as_refresh_linked_slides (custom menu title)",
-            source=build_refresh_script_body(menu_title='Deck "Sync" Tools'),
-            expect_menu=True,
-        )
-    )
-
-    # CLASS G -- slides->video renderer (onOpen menu + renderFrames + signed
-    # server POST). The un-injected doGet/doPost path deploys caller code
-    # verbatim; this builder is the generator's contribution.
-    cases.append(
-        GsCase(
-            id="G-video_deck",
-            label="as_generate_video_deck (render half)",
-            source=build_video_deck_script(
-                _PRES_ID,
-                "https://mcp.appscriptly.com/upload/frames/batch_abc123",
-                "tok_" + "de" * 20,
-            ),
-            expect_menu=True,
-        )
-    )
 
     # CLASS H -- standalone web app, HMAC-INJECTED variant (the generator's
     # contribution for a public ANYONE_ANONYMOUS app: it renames the caller's
@@ -475,15 +252,14 @@ def _registry_cases() -> list[GsCase]:
     return cases
 
 
-# The hand-written cases (``_cases``) exercise the pure ``build_*`` builders
-# DIRECTLY; the registry cases (``_registry_cases``) exercise the same builders
-# via the registry's ``render``. Both run today.
-# REDUNDANCY NOTE for Stream S3 (wrapper migration): once the 12(+1) wrappers
-# delegate to the registry, the Class B-G hand-written cases become duplicates
-# of the registry cases and can be dropped THERE -- but the Class H
+# The registry cases (``_registry_cases``) exercise every recipe generator's
+# ``build_*`` via the registry's ``render``; the hand-written cases (``_cases``)
+# cover only the two NON-recipe generators (webapp HMAC guard + disarm stub).
+# Done in Stream S3 (the earlier redundancy note): the recipe wrappers now
+# delegate to ``render``, so the former Class B-G hand-written cases were
+# duplicates of the registry cases and were dropped -- the Class H
 # (``as_deploy_web_app`` HMAC guard) and LIFECYCLE (``as_uninstall_automation``
-# disarm stub) hand-written cases are NOT recipes (no ``RECIPES`` entry) and
-# MUST remain here regardless.
+# disarm stub) cases are NOT recipes (no ``RECIPES`` entry) and remain here.
 _HANDWRITTEN_CASES = _cases()
 _REGISTRY_CASES = _registry_cases()
 _GS_CASES = _HANDWRITTEN_CASES + _REGISTRY_CASES

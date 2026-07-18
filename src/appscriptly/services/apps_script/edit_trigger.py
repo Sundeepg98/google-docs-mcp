@@ -72,14 +72,12 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
-    guard_name_for as _guard_name_for,
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_EDIT_TRIGGER_OUTPUT_SCHEMA
@@ -92,15 +90,6 @@ from appscriptly._tool_helpers import (  # noqa: F401
     _format_http_error,
     _get_credentials,
 )
-
-# An installable trigger created via ScriptApp.newTrigger(...).create()
-# runs with the user's full authorization, so the generated script must
-# declare this oauthScope in its manifest. Same scope sheet_dashboard's
-# time trigger needs (see api.py's _TRIGGER_SCOPE). We pass it to
-# build_manifest via oauth_scopes (an onEdit trigger is wired in code; the
-# manifest only carries the scope).
-_TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
-
 
 def _extract_handler_name(handler_function_body: str) -> str:
     """Pull the function name out of a ``function NAME(...) {...}`` body.
@@ -379,53 +368,42 @@ def as_install_edit_trigger(
             "(e.g. `function onSheetEdit(e) { ... }`)."
         )
 
-    # 2. Synthesize the full .gs body (handler fn + dedup'd installTrigger
-    #    wiring the onEdit trigger). _extract_handler_name (inside) also
-    #    rejects an unnamed function.
-    script_body, handler = build_edit_trigger_script_body(
-        handler_function_body, sheet_id, handler_note
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest + recorded handler. render() runs
+    #    the same build_edit_trigger_script_body (which embeds sheet_id into
+    #    the forSpreadsheet(...) trigger wiring) and threads the same manifest
+    #    plan (script.scriptapp for the installable trigger +
+    #    container_data_scope("sheets") + add_mail_scope for the failure
+    #    reporter); the byte-identity pins guarantee the output is unchanged.
+    #    We still parse the RAW handler name here for the return payload +
+    #    activation instructions (render records the GUARD-wrapped name).
+    handler = _extract_handler_name(handler_function_body)
+    spec = _RECIPES["as_install_edit_trigger"]
+    params = {
+        "sheet_id": sheet_id,
+        "handler_function_body": handler_function_body,
+        "handler_note": handler_note,
+        "name": name,
+    }
+    rendered = _render(spec, params)
+    project_name = spec.project_name(params)
 
-    # 3. Build the manifest. An installable onEdit trigger needs the
-    #    script.scriptapp oauthScope; we get it by handing build_manifest
-    #    that scope via oauth_scopes (the manifest can't declare the
-    #    trigger itself — the #138 manifest-reality finding — but it
-    #    carries the scope). We also echo the edit-trigger intent under the
-    #    plan via the triggers key (type "edit").
-    manifest_dict = _build_manifest(
-        {
-            "triggers": [{"type": "edit"}],
-            # _TRIGGER_SCOPE (script.scriptapp) for the installable trigger;
-            # container_data_scope("sheets") = spreadsheets.currentonly so the
-            # onEdit handler can touch THIS Sheet (an explicit oauthScopes
-            # block suppresses auto-detection - N-S3V-1); add_mail_scope adds
-            # the failure reporter's send scope. GENERATED manifest only,
-            # never appscriptly's consent.
-            "oauth_scopes": _add_mail_scope(
-                [_TRIGGER_SCOPE, _container_data_scope("sheets")]
-            ),
-        }
-    )
-
-    # 4. Default the project name when not supplied.
-    project_name = name or "appscriptly onEdit trigger"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=sheet_id), push the body + manifest, cut a
     #    version + deploy. (We bind directly to the Sheet ID; no Drive
     #    mimeType round-trip — this tool only ever targets a Sheet.)
     result = _mint_bound_automation(
         creds,
-        tool="as_install_edit_trigger",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
+        container_kind=spec.container_kind,
         project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
-        # Record the GUARD name (installTrigger's actual target) so
-        # uninstall's self-disarm reaper redefines the right function.
-        handler_functions=[_guard_name_for(handler)],
+        # render's handler_derivation records the GUARD name (installTrigger's
+        # actual target), matching the prior inline [_guard_name_for(handler)].
+        handler_functions=rendered.handler_functions,
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

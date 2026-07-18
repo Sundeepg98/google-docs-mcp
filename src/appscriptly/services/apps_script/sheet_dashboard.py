@@ -61,14 +61,12 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
-    guard_name_for as _guard_name_for,
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SHEET_DASHBOARD_OUTPUT_SCHEMA
@@ -423,52 +421,49 @@ def as_install_sheet_dashboard(
             "`function refreshDashboard() { ... }`)."
         )
 
-    # 2. Synthesize the full .gs body (refresh fn + dedup'd installTrigger).
-    #    _extract_handler_name (inside) also rejects an unnamed function.
-    script_body, handler = build_dashboard_script_body(
-        refresh_function_body, schedule, hour, dashboard_note
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest + recorded handler. render() runs
+    #    the same build_dashboard_script_body and threads the same
+    #    time-trigger manifest plan (script.scriptapp derived from the trigger
+    #    + container_data_scope("sheets") + add_mail_scope for the failure
+    #    reporter); the byte-identity pins guarantee the output is unchanged.
+    #    We still parse the RAW handler name here for the return payload +
+    #    activation instructions — render records the GUARD-wrapped name in
+    #    handler_functions (the ledger target), not the display name.
+    #    _extract_handler_name rejects an unnamed function, exactly as before
+    #    (render's handler_derivation parses the same regex).
+    handler = _extract_handler_name(refresh_function_body)
+    spec = _RECIPES["as_install_sheet_dashboard"]
+    params = {
+        "sheet_id": sheet_id,
+        "refresh_function_body": refresh_function_body,
+        "schedule": schedule,
+        "hour": hour,
+        "dashboard_note": dashboard_note,
+        "name": name,
+    }
+    rendered = _render(spec, params)
+    project_name = spec.project_name(params)
 
-    # 3. Build the manifest. A time trigger needs the script.scriptapp
-    #    oauthScope; we get it by handing build_manifest a time-trigger
-    #    plan (the manifest can't declare the trigger itself — that's the
-    #    #138 manifest-reality finding — but it derives the scope).
-    #    add_mail_scope adds script.send_mail so the injected failure
-    #    reporter can email the owner if a scheduled run throws (gap #5);
-    #    it lands ONLY in this generated manifest, never in appscriptly's
-    #    own consent.
-    #    container_data_scope("sheets") = spreadsheets.currentonly so the
-    #    refresh handler can read/write THIS Sheet (an explicit oauthScopes
-    #    block suppresses auto-detection - N-S3V-1); the time trigger derives
-    #    script.scriptapp from the "triggers" key.
-    manifest_dict = _build_manifest(
-        {
-            "triggers": [{"type": "time", "schedule": schedule}],
-            "oauth_scopes": _add_mail_scope([_container_data_scope("sheets")]),
-        }
-    )
-
-    # 4. Default the project name from the schedule when not supplied.
-    project_name = name or f"appscriptly dashboard refresh ({schedule})"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=sheet_id), push the body + manifest, cut
     #    a version + deploy. (We bind directly to the Sheet ID; no Drive
     #    mimeType round-trip — this tool only ever targets a Sheet.)
     result = _mint_bound_automation(
         creds,
-        tool="as_install_sheet_dashboard",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
+        container_kind=spec.container_kind,
         project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
-        # Record the GUARD wrapper name (what installTrigger actually
-        # targets), not the caller's semantic handler: uninstall's
-        # self-disarm reaper redefines exactly this name, so the ledger
-        # value must equal the wired trigger target.
-        handler_functions=[_guard_name_for(handler)],
+        # render's handler_derivation records the GUARD wrapper name (what
+        # installTrigger actually targets), matching the prior inline
+        # [_guard_name_for(handler)]: uninstall's self-disarm reaper
+        # redefines exactly this name, so the ledger value must equal the
+        # wired trigger target.
+        handler_functions=rendered.handler_functions,
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

@@ -51,13 +51,12 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
     guarded_function_block as _guarded_function_block,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_SHEET_MENU_OUTPUT_SCHEMA
@@ -350,36 +349,22 @@ def as_install_sheet_menu(
         )
     validated_items = _validate_items(items)
 
-    # 2. Generate the .gs body: onOpen menu-builder + handler functions.
-    script_body = build_menu_script(menu_title, validated_items)
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest. render() runs the same
+    #    build_menu_script and threads the same menu manifest plan
+    #    (container_data_scope("sheets") + add_mail_scope for the failure
+    #    reporter) this tool used to inline; the per-entry byte-identity pins
+    #    guarantee the output is unchanged.
+    spec = _RECIPES["as_install_sheet_menu"]
+    params = {
+        "sheet_id": sheet_id,
+        "menu_title": menu_title,
+        "items": validated_items,
+        "name": name,
+    }
+    rendered = _render(spec, params)
 
-    # 3. Build the manifest — reuse build_manifest with the menu key so
-    #    the script.container.ui scope is derived (menus are code; the
-    #    manifest only carries the scope). Map our items to the
-    #    primitive's {name, function_name} menu shape.
-    #    add_mail_scope adds script.send_mail so the injected failure
-    #    reporter can email the owner when a menu handler throws (gap #5);
-    #    it lands ONLY in this generated manifest, never in appscriptly's
-    #    own consent.
-    manifest_dict = _build_manifest(
-        {
-            "menu": [
-                {"name": it["label"], "function_name": it["function_name"]}
-                for it in validated_items
-            ],
-            # container_data_scope("sheets") = spreadsheets.currentonly, so
-            # the menu handlers can touch THIS Sheet (an explicit oauthScopes
-            # block suppresses auto-detection - N-S3V-1). add_mail_scope adds
-            # the failure reporter's send scope. Both land ONLY in this
-            # generated manifest, never in appscriptly's own consent.
-            "oauth_scopes": _add_mail_scope([_container_data_scope("sheets")]),
-        }
-    )
-
-    # 4. Default the project name from the menu title when not supplied.
-    project_name = name or f"appscriptly sheet menu - {menu_title}"
-
-    # 5. Deploy via the SAME machinery as as_generate_bound_script:
+    # 3. Deploy via the SAME machinery as as_generate_bound_script:
     #    create bound project → push content → cut version + deploy.
     #    The binding (parentId=sheet_id) is what makes the menu attach to
     #    THIS Sheet. container_kind is known ("sheets") — a SpreadsheetApp
@@ -387,12 +372,12 @@ def as_install_sheet_menu(
     #    needed.
     result = _mint_bound_automation(
         creds,
-        tool="as_install_sheet_menu",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
-        project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        container_kind=spec.container_kind,
+        project_name=spec.project_name(params),
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
     )
     script_id = result.script_id

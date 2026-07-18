@@ -58,11 +58,13 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
     reporter_helper_source as _reporter_helper_source,
     wrap_generated_body as _wrap_generated_body,
 )
-from appscriptly.services.apps_script.api import build_manifest as _build_manifest
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
+)
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_REFRESH_LINKED_SLIDES_OUTPUT_SCHEMA
 
@@ -90,11 +92,6 @@ _REFRESH_FUNCTION = "refreshLinkedSlides"
 
 # The menu item label that invokes the refresh function.
 _MENU_ITEM_LABEL = "Refresh linked slides"
-
-# ``refreshSlide()`` operates on the bound presentation; declaring the
-# presentations scope in the GENERATED manifest keeps the bound script's
-# authorization honest. NOT added to appscriptly's own consent.
-_PRESENTATIONS_SCOPE = "https://www.googleapis.com/auth/presentations"
 
 
 def _js_string(value: str) -> str:
@@ -301,41 +298,33 @@ def as_refresh_linked_slides(
             "presentation's menu bar."
         )
 
-    # 2. Synthesize the .gs body (onOpen menu + refreshLinkedSlides walker).
-    script_body = build_refresh_script_body(menu_title)
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest. render() runs the same
+    #    build_refresh_script_body (onOpen menu + refreshLinkedSlides walker)
+    #    and threads the same manifest plan (script.container.ui from the
+    #    onOpen menu + the presentations scope for refreshSlide +
+    #    add_mail_scope for the failure reporter); the byte-identity pins
+    #    guarantee the output is unchanged.
+    spec = _RECIPES["as_refresh_linked_slides"]
+    params = {
+        "presentation_id": presentation_id,
+        "menu_title": menu_title,
+        "name": name,
+    }
+    rendered = _render(spec, params)
 
-    # 3. Build the manifest. The onOpen menu requires script.container.ui
-    #    (derived from the menu key); refreshSlide() operates on the bound
-    #    presentation, so we also declare the presentations scope via
-    #    oauth_scopes. Both land in the GENERATED manifest only — never in
-    #    appscriptly's own consent.
-    #    add_mail_scope adds script.send_mail so the injected failure
-    #    reporter can email the owner on a refresh error (gap #5); it lands
-    #    ONLY in this generated manifest, never in appscriptly's consent.
-    manifest_dict = _build_manifest(
-        {
-            "menu": [
-                {"name": _MENU_ITEM_LABEL, "function_name": _REFRESH_FUNCTION}
-            ],
-            "oauth_scopes": _add_mail_scope([_PRESENTATIONS_SCOPE]),
-        }
-    )
-
-    # 4. Default the project name when not supplied.
-    project_name = name or "appscriptly refresh linked slides"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=presentation_id), push the body +
     #    manifest, cut a version + deploy. container_kind is known
     #    ("slides") — no Drive mimeType round-trip needed.
     result = _mint_bound_automation(
         creds,
-        tool="as_refresh_linked_slides",
+        tool=spec.name,
         container_id=presentation_id,
-        container_kind="slides",
-        project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        container_kind=spec.container_kind,
+        project_name=spec.project_name(params),
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
     )
     script_id = result.script_id

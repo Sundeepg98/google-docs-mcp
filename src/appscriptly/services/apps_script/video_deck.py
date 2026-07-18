@@ -76,14 +76,16 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
-from appscriptly.services.apps_script.api import (
-    auto_detect_container_kind as _auto_detect_container_kind,
-    build_manifest as _build_manifest,
-)
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
     reporter_helper_source as _reporter_helper_source,
     wrap_generated_body as _wrap_generated_body,
+)
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
+)
+from appscriptly.services.apps_script.api import (
+    auto_detect_container_kind as _auto_detect_container_kind,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_GENERATE_VIDEO_DECK_OUTPUT_SCHEMA
@@ -403,59 +405,36 @@ def as_generate_video_deck(
             f"as_generate_bound_script instead.)"
         )
 
-    # 3. Mint a signed frame-staging batch (base-tier handoff — the bound
-    #    script POSTs frames to the server, no Drive folder, no
-    #    drive.readonly). The batch id is what the user passes to
-    #    as_encode_video; the token authorizes the POSTs. The public
-    #    server URL comes from the same env-derived OAuth config the rest
-    #    of the runtime uses (GOOGLE_OAUTH_BASE_URL).
-    from appscriptly.credentials import current_user_id_or_none
-    from appscriptly.oauth_google import resolve_runtime_oauth_config
+    # 3. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest. video_deck is the one recipe
+    #    with a pre_mint hook: it mints the impure inputs the renderer embeds
+    #    (a server-side frames batch id + a user-bound single-use HMAC upload
+    #    token + the server base URL — base-tier handoff, no Drive folder, no
+    #    drive.readonly), injecting them into params BEFORE the pure render()
+    #    runs build_video_deck_script + threads the render manifest plan
+    #    (presentations + script.external_request + add_mail_scope). The
+    #    byte-identity pin drives BOTH this tool and pre_mint through the same
+    #    stubbed sources, proving the output is unchanged. batch_id is pulled
+    #    back out for the frames_batch_id / activation payload.
+    spec = _RECIPES["as_generate_video_deck"]
+    # Invariant (pinned by test_only_video_deck_carries_a_pre_mint_hook):
+    # video_deck is the sole recipe carrying a pre_mint hook.
+    assert spec.pre_mint is not None
+    params = spec.pre_mint({"presentation_id": presentation_id, "name": name})
+    rendered = _render(spec, params)
+    batch_id = params["batch_id"]
 
-    from ._frames_staging import new_batch_id, sign_frames_batch
-
-    server_base_url = resolve_runtime_oauth_config()["base_url"]
-    batch_id = new_batch_id()
-    # Bind the frame-upload token to the calling tenant (OAuth sub in HTTP
-    # mode; the operator sentinel in stdio mode), mirroring the convert
-    # path's v2.1 uid binding. The token is also single-use (nonce) — see
-    # _frames_staging.sign_frames_batch.
-    upload_token = sign_frames_batch(
-        batch_id, user_id=current_user_id_or_none()
-    )
-    upload_base_url = f"{server_base_url}/upload/frames/{batch_id}"
-
-    # 4. Generate the .gs renderer body (onOpen menu + renderFrames loop
-    #    that POSTs each PNG to upload_base_url).
-    script_body = build_video_deck_script(
-        presentation_id, upload_base_url, upload_token
-    )
-
-    # 5. Build the manifest — reuse build_manifest with oauth_scopes so the
-    #    Slides-read + UrlFetch scopes are declared (the renderer's
-    #    getThumbnail read + UrlFetchApp POST need them). A menu is code,
-    #    not a manifest field (the #138 manifest-reality finding).
-    #    add_mail_scope adds script.send_mail so the injected failure
-    #    reporter can email the owner on a render error (gap #5); it lands
-    #    ONLY in this generated manifest, never in appscriptly's consent.
-    manifest_dict = _build_manifest(
-        {"oauth_scopes": _add_mail_scope(_RENDER_SCOPES)}
-    )
-
-    # 6. Default the project name when not supplied.
-    project_name = name or "appscriptly video deck renderer"
-
-    # 7. Deploy via the SAME machinery as as_generate_bound_script: create
+    # 4. Deploy via the SAME machinery as as_generate_bound_script: create
     #    the bound project (parentId=presentation_id), push the body +
     #    manifest, cut a version + deploy.
     result = _mint_bound_automation(
         creds,
-        tool="as_generate_video_deck",
+        tool=spec.name,
         container_id=presentation_id,
-        container_kind="slides",
-        project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        container_kind=spec.container_kind,
+        project_name=spec.project_name(params),
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
     )
     script_id = result.script_id
