@@ -29,6 +29,17 @@ variant) and enforces two gates:
      that points at a function it never defines throws "Script function not
      found" the moment the user clicks the item.
 
+DRIVEN OFF THE RECIPE REGISTRY (Stream S2): the cases are the UNION of two
+sources -- the hand-written generator cases (``_cases``, which exercise the
+pure ``build_*`` builders directly) AND a set derived by iterating the recipe
+registry (``_registry_cases``: every ``RECIPES`` entry rendered through the
+registry's pure ``render`` for each of its ``example_params``). Iterating the
+registry is the structural close of this gap: a new recipe row is parse-gated +
+menu-integrity-gated with ZERO edits here, ``expect_menu`` is DERIVED from the
+entry's ``activation_model`` (never hand-flagged), and
+``test_every_recipe_is_covered_by_the_harness`` fails if a registered recipe
+escapes the collection (empty ``example_params`` or a dropped entry).
+
 WHAT IS OUT OF SCOPE (deliberately, not an omission):
   * Class A ``as_generate_bound_script`` emits NO server-generated ``.gs``
     -- the caller authors the whole body -- so there is nothing here to
@@ -86,6 +97,14 @@ from appscriptly.services.apps_script.slides_menu import (
 from appscriptly.services.apps_script.video_deck import build_video_deck_script
 from appscriptly.services.apps_script._lifecycle import build_disarm_script
 from appscriptly.services.gas_deploy.api import inject_webapp_hmac_guard
+
+# The recipe registry (Stream S1): the 13 bound generators expressed as DATA,
+# plus a pure ``render`` that reproduces each generator's ``.gs`` body. The
+# harness ALSO iterates this registry (``_registry_cases``) so every registered
+# recipe is parse-gated + menu-integrity-gated AUTOMATICALLY -- a new recipe row
+# is gated with ZERO edits to this file, and a recipe that escapes the
+# collection fails the completeness pin below.
+from appscriptly.services.apps_script._recipes import RECIPES, render
 
 _NODE = shutil.which("node")
 _IN_CI = bool(os.environ.get("CI"))
@@ -206,13 +225,17 @@ class GsCase:
     ``id`` is the readable pytest parametrize id; ``label`` names the tool /
     automation class for failure messages; ``source`` is the rendered ``.gs``;
     ``expect_menu`` marks cases that build an ``onOpen`` menu (subject to the
-    menu-integrity gate, which also asserts the menu is non-empty).
+    menu-integrity gate, which also asserts the menu is non-empty); ``recipe``
+    is the ``RECIPES`` key for registry-derived cases (``None`` for the
+    hand-written generator / lifecycle cases) -- the completeness pin reads it
+    to prove every registered recipe produced at least one case.
     """
 
     id: str
     label: str
     source: str
     expect_menu: bool = False
+    recipe: str | None = None
 
 
 def _cases() -> list[GsCase]:
@@ -412,8 +435,60 @@ def _cases() -> list[GsCase]:
     return cases
 
 
-_GS_CASES = _cases()
+# Recipes whose onOpen builds a custom menu are subject to the menu-integrity
+# gate. DERIVED from ``activation_model`` (never hand-flagged per case) so a new
+# menu-building recipe is menu-gated with no edit here: "menu" = the Class B
+# custom menus (doc / sheet / slides); "menu_action" = the Class F/G on-open
+# menu actions (grade / refresh / video_deck). ``test_non_menu_cases_define_no_menu``
+# self-checks this derivation against the rendered output.
+_MENU_ACTIVATION_MODELS = frozenset({"menu", "menu_action"})
+
+
+def _registry_cases() -> list[GsCase]:
+    """Render EVERY recipe registry entry x its ``example_params`` (PURE).
+
+    Iterating ``RECIPES`` (not a hand-list) is the key property: a recipe row
+    added to ``_recipes.py`` is parse-gated + menu-integrity-gated here with
+    ZERO edits to this file. ``expect_menu`` is derived from the entry's
+    ``activation_model`` (see ``_MENU_ACTIVATION_MODELS``), never hand-set.
+
+    ``render`` reproduces the generator's ``.gs`` body (the S1 identity pins
+    guarantee it is byte-for-byte the generator's output); it deliberately does
+    NOT run ``pre_mint``, so each entry's ``example_params`` already carry any
+    post-pre_mint values (video_deck's stubbed upload URL + token) -- exactly as
+    the wrapper passes them post-hook. Runs at import, like ``_cases``: a recipe
+    whose ``render`` raises fails collection loudly rather than shipping unseen.
+    """
+    cases: list[GsCase] = []
+    for spec in RECIPES.values():
+        expect_menu = spec.activation_model in _MENU_ACTIVATION_MODELS
+        for i, params in enumerate(spec.example_params):
+            cases.append(
+                GsCase(
+                    id=f"registry-{spec.name}-{i}",
+                    label=f"{spec.name} (registry render #{i})",
+                    source=render(spec, params).script_body,
+                    expect_menu=expect_menu,
+                    recipe=spec.name,
+                )
+            )
+    return cases
+
+
+# The hand-written cases (``_cases``) exercise the pure ``build_*`` builders
+# DIRECTLY; the registry cases (``_registry_cases``) exercise the same builders
+# via the registry's ``render``. Both run today.
+# REDUNDANCY NOTE for Stream S3 (wrapper migration): once the 12(+1) wrappers
+# delegate to the registry, the Class B-G hand-written cases become duplicates
+# of the registry cases and can be dropped THERE -- but the Class H
+# (``as_deploy_web_app`` HMAC guard) and LIFECYCLE (``as_uninstall_automation``
+# disarm stub) hand-written cases are NOT recipes (no ``RECIPES`` entry) and
+# MUST remain here regardless.
+_HANDWRITTEN_CASES = _cases()
+_REGISTRY_CASES = _registry_cases()
+_GS_CASES = _HANDWRITTEN_CASES + _REGISTRY_CASES
 _MENU_CASES = [c for c in _GS_CASES if c.expect_menu]
+_NON_MENU_CASES = [c for c in _GS_CASES if not c.expect_menu]
 
 # A top-level ``function NAME(`` declaration. Every generated menu handler is
 # emitted in this form (Class B wraps each item body as ``function fn() {..}``;
@@ -497,4 +572,58 @@ def test_generated_menu_targets_are_defined(case: GsCase):
         f"that are NOT defined in the generated source (defined: "
         f"{sorted(declared)}). Clicking the item would fail with 'Script "
         f"function not found'.\n--- generated source ---\n{case.source}"
+    )
+
+
+def test_every_recipe_is_covered_by_the_harness():
+    """COMPLETENESS PIN: every ``RECIPES`` entry is rendered + gated here.
+
+    The two halves of the key property this stream establishes:
+
+      * A new recipe row is gated with ZERO edits to this file -- the cases
+        iterate ``RECIPES`` (``_registry_cases``), so adding an entry adds its
+        parse + menu-integrity cases automatically.
+      * A registered recipe that ESCAPES the harness collection fails HERE
+        instead of silently shipping un-parsed. The covered set is derived from
+        the actually-collected registry cases; the expected set AND the expected
+        COUNT are derived from ``RECIPES`` (never a hand-listed number). So a
+        recipe shipped with empty ``example_params`` (0 cases), or one a future
+        refactor drops from ``_registry_cases``, trips this pin.
+    """
+    covered = {c.recipe for c in _REGISTRY_CASES if c.recipe is not None}
+    missing = set(RECIPES) - covered
+    assert not missing, (
+        f"recipe(s) {sorted(missing)} are registered in RECIPES but produced NO "
+        f"harness case (empty example_params, or dropped from the collection). "
+        f"Every recipe MUST be parse-gated + menu-integrity-gated here with no "
+        f"per-recipe edit to this file."
+    )
+    # Count derived from RECIPES, not hand-listed: exactly one case per
+    # example_params entry, across all recipes.
+    expected_count = sum(len(spec.example_params) for spec in RECIPES.values())
+    assert len(_REGISTRY_CASES) == expected_count, (
+        f"registry harness collected {len(_REGISTRY_CASES)} cases but RECIPES "
+        f"carries {expected_count} example_params across {len(RECIPES)} recipes "
+        f"-- a recipe was skipped, double-counted, or ships no example_params."
+    )
+
+
+@pytest.mark.parametrize("case", _NON_MENU_CASES, ids=[c.id for c in _NON_MENU_CASES])
+def test_non_menu_cases_define_no_menu(case: GsCase):
+    """Cases NOT flagged as menu-building must declare no ``.addItem`` target.
+
+    This self-checks the ``expect_menu`` derivation (``_MENU_ACTIVATION_MODELS``)
+    against the rendered output: if a recipe builds an onOpen menu but is
+    mis-derived as non-menu, its menu would silently escape the menu-integrity
+    gate. Finding an ``.addItem`` target in a case marked non-menu catches that
+    gap -- keeping "menu-integrity where applicable" honestly automatic rather
+    than dependent on a hand-set flag.
+    """
+    targets = _menu_target_names(case.source)
+    assert not targets, (
+        f"{case.label}: marked NON-menu (expect_menu=False) but the generated "
+        f"source declares .addItem menu target(s) {sorted(targets)}. Either the "
+        f"activation_model -> menu derivation missed a menu-building recipe or a "
+        f"menu leaked into a non-menu generator; the menu-integrity gate would "
+        f"NOT cover it.\n--- generated source ---\n{case.source}"
     )
