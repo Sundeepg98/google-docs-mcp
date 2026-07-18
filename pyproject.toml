@@ -95,7 +95,7 @@ dependencies = [
     "httplib2>=0.32.0,<1",   # PYSEC-2026-3444 (unbounded gzip/deflate decompression DoS, fixed 0.32.0); imported in google_api_client.py + transitive via google-api-python-client/google-auth-httplib2 (their bound: >=0.19.0,<1.0.0)
     "mcp>=1.28.1,<2",        # CVE-2026-52870/-52869 (task-handler access + HTTP auth-principal, fixed 1.27.2), CVE-2026-59950 (WebSocket Host/Origin validation, fixed 1.28.1); imported in decorators.py + transitive via fastmcp-slim[client,server] (its bound: >=1.24.0,<2.0)
     "tenacity>=9.1.4",
-    "sentry-sdk>=2.62.0",
+    "sentry-sdk>=2.66.0",
 ]
 
 [project.optional-dependencies]
