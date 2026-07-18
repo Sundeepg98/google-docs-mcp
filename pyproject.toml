@@ -88,6 +88,12 @@ dependencies = [
     "joserfc>=1.6.8,<2",             # CVE-2026-48990 (fixed 1.6.7), CVE-2026-49852 (fixed 1.6.8); transitive via fastmcp server auth
     "pydantic-settings>=2.14.2,<3",  # GHSA-4xgf-cpjx-pc3j; transitive via mcp + fastmcp
     "python-multipart>=0.0.31,<1",   # CVE-2026-53538/-53539 (fixed 0.0.30), CVE-2026-53540 (fixed 0.0.31); transitive via mcp form parsing
+    # 2026-07-18 pip-audit sweep (4 time-based CVEs surfaced since the
+    # 2026-07-08 sweep). Both are imported directly in src AND also arrive
+    # transitively, but had no floor here — so the locked resolution sat
+    # on CVE-affected versions. Floors = the fixed minimums pip-audit reports.
+    "httplib2>=0.32.0,<1",   # PYSEC-2026-3444 (unbounded gzip/deflate decompression DoS, fixed 0.32.0); imported in google_api_client.py + transitive via google-api-python-client/google-auth-httplib2 (their bound: >=0.19.0,<1.0.0)
+    "mcp>=1.28.1,<2",        # CVE-2026-52870/-52869 (task-handler access + HTTP auth-principal, fixed 1.27.2), CVE-2026-59950 (WebSocket Host/Origin validation, fixed 1.28.1); imported in decorators.py + transitive via fastmcp-slim[client,server] (its bound: >=1.24.0,<2.0)
     "tenacity>=9.1.4",
     "sentry-sdk>=2.62.0",
 ]
