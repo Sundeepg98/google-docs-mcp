@@ -28,6 +28,8 @@ hold (S0-2); the inventory is where those ids now come from.
 """
 from __future__ import annotations
 
+import json
+
 from fastmcp.exceptions import ToolError
 
 from appscriptly import automation_ledger
@@ -39,6 +41,7 @@ from appscriptly.services.apps_script._lifecycle import (
     uninstall_automation as _uninstall_automation,
     update_automation as _update_automation,
 )
+from appscriptly.services.apps_script._recipes import RECIPES, render as _render
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import (
@@ -105,6 +108,25 @@ def _to_inventory_entry(row: dict) -> dict:
         "activation_model": _ACTIVATION_MODEL.get(row["tool"], "unknown"),
         "handler_functions": row.get("handler_functions") or [],
     }
+
+
+def _stored_recipe_params(row: dict) -> dict:
+    """Parse a ledger row's recorded install params (the S5 regeneration input).
+
+    Returns the ``params_json`` column decoded to a dict, or ``{}`` when it is
+    NULL / empty / unparseable / not an object (the safe "nothing to replay"
+    reading). A recipe row minted after S5 always carries its params; an empty
+    result signals a pre-S5 or hand-tampered row, which the update tool treats
+    as not-regenerable (it asks for a script_body instead).
+    """
+    raw = row.get("params_json")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @workspace_tool(
@@ -272,44 +294,56 @@ def as_uninstall_automation(creds, script_id: str) -> dict:
 def as_update_automation(
     creds,
     script_id: str,
-    script_body: str,
+    script_body: str | None = None,
     manifest: dict | None = None,
     handler_functions: list[str] | None = None,
+    params: dict | None = None,
     allow_restricted_scopes: bool = False,
 ) -> dict:
     """Update an installed bound automation in place, preserving its consent.
 
-    USE WHEN: you have improved the generated code of an automation you
-    installed earlier (a codegen fix, a scope correction, an added step) and
-    want to roll it out to the EXISTING automation WITHOUT making the user
+    USE WHEN: you want to roll a codegen fix, a scope correction, or an added
+    step out to an automation you installed earlier WITHOUT making the user
     re-do setup. Get ``script_id`` from ``as_list_installed_automations``.
 
-    This re-pushes your regenerated ``.gs`` + manifest to the SAME Apps
-    Script project (a new version + deployment on the same ``script_id``). It
-    NEVER mints a new project, so the user's per-script authorization and any
-    installed trigger are PRESERVED, unlike uninstalling and re-installing
-    (which would create a fresh project and require a fresh Allow).
+    This re-pushes to the SAME Apps Script project (a new version + deployment
+    on the same ``script_id``). It NEVER mints a new project, so the user's
+    per-script authorization and any installed trigger are PRESERVED, unlike
+    uninstalling and re-installing (which would need a fresh Allow). Idempotent:
+    if the new content is identical to what is deployed, the tool returns
+    ``status: "unchanged"`` and re-pushes nothing.
 
-    You regenerate and pass the CURRENT code: the server does not store the
-    original inputs, so Claude re-authors ``script_body`` (and ``manifest``)
-    the same way the original installer does TODAY, at the current codegen.
-    This is how an update FIXES an old automation: re-running the current
-    installer logic now threads the container data scope
-    (``*.currentonly``, the N-S3V-1 / PR-G fix) into the manifest and wraps
-    the handler body with the failure reporter (Stream 4), so passing that
-    regenerated content refreshes a stale script to the corrected manifest.
-    Idempotent: if the regenerated content is identical to what is deployed,
-    the tool returns ``status: "unchanged"`` and re-pushes nothing.
+    TWO WAYS TO PROVIDE THE NEW CODE - pick by whether the automation came
+    from a recipe (most ``as_install_*`` tools install FROM a recipe):
+
+    * RECIPE automations - OMIT ``script_body``. The server REGENERATES the
+      ``.gs`` + manifest itself from the recipe at the CURRENT codegen, using
+      the install params it recorded when you first installed it. You do NOT
+      re-author anything. This is the deterministic way to roll a codegen fix
+      out to a fleet: for each installed automation, call
+      ``as_update_automation(script_id)`` and the current template (with the
+      ``*.currentonly`` data scope from PR-G, the Stream-4 failure reporter,
+      etc.) is regenerated and pushed. To CHANGE an input (e.g. a schedule or
+      a handler body), pass ``params`` with just the keys to override - they
+      are merged over the recorded params and re-stored. The response reports
+      ``regenerated_from_recipe: true``.
+
+    * RAW automations (an ``as_generate_bound_script`` script, which has no
+      recipe) - PASS the regenerated ``script_body`` (and ``manifest``). The
+      server has no recipe to replay for these, so you re-author the current
+      code the same way the original call did. The response reports
+      ``regenerated_from_recipe: false``. (You may also pass ``script_body``
+      for a recipe automation to push one-off custom code; that takes the
+      caller-body path too.)
 
     SCOPE-CHANGE / RE-ACTIVATION: if the new manifest declares an OAuth scope
-    the deployed version did not carry, the user must Run + Allow once to
-    grant it. The response then sets ``needs_reactivation: true`` with
-    ``added_scopes`` and the shared activation fields
-    (``activation_url`` / ``activation_instructions`` / ``activation_function``).
-    A pure content change with no new scope needs NO re-Allow. (Note: an
-    update does not itself activate a never-activated automation; if the
-    original install still needed a one-time activation, that is still true
-    after the update.)
+    the deployed version did not carry, the user must Run + Allow once to grant
+    it. The response then sets ``needs_reactivation: true`` with ``added_scopes``
+    and the shared activation fields (``activation_url`` /
+    ``activation_instructions`` / ``activation_function``). A pure content
+    change with no new scope needs NO re-Allow. (An update does not itself
+    activate a never-activated automation; if the original install still needed
+    a one-time activation, that is still true after the update.)
 
     Args:
         script_id: the automation to update (from
@@ -317,29 +351,36 @@ def as_update_automation(
             standalone web apps are updated with ``as_deploy_web_app``
             (``on_conflict="replace"``), which handles the new ``/exec`` URL
             + HMAC guard.
-        script_body: the regenerated ``.gs`` source (the current codegen).
-            Claude authors it. Required.
-        manifest: OPTIONAL high-level manifest description (same shape as
-            ``as_generate_bound_script``: ``menu`` / ``triggers`` /
-            ``sidebar_html`` / ``oauth_scopes``). Omit for a bare manifest.
-            The restricted-scope guard applies.
+        script_body: OMIT for a recipe automation (the server regenerates).
+            For a raw ``as_generate_bound_script`` automation, pass the
+            regenerated ``.gs`` source. An explicitly-empty string is rejected.
+        manifest: OPTIONAL high-level manifest description for the CALLER-BODY
+            path (same shape as ``as_generate_bound_script``: ``menu`` /
+            ``triggers`` / ``sidebar_html`` / ``oauth_scopes``). The
+            restricted-scope guard applies. Ignored when the server regenerates
+            from a recipe (the recipe owns the manifest).
         handler_functions: OPTIONAL updated installable-trigger handler names
-            (for the self-disarm on a later uninstall). Omit to keep the
-            recorded ones.
+            for the CALLER-BODY path (for the self-disarm on a later uninstall).
+            Omit to keep the recorded ones; the recipe derives its own.
+        params: OPTIONAL per-key overrides for a RECIPE regeneration (e.g.
+            ``{"schedule": "weekly"}``). Merged over the recorded install
+            params and re-stored. Only valid when the server regenerates
+            (``script_body`` omitted on a recipe automation).
         allow_restricted_scopes: OPTIONAL opt-in to permit a Google RESTRICTED
-            scope in the manifest (default False rejects them), same as
-            ``as_generate_bound_script``.
+            scope in a CALLER-BODY manifest (default False rejects them), same
+            as ``as_generate_bound_script``.
 
     Returns:
         ``{script_id, status, content_hash_before, content_hash_after,
-        deployment_id, needs_reactivation, added_scopes, message}`` plus the
-        activation fields when ``needs_reactivation`` is true. ``status`` is
-        ``updated`` or ``unchanged``.
+        deployment_id, needs_reactivation, added_scopes, regenerated_from_recipe,
+        message}`` plus the activation fields when ``needs_reactivation`` is
+        true. ``status`` is ``updated`` or ``unchanged``.
 
     Raises:
         ToolError: the automation is not in your inventory, is recorded under
-            a different account, or is a standalone web app; or any Apps
-            Script API error.
+            a different account, is a standalone web app, or is a video-deck
+            renderer (which mints a per-install token and must be re-installed
+            rather than updated); or any Apps Script API error.
     """
     if not script_id or not script_id.strip():
         raise ValueError(
@@ -347,11 +388,16 @@ def as_update_automation(
             "update (from as_list_installed_automations)."
         )
     script_id = script_id.strip()
-    if not script_body or not script_body.strip():
+
+    # An OMITTED script_body means "regenerate from the recipe"; an explicitly
+    # blank one is a caller mistake (a different thing) and is rejected.
+    if script_body is not None and not script_body.strip():
         raise ValueError(
-            "script_body cannot be empty - pass the regenerated .gs source "
-            "for the automation."
+            "script_body cannot be empty - either omit it entirely to "
+            "regenerate this automation from its recipe at the current "
+            "codegen, or pass the regenerated .gs source."
         )
+    body_supplied = script_body is not None
 
     row = automation_ledger.get_automation(script_id)
     me = _ledger_user_id()
@@ -375,23 +421,89 @@ def as_update_automation(
             "(container) automations."
         )
 
-    # Build the manifest (reuses the restricted-scope guard).
-    manifest_dict = _build_manifest(
-        manifest, allow_restricted_scopes=allow_restricted_scopes
-    )
-    handlers = (
-        handler_functions
-        if handler_functions is not None
-        else (row.get("handler_functions") or [])
-    )
+    # Resolve the recorded recipe (S5). A row minted from a registry recipe
+    # regenerates server-side; a raw as_generate_bound_script row (recipe NULL)
+    # keeps the caller-supplied-body path.
+    recipe_name = row.get("recipe")
+    spec = RECIPES.get(recipe_name) if recipe_name else None
+
+    # A recipe with an impure per-install pre_mint hook (video_deck: a fresh
+    # single-use HMAC upload token) CANNOT be reproduced from stored inputs, and
+    # a caller cannot re-author a valid one either - refuse in place and point
+    # at a fresh re-install (which mints a new batch + token).
+    if spec is not None and spec.pre_mint is not None:
+        raise ToolError(
+            "That automation is a video-deck renderer. Each install mints a "
+            "fresh single-use upload token, so it cannot be updated in place. "
+            "Re-install it with as_generate_video_deck (which mints a new "
+            "frames batch and token); remove the old one with "
+            "as_uninstall_automation."
+        )
+
+    if spec is not None and not body_supplied:
+        # SERVER-SIDE REGENERATION from the recipe at the CURRENT codegen. No
+        # caller re-authoring: render() reruns the recipe's build + manifest
+        # plan (threading container_data_scope + the failure reporter) exactly
+        # as a fresh install would, through the SAME build_manifest
+        # restricted-scope guard. params overrides merge over the recorded
+        # install params and are re-stored on success.
+        stored_params = _stored_recipe_params(row)
+        if not stored_params:
+            raise ToolError(
+                f"That automation is recorded as the '{recipe_name}' recipe "
+                f"but its install params were not stored, so it cannot be "
+                f"regenerated automatically. Pass the regenerated script_body "
+                f"to update it directly."
+            )
+        merged_params = {**stored_params, **(params or {})}
+        rendered = _render(spec, merged_params)
+        effective_body = rendered.script_body
+        manifest_dict = rendered.manifest
+        handlers = list(rendered.handler_functions)
+        recipe_params_to_store: dict | None = merged_params
+        regenerated_from_recipe = True
+    else:
+        # CALLER-SUPPLIED-BODY path: raw (recipe-less) rows, and recipe rows
+        # where the caller explicitly passed a body to push one-off code.
+        if params is not None:
+            raise ValueError(
+                "params overrides apply only when the server regenerates from "
+                "a recipe (omit script_body). This update is using the "
+                "script_body you passed; edit the code there instead."
+            )
+        if not body_supplied:
+            if recipe_name:
+                raise ToolError(
+                    f"That automation was installed from the '{recipe_name}' "
+                    f"recipe, which this server version no longer provides, so "
+                    f"it cannot be regenerated automatically. Pass the "
+                    f"regenerated script_body to update it directly."
+                )
+            raise ValueError(
+                "script_body is required: this automation was not installed "
+                "from a recipe (nothing to regenerate from), so pass the "
+                "regenerated .gs source."
+            )
+        manifest_dict = _build_manifest(
+            manifest, allow_restricted_scopes=allow_restricted_scopes
+        )
+        effective_body = script_body
+        handlers = (
+            handler_functions
+            if handler_functions is not None
+            else (row.get("handler_functions") or [])
+        )
+        recipe_params_to_store = None
+        regenerated_from_recipe = False
 
     result = _update_automation(
         creds,
         script_id,
-        script_body=script_body,
+        script_body=effective_body,
         manifest_dict=manifest_dict,
         handler_functions=handlers,
         row=row,
+        recipe_params=recipe_params_to_store,
     )
 
     response: dict = {
@@ -402,14 +514,17 @@ def as_update_automation(
         "deployment_id": result.deployment_id,
         "needs_reactivation": result.needs_reactivation,
         "added_scopes": result.added_scopes,
+        "regenerated_from_recipe": regenerated_from_recipe,
     }
     if result.status == "unchanged":
         response["message"] = (
-            "No change: the regenerated code is identical to what is already "
-            "deployed, so nothing was re-pushed."
+            "No change: the "
+            + ("regenerated" if regenerated_from_recipe else "new")
+            + " code is identical to what is already deployed, so nothing was "
+            "re-pushed."
         )
     elif result.needs_reactivation:
-        fn = _reactivation_function(script_body)
+        fn = _reactivation_function(effective_body)
         instructions = (
             f"This update added OAuth scope(s) {result.added_scopes} that the "
             f"deployed version did not carry, so it needs a one-time re-Allow. "

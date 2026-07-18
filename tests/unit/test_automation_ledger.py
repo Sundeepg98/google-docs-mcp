@@ -13,7 +13,30 @@ per-path init guard.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
+
 from appscriptly import automation_ledger
+
+# The ORIGINAL (pre-S5) ledger schema, WITHOUT the recipe / params_json columns
+# S5 adds. A test builds a DB with exactly this to prove the in-place migration
+# upgrades an existing /data DB (created before this wave) safely.
+_PRE_S5_CREATE = """
+    CREATE TABLE automation_ledger (
+        script_id         TEXT PRIMARY KEY,
+        user_id           TEXT NOT NULL,
+        tool              TEXT NOT NULL,
+        container_id      TEXT,
+        container_kind    TEXT,
+        deployment_id     TEXT,
+        project_url       TEXT,
+        exec_url          TEXT,
+        content_hash      TEXT,
+        handler_functions TEXT NOT NULL DEFAULT '[]',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL
+    )
+"""
 
 
 def test_record_then_get_round_trips_and_parses_handlers():
@@ -161,3 +184,123 @@ def test_exec_url_is_persisted_for_web_apps():
     row = automation_ledger.get_automation("W1")
     assert row is not None
     assert row["exec_url"].endswith("/exec")
+
+
+# ---------------------------------------------------------------------
+# S5: recipe + params columns (deterministic update)
+# ---------------------------------------------------------------------
+
+
+def test_record_stores_and_reads_back_recipe_and_params():
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_install_sheet_dashboard",
+        container_id="SHEET1", container_kind="sheets",
+        recipe="as_install_sheet_dashboard",
+        recipe_params={"sheet_id": "SHEET1", "schedule": "daily", "hour": 9},
+    )
+    row = automation_ledger.get_automation("S1")
+    assert row["recipe"] == "as_install_sheet_dashboard"
+    assert json.loads(row["params_json"]) == {
+        "sheet_id": "SHEET1", "schedule": "daily", "hour": 9,
+    }
+
+
+def test_record_without_recipe_reads_back_null():
+    # A raw as_generate_bound_script / web-app mint records no recipe.
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_generate_bound_script",
+        container_id="DOC1", container_kind="docs",
+    )
+    row = automation_ledger.get_automation("S1")
+    assert row["recipe"] is None
+    assert row["params_json"] is None
+
+
+def test_upsert_without_recipe_preserves_the_recorded_recipe():
+    # Initial mint records the recipe + params.
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_install_sheet_dashboard",
+        container_id="SHEET1", container_kind="sheets", deployment_id="D1",
+        recipe="as_install_sheet_dashboard", recipe_params={"sheet_id": "SHEET1"},
+    )
+    # A later refresh that OMITS recipe/params (the caller-body update path)
+    # must NOT clobber them to NULL - COALESCE preserves the recorded values.
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_install_sheet_dashboard",
+        container_id="SHEET1", container_kind="sheets", deployment_id="D2",
+    )
+    row = automation_ledger.get_automation("S1")
+    assert row["deployment_id"] == "D2"  # the refresh landed
+    assert row["recipe"] == "as_install_sheet_dashboard"  # preserved
+    assert json.loads(row["params_json"]) == {"sheet_id": "SHEET1"}  # preserved
+
+
+def test_upsert_with_new_params_restores_them():
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_install_sheet_dashboard",
+        container_id="SHEET1", container_kind="sheets",
+        recipe="as_install_sheet_dashboard", recipe_params={"schedule": "daily"},
+    )
+    # A recipe regeneration with overrides re-stores the merged params.
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="as_install_sheet_dashboard",
+        container_id="SHEET1", container_kind="sheets",
+        recipe="as_install_sheet_dashboard", recipe_params={"schedule": "weekly"},
+    )
+    row = automation_ledger.get_automation("S1")
+    assert json.loads(row["params_json"]) == {"schedule": "weekly"}
+
+
+def test_migration_upgrades_a_pre_s5_db_in_place():
+    """An existing /data DB created before S5 (no recipe/params_json columns)
+    gains them on first connect, and its old rows read the new columns as NULL."""
+    path = automation_ledger.db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute(_PRE_S5_CREATE)
+    conn.execute(
+        "INSERT INTO automation_ledger "
+        "(script_id, user_id, tool, created_at, updated_at) "
+        "VALUES ('OLD1', 'u1', 'as_install_sheet_menu', 1, 1)"
+    )
+    conn.commit()
+    conn.close()
+    # Nothing has initialized this path yet; clear the guard so the next op
+    # runs _ensure_initialized -> the in-place migration.
+    automation_ledger._initialized_paths.clear()
+
+    row = automation_ledger.get_automation("OLD1")
+    assert row is not None
+    # The pre-existing row now carries the new columns, read back as NULL.
+    assert row["recipe"] is None
+    assert row["params_json"] is None
+    # And the upgraded table accepts a new recipe-bearing row.
+    automation_ledger.record_automation(
+        user_id="u1", script_id="NEW1", tool="as_install_sheet_dashboard",
+        container_id="S1", container_kind="sheets",
+        recipe="as_install_sheet_dashboard", recipe_params={"sheet_id": "S1"},
+    )
+    new = automation_ledger.get_automation("NEW1")
+    assert new["recipe"] == "as_install_sheet_dashboard"
+    assert json.loads(new["params_json"]) == {"sheet_id": "S1"}
+
+
+def test_migration_guard_is_idempotent():
+    """_migrate_add_columns is safe to run repeatedly: a second pass finds the
+    columns already present and is a no-op (no duplicate-column error)."""
+    # Initialize a fresh DB via the normal path (schema already current).
+    automation_ledger.record_automation(
+        user_id="u1", script_id="S1", tool="t",
+        container_id="C1", container_kind="sheets",
+    )
+    conn = sqlite3.connect(automation_ledger.db_path())
+    try:
+        # Running it twice more must not raise.
+        automation_ledger._migrate_add_columns(conn)
+        automation_ledger._migrate_add_columns(conn)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(automation_ledger)")]
+    finally:
+        conn.close()
+    # Exactly one of each new column (no duplicates from re-running).
+    assert cols.count("recipe") == 1
+    assert cols.count("params_json") == 1

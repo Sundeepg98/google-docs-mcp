@@ -420,7 +420,14 @@ def as_generate_video_deck(
     # Invariant (pinned by test_only_video_deck_carries_a_pre_mint_hook):
     # video_deck is the sole recipe carrying a pre_mint hook.
     assert spec.pre_mint is not None
-    params = spec.pre_mint({"presentation_id": presentation_id, "name": name})
+    # The CLEAN, pre-pre_mint recipe params are what the S5 ledger records:
+    # pre_mint's outputs (a fresh frames batch id + a user-bound SINGLE-USE
+    # HMAC upload token) are per-install and must NOT be persisted or replayed.
+    # So a video_deck cannot be regenerated deterministically -- it carries a
+    # pre_mint hook, which as_update_automation refuses, pointing at a fresh
+    # re-install (which mints a new batch + token) instead.
+    recipe_params = {"presentation_id": presentation_id, "name": name}
+    params = spec.pre_mint(recipe_params)
     rendered = _render(spec, params)
     batch_id = params["batch_id"]
 
@@ -430,6 +437,8 @@ def as_generate_video_deck(
     result = _mint_bound_automation(
         creds,
         tool=spec.name,
+        recipe=spec.name,
+        recipe_params=recipe_params,
         container_id=presentation_id,
         container_kind=spec.container_kind,
         project_name=spec.project_name(params),

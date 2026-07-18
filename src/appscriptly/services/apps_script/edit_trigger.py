@@ -395,6 +395,8 @@ def as_install_edit_trigger(
     result = _mint_bound_automation(
         creds,
         tool=spec.name,
+        recipe=spec.name,
+        recipe_params=params,
         container_id=sheet_id,
         container_kind=spec.container_kind,
         project_name=project_name,

@@ -1568,6 +1568,11 @@ AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA = _object(
         "deployment_id": {"type": ["string", "null"]},
         "needs_reactivation": {"type": "boolean"},
         "added_scopes": {"type": "array", "items": {"type": "string"}},
+        # True when the server regenerated the .gs + manifest from the recorded
+        # recipe (script_body omitted on a recipe automation); False when the
+        # caller-supplied script_body was pushed (a raw as_generate_bound_script
+        # automation, or an explicit body on a recipe one). Stream S5.
+        "regenerated_from_recipe": {"type": "boolean"},
         "message": {"type": "string"},
         # Present only when needs_reactivation is True (shared activation shape).
         "activation_required": {"type": "boolean"},
@@ -1577,6 +1582,7 @@ AS_UPDATE_AUTOMATION_OUTPUT_SCHEMA = _object(
     },
     required=[
         "script_id", "status", "content_hash_after", "needs_reactivation",
+        "regenerated_from_recipe",
     ],
 )
 
