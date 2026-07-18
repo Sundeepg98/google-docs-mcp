@@ -220,6 +220,8 @@ def mint_bound_automation(
     on_conflict: str = DEFAULT_ON_CONFLICT,
     handler_functions: Sequence[str] = (),
     deploy_description: str | None = None,
+    recipe: str | None = None,
+    recipe_params: dict[str, Any] | None = None,
 ) -> MintResult:
     """Mint a bound automation (or reuse/replace a prior one) + record it.
 
@@ -248,6 +250,13 @@ def mint_bound_automation(
             otherwise.
         deploy_description: optional deployment description; a plain
             default is used when omitted.
+        recipe: the registry recipe name this mint came from (Stream S5),
+            recorded so ``as_update_automation`` can regenerate the ``.gs``
+            + manifest deterministically from the current codegen. None for
+            a raw ``as_generate_bound_script`` mint (no recipe to replay).
+        recipe_params: the install params ``render(spec, params)`` produced
+            this mint from — recorded (JSON) alongside ``recipe`` so the
+            regeneration replays the same inputs. None when ``recipe`` is None.
 
     Returns:
         A ``MintResult``. For ``skip`` with a prior install, no API call is
@@ -290,6 +299,8 @@ def mint_bound_automation(
         project_url=f"https://script.google.com/d/{script_id}/edit",
         content_hash=compute_automation_hash(script_body, manifest_dict),
         handler_functions=handler_functions,
+        recipe=recipe,
+        recipe_params=recipe_params,
     )
 
     return MintResult(
@@ -373,6 +384,7 @@ def update_automation(
     manifest_dict: dict[str, Any],
     handler_functions: Sequence[str],
     row: dict[str, Any],
+    recipe_params: dict[str, Any] | None = None,
 ) -> UpdateResult:
     """Re-push CURRENT codegen to the EXISTING project (consent-preserving).
 
@@ -398,6 +410,12 @@ def update_automation(
 
     ``row`` is the ledger row for ``script_id`` (already fetched +
     ownership-checked by the caller).
+
+    ``recipe_params`` (Stream S5): when the caller regenerated from the
+    registry recipe with param overrides, the merged params to re-store so a
+    later regeneration replays them; None (the caller-body path, or a recipe
+    regeneration with no overrides) leaves the recorded params untouched
+    (``record_automation`` COALESCE-preserves them).
     """
     old_hash = row.get("content_hash")
     new_hash = compute_automation_hash(script_body, manifest_dict)
@@ -446,6 +464,7 @@ def update_automation(
         exec_url=row.get("exec_url"),
         content_hash=new_hash,
         handler_functions=handler_functions,
+        recipe_params=recipe_params,
     )
 
     return UpdateResult(

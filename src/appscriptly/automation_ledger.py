@@ -55,6 +55,19 @@ _log = logging.getLogger("appscriptly.automation_ledger")
 _initialized_paths: set[Path] = set()
 _init_lock = threading.Lock()
 
+# Columns introduced AFTER the original CREATE TABLE (Stream S5 deterministic
+# update): they must be added in place to EXISTING /data DBs, which were
+# created before this wave and so lack them. Keyed name -> column definition.
+#   recipe       — the registry recipe a mint came from (NULL for a raw
+#                  as_generate_bound_script / web-app mint), so as_update_automation
+#                  can regenerate deterministically from the current codegen.
+#   params_json  — the JSON-serialized install params that produced the mint
+#                  (NULL when recipe is NULL), the input render() replays.
+_LEDGER_COLUMNS_ADDED_AFTER_V1: dict[str, str] = {
+    "recipe": "TEXT",
+    "params_json": "TEXT",
+}
+
 
 def db_path() -> Path:
     """Resolve the SQLite file path for the automation ledger.
@@ -94,10 +107,18 @@ def _ensure_initialized(path: Path) -> None:
                     content_hash      TEXT,
                     handler_functions TEXT NOT NULL DEFAULT '[]',
                     created_at        INTEGER NOT NULL,
-                    updated_at        INTEGER NOT NULL
+                    updated_at        INTEGER NOT NULL,
+                    recipe            TEXT,
+                    params_json       TEXT
                 )
                 """
             )
+            # Idempotent in-place migration for DBs created before S5 (the
+            # CREATE above only fires for a brand-new file; an existing table
+            # keeps its original columns). ADD-COLUMN-if-missing so a prod
+            # /data DB gains recipe/params_json without a rebuild, and old
+            # rows read them back as NULL.
+            _migrate_add_columns(conn)
             # List = "this user's automations, newest first"; on_conflict
             # lookup = "this user's automations for (tool, container)". Two
             # covering indexes so neither path scans the table.
@@ -112,6 +133,28 @@ def _ensure_initialized(path: Path) -> None:
         finally:
             conn.close()
         _initialized_paths.add(path)
+
+
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
+    """Add any post-V1 column missing from ``automation_ledger``, in place.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS``, so read the live columns via
+    ``PRAGMA table_info`` and ``ALTER TABLE ... ADD COLUMN`` only the ones not
+    present. IDEMPOTENT by construction: a second run (or a fresh DB whose
+    CREATE already declared the columns) finds nothing missing and is a no-op,
+    so it is safe to call on every first-connect. The added columns are
+    nullable with no default, so existing rows read them back as NULL. Column
+    names come from a fixed module constant (never user input), so the
+    interpolated DDL cannot be injected.
+    """
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(automation_ledger)")
+    }
+    for column, decl in _LEDGER_COLUMNS_ADDED_AFTER_V1.items():
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE automation_ledger ADD COLUMN {column} {decl}"
+            )
 
 
 @contextmanager
@@ -159,6 +202,8 @@ def record_automation(
     exec_url: str | None = None,
     content_hash: str | None = None,
     handler_functions: Sequence[str] = (),
+    recipe: str | None = None,
+    recipe_params: dict[str, Any] | None = None,
 ) -> None:
     """Insert (or refresh) the ledger row for a minted automation.
 
@@ -172,6 +217,15 @@ def record_automation(
     (Classes D/E) so uninstall can regenerate a self-disarming body that
     redefines exactly those functions (see ``_lifecycle.uninstall_automation``).
     Empty for classes with no installable trigger.
+
+    ``recipe`` / ``recipe_params`` record WHICH registry recipe and WHICH
+    install params produced this mint, so ``as_update_automation`` can
+    regenerate its ``.gs`` + manifest deterministically from the current
+    codegen (Stream S5). NULL for a raw ``as_generate_bound_script`` / web-app
+    mint (no recipe to replay). On an UPSERT they are COALESCE-preserved: a
+    refresh that omits them (e.g. a caller-body update) keeps the recorded
+    recipe/params rather than clobbering them to NULL; a refresh that passes
+    new params (a recipe regeneration with overrides) re-stores them.
     """
     if not user_id:
         raise ValueError("user_id is required")
@@ -181,14 +235,15 @@ def record_automation(
         raise ValueError("tool is required")
     now = int(time.time())
     handlers_json = json.dumps([str(h) for h in handler_functions])
+    params_json = json.dumps(recipe_params) if recipe_params is not None else None
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO automation_ledger (
                 script_id, user_id, tool, container_id, container_kind,
                 deployment_id, project_url, exec_url, content_hash,
-                handler_functions, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                handler_functions, created_at, updated_at, recipe, params_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(script_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 tool = excluded.tool,
@@ -199,12 +254,16 @@ def record_automation(
                 exec_url = excluded.exec_url,
                 content_hash = excluded.content_hash,
                 handler_functions = excluded.handler_functions,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                recipe = COALESCE(excluded.recipe, automation_ledger.recipe),
+                params_json = COALESCE(
+                    excluded.params_json, automation_ledger.params_json
+                )
             """,
             (
                 script_id, user_id, tool, container_id, container_kind,
                 deployment_id, project_url, exec_url, content_hash,
-                handlers_json, now, now,
+                handlers_json, now, now, recipe, params_json,
             ),
         )
 
