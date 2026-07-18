@@ -59,6 +59,7 @@ from appscriptly.http_server._helpers import (
     _resolve_client_config,
 )
 from appscriptly.http_server.routes.convert_status import build_status_url
+from appscriptly.preview import plan_conversion_dry_run
 from appscriptly.retrofit import retrofit_existing_docx as _retrofit_docx
 from appscriptly.services.drive.api import trash_drive_file as _trash_drive_file
 
@@ -529,6 +530,12 @@ async def convert_endpoint(request: Request) -> JSONResponse:
       ``async``: "1"/"true" returns 202 {job_id, status_url} immediately
         instead of waiting for the conversion (recommended for large
         docs; the pre-signed status_url is valid 24h and multi-use).
+      ``dry_run``: "1"/"true" returns the conversion PLAN (detected
+        split_strategy_used, heading1_found, planned tabs + nesting,
+        placeholder decision, fidelity warnings) and creates NOTHING - no
+        doc, no Drive mutation - and does NOT consume the signed URL, so
+        the SAME URL then performs the real convert. Always synchronous;
+        single input only (batch is a 400); wins over ``async``.
 
     **Response shapes.** Single input, no ``async``: the full converter
     result (unchanged from the pre-job-model endpoint), or the mapped
@@ -825,6 +832,21 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             )
         async_flag = async_raw.strip().lower() in {"1", "true", "yes"}
 
+    # dry_run (R-A): return the conversion PLAN only - no doc, no Drive
+    # mutation, no nonce burn, no job row. Parsed like ``async``; when both
+    # are set, dry_run wins (an info note says so).
+    dry_run_raw = form.get("dry_run")
+    dry_run = False
+    if dry_run_raw is not None and dry_run_raw != "":
+        if not isinstance(dry_run_raw, str) or dry_run_raw.strip().lower() not in {
+            "1", "true", "yes", "0", "false", "no",
+        }:
+            return JSONResponse(
+                {"error": f"Invalid dry_run value: {dry_run_raw!r} (use '1' or '0')"},
+                status_code=400,
+            )
+        dry_run = dry_run_raw.strip().lower() in {"1", "true", "yes"}
+
     batch_mode = len(uploads) > 1 or drive_file_ids is not None
     if batch_mode and title is not None:
         return JSONResponse(
@@ -840,6 +862,15 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             {
                 "error": "replace_doc_id is not supported with batch "
                 "input (one prior doc cannot be replaced by N results)"
+            },
+            status_code=400,
+        )
+    if batch_mode and dry_run:
+        return JSONResponse(
+            {
+                "error": "dry_run is not supported with batch input "
+                "(multiple files or drive_file_ids). Preview one document "
+                "per request."
             },
             status_code=400,
         )
@@ -941,6 +972,32 @@ async def convert_endpoint(request: Request) -> JSONResponse:
             # Bearer-header path — operator creds, single-tenant. Same
             # behavior as v2.0.
             creds = load_credentials(default_data_dir())
+
+        # dry_run (R-A): answer with the PLAN and stop here - deliberately
+        # BEFORE the fingerprint dict, the nonce consume, and job creation.
+        # So dry_run never enters fp_params (the rebase note), never burns
+        # the signed URL, and never mints a job row; the SAME URL then
+        # performs the real convert. Single-input only (batch already 400'd
+        # above). Reuses the converter's own split/nest/placeholder walkers
+        # over a local parse - ZERO Drive writes (the drive_file_id path
+        # only reads/exports bytes, keeping its drive.file cap + error).
+        if dry_run:
+            # A bad upload / unreadable source raises ValueError from the
+            # planner -> the ValueError handler below maps it to a clean
+            # 400 (never a bare 500).
+            plan = plan_conversion_dry_run(
+                creds,
+                docx_bytes=file_items[0][1] if file_items else None,
+                drive_file_id=drive_file_id,
+                split_by=split_by_raw,
+                nest_by=nest_by,
+                placeholder_behavior=placeholder_behavior_raw,
+            )
+            if async_flag:
+                plan["info"].insert(
+                    0, "async was ignored: dry_run always returns synchronously."
+                )
+            return JSONResponse(plan)
 
         # Params handed to the converter closures, and (canonicalized)
         # into the fingerprint. REBASE NOTE: any new output-affecting
