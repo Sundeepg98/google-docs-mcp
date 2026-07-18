@@ -64,18 +64,14 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
-from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
-    guard_name_for as _guard_name_for,
-)
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.services.apps_script.sheet_dashboard import (
     VALID_SCHEDULES,
-    build_dashboard_script_body as _build_time_trigger_script_body,
+    _extract_handler_name,
 )
 from appscriptly.tool_schemas import AS_INSTALL_TASK_ROLLOVER_OUTPUT_SCHEMA
 
@@ -307,56 +303,47 @@ def as_install_task_rollover(
             "`function rollOverTasks() { ... }`)."
         )
 
-    # 2. Synthesize the full .gs body (caller's task fn + dedup'd
-    #    installTrigger wiring the schedule). Reuses sheet_dashboard's
-    #    time-trigger body builder verbatim; _extract_handler_name (inside)
-    #    rejects an unnamed function.
-    script_body, handler = _build_time_trigger_script_body(
-        task_function_body, schedule, hour, task_note
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest + recorded handler. render()
+    #    reuses sheet_dashboard's time-trigger builder (via the registry's
+    #    build callable), threads the Tasks manifest plan (the full tasks
+    #    scope + script.scriptapp from the trigger + container_data_scope +
+    #    add_mail_scope), THEN applies the registry's manifest_transform to
+    #    enable the Tasks advanced service — the SAME _with_tasks_advanced_service
+    #    merge this module defines (and its tests pin); the registry mirrors it,
+    #    and the byte-identity pins prove they produce an identical manifest.
+    #    BOTH the scope and the dependency land in the GENERATED manifest only,
+    #    never appscriptly's consent. We still parse the RAW handler name here
+    #    for the return payload + activation instructions.
+    handler = _extract_handler_name(task_function_body)
+    spec = _RECIPES["as_install_task_rollover"]
+    params = {
+        "sheet_id": sheet_id,
+        "task_function_body": task_function_body,
+        "schedule": schedule,
+        "hour": hour,
+        "task_note": task_note,
+        "name": name,
+    }
+    rendered = _render(spec, params)
+    project_name = spec.project_name(params)
 
-    # 3. Build the manifest. A time trigger needs script.scriptapp (derived
-    #    from the triggers plan), and the Tasks advanced service needs the
-    #    full tasks scope (via oauth_scopes). THEN enable the Tasks advanced
-    #    service under dependencies so `Tasks.*` resolves at runtime. BOTH
-    #    the scope and the dependency land in the GENERATED manifest only -
-    #    never in appscriptly's own consent (the verify-LAST guarantee).
-    manifest_dict = _build_manifest(
-        {
-            "triggers": [{"type": "time", "schedule": schedule}],
-            # _TASKS_SCOPE (full tasks) is required for the Tasks ADVANCED
-            # service (.currentonly is NOT honored for advanced services);
-            # container_data_scope("sheets") = spreadsheets.currentonly so the
-            # handler can read the bound Sheet's rows via SpreadsheetApp (an
-            # explicit oauthScopes block suppresses auto-detection - N-S3V-1);
-            # add_mail_scope adds the failure reporter's send scope. GENERATED
-            # manifest only, never appscriptly's consent.
-            "oauth_scopes": _add_mail_scope(
-                [_TASKS_SCOPE, _container_data_scope("sheets")]
-            ),
-        }
-    )
-    manifest_dict = _with_tasks_advanced_service(manifest_dict)
-
-    # 4. Default the project name from the schedule when not supplied.
-    project_name = name or f"appscriptly tasks automation ({schedule})"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=sheet_id), push the body + manifest, cut a
     #    version + deploy. (We bind directly to the Sheet ID; no Drive
     #    mimeType round-trip - this tool only ever targets a Sheet.)
     result = _mint_bound_automation(
         creds,
-        tool="as_install_task_rollover",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
+        container_kind=spec.container_kind,
         project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
-        # Record the GUARD name (installTrigger's actual target) so
-        # uninstall's self-disarm reaper redefines the right function.
-        handler_functions=[_guard_name_for(handler)],
+        # render's handler_derivation records the GUARD name (installTrigger's
+        # actual target), matching the prior inline [_guard_name_for(handler)].
+        handler_functions=rendered.handler_functions,
     )
     script_id = result.script_id
     deployment_id = result.deployment_id

@@ -550,16 +550,22 @@ _EX_DOC_ID = "1DoC_iD00-abcdefghijklmnopqrstuvwxyz01234"
 _EX_FORM_ID = "1FoRm_iD-abcdefghijklmnopqrstuvwxyz01234"
 _EX_PRES_ID = "1PrEs_iD-abcdefghijklmnopqrstuvwxyz01234"
 
-# A multi-item menu that stresses label escaping (comma / quotes / < / non-ASCII)
-# and an empty handler body, plus a single-item menu.
+# A multi-item menu that stresses label escaping. It carries every edge the
+# now-dropped hand-written Class B harness cases exercised (S3), so those cases
+# can be removed without losing coverage: a comma INSIDE a label (exercises the
+# non-greedy .addItem-target extraction the harness's menu-integrity gate uses),
+# embedded double-quotes + '<' + a backslash + a non-ASCII char (exercises the
+# JS-string escaping in the menu builder), an empty handler body (a no-op
+# handler is legal), and a '$' in an identifier (a valid JS identifier char).
+# Paired with a single-item menu below.
 _EX_MENU_ITEMS_MULTI: list[dict[str, str]] = [
     {
-        "label": "Recompute totals",
+        "label": "Recompute totals, now",
         "function_name": "recomputeTotals",
         "function_body": "SpreadsheetApp.getActive().toast('done');",
     },
     {
-        "label": 'Quote "block" & <b> cafe',
+        "label": 'Quote "block" & <b> \\ café',
         "function_name": "insertBlock",
         "function_body": "var s = 'ok';\nLogger.log(s);",
     },

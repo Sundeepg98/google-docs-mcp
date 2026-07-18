@@ -56,9 +56,12 @@ from appscriptly.decorators import workspace_tool
 from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
+)
 from appscriptly.services.apps_script.api import (
     auto_detect_container_kind as _auto_detect_container_kind,
-    build_manifest as _build_manifest,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_CUSTOM_FUNCTION_OUTPUT_SCHEMA
@@ -377,29 +380,33 @@ def as_install_custom_function(
             f"automation."
         )
 
-    # 2. Shape the .gs body (validates identifier + body-defines-name +
-    #    non-empty; prepends the @customfunction JSDoc tag if absent).
-    script_body = build_custom_function_script(
-        function_name, function_body, description
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest. render() shapes the same
+    #    @customfunction-tagged body (build_custom_function_script, which
+    #    validates the identifier + that the body defines it + non-empty) and
+    #    the same bare manifest (build_manifest(None) — a custom function
+    #    needs no scope beyond the container binding); the byte-identity pins
+    #    guarantee the output is unchanged.
+    spec = _RECIPES["as_install_custom_function"]
+    params = {
+        "sheet_id": sheet_id,
+        "function_name": function_name,
+        "function_body": function_body,
+        "description": description,
+        "name": name,
+    }
+    rendered = _render(spec, params)
 
-    # 3. Default the project name from the function when not supplied.
-    project_name = name or f"appscriptly custom function ({function_name})"
-
-    # 4. A custom function needs NO scope beyond the container binding —
-    #    reuse #138's build_manifest(None) → bare V8 + timeZone manifest.
-    manifest_dict = _build_manifest(None)
-
-    # 5. Deploy via the SAME machinery as_generate_bound_script uses:
+    # 3. Deploy via the SAME machinery as_generate_bound_script uses:
     #    create bound project → push content → cut version + deploy.
     result = _mint_bound_automation(
         creds,
-        tool="as_install_custom_function",
+        tool=spec.name,
         container_id=sheet_id,
-        container_kind="sheets",
-        project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        container_kind=spec.container_kind,
+        project_name=spec.project_name(params),
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
     )
     script_id = result.script_id

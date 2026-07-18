@@ -69,14 +69,12 @@ from appscriptly.services.apps_script._lifecycle import (
     mint_bound_automation as _mint_bound_automation,
 )
 from appscriptly.services.apps_script._observability import (
-    add_mail_scope as _add_mail_scope,
-    guard_name_for as _guard_name_for,
     guarded_delegator as _guarded_delegator,
     reporter_helper_source as _reporter_helper_source,
 )
-from appscriptly.services.apps_script.api import (
-    build_manifest as _build_manifest,
-    container_data_scope as _container_data_scope,
+from appscriptly.services.apps_script._recipes import (
+    RECIPES as _RECIPES,
+    render as _render,
 )
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
 from appscriptly.tool_schemas import AS_INSTALL_FORM_HANDLER_OUTPUT_SCHEMA
@@ -89,14 +87,6 @@ from appscriptly._tool_helpers import (  # noqa: F401
     _format_http_error,
     _get_credentials,
 )
-
-# An installable trigger created via ScriptApp.newTrigger(...).create()
-# runs with the user's full authorization, so the generated script must
-# declare this oauthScope in its manifest. Same scope sheet_dashboard's
-# time trigger + edit_trigger's onEdit trigger need (api.py's
-# _TRIGGER_SCOPE). We pass it to build_manifest via oauth_scopes (the
-# onFormSubmit trigger is wired in code; the manifest only carries it).
-_TRIGGER_SCOPE = "https://www.googleapis.com/auth/script.scriptapp"
 
 
 def _extract_handler_name(handler_function_body: str) -> str:
@@ -375,38 +365,27 @@ def as_install_form_handler(
             "(e.g. `function onSubmit(e) { ... }`)."
         )
 
-    # 2. Synthesize the full .gs body (handler fn + dedup'd installTrigger
-    #    wiring the onFormSubmit trigger). _extract_handler_name (inside)
-    #    also rejects an unnamed function.
-    script_body, handler = build_form_handler_script_body(
-        handler_function_body, form_id, handler_note
-    )
+    # 2. Codegen via the recipe registry (_recipes.py) — the SINGLE source
+    #    for this tool's .gs body + manifest + recorded handler. render() runs
+    #    the same build_form_handler_script_body (which embeds form_id into
+    #    the forForm(...) trigger wiring) and threads the same manifest plan
+    #    (script.scriptapp for the installable onFormSubmit trigger +
+    #    container_data_scope("forms") + add_mail_scope for the failure
+    #    reporter); the byte-identity pins guarantee the output is unchanged.
+    #    We still parse the RAW handler name here for the return payload +
+    #    activation instructions (render records the GUARD-wrapped name).
+    handler = _extract_handler_name(handler_function_body)
+    spec = _RECIPES["as_install_form_handler"]
+    params = {
+        "form_id": form_id,
+        "handler_function_body": handler_function_body,
+        "handler_note": handler_note,
+        "name": name,
+    }
+    rendered = _render(spec, params)
+    project_name = spec.project_name(params)
 
-    # 3. Build the manifest. An installable onFormSubmit trigger needs the
-    #    script.scriptapp oauthScope; we get it by handing build_manifest
-    #    that scope via oauth_scopes (the manifest can't declare the
-    #    trigger itself — the #138 manifest-reality finding). We do NOT
-    #    pass a triggers entry: build_manifest's _validate_triggers only
-    #    knows "time"/"edit", and a form-submit trigger needs no plan echo
-    #    beyond the scope it requires (which we supply directly).
-    # _TRIGGER_SCOPE (script.scriptapp) for the installable onFormSubmit
-    # trigger; container_data_scope("forms") = forms.currentonly so the
-    # handler can read THIS Form's responses via FormApp (an explicit
-    # oauthScopes block suppresses auto-detection - N-S3V-1); add_mail_scope
-    # adds the failure reporter's send scope. GENERATED manifest only, never
-    # appscriptly's consent.
-    manifest_dict = _build_manifest(
-        {
-            "oauth_scopes": _add_mail_scope(
-                [_TRIGGER_SCOPE, _container_data_scope("forms")]
-            )
-        }
-    )
-
-    # 4. Default the project name when not supplied.
-    project_name = name or "appscriptly onFormSubmit handler"
-
-    # 5. Deploy via the SAME machinery the #138 primitive uses: create the
+    # 3. Deploy via the SAME machinery the #138 primitive uses: create the
     #    bound project (parentId=form_id), push the body + manifest, cut a
     #    version + deploy. We bind DIRECTLY to the Form ID and never call
     #    auto_detect_container_kind — that is how the Forms hard-rejection
@@ -414,16 +393,16 @@ def as_install_form_handler(
     #    auto-detect stays Forms-rejecting for menu/sidebar/edit use).
     result = _mint_bound_automation(
         creds,
-        tool="as_install_form_handler",
+        tool=spec.name,
         container_id=form_id,
-        container_kind="forms",
+        container_kind=spec.container_kind,
         project_name=project_name,
-        script_body=script_body,
-        manifest_dict=manifest_dict,
+        script_body=rendered.script_body,
+        manifest_dict=rendered.manifest,
         on_conflict=on_conflict,
-        # Record the GUARD name (installTrigger's actual target) so
-        # uninstall's self-disarm reaper redefines the right function.
-        handler_functions=[_guard_name_for(handler)],
+        # render's handler_derivation records the GUARD name (installTrigger's
+        # actual target), matching the prior inline [_guard_name_for(handler)].
+        handler_functions=rendered.handler_functions,
     )
     script_id = result.script_id
     deployment_id = result.deployment_id
