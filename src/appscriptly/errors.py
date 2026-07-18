@@ -35,7 +35,13 @@ _GUIDANCE: list[tuple[str, str]] = [
     (
         "file not found",
         "The Drive file ID could not be resolved. Verify the ID is correct, "
-        "the file exists, and the OAuth user has read access.",
+        "the file exists, and the OAuth user has read access. NOTE: under the "
+        "drive.file scope this app can only see files it created or that were "
+        "explicitly shared with it, so a real file this app has never touched "
+        "can also surface as not-found. In that case upload the .docx bytes "
+        "via gdrive_get_signed_upload_url instead (no Drive read scope "
+        "needed), or open or copy the file with this app first so it becomes "
+        "app-visible.",
     ),
     (
         "invalid_grant",
