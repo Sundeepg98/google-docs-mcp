@@ -220,6 +220,54 @@ def test_params_override_merges_over_recorded_params_and_restores(fake_api):
     assert stored["refresh_function_body"] == _DASH_PARAMS["refresh_function_body"]
 
 
+def test_null_override_of_a_required_param_is_rejected_atomically(fake_api):
+    """A params override that NULLS a required recipe input is rejected with a
+    clean ValueError naming the key + recipe BEFORE any render/push, and the
+    ledger's recipe + params_json are left intact (nothing regenerated).
+
+    Pre-fix, nulling refresh_function_body surfaced as a raw TypeError from the
+    dashboard builder (atomic, but cryptic); this pins the clean rejection.
+    """
+    result = as_install_sheet_dashboard(**_DASH_PARAMS)
+    sid = result["script_id"]
+    pushes_after_install = [p for p in fake_api.pushed if p[0] == sid]
+    row_before = automation_ledger.get_automation(sid)
+
+    with pytest.raises(ValueError, match="refresh_function_body") as exc:
+        as_update_automation(
+            script_id=sid, params={"refresh_function_body": None}
+        )
+    # The message names both the offending key and the recipe.
+    assert "as_install_sheet_dashboard" in str(exc.value)
+
+    # Atomic: no extra push happened, and the ledger row's recipe + params_json
+    # are untouched (the bad override was never merged in or stored).
+    assert [p for p in fake_api.pushed if p[0] == sid] == pushes_after_install
+    row_after = automation_ledger.get_automation(sid)
+    assert row_after["recipe"] == row_before["recipe"] == "as_install_sheet_dashboard"
+    assert row_after["params_json"] == row_before["params_json"]
+    assert json.loads(row_after["params_json"])["refresh_function_body"] == (
+        _DASH_PARAMS["refresh_function_body"]
+    )
+
+
+def test_wrong_typed_override_of_a_required_param_is_rejected(fake_api):
+    """A params override that WRONG-TYPES a required input (a list where the
+    recipe declares a "string") is rejected with the same clean ValueError,
+    naming the key + the expected type, before any push."""
+    result = as_install_sheet_dashboard(**_DASH_PARAMS)
+    sid = result["script_id"]
+    pushes_after_install = [p for p in fake_api.pushed if p[0] == sid]
+
+    with pytest.raises(ValueError, match="refresh_function_body") as exc:
+        as_update_automation(
+            script_id=sid,
+            params={"refresh_function_body": ["not", "a", "string"]},
+        )
+    assert "expected string" in str(exc.value)
+    assert [p for p in fake_api.pushed if p[0] == sid] == pushes_after_install
+
+
 def test_regeneration_reports_a_scope_the_live_deployment_lacks(
     fake_api, monkeypatch
 ):
