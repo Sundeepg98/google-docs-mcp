@@ -14,8 +14,12 @@ into the minimal Google-Docs element shape the REAL converter walks, then
 runs the converter's OWN split/nest/placeholder logic
 (``docx_import._detect_splits`` et al.) over it, so the predicted plan is
 computed by the same code the conversion uses — no forked re-implement.
-Still ZERO Drive writes: the upload path never touches Drive, and the
-drive_file_id path only reads/exports bytes.
+A ``markers`` request likewise reuses retrofit's own local injection
+(``retrofit._inject_headings``) before planning. Still ZERO Drive writes:
+the upload path never touches Drive, and the drive_file_id path only
+reads/exports bytes. The drift pin
+(``tests/unit/test_dry_run_plan_equivalence.py``) holds this path equal to
+the converter's decision sequence over Drive-shaped Docs JSON.
 """
 from __future__ import annotations
 
@@ -51,6 +55,7 @@ from .docx_import import (
     _SplitPoint,
     _unmoved_visible_count,
 )
+from .retrofit import _inject_headings
 from .services.docs.content_transplant import FidelityReport
 
 PreviewSplitBy = Literal["heading_1", "heading_2", "page_break", "auto"]
@@ -161,6 +166,19 @@ def _fetch_drive_as_docx(creds: Credentials, drive_file_id: str) -> io.BytesIO:
     ``readonly=True``. All three Drive calls (metadata fetch, raw
     media download, .docx export) wrapped with idempotent retry.
     """
+    buf, _ = _fetch_drive_docx_and_mime(creds, drive_file_id)
+    return buf
+
+
+def _fetch_drive_docx_and_mime(
+    creds: Credentials, drive_file_id: str
+) -> tuple[io.BytesIO, str]:
+    """As ``_fetch_drive_as_docx``, but also return the source mimeType.
+
+    The dry-run planner needs it: a native Google Doc source (GDOC_MIME)
+    behaves differently in the real conversion (copy carries the source's
+    tabs; only the first tab is split), which the plan must disclose.
+    """
     drive = get_service("drive", "v3", credentials=creds)
     meta = execute_with_retry(
         lambda: drive.files().get(fileId=drive_file_id, fields="mimeType").execute(),
@@ -174,7 +192,7 @@ def _fetch_drive_as_docx(creds: Credentials, drive_file_id: str) -> io.BytesIO:
             idempotent=True,
             op_name="drive.files.get_media.docx",
         )
-        return io.BytesIO(buf)
+        return io.BytesIO(buf), mime
     if mime == GDOC_MIME:
         buf = execute_with_retry(
             lambda: drive.files().export(
@@ -183,7 +201,7 @@ def _fetch_drive_as_docx(creds: Credentials, drive_file_id: str) -> io.BytesIO:
             idempotent=True,
             op_name="drive.files.export.docx",
         )
-        return io.BytesIO(buf)
+        return io.BytesIO(buf), mime
     raise ValueError(
         f"Drive file {drive_file_id!r} has mimeType {mime!r}. "
         "Expected .docx or Google Doc."
@@ -235,6 +253,41 @@ def _para_has_page_break(para) -> bool:
     return False
 
 
+# Non-text inline content the placeholder-veto scan must SEE (S1-B2):
+# images (w:drawing), legacy pictures (w:pict), equations (m:oMath). In
+# real Docs JSON such paragraphs carry a non-textRun element, which
+# ``_has_visible_content`` counts as visible even when the paragraph has
+# no text - so an image-only paragraph before the first heading vetoes
+# the placeholder delete. The adapter must not render them invisible.
+_NONTEXT_PARA_TAGS = frozenset({
+    f"{_W_NS}drawing",
+    f"{_W_NS}pict",
+    f"{_M_NS}oMath",
+})
+
+
+def _para_has_nontext_content(para) -> bool:
+    """True when the paragraph XML carries an image / picture / equation."""
+    for node in para._p.iter():
+        if node.tag in _NONTEXT_PARA_TAGS:
+            return True
+    return False
+
+
+def _para_is_list_item(para) -> bool:
+    """True for list paragraphs (direct numbering or a List* style).
+
+    The real Docs JSON gives list paragraphs a ``bullet`` field, which
+    counts as visible content even when the text is empty - an empty
+    bulleted paragraph before the first heading vetoes the placeholder
+    delete, so the adapter must carry the signal (S1-B2)."""
+    pPr = para._p.pPr
+    if pPr is not None and pPr.numPr is not None:
+        return True
+    style = para.style
+    return bool(style is not None and (style.name or "").startswith("List"))
+
+
 def _docx_to_min_body(doc: DocumentT) -> list[dict]:
     """Adapt a python-docx Document into the minimal Docs-``body.content``
     shape ``_detect_splits`` / ``_docapp_children`` / ``_unmoved_visible_count``
@@ -243,7 +296,10 @@ def _docx_to_min_body(doc: DocumentT) -> list[dict]:
     Only the fields those walkers touch are emitted:
       - each body paragraph -> ``{"paragraph": {"paragraphStyle":
         {"namedStyleType": ...}, "elements": [{"textRun": {"content":
-        text}}] (+ {"pageBreak": {}} when the paragraph breaks a page)}}``;
+        text}}]}}``, plus ``{"pageBreak": {}}`` when the paragraph breaks
+        a page, ``{"inlineObjectElement": {}}`` when it carries an image /
+        picture / equation (S1-B2 visibility), and a paragraph-level
+        ``"bullet"`` key for list paragraphs;
       - each body table -> ``{"table": {}}`` - an opaque non-paragraph
         block, so it extends the current split range and counts as
         VISIBLE content for the placeholder-veto check, exactly as a real
@@ -261,16 +317,19 @@ def _docx_to_min_body(doc: DocumentT) -> list[dict]:
         style_name = block.style.name if block.style is not None else None
         named_type = _STYLE_NAME_TO_NAMED_TYPE.get(style_name or "", "NORMAL_TEXT")
         elements: list[dict] = [{"textRun": {"content": block.text}}]
+        if _para_has_nontext_content(block):
+            elements.append({"inlineObjectElement": {}})
         if _para_has_page_break(block):
             elements.append({"pageBreak": {}})
-        body.append(
-            {
-                "paragraph": {
-                    "paragraphStyle": {"namedStyleType": named_type},
-                    "elements": elements,
-                }
-            }
-        )
+        para: dict = {
+            "paragraphStyle": {"namedStyleType": named_type},
+            "elements": elements,
+        }
+        if _para_is_list_item(block):
+            # Non-empty like the real shape ({"listId": ...}): the veto
+            # scan tests the field with bool(), so {} would vanish.
+            para["bullet"] = {"listId": "local"}
+        body.append({"paragraph": para})
     return body
 
 
@@ -311,9 +370,12 @@ def _load_dry_run_doc(
     docx_bytes: bytes | None,
     docx_path: Path | None,
     drive_file_id: str | None,
-) -> DocumentT:
-    """Resolve exactly one input mode to a python-docx Document, with NO
-    Drive write (the drive path only reads/exports bytes)."""
+) -> tuple[DocumentT, str | None]:
+    """Resolve exactly one input mode to ``(Document, source_mime)`` with
+    NO Drive write (the drive path only reads/exports bytes).
+
+    ``source_mime`` is the Drive mimeType for a drive_file_id input and
+    None otherwise - the planner discloses native-Google-Doc specifics."""
     provided = [x is not None for x in (docx_bytes, docx_path, drive_file_id)]
     if sum(provided) != 1:
         raise ValueError(
@@ -324,14 +386,15 @@ def _load_dry_run_doc(
     # a ValueError so the caller answers 400, not a bare 500.
     try:
         if docx_bytes is not None:
-            return Document(io.BytesIO(docx_bytes))
+            return Document(io.BytesIO(docx_bytes)), None
         if docx_path is not None:
             if not docx_path.exists():
                 raise FileNotFoundError(f"DOCX file not found: {docx_path}")
-            return Document(str(docx_path))
+            return Document(str(docx_path)), None
         if creds is None:
             raise ValueError("creds required when previewing a Drive file")
-        return Document(_fetch_drive_as_docx(creds, drive_file_id))  # type: ignore[arg-type]
+        buf, mime = _fetch_drive_docx_and_mime(creds, drive_file_id)  # type: ignore[arg-type]
+        return Document(buf), mime
     except (BadZipFile, PackageNotFoundError) as e:
         raise ValueError(
             f"could not read the source as a .docx ({e}); ensure it is a "
@@ -353,6 +416,38 @@ def _split_depths(splits: list[_SplitPoint]) -> list[int]:
     return out
 
 
+# The working copy of a FRESH Drive import carries exactly one tab,
+# titled "Tab 1" - the set the real converter's title de-dup runs against
+# (docx_import.py step 4: _dedupe_split_titles over _existing_tab_titles
+# of the just-imported doc). The plan must seed the same set or an H1
+# literally titled "Tab 1" plans as "Tab 1" while the real run produces
+# "Tab 1 (2)" (S1-M1).
+_FRESH_IMPORT_TAB_TITLES = frozenset({"Tab 1"})
+
+# Disclosure for a native-Google-Doc drive source: the local parse sees
+# the EXPORTED docx, while the real conversion copies the doc - carrying
+# ALL its tabs (extra de-dup surface) and splitting only the first tab.
+_GDOC_SOURCE_INFO = (
+    "drive_file_id source is a native Google Doc: this plan derives from "
+    "its exported .docx content. The real conversion copies the document, "
+    "splits only the FIRST tab, and carries the source's other tabs into "
+    "the working copy, which can add title de-duplication suffixes not "
+    "shown here."
+)
+
+# Every dry-run response carries this honesty note: nothing was created,
+# the URL is intact, and BOTH the split plan and the fidelity warnings
+# come from a local parse of the source - the conversion itself is the
+# authority.
+_DRY_RUN_INFO_NOTE = (
+    "dry_run: no document was created and no signed URL was consumed. "
+    "POST the identical request without dry_run to perform the "
+    "conversion. The split plan and the content-fidelity warnings come "
+    "from a local parse of the source document; the authoritative result "
+    "comes from the conversion itself."
+)
+
+
 def plan_conversion_dry_run(
     creds: Credentials | None = None,
     *,
@@ -362,23 +457,69 @@ def plan_conversion_dry_run(
     split_by: str = "heading_1",
     nest_by: str | None = None,
     placeholder_behavior: str = "delete",
+    markers: list[dict] | None = None,
 ) -> dict:
     """Return the conversion PLAN for a .docx without creating anything.
 
     Provide exactly one input: ``docx_bytes`` (the /api/convert upload
     path), ``docx_path`` (local), or ``drive_file_id`` (``creds`` required;
-    read/export only). ``nest_by`` and ``placeholder_behavior`` are the
-    same values ``convert_endpoint`` validated.
+    read/export only). ``nest_by``, ``placeholder_behavior`` and
+    ``markers`` are the same values ``convert_endpoint`` validated.
+
+    ``markers`` mirrors the retrofit path: the SAME local injection the
+    real ``retrofit_existing_docx`` performs (``_inject_headings``) runs
+    on the parsed document first, the plan reflects the injected Heading
+    1s, and the response carries the real path's ``retrofit`` echo
+    (``markers_matched`` / ``markers_missed``). When nothing matches, the
+    real run returns a failed envelope without converting - the plan
+    mirrors that as a ``problems`` entry instead of a bogus split plan.
 
     The response mirrors the REAL convert result's echo field NAMES so a
     caller can line up plan vs. outcome, plus ``dry_run: true``:
     ``{dry_run, split_strategy_used, heading1_found, tabs_created, tabs:
     [{title, depth}, ...] (pre-order), placeholder, placeholder_veto?,
-    warnings, info, problems}``. ``heading1_found`` counts top-level
-    splits (parents); ``tabs_created`` includes ``nest_by`` children -
-    exactly as the converter reports them.
+    warnings, info, problems, retrofit?}``. ``heading1_found`` counts
+    top-level splits (parents); ``tabs_created`` includes ``nest_by``
+    children - exactly as the converter reports them.
     """
-    doc = _load_dry_run_doc(creds, docx_bytes, docx_path, drive_file_id)
+    doc, source_mime = _load_dry_run_doc(creds, docx_bytes, docx_path, drive_file_id)
+
+    warnings: list[str] = []
+    info: list[str] = []
+    problems: list[str] = []
+
+    # markers (S1-B1): run retrofit's OWN local injection before planning,
+    # so the plan reflects the same synthetic Heading 1s the real run
+    # converts on. Zero-match mirrors the real failed envelope.
+    retrofit_echo: dict | None = None
+    if markers:
+        matched, missed_specs = _inject_headings(doc, markers)
+        retrofit_echo = {
+            "markers_matched": matched,
+            "markers_missed": missed_specs,
+        }
+        if not matched:
+            problems.append(
+                "None of the marker_text values matched any block in the "
+                "document; the real conversion would FAIL for this request "
+                "without creating anything. Check the candidate_blocks "
+                "list under retrofit.markers_missed for the actual visible "
+                "text of each body block, pick a distinctive substring, "
+                "and retry."
+            )
+            info.append(_DRY_RUN_INFO_NOTE)
+            return {
+                "dry_run": True,
+                "split_strategy_used": "none",
+                "heading1_found": 0,
+                "tabs_created": 0,
+                "tabs": [],
+                "placeholder": "none",
+                "warnings": warnings,
+                "info": info,
+                "problems": problems,
+                "retrofit": retrofit_echo,
+            }
 
     # Split / nest / placeholder: computed by the converter's own walkers
     # over the adapted body, so the plan cannot drift from the real run.
@@ -392,13 +533,10 @@ def plan_conversion_dry_run(
         body_content, cast(SplitBy, split_by), nest_by=nest
     )
     flat_splits = _flatten_splits(splits)
-    # Match the converter's same-title de-dup (no existing tabs on a fresh
-    # convert): two "Intro" H1s become "Intro" / "Intro (2)".
-    _dedupe_split_titles(flat_splits, set())
-
-    warnings: list[str] = []
-    info: list[str] = []
-    problems: list[str] = []
+    # The converter's same-title de-dup, seeded exactly like the real run:
+    # a fresh working copy's only tab is "Tab 1" (S1-M1), and duplicate
+    # H1s become "Intro" / "Intro (2)".
+    _dedupe_split_titles(flat_splits, set(_FRESH_IMPORT_TAB_TITLES))
 
     # Per-split title diagnostics. A split's first range starts at its
     # heading paragraph's docapp index, so we can recover the RAW
@@ -442,7 +580,10 @@ def plan_conversion_dry_run(
     # Placeholder decision, mirroring convert_docx_to_tabbed_doc step 8:
     # a "delete" is VETOED when visible content sits before the first
     # split point (it would be the only copy). rename/keep are honored.
-    placeholder_outcome = "kept"
+    # NO splits mirrors the real no-splits early return, which reports
+    # "none" (the single-tab import has no placeholder duplication) -
+    # S1-M2.
+    placeholder_outcome = "kept" if splits else "none"
     placeholder_veto: str | None = None
     if splits and placeholder_behavior == "delete":
         all_ranges = [r for s in flat_splits for r in s["ranges"]]
@@ -458,12 +599,9 @@ def plan_conversion_dry_run(
     elif splits and placeholder_behavior == "rename":
         placeholder_outcome = "renamed"
 
-    info.append(
-        "dry_run: no document was created and no signed URL was consumed. "
-        "POST the identical request without dry_run to perform the "
-        "conversion. Content-fidelity warnings are a conservative local "
-        "scan; the authoritative report comes from the conversion itself."
-    )
+    if source_mime == GDOC_MIME:
+        info.append(_GDOC_SOURCE_INFO)
+    info.append(_DRY_RUN_INFO_NOTE)
 
     result: dict = {
         "dry_run": True,
@@ -478,4 +616,6 @@ def plan_conversion_dry_run(
     }
     if placeholder_veto:
         result["placeholder_veto"] = placeholder_veto
+    if retrofit_echo is not None:
+        result["retrofit"] = retrofit_echo
     return result

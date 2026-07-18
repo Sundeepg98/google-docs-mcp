@@ -236,6 +236,9 @@ def test_dry_run_no_splits_reports_problem():
     assert body["heading1_found"] == 0
     assert body["tabs"] == []
     assert body["problems"] and "No split points" in body["problems"][0]
+    # S1-M2: mirrors the real no-splits early return, which reports
+    # placeholder "none" (not "kept").
+    assert body["placeholder"] == "none"
 
 
 # ---------------------------------------------------------------------
@@ -351,6 +354,88 @@ def test_dry_run_wins_over_async_with_info_note():
     assert any("async was ignored" in note for note in body["info"])
 
 
+def _banner_docx_bytes() -> bytes:
+    """A styled doc with NO headings - the canonical markers use case."""
+    doc = Document()
+    doc.add_paragraph("MODULE ONE overview")
+    doc.add_paragraph("module one body")
+    doc.add_paragraph("MODULE TWO overview")
+    doc.add_paragraph("module two body")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_dry_run_with_markers_plans_injected_tabs():
+    """S1-B1: dry_run + markers must reflect retrofit's injection (the
+    real path routes to _retrofit_docx), not report zero headings with
+    advice to use markers. Neither converter entry runs; nothing is
+    written; the retrofit echo mirrors the real response shape."""
+    import json as _json
+
+    app = _build_app_under_test()
+    markers = [
+        {"marker_text": "MODULE ONE", "tab_title": "One"},
+        {"marker_text": "MODULE TWO", "tab_title": "Two"},
+    ]
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=AssertionError("converter must not run for a dry_run"),
+    ), patch(
+        "appscriptly.http_server.routes.convert._retrofit_docx",
+        side_effect=AssertionError("retrofit must not run for a dry_run"),
+    ), TestClient(app) as client:
+        r = client.post(
+            f"/api/convert?{_mint_qs()}",
+            files=_form(_banner_docx_bytes(), name="curriculum.docx"),
+            data={"dry_run": "1", "markers": _json.dumps(markers)},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dry_run"] is True
+    assert body["heading1_found"] == 2
+    assert [t["title"] for t in body["tabs"]] == ["One", "Two"]
+    assert body["retrofit"] == {"markers_matched": 2, "markers_missed": []}
+    assert body["problems"] == []
+    assert _count_job_rows() == 0
+
+
+def test_dry_run_with_markers_none_matched_mirrors_failed_envelope():
+    """S1-B1 zero-match: the real retrofit fails without converting; the
+    plan mirrors that (problems + the retrofit echo with
+    candidate_blocks), never a bogus no-headings split plan."""
+    import json as _json
+
+    app = _build_app_under_test()
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, TestClient(app) as client:
+        r = client.post(
+            f"/api/convert?{_mint_qs()}",
+            files=_form(_banner_docx_bytes()),
+            data={
+                "dry_run": "1",
+                "markers": _json.dumps(
+                    [{"marker_text": "NO SUCH BANNER", "tab_title": "X"}]
+                ),
+            },
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["heading1_found"] == 0
+    assert body["tabs"] == []
+    assert body["split_strategy_used"] == "none"
+    assert body["placeholder"] == "none"
+    assert body["problems"] and "would FAIL" in body["problems"][0]
+    assert body["retrofit"]["markers_matched"] == 0
+    missed = body["retrofit"]["markers_missed"]
+    assert missed[0]["marker_text"] == "NO SUCH BANNER"
+    assert missed[0]["candidate_blocks"], "candidate_blocks aid debugging"
+    assert _count_job_rows() == 0
+
+
 def test_batch_plus_dry_run_is_400():
     app = _build_app_under_test()
     files = [
@@ -368,14 +453,17 @@ def test_batch_plus_dry_run_is_400():
 
 def test_dry_run_drive_file_id_reads_without_write():
     """drive_file_id dry_run: the file is only READ (export/download); the
-    converter never runs and no row is created."""
+    converter never runs and no row is created. A .docx drive source gets
+    no native-Google-Doc disclosure."""
+    from appscriptly.services.drive.api import DOCX_MIME
+
     app = _build_app_under_test()
     content = _docx_bytes(["Alpha", "Beta"])
 
     p1, p2, p3 = _creds_patches()
     with p1, p2, p3, patch(
-        "appscriptly.preview._fetch_drive_as_docx",
-        return_value=io.BytesIO(content),
+        "appscriptly.preview._fetch_drive_docx_and_mime",
+        return_value=(io.BytesIO(content), DOCX_MIME),
     ) as fetch_mock, patch(
         "appscriptly.http_server.routes.convert._convert_docx",
         side_effect=AssertionError("converter must not run for a dry_run"),
@@ -391,6 +479,33 @@ def test_dry_run_drive_file_id_reads_without_write():
     assert [t["title"] for t in body["tabs"]] == ["Alpha", "Beta"]
     fetch_mock.assert_called_once()
     assert _count_job_rows() == 0
+    assert not any("native Google Doc" in note for note in body["info"])
+
+
+def test_dry_run_drive_gdoc_source_carries_disclosure():
+    """S1-M1 residue: a native-Google-Doc drive source behaves differently
+    in the real run (copy carries the source's tabs; only the first tab
+    splits) - the plan must disclose that."""
+    from appscriptly.services.drive.api import GDOC_MIME
+
+    app = _build_app_under_test()
+    content = _docx_bytes(["Alpha"])
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.preview._fetch_drive_docx_and_mime",
+        return_value=(io.BytesIO(content), GDOC_MIME),
+    ), TestClient(app) as client:
+        r = client.post(
+            "/api/convert",
+            data={"drive_file_id": "GDOC123", "dry_run": "1"},
+            headers=_bearer_headers(),
+        )
+    assert r.status_code == 200, r.text
+    notes = r.json()["info"]
+    assert any(
+        "native Google Doc" in n and "FIRST tab" in n for n in notes
+    ), notes
 
 
 def test_dry_run_malformed_docx_is_400():

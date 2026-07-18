@@ -980,7 +980,9 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         # performs the real convert. Single-input only (batch already 400'd
         # above). Reuses the converter's own split/nest/placeholder walkers
         # over a local parse - ZERO Drive writes (the drive_file_id path
-        # only reads/exports bytes, keeping its drive.file cap + error).
+        # only reads/exports bytes, keeping its drive.file cap + error). A
+        # markers request runs retrofit's local injection first, mirroring
+        # the real routing to the retrofit entry.
         if dry_run:
             # A bad upload / unreadable source raises ValueError from the
             # planner -> the ValueError handler below maps it to a clean
@@ -992,6 +994,7 @@ async def convert_endpoint(request: Request) -> JSONResponse:
                 split_by=split_by_raw,
                 nest_by=nest_by,
                 placeholder_behavior=placeholder_behavior_raw,
+                markers=markers,
             )
             if async_flag:
                 plan["info"].insert(
