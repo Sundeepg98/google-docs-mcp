@@ -193,6 +193,22 @@ _RETRYABLE_ERRNOS = frozenset(
 )
 
 
+def is_retryable_transport_error(exc: BaseException) -> bool:
+    """Public predicate: True iff ``exc`` is a transient transport failure.
+
+    Thin public wrapper over ``_is_retryable_transport_error`` so the
+    tool-boundary envelope (``decorators.workspace_tool``) can classify the
+    exact SAME transient set the retry chokepoint treats as retryable
+    (socket timeout, connection reset/refused, retryable errno) without
+    duplicating the membership rule. Keeping "transient" defined in ONE
+    place is what lets the boundary map only the errors the chokepoint
+    already considers safe to retry, and re-raise everything else so a real
+    bug is never mislabeled as a transient blip. This adds NO behavior to
+    the retry machinery, which keeps using the private predicate directly.
+    """
+    return _is_retryable_transport_error(exc)
+
+
 def _build_authorized_http(credentials: Credentials) -> object:
     """Build a credentialed HTTP transport carrying a socket deadline.
 

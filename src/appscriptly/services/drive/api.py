@@ -208,18 +208,22 @@ def fetch_and_convert_drive_docx(
     drive_file_id: str,
     title: str | None = None,
 ) -> dict:
-    """Read a .docx already in Drive (any owner) and re-create as a Google Doc.
+    """Read an APP-ACCESSIBLE .docx in Drive and re-create it as a Google Doc.
 
-    The source file's bytes are streamed via Drive's ``files.get_media``
-    using our ``drive.readonly`` scope, then re-uploaded via
-    ``files.create`` with ``mimeType=GDOC_MIME`` so the conversion runs
-    under our app's ownership (``drive.file`` scope). The original .docx
-    is left in place — we never modify or delete it.
+    The source file's bytes are streamed via Drive's ``files.get_media``,
+    then re-uploaded via ``files.create`` with ``mimeType=GDOC_MIME`` so the
+    conversion runs under our app's ownership (``drive.file`` scope). The
+    original .docx is left in place; we never modify or delete it.
 
-    This is the workflow for Claude.ai cloud chat: the user attaches
-    or generates a .docx in chat, cloud chat uploads it to Drive via
-    the Anthropic Drive connector (different app, different scopes),
-    then hands the file ID to this tool.
+    SCOPE CAP: get_media on a file this app did not create needs the
+    ``drive.readonly`` scope, which the base tier dropped to stay CASA-free.
+    So this helper works only for files this app created or that were
+    explicitly shared with it (drive.file), plus older tokens that still
+    carry drive.readonly; for anything else Google returns an
+    insufficient-scope error. New callers should use the signed-upload
+    convert flow instead (see the deprecation note on
+    ``gdocs_tab_existing_doc``), which stages the bytes server-side with no
+    Drive read scope.
     """
     drive = get_service("drive", "v3", credentials=creds)
 
