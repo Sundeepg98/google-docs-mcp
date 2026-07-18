@@ -23,6 +23,10 @@ EXPECTED: frozenset[str] = frozenset({
     # answers "is this deployed automation live yet?" via a web-app probe
     # or an execution-history read. Same script.processes scope.
     "as_check_activation",
+    # Wave 2 (S4) - recipe catalog browse tool (recipes_catalog.py).
+    # Read-only, no creds: projects the internal recipe registry
+    # (_recipes.py) into the discovery surface for the as_install_* family.
+    "as_list_recipes",
     # Automation lifecycle (lifecycle_tools.py) — the forward-only
     # inventory + honest partial uninstall + consent-preserving update,
     # backed by the per-user automation ledger. Closes the install-only gap

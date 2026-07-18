@@ -129,6 +129,7 @@ EXPECTED_TOOLS = {
     "as_generate_bound_script",  # PR-Δ7: generic Apps Script bound-script generator
     "as_list_script_processes",  # CASA-free growth: processes.listScriptProcesses — execution-history read (script.processes, SENSITIVE → no CASA)
     "as_check_activation",  # Stream 3: verify a deployed automation is activated yet (web-app probe or execution-history read)
+    "as_list_recipes",  # Wave 2 (S4): read-only recipe catalog projected from the registry (_recipes.py); discovery surface for the as_install_* family
     "as_install_custom_function",  # PR-Δ10: install a custom =FUNCTION() into a Sheet
     "as_install_sheet_dashboard",  # PR-Δ9: scheduled dashboard refresh for Sheets
     "as_install_doc_menu",  # PR-Δ8: install a custom menu into a Google Doc
@@ -304,6 +305,9 @@ _DOES_NOT_NEED_OAUTH = {
     # Reads only the local per-user automation ledger — no Google API call,
     # no OAuth grant (the caller is known from the auth context).
     "as_list_installed_automations",
+    # Wave 2 (S4): reads only the in-process recipe registry - no Google API
+    # call, no OAuth grant.
+    "as_list_recipes",
 }
 
 _MISLEADING_PHRASES = [
@@ -434,6 +438,9 @@ def test_tool_input_schema_non_empty(all_tools, tool_name):
         # automations (identified via the auth context); nothing to
         # parameterize.
         "as_list_installed_automations",
+        # Wave 2 (S4): the recipe catalog is the full built-in registry;
+        # nothing to parameterize (the description carries the routing signal).
+        "as_list_recipes",
     }
     if tool_name in no_arg_tools:
         return  # empty properties is fine for these

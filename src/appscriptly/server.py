@@ -368,8 +368,12 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # 136 → 137 with the Stream 3 activation-verification tool
 # (as_check_activation — canonical-only, apps_script service); then
 # 137 -> 139 with the Stream 2 automation-lifecycle tools
-# (as_list_installed_automations + as_uninstall_automation).
-_MIN_EXPECTED_TOOL_COUNT = 140
+# (as_list_installed_automations + as_uninstall_automation); then
+# 139 -> 140 with the Stream 5 consent-preserving update tool
+# (as_update_automation); then 140 -> 141 with the Wave 2 (S4) recipe
+# catalog browse tool (as_list_recipes - canonical-only, apps_script
+# service; read-only projection of the internal recipe registry).
+_MIN_EXPECTED_TOOL_COUNT = 141
 
 _discovery_failures: list[tuple[str, str]] = []
 
