@@ -40,6 +40,7 @@ from .docx_import import (
     convert_docx_to_tabbed_doc,
 )
 from .services.drive.api import DOCX_MIME, GDOC_MIME
+from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 
 W_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -355,18 +356,33 @@ def _fetch_drive_as_docx_bytes(
     so the converted doc never wears a temp-file name.
     """
     drive = get_service("drive", "v3", credentials=creds)
-    meta = drive.files().get(
-        fileId=drive_file_id, fields="name,mimeType"
-    ).execute()
+    meta = execute_with_retry(
+        lambda: drive.files().get(
+            fileId=drive_file_id, fields="name,mimeType"
+        ).execute(),
+        idempotent=True,
+        op_name="drive.files.get.fetchDocxBytes.metadata",
+    )
     mime = meta.get("mimeType")
     name = meta.get("name") or ""
     if mime == DOCX_MIME:
-        return drive.files().get_media(fileId=drive_file_id).execute(), name
+        return (
+            execute_with_retry(
+                lambda: drive.files().get_media(fileId=drive_file_id).execute(),
+                idempotent=True,
+                op_name="drive.files.get_media.fetchDocxBytes",
+            ),
+            name,
+        )
     if mime == GDOC_MIME:
         return (
-            drive.files().export(
-                fileId=drive_file_id, mimeType=DOCX_MIME
-            ).execute(),
+            execute_with_retry(
+                lambda: drive.files().export(
+                    fileId=drive_file_id, mimeType=DOCX_MIME
+                ).execute(),
+                idempotent=True,
+                op_name="drive.files.export.fetchDocxBytes",
+            ),
             name,
         )
     raise ValueError(
