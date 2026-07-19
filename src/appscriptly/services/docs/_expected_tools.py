@@ -34,4 +34,10 @@ EXPECTED: frozenset[str] = frozenset({
     "gdocs_insert_markdown_table",
     "gdocs_set_tab_icons",
     "gdocs_preview_tab_split",
+    # Wave 5 (S1): template fill - named-range trio + page break (all
+    # documents.batchUpdate single-request builders; documents scope).
+    "gdocs_create_named_range",
+    "gdocs_replace_named_range_content",
+    "gdocs_delete_named_range",
+    "gdocs_insert_page_break",
 })

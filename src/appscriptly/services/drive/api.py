@@ -326,6 +326,65 @@ def copy_google_doc(
     }
 
 
+def copy_drive_file(
+    creds: Credentials,
+    file_id: str,
+    title: str | None = None,
+) -> dict:
+    """Copy any app-accessible Drive file, returning the new id/name/url.
+
+    Exposes the same ``files.copy()`` seam used internally by
+    ``copy_google_doc`` (which is .docx-conversion specific: it forces a
+    Google-Doc mimeType and appends a " (tabified)" fallback name), as a
+    GENERAL user-facing copy. The primary use is the template-fill flow:
+    copy a Google Doc that already carries pre-authored named ranges,
+    then fill the COPY with ``replace_named_range_content`` while the
+    original template stays untouched.
+
+    The copy inherits the caller's ownership. Only files THIS app can
+    access under the ``drive.file`` scope are copyable.
+
+    Args:
+        creds: OAuth credentials carrying the ``drive.file`` scope.
+        file_id: The Drive file ID to copy.
+        title: Optional name for the copy. Omit to let Drive name it
+            ``"Copy of <original>"`` (Drive's own default).
+
+    Returns:
+        ``{file_id, name, url}`` for the NEW file: its id, final name,
+        and Drive ``webViewLink`` (the correct open-in-browser URL for
+        ANY file type, Doc or not).
+
+    Raises:
+        ValueError: ``title`` is the empty string (omit it instead).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    drive = get_service("drive", "v3", credentials=creds)
+    body: dict[str, Any] = {}
+    if title is not None:
+        if not title.strip():
+            raise ValueError(
+                "title cannot be the empty string; omit it to let Drive "
+                "name the copy 'Copy of <original>'."
+            )
+        body["name"] = title
+    # files.copy is NOT idempotent (each call makes another copy). Single
+    # attempt, no execute_with_retry - a retry after a landed copy would
+    # duplicate the file (same posture as copy_google_doc / create_folder).
+    copied = drive.files().copy(
+        fileId=file_id,
+        body=body,
+        fields="id,name,webViewLink",
+    ).execute()
+    new_id = copied["id"]
+    return {
+        "file_id": new_id,
+        "name": copied.get("name"),
+        "url": copied.get("webViewLink")
+        or f"https://drive.google.com/file/d/{new_id}/view",
+    }
+
+
 def untrash_drive_file(creds: Credentials, drive_file_id: str) -> dict:
     """Restore a Drive file from trash to its original location.
 

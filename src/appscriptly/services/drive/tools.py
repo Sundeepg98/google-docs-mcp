@@ -66,6 +66,7 @@ from fastmcp.exceptions import ToolError
 from appscriptly._deprecation import warn_deprecated_alias
 from appscriptly.decorators import workspace_tool
 from appscriptly.services.drive.api import (
+    copy_drive_file as _copy_drive_file,
     create_folder as _create_folder,
     export_doc as _export_doc,
     find_doc_by_title as _find_doc_by_title,
@@ -92,6 +93,7 @@ from appscriptly.tool_schemas import (
     GDOCS_SHARE_FILE_OUTPUT_SCHEMA,
     GDOCS_TRASH_FILE_OUTPUT_SCHEMA,
     GDOCS_UNTRASH_FILE_OUTPUT_SCHEMA,
+    GDRIVE_COPY_FILE_OUTPUT_SCHEMA,
     GDRIVE_RENAME_FILE_OUTPUT_SCHEMA,
 )
 
@@ -605,6 +607,58 @@ def gdrive_rename_file(creds, file_id: str, new_name: str) -> dict:
     ``reason: "app_not_authorized"``.
     """
     return _rename_file(creds, file_id, new_name)
+
+
+# ---------------------------------------------------------------------
+# gdrive_copy_file - canonical only, NO alias (new tool, never had a
+# legacy gdocs_ prefix). The template-fill flow enabler.
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="drive",
+    title="Copy a Drive file",
+    # Creates a copy (adds state, touches nothing existing) so it is a
+    # write, not destructive. NOT idempotent: each call makes another copy.
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDRIVE_COPY_FILE_OUTPUT_SCHEMA,
+)
+def gdrive_copy_file(creds, file_id: str, title: str | None = None) -> dict:
+    """Copy a Drive file (Google Doc, Sheet, Slides, .docx, anything).
+
+    USE WHEN: you want a working COPY of an existing file. The headline
+    case is template fill: copy a Google Doc template that already
+    carries pre-authored named ranges, then fill the copy with
+    ``gdocs_replace_named_range_content`` - the original template is
+    never modified.
+
+    Uses Drive ``files.copy``. The copy inherits your ownership; same
+    ``drive.file`` scope as ``gdrive_rename_file``, no extra permission.
+    Only files THIS app created / can access are copyable.
+
+    Args:
+        file_id: The Drive file ID to copy (from a create call,
+            ``gdrive_find_file``, or ``gdrive_find_doc_by_title``).
+        title: Optional name for the copy. Omit to let Drive name it
+            ``"Copy of <original>"``.
+
+    Returns:
+        ``{file_id, name, url}`` for the NEW file: its id, name, and
+        open-in-browser URL (Drive's ``webViewLink``).
+
+    Choreography: ``gdrive_copy_file`` (copy a pre-marked template) ->
+    ``gdocs_replace_named_range_content`` (fill each field in the copy)
+    -> ``gdocs_read_doc`` (verify). To rename in place instead use
+    ``gdrive_rename_file``; to remove a file use ``gdrive_trash_file``.
+
+    NOTE: requires the base Google OAuth grant like every tool; works
+    only on files this app can access (``drive.file`` scope).
+    """
+    try:
+        return _copy_drive_file(creds, file_id, title)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 # ---------------------------------------------------------------------

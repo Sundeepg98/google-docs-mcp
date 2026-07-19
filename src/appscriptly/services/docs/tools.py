@@ -63,6 +63,8 @@ from appscriptly.services.docs.api import (
     add_tabs_to_doc,
     append_to_tab as _append_to_tab,
     create_comment as _create_comment,
+    create_named_range as _create_named_range,
+    delete_named_range as _delete_named_range,
     delete_tab as _delete_tab,
     edit_range as _edit_range,
     format_paragraph as _format_paragraph,
@@ -71,6 +73,7 @@ from appscriptly.services.docs.api import (
     insert_image as _insert_image,
     inspect_tab_content as _inspect_tab_content,
     insert_markdown_table as _insert_markdown_table,
+    insert_page_break as _insert_page_break,
     insert_table as _insert_table,
     list_comments as _list_comments,
     make_doc_with_tabs,
@@ -78,6 +81,7 @@ from appscriptly.services.docs.api import (
     read_tab_content as _read_tab_content,
     rename_tab as _rename_tab,
     replace_all_text as _replace_all_text,
+    replace_named_range_content as _replace_named_range_content,
     reply_to_comment as _reply_to_comment,
     set_tab_icons as _set_tab_icons,
 )
@@ -85,6 +89,8 @@ from appscriptly.tool_schemas import (
     GDOCS_ADD_TABS_OUTPUT_SCHEMA,
     GDOCS_APPEND_TO_TAB_OUTPUT_SCHEMA,
     GDOCS_CREATE_COMMENT_OUTPUT_SCHEMA,
+    GDOCS_CREATE_NAMED_RANGE_OUTPUT_SCHEMA,
+    GDOCS_DELETE_NAMED_RANGE_OUTPUT_SCHEMA,
     GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
     GDOCS_EDIT_RANGE_OUTPUT_SCHEMA,
     GDOCS_FORMAT_PARAGRAPH_OUTPUT_SCHEMA,
@@ -93,6 +99,7 @@ from appscriptly.tool_schemas import (
     GDOCS_GET_TAB_URL_OUTPUT_SCHEMA,
     GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA,
     GDOCS_INSERT_MARKDOWN_TABLE_OUTPUT_SCHEMA,
+    GDOCS_INSERT_PAGE_BREAK_OUTPUT_SCHEMA,
     GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
     GDOCS_LIST_COMMENTS_OUTPUT_SCHEMA,
     GDOCS_MAKE_TABBED_DOC_OUTPUT_SCHEMA,
@@ -100,6 +107,7 @@ from appscriptly.tool_schemas import (
     GDOCS_READ_DOC_OUTPUT_SCHEMA,
     GDOCS_RENAME_TAB_OUTPUT_SCHEMA,
     GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
+    GDOCS_REPLACE_NAMED_RANGE_CONTENT_OUTPUT_SCHEMA,
     GDOCS_REPLY_TO_COMMENT_OUTPUT_SCHEMA,
     GDOCS_SET_TAB_ICONS_OUTPUT_SCHEMA,
     GDOCS_TAB_EXISTING_DOC_OUTPUT_SCHEMA,
@@ -351,6 +359,7 @@ def gdocs_read_doc(
     tab_id: str | None = None,
     tab_title: str | None = None,
     suggestions_view_mode: str | None = None,
+    include_indices: bool = False,
 ) -> dict:
     """Read tab body content, one tab or all of them.
 
@@ -375,6 +384,12 @@ def gdocs_read_doc(
             suggestions were accepted, ``"SUGGESTIONS_INLINE"`` keeps
             them inline, ``"DEFAULT_FOR_CURRENT_ACCESS"`` lets Docs
             decide. Omit to use Docs' default.
+        include_indices: When True, every ``paragraphs`` entry also
+            carries the server ``start_index`` / ``end_index`` of its
+            element (works in BOTH single-tab and all-tabs mode). These
+            are the exact spans ``gdocs_create_named_range`` and
+            ``gdocs_insert_page_break`` consume, so template-fill callers
+            never compute an index by hand. Default False.
 
     Returns:
         Single-tab mode: ``{"doc_id", "tab_id", "title",
@@ -383,7 +398,8 @@ def gdocs_read_doc(
         All-tabs mode: ``{"doc_id", "tabs": [{tab_id, title, depth,
         paragraph_count, paragraphs: [...]}, ...]}``.
         (Every mode echoes ``doc_id`` - it is required by the declared
-        output schema.)
+        output schema.) With ``include_indices=True`` each paragraph
+        entry additionally carries ``start_index`` / ``end_index``.
 
     ``paragraphs[].style`` is a Docs namedStyleType (``HEADING_1``,
     ``NORMAL_TEXT``, etc.) or ``"TABLE"`` / ``"TOC"`` placeholders.
@@ -392,16 +408,21 @@ def gdocs_read_doc(
 
     Choreography: typically preceded by ``gdocs_get_doc_outline`` to
     pick the tab_id (single-tab mode). For tab structure WITHOUT body
-    text use ``gdocs_get_doc_outline`` (faster, smaller).
+    text use ``gdocs_get_doc_outline`` (faster, smaller). To then mark a
+    field for template fill, read with ``include_indices=True`` and pass
+    a paragraph's span to ``gdocs_create_named_range``.
     """
     try:
         if tab_id is None and tab_title is None:
             return _read_all_tabs(
-                creds, doc_id, suggestions_view_mode=suggestions_view_mode
+                creds, doc_id,
+                suggestions_view_mode=suggestions_view_mode,
+                include_indices=include_indices,
             )
         return _read_tab_content(
             creds, doc_id, tab_id=tab_id, tab_title=tab_title,
             suggestions_view_mode=suggestions_view_mode,
+            include_indices=include_indices,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e
@@ -1241,6 +1262,248 @@ def gdocs_insert_table(
     try:
         return _insert_table(
             creds, doc_id, rows, columns, index=index, tab_id=tab_id,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_create_named_range - documents.batchUpdate (createNamedRange)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Create a named range over a span in a document",
+    # A named range is a marker over existing content; creating one adds
+    # state, touches no existing text, and is not destructive. Each call
+    # makes another range, so it is not idempotent.
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_CREATE_NAMED_RANGE_OUTPUT_SCHEMA,
+)
+def gdocs_create_named_range(
+    creds,
+    doc_id: str,
+    name: str,
+    start_index: int,
+    end_index: int,
+    tab_id: str | None = None,
+) -> dict:
+    """Mark a span ``[start_index, end_index)`` with a stable named range.
+
+    USE WHEN: setting up a template field you will fill (and maybe
+    refill) later. A named range is a server-managed marker: create it
+    once, then rewrite its content any number of times with
+    ``gdocs_replace_named_range_content`` WITHOUT re-reading or
+    recomputing indices. This is the robust alternative to a fragile
+    whole-doc find/replace.
+
+    The indices MUST come from a read: call
+    ``gdocs_read_doc(..., include_indices=True)`` and pass a paragraph's
+    ``start_index`` / ``end_index`` straight through. This tool NEVER
+    computes indices from text; anchoring a range by searching for a
+    token is a separate, higher risk capability that is out of scope.
+
+    Args:
+        doc_id: Document ID.
+        name: Named-range name. One name may cover several ranges; the
+            replace / delete tools address every range sharing the name.
+        start_index: Span start (>= 1), from a
+            ``gdocs_read_doc(include_indices=True)`` paragraph.
+        end_index: Span end, exclusive (> start_index), from the same read.
+        tab_id: Optional tab to scope the range to (from
+            ``gdocs_get_doc_outline``). Omit for the default tab.
+
+    Returns:
+        ``{doc_id, named_range_id, name, start_index, end_index,
+        tab_id}`` where ``named_range_id`` is the server id (address one
+        range precisely; may be null if Docs omits it).
+
+    Choreography: ``gdocs_read_doc(include_indices=True)`` to get the
+    span -> ``gdocs_create_named_range`` -> later
+    ``gdocs_replace_named_range_content`` to fill it ->
+    ``gdocs_delete_named_range`` to clear the marker.
+    """
+    try:
+        return _create_named_range(
+            creds, doc_id, name, start_index, end_index, tab_id=tab_id,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_replace_named_range_content - batchUpdate (replaceNamedRangeContent)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Replace the content of a named range",
+    # Rewrites a marker's content; existing marker persists, no content
+    # is removed net (it is swapped). Idempotent: same text twice lands
+    # the same state (same posture as gdocs_replace_all_text).
+    readonly=False, destructive=False, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_REPLACE_NAMED_RANGE_CONTENT_OUTPUT_SCHEMA,
+)
+def gdocs_replace_named_range_content(
+    creds,
+    doc_id: str,
+    text: str,
+    named_range_name: str | None = None,
+    named_range_id: str | None = None,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Fill a named range with ``text``, resolved server-side (no indices).
+
+    USE WHEN: filling a template field previously marked with
+    ``gdocs_create_named_range`` (or authored in the Docs UI, or carried
+    in a copied template). The server locates the range and swaps its
+    content with ZERO client index arithmetic, so it never goes stale.
+    THE template-fill leverage primitive.
+
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``:
+    by NAME fills every range with that name (scope to some tabs with
+    ``tab_ids``; omit for all tabs); by ID fills one specific range
+    (``tab_ids`` not applicable).
+
+    Args:
+        doc_id: Document ID.
+        text: Replacement text (typically non-empty).
+        named_range_name: Fill every range with this name.
+        named_range_id: Fill one range by its server id (from
+            ``gdocs_create_named_range``).
+        tab_ids: With ``named_range_name`` only, restrict to these tabs.
+
+    Returns:
+        ``{doc_id, selector, selector_value, text_length, scope}``. The
+        Docs reply carries NO match count, so this echoes the request
+        and does NOT report how many ranges matched. Filling a name that
+        matches nothing is a no-op success.
+
+    Choreography: ``gdocs_create_named_range`` (or ``gdrive_copy_file``
+    of a pre-marked template) -> ``gdocs_replace_named_range_content``
+    -> ``gdocs_read_doc`` to verify the field now reads the new text.
+    """
+    try:
+        return _replace_named_range_content(
+            creds, doc_id, text,
+            named_range_name=named_range_name,
+            named_range_id=named_range_id,
+            tab_ids=tab_ids,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_delete_named_range - documents.batchUpdate (deleteNamedRange)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Delete a named range marker",
+    # Removes the MARKER, not the content it covered. Destructive so MCP
+    # clients can prompt for confirmation (an anchor other automations
+    # may rely on is being removed). Idempotent in intent (deleting the
+    # same marker twice ends in the same state); the api dispatches
+    # single-shot to honor the destructive-op safety floor.
+    readonly=False, destructive=True, idempotent=True, external=True,
+    creds=True,
+    output_schema=GDOCS_DELETE_NAMED_RANGE_OUTPUT_SCHEMA,
+)
+def gdocs_delete_named_range(
+    creds,
+    doc_id: str,
+    named_range_name: str | None = None,
+    named_range_id: str | None = None,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Remove a named range MARKER (the content it covered stays put).
+
+    USE WHEN: cleaning up a template field once it is filled, so the
+    span is no longer addressable as a named range. IMPORTANT: this
+    deletes only the marker/anchor. The text and paragraphs the range
+    covered are NOT removed, they remain in the document unchanged.
+
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``
+    (same addressing rules as ``gdocs_replace_named_range_content``).
+
+    Args:
+        doc_id: Document ID.
+        named_range_name: Remove every range with this name.
+        named_range_id: Remove one range by its server id.
+        tab_ids: With ``named_range_name`` only, restrict to these tabs.
+
+    Returns:
+        ``{doc_id, selector, selector_value, scope}`` echoing which
+        marker was removed.
+
+    Choreography: the cleanup step of the mark -> fill -> clear loop.
+    After deleting, a ``gdocs_replace_named_range_content`` on that same
+    name is a no-op (the marker is gone).
+    """
+    try:
+        return _delete_named_range(
+            creds, doc_id,
+            named_range_name=named_range_name,
+            named_range_id=named_range_id,
+            tab_ids=tab_ids,
+        )
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------
+# gdocs_insert_page_break - documents.batchUpdate (insertPageBreak)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="docs",
+    title="Insert a page break into a document",
+    # Adds a page break; existing content untouched, not destructive.
+    # Each call inserts another break, so it is not idempotent.
+    readonly=False, destructive=False, idempotent=False, external=True,
+    creds=True,
+    output_schema=GDOCS_INSERT_PAGE_BREAK_OUTPUT_SCHEMA,
+)
+def gdocs_insert_page_break(
+    creds,
+    doc_id: str,
+    index: int | None = None,
+    tab_id: str | None = None,
+) -> dict:
+    """Insert a page break at the tab body end (default) or at ``index``.
+
+    USE WHEN: forcing content onto a new page, e.g. between the sections
+    of a filled template. By default (``index`` omitted) the break is
+    appended at the END of the tab body, which needs no index and no
+    read (the arithmetic-free path). Pass ``index`` to break at a
+    precise position; that index MUST come from a
+    ``gdocs_read_doc(include_indices=True)`` read, this tool never
+    computes it.
+
+    Args:
+        doc_id: Document ID.
+        index: Optional body index to break at (>= 1). Omit to append at
+            the tab body end.
+        tab_id: Optional tab to target. Omit for the default tab.
+
+    Returns:
+        ``{doc_id, location_mode, index, tab_id}`` where
+        ``location_mode`` is ``"end_of_segment"`` (index omitted) or
+        ``"index"``.
+
+    Choreography: pairs with the template-fill flow; typically after
+    ``gdocs_replace_named_range_content`` to paginate the result.
+    """
+    try:
+        return _insert_page_break(
+            creds, doc_id, index=index, tab_id=tab_id,
         )
     except ValueError as e:
         raise ToolError(str(e)) from e

@@ -425,6 +425,7 @@ def read_tab_content(
     tab_title: str | None = None,
     *,
     suggestions_view_mode: str | None = None,
+    include_indices: bool = False,
 ) -> dict:
     """Read the body content of a single tab.
 
@@ -446,6 +447,12 @@ def read_tab_content(
     current text, ``PREVIEW_SUGGESTIONS_ACCEPTED`` reads as if all
     suggestions were accepted, ``SUGGESTIONS_INLINE`` keeps them inline.
     Omit to use Docs' default for the caller's access.
+
+    ``include_indices`` (optional): when True, every ``paragraphs``
+    entry also carries the server ``start_index`` / ``end_index`` of its
+    source element. These are the exact spans ``create_named_range`` /
+    ``insert_page_break`` consume, so a caller never has to compute an
+    index client-side.
     """
     if not tab_id and not tab_title:
         raise ValueError("Provide either tab_id or tab_title")
@@ -478,7 +485,9 @@ def read_tab_content(
         )
 
     body_content = tab["documentTab"]["body"]["content"]
-    paragraphs, table_count, image_count = _summarize_body_content(body_content)
+    paragraphs, table_count, image_count = _summarize_body_content(
+        body_content, include_indices=include_indices
+    )
 
     from appscriptly.services.drive.api import is_file_trashed
     return {
@@ -629,6 +638,342 @@ def insert_table(
         "doc_id": doc_id,
         "rows": rows,
         "columns": columns,
+        "index": index,
+        "tab_id": tab_id,
+    }
+
+
+# ---------------------------------------------------------------------
+# Template fill: named ranges + page break (single-request builders).
+# Each follows the insert_table shape (one documents.batchUpdate request,
+# conditional tabId threading). Named ranges are the robust template
+# primitive: mark a span once, then rewrite it server-side with ZERO
+# client index arithmetic. Indices only ever come FROM A READ
+# (gdocs_read_doc include_indices), never computed here.
+# ---------------------------------------------------------------------
+
+
+def create_named_range(
+    creds: Credentials,
+    doc_id: str,
+    name: str,
+    start_index: int,
+    end_index: int,
+    *,
+    tab_id: str | None = None,
+) -> dict:
+    """Create a named range over an EXISTING span ``[start_index, end_index)``.
+
+    A named range is a stable, server-managed marker over a run of
+    content. It is the robust anchor for template fill: mark a span
+    once, then rewrite it any number of times with
+    ``replace_named_range_content`` WITHOUT re-reading or recomputing
+    indices. The range is tab-scoped via ``tab_id`` for multi-tab docs.
+
+    The indices MUST come from a prior read. Call
+    ``read_tab_content`` / ``read_all_tabs`` with ``include_indices``
+    and pass a paragraph's ``start_index`` / ``end_index`` straight
+    through. This function NEVER computes indices from text; searching
+    for a token and deriving its span is a separate, higher risk
+    capability that is out of scope here.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope
+            (baseline, no extra grant).
+        doc_id: The Google Doc ID.
+        name: The named-range name. One name may cover several ranges;
+            ``replace_named_range_content`` / ``delete_named_range``
+            address every range sharing the name (optionally tab-scoped).
+        start_index: Span start (>= 1; index 0 is reserved by Docs),
+            read from a prior ``include_indices`` read.
+        end_index: Span end, exclusive (> ``start_index``), from the
+            same read.
+        tab_id: Optional tab to scope the range to (from
+            ``get_doc_outline`` / a read). Omit for the default tab.
+
+    Returns:
+        ``{doc_id, named_range_id, name, start_index, end_index,
+        tab_id}``. ``named_range_id`` is the server id parsed from the
+        ``createNamedRange`` reply, to address this one range precisely.
+
+    Raises:
+        ValueError: empty ``name``, ``start_index`` < 1, or
+            ``end_index`` <= ``start_index``.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    if not name or not name.strip():
+        raise ValueError("name cannot be empty.")
+    if start_index < 1:
+        raise ValueError("start_index must be >= 1 (index 0 is reserved by Docs).")
+    if end_index <= start_index:
+        raise ValueError("end_index must be greater than start_index.")
+
+    docs = get_service("docs", "v1", credentials=creds)
+    range_obj: dict[str, Any] = {"startIndex": start_index, "endIndex": end_index}
+    if tab_id is not None:
+        if not tab_id.strip():
+            raise ValueError("tab_id cannot be the empty string; omit it instead.")
+        range_obj["tabId"] = tab_id
+    req = {"createNamedRange": {"name": name, "range": range_obj}}
+    # NOT idempotent: each call creates ANOTHER range (a name may map to
+    # multiple ranges). Single attempt, same posture as insert_table.
+    resp = execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.createNamedRange",
+    )
+    named_range_id = (
+        resp.get("replies", [{}])[0]
+        .get("createNamedRange", {})
+        .get("namedRangeId")
+    )
+    return {
+        "doc_id": doc_id,
+        "named_range_id": named_range_id,
+        "name": name,
+        "start_index": start_index,
+        "end_index": end_index,
+        "tab_id": tab_id,
+    }
+
+
+def _named_range_selector(
+    named_range_name: str | None,
+    named_range_id: str | None,
+    tab_ids: list[str] | None,
+    *,
+    name_field: str,
+) -> tuple[dict, str, str, Any]:
+    """Build the shared ``{<name_field>|namedRangeId (+tabsCriteria)}``.
+
+    Used by ``replace_named_range_content`` + ``delete_named_range`` so
+    their selector rules stay in lockstep. The by-NAME field key differs
+    per request - a real Docs API asymmetry: ``replaceNamedRangeContent``
+    selects by ``namedRangeName`` while ``deleteNamedRange`` selects by
+    ``name``. Each caller passes the right one as ``name_field``. Returns
+    ``(fields, selector, selector_value, scope)`` where ``fields`` is
+    merged into the request, ``selector`` is ``"named_range_name"`` or
+    ``"named_range_id"`` (the tool's own echo label, NOT the API field),
+    and ``scope`` is the tab scope (``"all_tabs"`` / a tab-id list) for
+    name selection or ``None`` for id selection.
+
+    Enforces: EXACTLY ONE of name/id; ``tab_ids`` only with a name (an
+    id is globally unique, so tab scoping is meaningless for it).
+    """
+    if named_range_id is not None:
+        if named_range_name is not None:
+            raise ValueError(
+                "Provide exactly one of named_range_name or named_range_id."
+            )
+        if tab_ids is not None:
+            raise ValueError(
+                "tab_ids applies only to named_range_name "
+                "(a named_range_id is globally unique)."
+            )
+        return {"namedRangeId": named_range_id}, "named_range_id", named_range_id, None
+    if named_range_name is None:
+        raise ValueError(
+            "Provide exactly one of named_range_name or named_range_id."
+        )
+    fields: dict[str, Any] = {name_field: named_range_name}
+    if tab_ids is not None:
+        if not tab_ids:
+            raise ValueError(
+                "tab_ids list cannot be empty; omit it to target all tabs."
+            )
+        fields["tabsCriteria"] = {"tabIds": list(tab_ids)}
+    scope: Any = "all_tabs" if tab_ids is None else list(tab_ids)
+    return fields, "named_range_name", named_range_name, scope
+
+
+def replace_named_range_content(
+    creds: Credentials,
+    doc_id: str,
+    text: str,
+    *,
+    named_range_name: str | None = None,
+    named_range_id: str | None = None,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Replace the content of a named range with ``text`` (server-resolved).
+
+    THE template-fill leverage primitive. The server locates the range
+    (by name or id) and swaps its content for ``text`` with ZERO client
+    index arithmetic, so it never goes stale as the document changes.
+    More robust than a whole-doc ``replace_all_text``, which matches raw
+    text anywhere in the body.
+
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``:
+    by NAME addresses every range sharing that name (scope with
+    ``tab_ids`` to a subset of tabs; omit = all tabs); by ID addresses
+    one specific range (``tab_ids`` not applicable).
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope.
+        doc_id: The Google Doc ID.
+        text: Replacement text (typically non-empty).
+        named_range_name: Address every range with this name.
+        named_range_id: Address one range by its server id (from
+            ``create_named_range``).
+        tab_ids: With ``named_range_name`` only, limit the replace to
+            these tabs. Omit to hit every tab.
+
+    Returns:
+        ``{doc_id, selector, selector_value, text_length, scope}``. The
+        Docs ``replaceNamedRangeContent`` reply carries NO match count,
+        so this echoes the request and does NOT report how many ranges
+        matched. A name matching nothing is a no-op success (relied on
+        by the delete then replace cleanup path).
+
+    Raises:
+        ValueError: neither or both selectors; ``tab_ids`` with
+            ``named_range_id``; empty ``tab_ids`` list.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    fields, selector, selector_value, scope = _named_range_selector(
+        named_range_name, named_range_id, tab_ids, name_field="namedRangeName"
+    )
+    docs = get_service("docs", "v1", credentials=creds)
+    req = {"replaceNamedRangeContent": {"text": text, **fields}}
+    # Idempotent: replacing a range's content with the same text twice
+    # lands the same final state (same posture as replace_all_text).
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.batchUpdate.replaceNamedRangeContent",
+    )
+    return {
+        "doc_id": doc_id,
+        "selector": selector,
+        "selector_value": selector_value,
+        "text_length": len(text),
+        "scope": scope,
+    }
+
+
+def delete_named_range(
+    creds: Credentials,
+    doc_id: str,
+    *,
+    named_range_name: str | None = None,
+    named_range_id: str | None = None,
+    tab_ids: list[str] | None = None,
+) -> dict:
+    """Delete a named range MARKER (not the content it covered).
+
+    Removes the named-range anchor so the span is no longer addressable
+    by ``replace_named_range_content``; the text and paragraphs the
+    range covered stay in the document untouched. The cleanup step of
+    the mark then fill then clear template loop.
+
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``
+    (same addressing rules as ``replace_named_range_content``).
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope.
+        doc_id: The Google Doc ID.
+        named_range_name: Remove every range with this name.
+        named_range_id: Remove one range by its server id.
+        tab_ids: With ``named_range_name`` only, limit removal to these
+            tabs. Omit to hit every tab.
+
+    Returns:
+        ``{doc_id, selector, selector_value, scope}`` echoing which
+        marker was removed.
+
+    Raises:
+        ValueError: selector rules violated (see
+            ``replace_named_range_content``).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    fields, selector, selector_value, scope = _named_range_selector(
+        named_range_name, named_range_id, tab_ids, name_field="name"
+    )
+    docs = get_service("docs", "v1", credentials=creds)
+    req = {"deleteNamedRange": fields}
+    # Destructive marker removal: single attempt (NOT retried) to honor
+    # the destructive-op safety floor. A lost-response retry could
+    # surface a spurious "not found" on the second delete.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.deleteNamedRange",
+    )
+    return {
+        "doc_id": doc_id,
+        "selector": selector,
+        "selector_value": selector_value,
+        "scope": scope,
+    }
+
+
+def insert_page_break(
+    creds: Credentials,
+    doc_id: str,
+    *,
+    index: int | None = None,
+    tab_id: str | None = None,
+) -> dict:
+    """Insert a page break at the tab body end (default) or at ``index``.
+
+    Default (``index`` omitted) appends the break at the END of the
+    tab's body via ``endOfSegmentLocation`` - the arithmetic-free path,
+    no read required. Pass ``index`` (read from an ``include_indices``
+    read) to break at a precise position; the index MUST come from a
+    read, this function never computes it.
+
+    Args:
+        creds: OAuth credentials carrying the ``documents`` scope.
+        doc_id: The Google Doc ID.
+        index: Optional body index to break at (>= 1). Omit to append at
+            the tab body end.
+        tab_id: Optional tab to target. Omit for the default tab.
+
+    Returns:
+        ``{doc_id, location_mode, index, tab_id}`` where
+        ``location_mode`` is ``"end_of_segment"`` (index omitted) or
+        ``"index"``.
+
+    Raises:
+        ValueError: ``index`` < 1, or ``tab_id`` is the empty string.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+    """
+    if tab_id is not None and not tab_id.strip():
+        raise ValueError("tab_id cannot be the empty string; omit it instead.")
+    docs = get_service("docs", "v1", credentials=creds)
+    if index is None:
+        end_loc: dict[str, Any] = {}
+        if tab_id is not None:
+            end_loc["tabId"] = tab_id
+        page_break: dict[str, Any] = {"endOfSegmentLocation": end_loc}
+        location_mode = "end_of_segment"
+    else:
+        if index < 1:
+            raise ValueError("index must be >= 1 (index 0 is reserved by Docs).")
+        loc: dict[str, Any] = {"index": index}
+        if tab_id is not None:
+            loc["tabId"] = tab_id
+        page_break = {"location": loc}
+        location_mode = "index"
+    req = {"insertPageBreak": page_break}
+    # NOT idempotent: each call inserts ANOTHER page break. Single
+    # attempt, same posture as insert_table.
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": [req]}
+        ).execute(),
+        idempotent=False,
+        op_name="docs.documents.batchUpdate.insertPageBreak",
+    )
+    return {
+        "doc_id": doc_id,
+        "location_mode": location_mode,
         "index": index,
         "tab_id": tab_id,
     }
@@ -1516,6 +1861,7 @@ def read_all_tabs(
     doc_id: str,
     *,
     suggestions_view_mode: str | None = None,
+    include_indices: bool = False,
 ) -> dict:
     """Read body content of every tab in one call.
 
@@ -1525,6 +1871,11 @@ def read_all_tabs(
     ``suggestions_view_mode`` (optional) controls how tracked-change
     suggestions render (same values + meaning as ``read_tab_content``);
     omit to use Docs' default for the caller's access.
+
+    ``include_indices`` (optional): when True, every ``paragraphs``
+    entry (in every tab) also carries the server ``start_index`` /
+    ``end_index`` of its source element, identical to
+    ``read_tab_content`` (the shared summarizer produces both).
 
     Returns ``{"doc_id", "tabs": [{tab_id, title, depth,
     paragraph_count, table_count, image_count, paragraphs:
@@ -1554,7 +1905,7 @@ def read_all_tabs(
             props = tab["tabProperties"]
             body = tab.get("documentTab", {}).get("body", {})
             paragraphs, table_count, image_count = _summarize_body_content(
-                body.get("content") or []
+                body.get("content") or [], include_indices=include_indices
             )
             out.append(
                 {
@@ -1586,7 +1937,7 @@ _MAX_CELL_TABLE_DEPTH = 6
 
 
 def _summarize_body_content(
-    content: list[dict], *, _depth: int = 0
+    content: list[dict], *, _depth: int = 0, include_indices: bool = False
 ) -> tuple[list[dict], int, int]:
     """Summarize a body content list into ``{style, text}`` entries + counts.
 
@@ -1594,6 +1945,14 @@ def _summarize_body_content(
     ``read_tab_content`` (single tab) and ``read_all_tabs`` (bulk) - so
     their per-element emission is byte-identical. Returns
     ``(paragraphs, table_count, image_count)``.
+
+    When ``include_indices`` is True, each emitted top-level entry also
+    carries the source structural element's ``start_index`` /
+    ``end_index`` (the Docs ``startIndex`` / ``endIndex``; either may be
+    ``None`` for the first element, which Docs omits at index 0). These
+    are the server-sourced spans ``create_named_range`` /
+    ``insert_page_break`` consume. Table-cell recursion always summarizes
+    WITHOUT indices (cells are flattened to text, not addressable here).
 
     Element -> emission:
       textRun             -> its content
@@ -1615,6 +1974,15 @@ def _summarize_body_content(
     paragraphs: list[dict] = []
     table_count = 0
     image_count = 0
+
+    def _tag(entry: dict, elem: dict) -> dict:
+        # Attach server startIndex/endIndex when requested. Docs omits
+        # startIndex on the index-0 element, so either may be None.
+        if include_indices:
+            entry["start_index"] = elem.get("startIndex")
+            entry["end_index"] = elem.get("endIndex")
+        return entry
+
     for elem in content:
         if "paragraph" in elem:
             para = elem["paragraph"]
@@ -1639,7 +2007,7 @@ def _summarize_body_content(
                     chunks.append("[link]")
             text = "".join(chunks).rstrip("\n")
             if text or style != "NORMAL_TEXT":
-                paragraphs.append({"style": style, "text": text})
+                paragraphs.append(_tag({"style": style, "text": text}, elem))
         elif "table" in elem:
             tbl = elem["table"]
             rows = tbl.get("rows", 0)
@@ -1648,15 +2016,20 @@ def _summarize_body_content(
             marker = f"[table {rows}x{cols}]"
             cell_text = _extract_table_cell_text(tbl, _depth=_depth)
             paragraphs.append(
-                {
-                    "style": "TABLE",
-                    "text": f"{marker} {cell_text}" if cell_text else marker,
-                }
+                _tag(
+                    {
+                        "style": "TABLE",
+                        "text": f"{marker} {cell_text}" if cell_text else marker,
+                    },
+                    elem,
+                )
             )
         elif "sectionBreak" in elem:
             continue
         elif "tableOfContents" in elem:
-            paragraphs.append({"style": "TOC", "text": "[table of contents]"})
+            paragraphs.append(
+                _tag({"style": "TOC", "text": "[table of contents]"}, elem)
+            )
     return paragraphs, table_count, image_count
 
 
