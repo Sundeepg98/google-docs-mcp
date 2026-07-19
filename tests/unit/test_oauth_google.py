@@ -36,6 +36,13 @@ def signing_key():
 
 
 @pytest.fixture
+def enc_key():
+    # AES-GCM key for the encrypted PKCE verifier embedded in the state
+    # token (matches keys.get_key("oauth_state_enc") length).
+    return bytes(range(32))
+
+
+@pytest.fixture
 def base_url():
     return "https://example.fly.dev"
 
@@ -82,7 +89,7 @@ def test_load_client_config_rejects_garbage(tmp_path):
 
 
 def test_build_authorization_url_contains_signed_state(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     from appscriptly.oauth_google import build_authorization_url
 
@@ -91,17 +98,19 @@ def test_build_authorization_url_contains_signed_state(
         base_url=base_url,
         client_config=client_config,
         signing_key=signing_key,
+        enc_key=enc_key,
     )
 
     qs = parse_qs(urlparse(url).query)
     assert "state" in qs
     state = qs["state"][0]
-    # Signed state shape: sub_b64.nonce.exp.sig — 4 dot-separated parts
-    assert state.count(".") == 3
+    # Signed state shape with encrypted PKCE: sub_b64.nonce.exp.enc.sig —
+    # 5 dot-separated parts (the verifier ciphertext adds the enc field).
+    assert state.count(".") == 4
 
 
 def test_auth_pkce_consistency_every_url(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     """v1.1.1 regression guard (Issue B). Every auth_url from
     build_authorization_url MUST deterministically include
@@ -124,6 +133,7 @@ def test_auth_pkce_consistency_every_url(
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key,
+            enc_key=enc_key,
         )
         qs = parse_qs(urlparse(url).query)
 
@@ -147,7 +157,7 @@ def test_auth_pkce_consistency_every_url(
 
 
 def test_build_authorization_url_uses_correct_redirect(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     from appscriptly.oauth_google import (
         CALLBACK_PATH, build_authorization_url,
@@ -158,6 +168,7 @@ def test_build_authorization_url_uses_correct_redirect(
         base_url=base_url,
         client_config=client_config,
         signing_key=signing_key,
+        enc_key=enc_key,
     )
 
     qs = parse_qs(urlparse(url).query)
@@ -165,7 +176,7 @@ def test_build_authorization_url_uses_correct_redirect(
 
 
 def test_build_authorization_url_requests_offline_access_and_consent_prompt(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     """Without these flags, Google may omit refresh_token on re-auth —
     breaking our long-lived background refresh story."""
@@ -176,6 +187,7 @@ def test_build_authorization_url_requests_offline_access_and_consent_prompt(
         base_url=base_url,
         client_config=client_config,
         signing_key=signing_key,
+        enc_key=enc_key,
     )
 
     qs = parse_qs(urlparse(url).query)
@@ -184,7 +196,7 @@ def test_build_authorization_url_requests_offline_access_and_consent_prompt(
 
 
 def test_build_authorization_url_includes_all_default_scopes(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     from appscriptly.oauth_google import (
         GOOGLE_API_SCOPES, build_authorization_url,
@@ -192,7 +204,7 @@ def test_build_authorization_url_includes_all_default_scopes(
 
     url = build_authorization_url(
         "u", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key, enc_key=enc_key,
     )
 
     scope_str = parse_qs(urlparse(url).query)["scope"][0]
@@ -201,13 +213,13 @@ def test_build_authorization_url_includes_all_default_scopes(
 
 
 def test_build_authorization_url_rejects_empty_user_id(
-    client_config, signing_key, base_url
+    client_config, signing_key, enc_key, base_url
 ):
     from appscriptly.oauth_google import build_authorization_url
     with pytest.raises(ValueError, match="user_id is required"):
         build_authorization_url(
             "", base_url=base_url, client_config=client_config,
-            signing_key=signing_key,
+            signing_key=signing_key, enc_key=enc_key,
         )
 
 
@@ -233,7 +245,7 @@ def _mock_flow_with_creds(
 
 
 def test_exchange_code_returns_user_id_and_creds_json(
-    client_config, signing_key, base_url, fresh_nonce_store
+    client_config, signing_key, enc_key, base_url, fresh_nonce_store
 ):
     from appscriptly.oauth_google import (
         build_authorization_url, exchange_code_for_credentials,
@@ -241,7 +253,7 @@ def test_exchange_code_returns_user_id_and_creds_json(
 
     auth_url = build_authorization_url(
         "user-sub-xyz", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -256,6 +268,7 @@ def test_exchange_code_returns_user_id_and_creds_json(
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key,
+            enc_key=enc_key,
             nonce_store=fresh_nonce_store,
         )
 
@@ -264,7 +277,7 @@ def test_exchange_code_returns_user_id_and_creds_json(
 
 
 def test_exchange_code_rejects_bad_state(
-    client_config, signing_key, base_url, fresh_nonce_store
+    client_config, signing_key, enc_key, base_url, fresh_nonce_store
 ):
     from appscriptly.oauth_google import (
         OAuthCallbackError, exchange_code_for_credentials,
@@ -277,12 +290,13 @@ def test_exchange_code_rejects_bad_state(
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key,
+            enc_key=enc_key,
             nonce_store=fresh_nonce_store,
         )
 
 
 def test_exchange_code_rejects_replayed_state(
-    client_config, signing_key, base_url, fresh_nonce_store
+    client_config, signing_key, enc_key, base_url, fresh_nonce_store
 ):
     """A state token consumed once must not work a second time."""
     from appscriptly.oauth_google import (
@@ -292,7 +306,7 @@ def test_exchange_code_rejects_replayed_state(
 
     auth_url = build_authorization_url(
         "user-1", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -305,7 +319,8 @@ def test_exchange_code_rejects_replayed_state(
             state=state,
             authorization_response_url=f"{base_url}/cb?state={state}&code=X",
             base_url=base_url, client_config=client_config,
-            signing_key=signing_key, nonce_store=fresh_nonce_store,
+            signing_key=signing_key, enc_key=enc_key,
+            nonce_store=fresh_nonce_store,
         )
         # Second redemption: must fail.
         with pytest.raises(OAuthCallbackError, match="state could not be validated"):
@@ -313,12 +328,13 @@ def test_exchange_code_rejects_replayed_state(
                 state=state,
                 authorization_response_url=f"{base_url}/cb?state={state}&code=X",
                 base_url=base_url, client_config=client_config,
-                signing_key=signing_key, nonce_store=fresh_nonce_store,
+                signing_key=signing_key, enc_key=enc_key,
+                nonce_store=fresh_nonce_store,
             )
 
 
 def test_exchange_code_rejects_creds_without_refresh_token(
-    client_config, signing_key, base_url, fresh_nonce_store
+    client_config, signing_key, enc_key, base_url, fresh_nonce_store
 ):
     """If Google returns access_token but no refresh_token, fail loudly
     rather than silently saving short-lived creds that'll break in 1h."""
@@ -329,7 +345,7 @@ def test_exchange_code_rejects_creds_without_refresh_token(
 
     auth_url = build_authorization_url(
         "user-1", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -342,12 +358,13 @@ def test_exchange_code_rejects_creds_without_refresh_token(
                 state=state,
                 authorization_response_url=f"{base_url}/cb?state={state}&code=X",
                 base_url=base_url, client_config=client_config,
-                signing_key=signing_key, nonce_store=fresh_nonce_store,
+                signing_key=signing_key, enc_key=enc_key,
+                nonce_store=fresh_nonce_store,
             )
 
 
 def test_exchange_code_wraps_fetch_token_errors_with_502(
-    client_config, signing_key, base_url, fresh_nonce_store
+    client_config, signing_key, enc_key, base_url, fresh_nonce_store
 ):
     """If google-auth-oauthlib raises (network blip, invalid code, etc.)
     we want a clean OAuthCallbackError, not a 500 leaking internals."""
@@ -358,7 +375,7 @@ def test_exchange_code_wraps_fetch_token_errors_with_502(
 
     auth_url = build_authorization_url(
         "user-1", base_url=base_url, client_config=client_config,
-        signing_key=signing_key,
+        signing_key=signing_key, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -373,5 +390,6 @@ def test_exchange_code_wraps_fetch_token_errors_with_502(
                 state=state,
                 authorization_response_url=f"{base_url}/cb?state={state}&code=X",
                 base_url=base_url, client_config=client_config,
-                signing_key=signing_key, nonce_store=fresh_nonce_store,
+                signing_key=signing_key, enc_key=enc_key,
+                nonce_store=fresh_nonce_store,
             )

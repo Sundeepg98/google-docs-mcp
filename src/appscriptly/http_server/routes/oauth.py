@@ -62,6 +62,10 @@ async def oauth_google_api_callback(request: Request) -> Response:
     # output (~99.96% of 32 random bytes aren't valid UTF-8).
     try:
         signing_key = keys.get_key("oauth_state")
+        # Second HKDF key: decrypts the PKCE verifier embedded in the
+        # state token (stateless encrypted PKCE). Same master / same
+        # fail-closed behavior as the HMAC key above.
+        enc_key = keys.get_key("oauth_state_enc")
     except RuntimeError:
         log.error("oauth: MCP_BEARER_TOKEN unset; cannot verify state")
         return _error_page(
@@ -100,6 +104,7 @@ async def oauth_google_api_callback(request: Request) -> Response:
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key,
+            enc_key=enc_key,
             nonce_store=_state._NONCE_STORE,
         )
     except OAuthCallbackError as e:

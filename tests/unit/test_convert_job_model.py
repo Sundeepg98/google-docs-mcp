@@ -67,6 +67,7 @@ def isolated_env(tmp_path, monkeypatch):
     with with_key_provider(InMemoryKeyProvider({
         "api_bearer": _TEST_KEY_BYTES,
         "oauth_state": _TEST_KEY_BYTES,
+        "oauth_state_enc": _TEST_KEY_BYTES,
         "signed_url": _TEST_KEY_BYTES,
     })):
         yield

@@ -326,6 +326,9 @@ def test_gdocs_setup_apps_script_tool_demands_script_scopes_when_missing(
             # as bytes (matches keys.get_key("oauth_state") return
             # type post-strict-flip).
             "signing_key": b"test-signing-key",
+            # AES-GCM key for the encrypted PKCE verifier in the re-auth
+            # URL (matches keys.get_key("oauth_state_enc")).
+            "enc_key": bytes(range(32)),
             "base_url": "https://example.fly.dev",
         },
     )

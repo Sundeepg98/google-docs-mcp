@@ -950,14 +950,19 @@ async def convert_endpoint(request: Request) -> JSONResponse:
         if signed_uid is not None:
             client_config = _resolve_client_config()
             # v2.0b: route via keys.get_key("oauth_state") — same
-            # key-resolution path as the OAuth callback.
+            # key-resolution path as the OAuth callback. The enc_key
+            # (oauth_state_enc) is what the re-auth URL builder encrypts
+            # the PKCE verifier with; without it a NeedsReauth on this
+            # path would raise instead of surfacing a clean 401 + auth_url.
             signing_key = keys.get_key("oauth_state")
+            enc_key = keys.get_key("oauth_state_enc")
             base_url = _resolve_base_url(request)
             try:
                 creds = get_credentials_for_user(
                     signed_uid,
                     client_config=client_config,
                     signing_key=signing_key,
+                    enc_key=enc_key,
                     base_url=base_url,
                 )
             except NeedsReauthError as e:

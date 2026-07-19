@@ -57,7 +57,7 @@ from typing import Iterator, Literal, Protocol, runtime_checkable
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
+Purpose = Literal["api_bearer", "oauth_state", "signed_url", "oauth_state_enc"]
 
 _MIN_MASTER_LEN = 32
 
@@ -110,6 +110,7 @@ _OVERRIDE_ENV: dict[str, str] = {
     "api_bearer": "MCP_API_BEARER_KEY",
     "oauth_state": "OAUTH_STATE_SIGNING_KEY",
     "signed_url": "SIGNED_URL_SIGNING_KEY",
+    "oauth_state_enc": "OAUTH_STATE_ENC_KEY",
 }
 
 
@@ -210,6 +211,11 @@ _HKDF_INFO: dict[str, bytes] = {
     "api_bearer": b"google-docs-mcp v1 api_bearer",
     "oauth_state": b"google-docs-mcp v1 oauth_state",
     "signed_url": b"google-docs-mcp v1 signed_url",
+    # oauth_state_enc: AES-GCM key that encrypts the PKCE code_verifier
+    # carried INSIDE the OAuth state token (stateless-PKCE, fix/…-login).
+    # Distinct info string ⇒ an independent 32-byte key, separate from the
+    # oauth_state HMAC key even though both derive from the same master.
+    "oauth_state_enc": b"google-docs-mcp v1 oauth_state_enc",
 }
 
 

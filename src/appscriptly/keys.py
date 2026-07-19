@@ -79,15 +79,20 @@ _HKDF_INFO: dict[str, bytes] = {
     "api_bearer": b"google-docs-mcp v1 api_bearer",
     "oauth_state": b"google-docs-mcp v1 oauth_state",
     "signed_url": b"google-docs-mcp v1 signed_url",
+    # oauth_state_enc: AES-GCM key for the encrypted PKCE verifier carried
+    # in the OAuth state token (stateless-PKCE). Mirror of the same entry
+    # in key_provider.py (the adapter-internal source of truth).
+    "oauth_state_enc": b"google-docs-mcp v1 oauth_state_enc",
 }
 
 _OVERRIDE_ENV: dict[str, str] = {
     "api_bearer": "MCP_API_BEARER_KEY",
     "oauth_state": "OAUTH_STATE_SIGNING_KEY",
     "signed_url": "SIGNED_URL_SIGNING_KEY",
+    "oauth_state_enc": "OAUTH_STATE_ENC_KEY",
 }
 
-Purpose = Literal["api_bearer", "oauth_state", "signed_url"]
+Purpose = Literal["api_bearer", "oauth_state", "signed_url", "oauth_state_enc"]
 
 _MIN_MASTER_LEN = 32
 
