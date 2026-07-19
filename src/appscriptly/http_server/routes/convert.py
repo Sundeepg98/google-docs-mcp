@@ -542,9 +542,11 @@ async def convert_endpoint(request: Request) -> JSONResponse:
 
     **Response shapes.** Single input, no ``async``: the full converter
     result (unchanged from the pre-job-model endpoint), or the mapped
-    error (400/500/502). Single input with ``async=1``: 202 with a job
-    descriptor. Batch (multiple files or ``drive_file_ids``): ALWAYS
-    202 ``{"jobs": [descriptor, ...]}`` - a batch is inherently async;
+    error: the caller's own 4xx passed through, 502 on an upstream 5xx
+    or timeout, 500 on a partial-failure envelope or internal error.
+    Single input with ``async=1``: 202 with a job descriptor. Batch
+    (multiple files or ``drive_file_ids``): ALWAYS 202
+    ``{"jobs": [descriptor, ...]}`` - a batch is inherently async;
     poll each ``status_url``.
 
     **Retry semantics (job model).** The conversion itself runs in a
