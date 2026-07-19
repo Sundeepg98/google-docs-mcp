@@ -60,6 +60,7 @@ from typing import Any, Literal, TypedDict
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
+from appscriptly.google_api_client import execute_with_retry
 from appscriptly.google_clients import get_service
 
 from .services.docs.api import (
@@ -353,9 +354,13 @@ def convert_docx_to_tabbed_doc(
     try:
         # 2. Find split points in the converted doc's primary tab body.
         docs = get_service("docs", "v1", credentials=creds)
-        fetched = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        fetched = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.tabExistingDoc.detectSplits",
+        )
         source_tab = fetched["tabs"][0]["documentTab"]
         body_content = source_tab["body"]["content"]
 
@@ -492,9 +497,13 @@ def convert_docx_to_tabbed_doc(
         # its own index space, so writing into one tab does not move
         # another tab's insertion point (table sync-points inside the
         # executor re-fetch on their own).
-        shells_doc = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        shells_doc = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.tabExistingDoc.shellsState",
+        )
         for tab, plan in plans:
             transplant_write_attempted = True
             moved_blocks += execute_tab_transplant(
@@ -502,9 +511,13 @@ def convert_docx_to_tabbed_doc(
                 governor_key=governor_key,
             )
             executed_count += 1
-        verify_doc = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        verify_doc = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.tabExistingDoc.verifyTransplant",
+        )
         for tab, plan in plans:
             verify_tab_transplant(verify_doc, tab["tab_id"], plan)
     except Exception as e:
@@ -821,9 +834,13 @@ def _partial_failure_result(
     pending_sections: list[str] = []
     moved_blocks = 0
     try:
-        document = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        document = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.verifyExecutedTabs",
+        )
     except Exception:  # noqa: BLE001
         document = None
     for tab, plan in plans:
@@ -936,9 +953,13 @@ def _expected_final_title(
         )
     assert drive_file_id is not None  # caller validated exactly-one-of
     drive = get_service("drive", "v3", credentials=creds)
-    meta = drive.files().get(
-        fileId=drive_file_id, fields="name,mimeType"
-    ).execute()
+    meta = execute_with_retry(
+        lambda: drive.files().get(
+            fileId=drive_file_id, fields="name,mimeType"
+        ).execute(),
+        idempotent=True,
+        op_name="drive.files.get.convertTitle.metadata",
+    )
     name = meta.get("name") or ""
     kind = "gdoc" if meta.get("mimeType") == GDOC_MIME else "docx"
     return effective_convert_title(title, source_kind=kind, source_name=name)

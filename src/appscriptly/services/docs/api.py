@@ -148,9 +148,13 @@ def _materialize_tab_tree(
             continue
 
         if level == 0:
-            fetched = docs.documents().get(
-                documentId=doc_id, includeTabsContent=True
-            ).execute()
+            fetched = execute_with_retry(
+                lambda: docs.documents().get(
+                    documentId=doc_id, includeTabsContent=True
+                ).execute(),
+                idempotent=True,
+                op_name="docs.documents.get.materializeTabTree.firstTab",
+            )
             first_tab_id = fetched["tabs"][0]["tabProperties"]["tabId"]
             requests = [_rename_tab_request(first_tab_id, level_specs[0][1])]
             for _path, spec in level_specs[1:]:
@@ -165,9 +169,13 @@ def _materialize_tab_tree(
             documentId=doc_id, body={"requests": requests}
         ).execute()
 
-        fetched = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        fetched = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.materializeTabTree.newTabIds",
+        )
 
         if level == 0:
             for i, (path, _spec) in enumerate(level_specs):
@@ -219,9 +227,13 @@ def add_tabs_to_doc(
     docs = get_service("docs", "v1", credentials=creds)
 
     if parent_tab_id:
-        fetched = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        fetched = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.addTabs.parentDepth",
+        )
         parent_depth = _get_tab_depth(fetched.get("tabs") or [], parent_tab_id)
         if parent_depth < 0:
             raise ValueError(
@@ -255,9 +267,13 @@ def add_tabs_to_doc(
             documentId=doc_id, body={"requests": requests}
         ).execute()
 
-        fetched = docs.documents().get(
-            documentId=doc_id, includeTabsContent=True
-        ).execute()
+        fetched = execute_with_retry(
+            lambda: docs.documents().get(
+                documentId=doc_id, includeTabsContent=True
+            ).execute(),
+            idempotent=True,
+            op_name="docs.documents.get.addTabs.newTabIds",
+        )
 
         if level == 0:
             if parent_tab_id:
@@ -2078,9 +2094,13 @@ def append_to_tab(
         return {"tab_id": tab_id, "appended_chars": 0}
 
     docs = get_service("docs", "v1", credentials=creds)
-    fetched = docs.documents().get(
-        documentId=doc_id, includeTabsContent=True
-    ).execute()
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.appendToTab",
+    )
     tab = _find_tab_by_id(fetched.get("tabs") or [], tab_id)
     if tab is None:
         raise ValueError(f"Tab {tab_id} not found in doc {doc_id}")
