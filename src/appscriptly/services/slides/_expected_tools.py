@@ -18,4 +18,5 @@ EXPECTED: frozenset[str] = frozenset({
     "gslides_delete_object",
     "gslides_duplicate_object",
     "gslides_update_element_transform",
+    "gslides_insert_text",
 })

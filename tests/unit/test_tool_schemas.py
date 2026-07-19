@@ -113,6 +113,7 @@ EXPECTED_TOOLS = {
     "gslides_delete_object",  # Wave 4 (S1): Slides batchUpdate (deleteObject) - delete element/slide
     "gslides_duplicate_object",  # Wave 4 (S1): Slides batchUpdate (duplicateObject) - copy + id map
     "gslides_update_element_transform",  # Wave 4 (S1): Slides batchUpdate (updatePageElementTransform) - move/resize
+    "gslides_insert_text",  # Wave 5 (S2): Slides batchUpdate (insertText) - text into an existing shape
     "gcontacts_list",  # contacts: People API connections.list — list contacts (paged)
     "gcontacts_search",  # contacts: People API searchContacts — prefix search
     "gcontacts_get",  # contacts: People API people.get — single contact (etag)

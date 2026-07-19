@@ -55,6 +55,7 @@ from appscriptly.services.slides.api import (
     delete_object,
     duplicate_object,
     get_outline,
+    insert_text,
     replace_all_text,
     set_speaker_notes,
     update_element_transform,
@@ -1731,4 +1732,98 @@ def test_update_element_transform_propagates_http_error_for_bogus_object_id(
     )
     with pytest.raises(HttpError) as exc:
         update_element_transform(MagicMock(), "DECK1", "BOGUS")
+    assert exc.value.resp.status == 400
+
+
+# --- insert_text (Wave 5 S2) -----------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_insert_text():
+    slides = MagicMock(name="slides-v1-stub-insert-text")
+    # insertText has no reply payload - Slides returns an empty reply.
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_insert_text_rejects_empty_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        insert_text(MagicMock(), "DECK1", "", "hello")
+
+
+def test_insert_text_rejects_whitespace_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        insert_text(MagicMock(), "DECK1", "   ", "hello")
+
+
+def test_insert_text_rejects_empty_text():
+    """Empty text is a no-op that Slides 400s - reject client-side."""
+    with pytest.raises(ValueError, match="text cannot be empty"):
+        insert_text(MagicMock(), "DECK1", "SHAPE_1", "")
+
+
+def test_insert_text_rejects_negative_insertion_index():
+    with pytest.raises(ValueError, match="insertion_index cannot be negative"):
+        insert_text(MagicMock(), "DECK1", "SHAPE_1", "hi", insertion_index=-1)
+
+
+def test_insert_text_passes_presentationId(stub_slides_for_insert_text):
+    insert_text(MagicMock(), "DECK-XYZ", "SHAPE_1", "hi")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_insert_text)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_insert_text_builds_insertText_request(stub_slides_for_insert_text):
+    """The batch carries exactly ONE insertText request targeting the
+    given objectId, text, and insertionIndex - a bug that sent the wrong
+    objectId, dropped the index, or built a different request type fails
+    here (this is the discriminating payload test)."""
+    insert_text(
+        MagicMock(), "DECK1", "SHAPE_42", "Quarterly results", insertion_index=5,
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_insert_text)["body"]["requests"]
+    assert reqs == [
+        {
+            "insertText": {
+                "objectId": "SHAPE_42",
+                "text": "Quarterly results",
+                "insertionIndex": 5,
+            },
+        },
+    ]
+
+
+def test_insert_text_default_insertion_index_is_zero(stub_slides_for_insert_text):
+    """Omitting insertion_index inserts at the start (index 0)."""
+    insert_text(MagicMock(), "DECK1", "SHAPE_1", "hi")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_insert_text)["body"]["requests"]
+    assert reqs[0]["insertText"]["insertionIndex"] == 0
+
+
+def test_insert_text_returns_flat_envelope(stub_slides_for_insert_text):
+    """Result NAMES the object it acted on + echoes the index and the
+    character count (insertText has no reply, so no new objectId)."""
+    result = insert_text(MagicMock(), "DECK-1", "SHAPE_9", "abcde", insertion_index=2)
+    assert result == {
+        "presentation_id": "DECK-1",
+        "object_id": "SHAPE_9",
+        "insertion_index": 2,
+        "text_length": 5,
+    }
+
+
+def test_insert_text_propagates_http_error_for_bogus_object_id(
+    stub_slides_for_insert_text,
+):
+    """A bogus (or non-text) objectId surfaces Slides' 400 - the error
+    must PROPAGATE, not be swallowed or mapped to a success envelope."""
+    stub_slides_for_insert_text.presentations().batchUpdate().execute.side_effect = (
+        _http_error(400)
+    )
+    with pytest.raises(HttpError) as exc:
+        insert_text(MagicMock(), "DECK1", "BOGUS", "hi")
     assert exc.value.resp.status == 400

@@ -615,3 +615,58 @@ def test_gslides_update_element_transform_rejects_bad_apply_mode(
         tools.gslides_update_element_transform(
             presentation_id="DECK1", object_id="OBJ1", apply_mode="NOPE",
         )
+
+
+# ---------------------------------------------------------------------
+# 13. gslides_insert_text - happy path + forwarding + validation (Wave 5 S2)
+# ---------------------------------------------------------------------
+
+
+def test_gslides_insert_text_happy_path(with_slides_stub):
+    """Insert text -> flat envelope naming the object + echoing the
+    index + character count, through the @workspace_tool boundary."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{}],
+    }
+    result = tools.gslides_insert_text(
+        presentation_id="DECK1",
+        object_id="SHAPE_1",
+        text="Hello",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "object_id": "SHAPE_1",
+        "insertion_index": 0,
+        "text_length": 5,
+    }
+
+
+def test_gslides_insert_text_forwards_args_to_insertText(with_slides_stub):
+    """object_id, text, and insertion_index reach the insertText request
+    unchanged."""
+    tools.gslides_insert_text(
+        presentation_id="DECK1", object_id="SHAPE_7", text="shape copy",
+        insertion_index=3,
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    req = last.kwargs["body"]["requests"][0]["insertText"]
+    assert req == {
+        "objectId": "SHAPE_7",
+        "text": "shape copy",
+        "insertionIndex": 3,
+    }
+
+
+def test_gslides_insert_text_rejects_empty_object_id(with_slides_stub):
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        tools.gslides_insert_text(
+            presentation_id="DECK1", object_id="", text="hi",
+        )
+
+
+def test_gslides_insert_text_rejects_empty_text(with_slides_stub):
+    with pytest.raises(ValueError, match="text cannot be empty"):
+        tools.gslides_insert_text(
+            presentation_id="DECK1", object_id="SHAPE_1", text="",
+        )

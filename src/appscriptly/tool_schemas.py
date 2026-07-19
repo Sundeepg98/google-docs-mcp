@@ -1161,6 +1161,26 @@ GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gslides_insert_text`` inserts text into an existing shape object;
+# echoes the target objectId + insertion offset + the number of
+# characters inserted. ``insertText`` returns no reply, so there is no
+# new objectId to surface (unlike the create_* verbs).
+GSLIDES_INSERT_TEXT_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "object_id": {"type": "string"},
+        "insertion_index": {"type": "integer", "minimum": 0},
+        "text_length": {"type": "integer", "minimum": 1},
+    },
+    required=[
+        "presentation_id",
+        "object_id",
+        "insertion_index",
+        "text_length",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Forms (services/forms/) — new service (sensitive scopes, no CASA)
 # ---------------------------------------------------------------------
@@ -2698,6 +2718,8 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_update_element_transform": (
         GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA
     ),
+    # Wave 5 (S2): insertText into an existing shape object
+    "gslides_insert_text": GSLIDES_INSERT_TEXT_OUTPUT_SCHEMA,
     # Forms (new service, sensitive scopes forms.body +
     # forms.responses.readonly — NOT restricted, no CASA)
     "gforms_create_form": GFORMS_CREATE_FORM_OUTPUT_SCHEMA,
