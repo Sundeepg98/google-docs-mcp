@@ -35,6 +35,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from googleapiclient.errors import HttpError
 
 from appscriptly.google_api_client import (
     InMemoryGoogleAPIClient,
@@ -51,9 +52,12 @@ from appscriptly.services.slides.api import (
     create_presentation,
     create_shape,
     create_table,
+    delete_object,
+    duplicate_object,
     get_outline,
     replace_all_text,
     set_speaker_notes,
+    update_element_transform,
 )
 
 
@@ -1440,3 +1444,291 @@ def test_set_speaker_notes_raises_when_no_notes_shape():
     ):
         with pytest.raises(ValueError, match="no resolvable speaker-notes"):
             set_speaker_notes(MagicMock(), "DECK-NN", "S1", "x")
+
+
+# ---------------------------------------------------------------------
+# Wave 4 (S1) element-management verbs: delete / duplicate / transform
+# ---------------------------------------------------------------------
+
+
+def _http_error(status: int) -> HttpError:
+    """Build a googleapiclient HttpError with the given status, matching
+    the construction used across the apps_script error-path tests."""
+    resp = MagicMock()
+    resp.status = status
+    return HttpError(
+        resp=resp,
+        content=b'{"error": {"message": "Invalid requests[0].deleteObject: '
+        b'The object (BOGUS) could not be found."}}',
+    )
+
+
+# --- delete_object ---------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_delete():
+    slides = MagicMock(name="slides-v1-stub-delete")
+    # deleteObject has no reply payload - Slides returns an empty reply.
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_delete_object_rejects_empty_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        delete_object(MagicMock(), "DECK1", "")
+
+
+def test_delete_object_rejects_whitespace_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        delete_object(MagicMock(), "DECK1", "   ")
+
+
+def test_delete_object_passes_presentationId(stub_slides_for_delete):
+    delete_object(MagicMock(), "DECK-XYZ", "OBJ_7")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_delete)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_delete_object_builds_deleteObject_request(stub_slides_for_delete):
+    """The batch carries exactly ONE deleteObject request targeting the
+    given objectId - a bug that deleted the wrong id (or built a
+    different request type) fails here."""
+    delete_object(MagicMock(), "DECK1", "SHAPE_42")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_delete)["body"]["requests"]
+    assert reqs == [{"deleteObject": {"objectId": "SHAPE_42"}}]
+
+
+def test_delete_object_returns_flat_envelope(stub_slides_for_delete):
+    """Result NAMES the objectId it acted on (deleted_object_id)."""
+    result = delete_object(MagicMock(), "DECK-1", "IMG_9")
+    assert result == {
+        "presentation_id": "DECK-1",
+        "deleted_object_id": "IMG_9",
+    }
+
+
+def test_delete_object_propagates_http_error_for_bogus_object_id(
+    stub_slides_for_delete,
+):
+    """A bogus objectId surfaces Slides' 400 - the error must PROPAGATE
+    (not be swallowed / mapped to a success envelope)."""
+    stub_slides_for_delete.presentations().batchUpdate().execute.side_effect = (
+        _http_error(400)
+    )
+    with pytest.raises(HttpError) as exc:
+        delete_object(MagicMock(), "DECK1", "BOGUS")
+    assert exc.value.resp.status == 400
+
+
+# --- duplicate_object ------------------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_duplicate():
+    slides = MagicMock(name="slides-v1-stub-duplicate")
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{"duplicateObject": {"objectId": "COPY_1"}}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_duplicate_object_rejects_empty_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        duplicate_object(MagicMock(), "DECK1", "")
+
+
+def test_duplicate_object_passes_presentationId(stub_slides_for_duplicate):
+    duplicate_object(MagicMock(), "DECK-XYZ", "OBJ_7")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_duplicate)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_duplicate_object_builds_duplicateObject_request(
+    stub_slides_for_duplicate,
+):
+    duplicate_object(MagicMock(), "DECK1", "TABLE_3")
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_duplicate)["body"]["requests"]
+    assert reqs == [{"duplicateObject": {"objectId": "TABLE_3"}}]
+
+
+def test_duplicate_object_returns_id_map_and_new_id(stub_slides_for_duplicate):
+    """duplicate returns the {source: new} id map AND names the new copy's
+    objectId - the reply's new id is surfaced, not the source echoed back."""
+    result = duplicate_object(MagicMock(), "DECK-1", "SRC_5")
+    assert result == {
+        "presentation_id": "DECK-1",
+        "source_object_id": "SRC_5",
+        "new_object_id": "COPY_1",
+        "id_map": {"SRC_5": "COPY_1"},
+    }
+
+
+def test_duplicate_object_empty_reply_yields_empty_id_map(
+    stub_slides_for_duplicate,
+):
+    """If Slides returns no duplicateObject reply, new_object_id is the
+    empty string and id_map is empty (honest about the missing id rather
+    than fabricating one) - still schema-valid."""
+    stub_slides_for_duplicate.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    result = duplicate_object(MagicMock(), "DECK-1", "SRC_5")
+    assert result["new_object_id"] == ""
+    assert result["id_map"] == {}
+    assert result["source_object_id"] == "SRC_5"
+
+
+def test_duplicate_object_propagates_http_error_for_bogus_object_id(
+    stub_slides_for_duplicate,
+):
+    stub_slides_for_duplicate.presentations().batchUpdate().execute.side_effect = (
+        _http_error(400)
+    )
+    with pytest.raises(HttpError) as exc:
+        duplicate_object(MagicMock(), "DECK1", "BOGUS")
+    assert exc.value.resp.status == 400
+
+
+# --- update_element_transform ----------------------------------------
+
+
+@pytest.fixture
+def stub_slides_for_transform():
+    slides = MagicMock(name="slides-v1-stub-transform")
+    # updatePageElementTransform has no reply payload.
+    slides.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK-1",
+        "replies": [{}],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("slides", "v1"): slides})):
+        yield slides
+
+
+def test_update_element_transform_rejects_empty_object_id():
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        update_element_transform(MagicMock(), "DECK1", "")
+
+
+def test_update_element_transform_rejects_unsupported_apply_mode():
+    with pytest.raises(ValueError, match="apply_mode must be one of"):
+        update_element_transform(
+            MagicMock(), "DECK1", "OBJ1", apply_mode="SIDEWAYS",
+        )
+
+
+def test_update_element_transform_rejects_zero_scale():
+    with pytest.raises(ValueError, match="must be non-zero"):
+        update_element_transform(MagicMock(), "DECK1", "OBJ1", scale_x=0)
+    with pytest.raises(ValueError, match="must be non-zero"):
+        update_element_transform(MagicMock(), "DECK1", "OBJ1", scale_y=0)
+
+
+def test_update_element_transform_passes_presentationId(
+    stub_slides_for_transform,
+):
+    update_element_transform(MagicMock(), "DECK-XYZ", "OBJ_7")
+    kw = _last_batchUpdate_kwargs(stub_slides_for_transform)
+    assert kw["presentationId"] == "DECK-XYZ"
+
+
+def test_update_element_transform_builds_request_with_exact_matrix_and_mode(
+    stub_slides_for_transform,
+):
+    """CORE discriminating check: the request carries the EXACT applyMode
+    and the EXACT affine matrix given, with translate in EMU."""
+    update_element_transform(
+        MagicMock(), "DECK1", "SHAPE_9",
+        scale_x=2.0, scale_y=3.0,
+        translate_x_emu=914400, translate_y_emu=457200,
+        apply_mode="ABSOLUTE",
+    )
+    reqs = _last_batchUpdate_kwargs(stub_slides_for_transform)["body"]["requests"]
+    assert len(reqs) == 1
+    upt = reqs[0]["updatePageElementTransform"]
+    assert upt["objectId"] == "SHAPE_9"
+    assert upt["applyMode"] == "ABSOLUTE"
+    assert upt["transform"] == {
+        "scaleX": 2.0,
+        "scaleY": 3.0,
+        "translateX": 914400,
+        "translateY": 457200,
+        "unit": "EMU",
+    }
+
+
+def test_update_element_transform_defaults_to_relative_identity_noop(
+    stub_slides_for_transform,
+):
+    """Safe default: apply_mode defaults to RELATIVE and the default
+    matrix is the identity (scale 1, translate 0), so a bare call is a
+    no-op that cannot collapse or teleport the element."""
+    update_element_transform(MagicMock(), "DECK1", "OBJ1")
+    upt = _last_batchUpdate_kwargs(
+        stub_slides_for_transform
+    )["body"]["requests"][0]["updatePageElementTransform"]
+    assert upt["applyMode"] == "RELATIVE"
+    assert upt["transform"] == {
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+        "translateX": 0.0,
+        "translateY": 0.0,
+        "unit": "EMU",
+    }
+
+
+def test_update_element_transform_allows_negative_scale(
+    stub_slides_for_transform,
+):
+    """Negative scale mirrors/flips the element - a legitimate use, NOT
+    rejected (only exact zero is)."""
+    update_element_transform(
+        MagicMock(), "DECK1", "OBJ1", scale_x=-1.0, apply_mode="ABSOLUTE",
+    )
+    upt = _last_batchUpdate_kwargs(
+        stub_slides_for_transform
+    )["body"]["requests"][0]["updatePageElementTransform"]
+    assert upt["transform"]["scaleX"] == -1.0
+
+
+def test_update_element_transform_returns_envelope_echoing_matrix(
+    stub_slides_for_transform,
+):
+    """Result NAMES the objectId acted on + echoes the resolved mode and
+    the exact matrix sent."""
+    result = update_element_transform(
+        MagicMock(), "DECK-1", "OBJ_2",
+        scale_x=1.0, scale_y=1.0,
+        translate_x_emu=100000, translate_y_emu=0,
+        apply_mode="RELATIVE",
+    )
+    assert result == {
+        "presentation_id": "DECK-1",
+        "object_id": "OBJ_2",
+        "apply_mode": "RELATIVE",
+        "transform": {
+            "scaleX": 1.0,
+            "scaleY": 1.0,
+            "translateX": 100000,
+            "translateY": 0,
+            "unit": "EMU",
+        },
+    }
+
+
+def test_update_element_transform_propagates_http_error_for_bogus_object_id(
+    stub_slides_for_transform,
+):
+    stub_slides_for_transform.presentations().batchUpdate().execute.side_effect = (
+        _http_error(400)
+    )
+    with pytest.raises(HttpError) as exc:
+        update_element_transform(MagicMock(), "DECK1", "BOGUS")
+    assert exc.value.resp.status == 400

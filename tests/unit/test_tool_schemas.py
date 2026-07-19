@@ -105,6 +105,9 @@ EXPECTED_TOOLS = {
     "gslides_create_shape",  # #155: Slides batchUpdate (createShape) — rect/ellipse/text box
     "gslides_create_line",  # #155: Slides batchUpdate (createLine) — connector/divider
     "gslides_set_speaker_notes",  # Slides batchUpdate (deleteText+insertText) — set speaker notes
+    "gslides_delete_object",  # Wave 4 (S1): Slides batchUpdate (deleteObject) - delete element/slide
+    "gslides_duplicate_object",  # Wave 4 (S1): Slides batchUpdate (duplicateObject) - copy + id map
+    "gslides_update_element_transform",  # Wave 4 (S1): Slides batchUpdate (updatePageElementTransform) - move/resize
     "gcontacts_list",  # contacts: People API connections.list — list contacts (paged)
     "gcontacts_search",  # contacts: People API searchContacts — prefix search
     "gcontacts_get",  # contacts: People API people.get — single contact (etag)

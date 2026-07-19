@@ -163,6 +163,12 @@ DESTRUCTIVE_TOOLS = {
     # it only restyles, never removes content.)
     "gdocs_edit_range",
     "gsheets_delete_sheet",  # removes a tab + all its cell data
+    # Wave 4 (S1): Slides batchUpdate (deleteObject) removes a page element
+    # OR an entire slide (and its content). Destructive so MCP clients can
+    # prompt for confirmation. Sister tools gslides_duplicate_object (adds a
+    # copy) and gslides_update_element_transform (only repositions) are NOT
+    # here.
+    "gslides_delete_object",
     # Revokes a share (permissions.delete) — removes someone's access,
     # the inverse of gdocs_share_file. Destructive so MCP clients can
     # prompt for confirmation. (gdocs_create_folder is NOT here — it

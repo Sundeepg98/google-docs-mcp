@@ -507,3 +507,111 @@ def test_gslides_set_speaker_notes_happy_path(with_slides_stub):
         "speaker_notes_object_id": "NOTES1",
         "notes_text": "Presenter script here",
     }
+
+
+# ---------------------------------------------------------------------
+# 10. gslides_delete_object - happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_delete_object_happy_path(with_slides_stub):
+    """Delete an element -> flat {presentation_id, deleted_object_id}
+    envelope through the decorator boundary."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{}],
+    }
+    result = tools.gslides_delete_object(
+        presentation_id="DECK1", object_id="SHAPE_9",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "deleted_object_id": "SHAPE_9",
+    }
+
+
+def test_gslides_delete_object_rejects_empty_object_id(with_slides_stub):
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        tools.gslides_delete_object(presentation_id="DECK1", object_id="")
+
+
+# ---------------------------------------------------------------------
+# 11. gslides_duplicate_object - happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_duplicate_object_happy_path(with_slides_stub):
+    """Duplicate -> envelope carrying the new objectId + the id map."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{"duplicateObject": {"objectId": "COPY_1"}}],
+    }
+    result = tools.gslides_duplicate_object(
+        presentation_id="DECK1", object_id="SRC_5",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "source_object_id": "SRC_5",
+        "new_object_id": "COPY_1",
+        "id_map": {"SRC_5": "COPY_1"},
+    }
+
+
+def test_gslides_duplicate_object_rejects_empty_object_id(with_slides_stub):
+    with pytest.raises(ValueError, match="object_id cannot be empty"):
+        tools.gslides_duplicate_object(presentation_id="DECK1", object_id="")
+
+
+# ---------------------------------------------------------------------
+# 12. gslides_update_element_transform - happy path + validation
+# ---------------------------------------------------------------------
+
+
+def test_gslides_update_element_transform_happy_path(with_slides_stub):
+    """Move an element -> envelope echoing the resolved mode + matrix."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{}],
+    }
+    result = tools.gslides_update_element_transform(
+        presentation_id="DECK1",
+        object_id="OBJ_2",
+        translate_x_emu=100000,
+        apply_mode="RELATIVE",
+    )
+    assert result == {
+        "presentation_id": "DECK1",
+        "object_id": "OBJ_2",
+        "apply_mode": "RELATIVE",
+        "transform": {
+            "scaleX": 1.0,
+            "scaleY": 1.0,
+            "translateX": 100000,
+            "translateY": 0.0,
+            "unit": "EMU",
+        },
+    }
+
+
+def test_gslides_update_element_transform_forwards_apply_mode(with_slides_stub):
+    """The apply_mode parameter reaches the updatePageElementTransform
+    request unchanged (default is RELATIVE; ABSOLUTE forwards)."""
+    with_slides_stub.presentations().batchUpdate().execute.return_value = {
+        "presentationId": "DECK1",
+        "replies": [{}],
+    }
+    tools.gslides_update_element_transform(
+        presentation_id="DECK1", object_id="OBJ_2", apply_mode="ABSOLUTE",
+    )
+    last = with_slides_stub.presentations().batchUpdate.call_args_list[-1]
+    req = last.kwargs["body"]["requests"][0]["updatePageElementTransform"]
+    assert req["applyMode"] == "ABSOLUTE"
+
+
+def test_gslides_update_element_transform_rejects_bad_apply_mode(
+    with_slides_stub,
+):
+    with pytest.raises(ValueError, match="apply_mode must be one of"):
+        tools.gslides_update_element_transform(
+            presentation_id="DECK1", object_id="OBJ1", apply_mode="NOPE",
+        )
