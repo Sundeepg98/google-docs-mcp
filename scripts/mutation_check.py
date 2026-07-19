@@ -115,8 +115,18 @@ MUTATIONS: list[Mutation] = [
         test_path="tests/unit/test_oauth_google.py::test_auth_pkce_consistency_every_url",
         description="override both PKCE paths after explicit assignment -> URLs lose code_challenge",
         file="src/appscriptly/oauth_google.py",
-        find='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier\n\n    state = sign_state(\n        user_id, signing_key, ttl_seconds=ttl_seconds,\n        code_verifier=code_verifier,\n    )',
-        replace='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier\n    flow.code_verifier = None\n    flow.autogenerate_code_verifier = False\n\n    state = sign_state(\n        user_id, signing_key, ttl_seconds=ttl_seconds,\n        code_verifier=code_verifier,\n    )',
+        # PR #273 (stateless encrypted PKCE) added ``enc_key=`` to the
+        # sign_state call the previous find quoted, staling it. The find
+        # is now anchored on the verifier-generation block ONLY — made
+        # unique by the ``import secrets as _secrets`` line (the exchange
+        # path's ``flow.code_verifier = code_verifier`` at line ~553 has
+        # no such prefix) — so it survives future sign_state signature
+        # changes. The injected bug is unchanged: null the verifier and
+        # disable autogeneration, so flow.authorization_url() emits no
+        # code_challenge and the guard's presence + per-call-uniqueness
+        # assertions both trip.
+        find='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier',
+        replace='    import secrets as _secrets\n    code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits\n    flow.code_verifier = code_verifier\n    flow.code_verifier = None\n    flow.autogenerate_code_verifier = False',
     ),
     Mutation(
         guard="test_owned_by_app_agrees_with_trash_outcome",
@@ -201,7 +211,14 @@ def run_full_unit_suite() -> tuple[int, list[str]]:
     try:
         result = subprocess.run(
             [
-                "python", "-m", "pytest", "tests/unit",
+                # sys.executable, not bare "python": the subprocess MUST
+                # reuse the interpreter running this script (the venv one).
+                # Bare "python" resolves via PATH, which under `uv run` on
+                # Windows lands on the base cpython (no pytest) and silently
+                # returns zero failures -> every mutation misreads as
+                # stale_patch. Identical to the prior behavior on CI/Linux,
+                # where PATH already pointed "python" at the venv.
+                sys.executable, "-m", "pytest", "tests/unit",
                 "-q", "--tb=no", "--no-header",
                 "--hypothesis-seed=0",
                 "--json-report", f"--json-report-file={json_path}",
