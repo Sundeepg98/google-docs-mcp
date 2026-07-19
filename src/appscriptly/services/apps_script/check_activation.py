@@ -281,8 +281,12 @@ def as_check_activation(
     Raises:
         ValueError: empty ``script_id``.
         ToolError: a Google API error from the execution-history read (e.g.
-            403 if the Apps Script API is not enabled) - rendered by the
-            standard decorator envelope.
+            403 if the Apps Script API is not enabled for the account) -
+            rendered by the standard decorator envelope. When that 403 is
+            the "Apps Script API not enabled" case, the deploying user must
+            open https://script.google.com/home/usersettings, toggle
+            "Google Apps Script API" ON, and retry: the API is off by
+            default and blocks all script management until it is turned on.
 
     Choreography: install -> relay the ``activation_instructions`` ->
     (user runs the function + Allows) -> call this with the same
