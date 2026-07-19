@@ -379,8 +379,13 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # 143 -> 146 with the Wave 4 (S1) Slides element-management verbs
 # (gslides_delete_object + gslides_duplicate_object +
 # gslides_update_element_transform - canonical-only, slides service;
-# all ride the deployed presentations scope, no new OAuth scope).
-_MIN_EXPECTED_TOOL_COUNT = 146
+# all ride the deployed presentations scope, no new OAuth scope); then
+# 146 -> 151 with the Wave 5 (S1) Docs template-fill tools
+# (gdocs_create_named_range + gdocs_replace_named_range_content +
+# gdocs_delete_named_range + gdocs_insert_page_break on the deployed
+# documents scope; gdrive_copy_file on the deployed drive.file scope -
+# canonical-only, no new OAuth scope).
+_MIN_EXPECTED_TOOL_COUNT = 151
 
 _discovery_failures: list[tuple[str, str]] = []
 

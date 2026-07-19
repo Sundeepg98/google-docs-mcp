@@ -162,6 +162,13 @@ DESTRUCTIVE_TOOLS = {
     # be able to prompt for confirmation. (gdocs_format_range is NOT here:
     # it only restyles, never removes content.)
     "gdocs_edit_range",
+    # Wave 5 (S1): removes a named-range MARKER (deleteNamedRange). The
+    # content the range covered stays put, but an anchor other automations
+    # may rely on is gone, so MCP clients can prompt for confirmation.
+    # Sister tools gdocs_create_named_range (adds a marker) and
+    # gdocs_replace_named_range_content (rewrites content in place) are NOT
+    # here.
+    "gdocs_delete_named_range",
     "gsheets_delete_sheet",  # removes a tab + all its cell data
     # Wave 4 (S1): Slides batchUpdate (deleteObject) removes a page element
     # OR an entire slide (and its content). Destructive so MCP clients can

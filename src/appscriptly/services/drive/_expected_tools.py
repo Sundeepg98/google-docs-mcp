@@ -33,6 +33,10 @@ EXPECTED: frozenset[str] = frozenset({
     # 2026-07 wave; canonical-only - never had a gdocs_ name, so NO
     # deprecated alias is registered for it.
     "gdrive_rename_file",
+    # File-CRUD: copy a file (files.copy). Wave 5 (S1) template-fill
+    # enabler; canonical-only - never had a gdocs_ name, so NO deprecated
+    # alias is registered for it.
+    "gdrive_copy_file",
     # sharing sub-module (tools live in drive/tools.py, delegating to
     # drive/sharing.py).
     "gdrive_share_file",

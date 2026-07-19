@@ -213,6 +213,64 @@ GDOCS_INSERT_TABLE_OUTPUT_SCHEMA = _object(
 )
 
 
+# Template-fill (Wave 5 S1). ``gdocs_create_named_range`` echoes the
+# created marker + its server ``named_range_id`` (nullable if Docs omits
+# it in the reply).
+GDOCS_CREATE_NAMED_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "named_range_id": {"type": ["string", "null"]},
+        "name": {"type": "string"},
+        "start_index": {"type": "integer", "minimum": 1},
+        "end_index": {"type": "integer", "minimum": 1},
+        "tab_id": {"type": ["string", "null"]},
+    },
+    required=["doc_id", "name", "start_index", "end_index"],
+)
+
+
+# ``gdocs_replace_named_range_content`` echoes the request (the Docs
+# replaceNamedRangeContent reply carries no match count). ``selector`` is
+# "named_range_name" | "named_range_id"; ``scope`` is a tab-scope string
+# ("all_tabs"), a tab-id list, or null (for id selection).
+GDOCS_REPLACE_NAMED_RANGE_CONTENT_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "selector": {"type": "string"},
+        "selector_value": {"type": "string"},
+        "text_length": {"type": "integer", "minimum": 0},
+        "scope": {"type": ["string", "array", "null"]},
+    },
+    required=["doc_id", "selector", "selector_value"],
+)
+
+
+# ``gdocs_delete_named_range`` echoes which marker was removed (same
+# selector/scope shape as replace, minus text_length).
+GDOCS_DELETE_NAMED_RANGE_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "selector": {"type": "string"},
+        "selector_value": {"type": "string"},
+        "scope": {"type": ["string", "array", "null"]},
+    },
+    required=["doc_id", "selector", "selector_value"],
+)
+
+
+# ``gdocs_insert_page_break`` echoes where the break landed.
+# ``location_mode`` is "end_of_segment" (index omitted) or "index".
+GDOCS_INSERT_PAGE_BREAK_OUTPUT_SCHEMA = _object(
+    properties={
+        "doc_id": {"type": "string"},
+        "location_mode": {"type": "string"},
+        "index": {"type": ["integer", "null"]},
+        "tab_id": {"type": ["string", "null"]},
+    },
+    required=["doc_id", "location_mode"],
+)
+
+
 # ``gdocs_insert_image`` echoes the inserted image's stable objectId
 # (parsed from the insertInlineImage reply; may be null if Docs omits
 # it) plus the request echo.
@@ -441,6 +499,19 @@ GDRIVE_RENAME_FILE_OUTPUT_SCHEMA = _object(
         "message": {"type": "string"},
     },
     required=["file_id"],
+)
+
+
+# Template-fill (Wave 5 S1). ``gdrive_copy_file`` returns the NEW file's
+# id + name + Drive webViewLink (``name`` nullable defensively; the copy
+# always has one, but the field is copied through from the API reply).
+GDRIVE_COPY_FILE_OUTPUT_SCHEMA = _object(
+    properties={
+        "file_id": {"type": "string"},
+        "name": {"type": ["string", "null"]},
+        "url": {"type": "string"},
+    },
+    required=["file_id", "url"],
 )
 
 
@@ -2515,6 +2586,14 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gdocs_delete_tab": GDOCS_DELETE_TAB_OUTPUT_SCHEMA,
     "gdocs_replace_all_text": GDOCS_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     "gdocs_insert_table": GDOCS_INSERT_TABLE_OUTPUT_SCHEMA,
+    # Wave 5 (S1) template fill - named-range trio + page break (all ride
+    # the deployed documents scope; no new scope).
+    "gdocs_create_named_range": GDOCS_CREATE_NAMED_RANGE_OUTPUT_SCHEMA,
+    "gdocs_replace_named_range_content": (
+        GDOCS_REPLACE_NAMED_RANGE_CONTENT_OUTPUT_SCHEMA
+    ),
+    "gdocs_delete_named_range": GDOCS_DELETE_NAMED_RANGE_OUTPUT_SCHEMA,
+    "gdocs_insert_page_break": GDOCS_INSERT_PAGE_BREAK_OUTPUT_SCHEMA,
     # Inline image insert (rides the deployed documents scope; Docs
     # fetches the URI server-side, so no Drive scope needed)
     "gdocs_insert_image": GDOCS_INSERT_IMAGE_OUTPUT_SCHEMA,
@@ -2729,6 +2808,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # BUG 2b (2026-07-10) — canonical-only (no gdocs_ alias; the tool
     # never existed under the legacy prefix).
     "gdrive_rename_file": GDRIVE_RENAME_FILE_OUTPUT_SCHEMA,
+    # Wave 5 (S1) - canonical-only copy tool (template-fill enabler; no
+    # gdocs_ alias; drive.file scope, no new scope).
+    "gdrive_copy_file": GDRIVE_COPY_FILE_OUTPUT_SCHEMA,
     # admin / introspection / auth.
     "server_info": GDOCS_SERVER_INFO_OUTPUT_SCHEMA,
     "server_test_manifest": GDOCS_TEST_MANIFEST_OUTPUT_SCHEMA,

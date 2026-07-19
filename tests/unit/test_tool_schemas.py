@@ -44,6 +44,11 @@ EXPECTED_TOOLS = {
     "gdocs_rename_tab",
     "gdocs_replace_all_text",
     "gdocs_insert_table",  # documents.batchUpdate (insertTable)
+    # Wave 5 (S1): template fill - named-range trio + page break
+    "gdocs_create_named_range",  # documents.batchUpdate (createNamedRange)
+    "gdocs_replace_named_range_content",  # batchUpdate (replaceNamedRangeContent)
+    "gdocs_delete_named_range",  # documents.batchUpdate (deleteNamedRange) - destructive
+    "gdocs_insert_page_break",  # documents.batchUpdate (insertPageBreak)
     "gdocs_format_range",  # documents.batchUpdate (updateTextStyle)
     "gdocs_format_paragraph",  # documents.batchUpdate (updateParagraphStyle)
     "gdocs_edit_range",  # documents.batchUpdate (deleteContentRange [+ insertText])
@@ -175,6 +180,9 @@ EXPECTED_TOOLS = {
     # 2026-07 next wave: rename-in-place (BUG 2b). Canonical-only -
     # never had a gdocs_ name, so no alias entry accompanies it.
     "gdrive_rename_file",
+    # Wave 5 (S1): copy a Drive file (files.copy) - template-fill
+    # enabler. Canonical-only - never had a gdocs_ name.
+    "gdrive_copy_file",
     # admin / introspection / auth.
     "server_info",                # was gdocs_server_info
     "server_test_manifest",       # was gdocs_test_manifest
