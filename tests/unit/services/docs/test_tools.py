@@ -1010,9 +1010,20 @@ def test_gdocs_format_paragraph_requires_at_least_one_attr(with_docs_stub):
 # ---------------------------------------------------------------------
 
 
-def _table_doc_fixture(rows: int, columns: int, base: int = 2):
+def _table_doc_fixture(rows: int, columns: int, base: int = 101):
     """Build a documents().get() response whose default-tab body has one
-    table with deterministic per-cell startIndex values."""
+    table with deterministic per-cell startIndex values.
+
+    The starts are deliberately NOT reproducible by client-side table
+    arithmetic: a distinctive base far from the insert index (1) plus a
+    per-row jump. Naive arithmetic for a table at index 1 would compute
+    first_cell = table_start + 1 = 2, then +2 per flat cell -> 2, 4,
+    6, 8...; a realistic layout also spends indices at each row boundary.
+    So any code that COMPUTES cell starts (instead of reading them from
+    this re-fetch) yields different indices, and
+    test_gdocs_insert_markdown_table_uses_server_sourced_cell_indices
+    catches the regression.
+    """
     idx = base
     table_rows = []
     for _r in range(rows):
@@ -1020,6 +1031,9 @@ def _table_doc_fixture(rows: int, columns: int, base: int = 2):
         for _c in range(columns):
             cells.append({"content": [{"startIndex": idx}]})
             idx += 2  # each empty cell occupies a couple of indices
+        # A row boundary adds indices the naive "+2 per flat cell"
+        # arithmetic omits, so the sequence is non-uniform (revert-proof).
+        idx += 3
         table_rows.append({"tableCells": cells})
     return {
         "tabs": [
@@ -1095,6 +1109,37 @@ def test_gdocs_insert_markdown_table_skips_empty_cells(with_docs_stub):
     md = "| H1 | H2 |\n|----|----|\n| a |  |"  # second body cell empty
     result = tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
     assert result["cells_filled"] == 3  # H1, H2, a (not the empty one)
+
+
+def test_gdocs_insert_markdown_table_uses_server_sourced_cell_indices(
+    with_docs_stub,
+):
+    """Cell-fill insertText indices MUST be the SERVER-assigned cell starts
+    from the re-fetch, never client-computed.
+
+    The fixture's cell starts are deliberately un-arithmetic (base 101 +
+    a per-row jump). Old client arithmetic for a table at index 1 would
+    compute first_cell = table_start + 1 = 2, then +2 per flat cell ->
+    [2, 4, 6, 8]; the server-sourced starts here are [101, 103, 108, 110].
+    A revert to client index arithmetic therefore fails this assertion.
+    """
+    with_docs_stub.documents().get().execute.return_value = _table_doc_fixture(
+        rows=2, columns=2,
+    )
+    md = "| H1 | H2 |\n|----|----|\n| a | b |"
+    tools.gdocs_insert_markdown_table(doc_id="DOC1", markdown=md)
+    fill = None
+    for c in with_docs_stub.documents().batchUpdate.call_args_list:
+        reqs = c.kwargs.get("body", {}).get("requests", [])
+        if reqs and "insertText" in reqs[0]:
+            fill = reqs
+            break
+    assert fill is not None, "no cell-fill batchUpdate found"
+    got = sorted(r["insertText"]["location"]["index"] for r in fill)
+    assert got == [101, 103, 108, 110], (
+        f"cell-fill indices {got} are not the server-sourced cell starts; "
+        "a client-arithmetic revert (e.g. [2, 4, 6, 8]) would land here"
+    )
 
 
 def test_gdocs_insert_markdown_table_rejects_bad_markdown(with_docs_stub):

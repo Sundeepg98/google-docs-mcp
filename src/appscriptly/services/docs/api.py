@@ -1297,7 +1297,13 @@ def _is_fence(line: str) -> bool:
 def _content_has_table(content: str) -> bool:
     """True if markdown ``content`` contains a GFM table OUTSIDE a fenced
     code block (a header line immediately followed by a ``|---|---|``
-    separator). Pipes inside a fence are code, not a table."""
+    separator whose column count matches the header). Pipes inside a
+    fence are code, not a table.
+
+    The column-count clause mirrors ``_split_content_segments`` so the
+    two agree on what a table is: a header/separator pair with mismatched
+    column counts is not a GFM table, so it is NOT routed to the table
+    path (it renders as prose)."""
     lines = content.split("\n")
     in_fence = False
     for i in range(len(lines) - 1):
@@ -1309,6 +1315,7 @@ def _content_has_table(content: str) -> bool:
             and "|" in lines[i]
             and "|" in lines[i + 1]
             and _is_table_separator(lines[i + 1])
+            and len(_split_table_row(lines[i + 1])) == len(_split_table_row(lines[i]))
         ):
             return True
     return False
@@ -1580,6 +1587,10 @@ def _summarize_body_content(
       table               -> "[table RxC]" + extracted cell text (+ table_count)
       tableOfContents     -> "[table of contents]"
       sectionBreak        -> skipped
+
+    The counts are TOP-LEVEL only: an image or table nested inside a
+    table cell shows its marker in that cell's extracted text but is
+    not added to ``image_count`` / ``table_count``.
 
     Empty ``NORMAL_TEXT`` paragraphs are dropped (blank lines); a
     styled-but-empty paragraph (e.g. an empty heading) is kept so the

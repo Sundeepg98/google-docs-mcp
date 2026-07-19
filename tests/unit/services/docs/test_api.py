@@ -479,6 +479,22 @@ def test_content_has_table_detects_gfm_table():
     assert not _content_has_table("intro\n\n---\n\nmore")
 
 
+def test_content_has_table_rejects_column_count_mismatch():
+    """D3: a header/separator pair whose column counts DISAGREE is not a
+    GFM table. _content_has_table now applies the same column-count clause
+    as _split_content_segments, so a mismatched pair is NOT routed to the
+    table path - both agree it renders as prose."""
+    # Header has 2 columns, separator declares 3 -> not a table.
+    mismatch = "| A | B |\n|---|---|---|\n| x | y |"
+    assert not _content_has_table(mismatch)
+    # _split_content_segments already agrees: no 'table' segment isolated.
+    assert "table" not in [k for k, _ in _split_content_segments(mismatch)]
+    # A matching column count is still detected AND split as a table.
+    match = "| A | B |\n|---|---|\n| x | y |"
+    assert _content_has_table(match)
+    assert "table" in [k for k, _ in _split_content_segments(match)]
+
+
 def test_split_content_segments_isolates_table_from_prose():
     content = "intro\n\n| A | B |\n|---|---|\n| x | y |\n\ntail"
     segments = _split_content_segments(content)
