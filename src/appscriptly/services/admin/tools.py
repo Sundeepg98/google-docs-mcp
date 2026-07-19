@@ -624,7 +624,7 @@ def server_guide() -> dict:
 
     return {
         "server": {
-            "name": "google-docs-fly",
+            "name": "appscriptly",
             "version": __version__,
             "what_it_does": (
                 "Workspace Automation MCP. Generates persistent workflows "
@@ -639,12 +639,15 @@ def server_guide() -> dict:
             # surface; the other domains use their own honest prefix
             # (see additional_tool_prefixes). The historical ``gdocs_``
             # names for Drive / admin / auth tools are kept as DEPRECATED
-            # ALIASES (planned removal v3.0) — prefer the canonical name.
-            "all_tools_prefixed": "gdocs_",
+            # ALIASES (planned removal v3.0); prefer the canonical name.
+            "all_tools_prefixed": (
+                "gdocs_ for Google Docs / native tabs; every other domain "
+                "uses its own prefix (see additional_tool_prefixes)."
+            ),
             "additional_tool_prefixes": {
                 "gdrive_": (
-                    "Google Drive file management (find / move / trash / "
-                    "share / export / signed-upload-URL)."
+                    "Google Drive file management (find / move / copy / "
+                    "trash / share / export / signed-upload-URL)."
                 ),
                 "gsheets_": "Google Sheets tools.",
                 "gslides_": "Google Slides tools.",
@@ -653,8 +656,13 @@ def server_guide() -> dict:
                 "gtasks_": "Google Tasks tools.",
                 "gcontacts_": "Google Contacts (People API) tools.",
                 "as_": (
-                    "appscriptly-native automation tools (e.g. "
-                    "as_generate_bound_script, as_install_automation)."
+                    "appscriptly-native Apps Script automation: "
+                    "as_list_recipes (browse the built-in recipe catalog), "
+                    "the as_install_* recipe installers, "
+                    "as_generate_bound_script (custom bound scripts), and "
+                    "the lifecycle tools (as_check_activation, "
+                    "as_list_installed_automations, as_update_automation, "
+                    "as_uninstall_automation)."
                 ),
                 "server_": (
                     "server introspection (server_info / server_guide / "
@@ -672,8 +680,9 @@ def server_guide() -> dict:
             ),
             "more_info": (
                 "Call server_info for build version + verified CI "
-                "test status (digest, ci_run_url, mutation_check), and for "
-                "the authoritative full tool inventory (tools list)."
+                "test status (digest, ci_run_url, mutation_check) and the "
+                "authoritative full tool inventory (tools list); call "
+                "as_list_recipes for the installable automation catalog."
             ),
         },
         "workflows": [
@@ -699,7 +708,9 @@ def server_guide() -> dict:
                 ],
                 "notes": (
                     "Preview first to validate the split; convert; then "
-                    "outline to verify the result. Conversion is one-way."
+                    "outline to verify the result. Conversion is one-way. "
+                    "The HTTP /api/convert route also accepts dry_run=1 to "
+                    "return the split PLAN without creating a doc."
                 ),
             },
             {
@@ -715,7 +726,7 @@ def server_guide() -> dict:
                     "Same tool as convert_doc_with_headings; passing "
                     "`markers` triggers retrofit mode (injects synthetic "
                     "H1s before each marker block, then converts). NEVER "
-                    "rebuild a styled .docx from text — formatting would "
+                    "rebuild a styled .docx from text; formatting would "
                     "be lost."
                 ),
             },
@@ -730,7 +741,7 @@ def server_guide() -> dict:
                     "POST {url}",
                 ],
                 "notes": (
-                    "`docx_path` does NOT work from cloud chat — the "
+                    "`docx_path` does NOT work from cloud chat; the "
                     "server cannot see the caller's filesystem. The POST "
                     "is equivalent to gdocs_tab_existing_doc; use this "
                     "route when the .docx is in your sandbox."
@@ -752,24 +763,81 @@ def server_guide() -> dict:
             {
                 "name": "install_automation",
                 "goal": (
-                    "Make something keep working AFTER the chat ends — a "
+                    "Make something keep working AFTER the chat ends: a "
                     "recurring job, a custom menu, a reaction to the user's "
                     "own future edits (persistent Workspace automation)"
                 ),
                 "tool_sequence": [
-                    "as_install_automation",
+                    "as_list_recipes",
+                    "as_install_sheet_dashboard | as_install_doc_menu | ...",
                     "as_generate_bound_script",
                 ],
                 "notes": (
-                    "One-time: as_install_automation provisions the "
-                    "per-user Apps Script runtime (returns "
+                    "PREFER a recipe: call as_list_recipes to browse the "
+                    "built-in catalog (custom menus, a scheduled dashboard "
+                    "refresh, onEdit / onFormSubmit handlers, a form grader, "
+                    "a custom =FUNCTION()), then call the matching typed "
+                    "installer (each recipe's installer_tool). Only when no "
+                    "recipe fits, drop to as_generate_bound_script("
+                    "container_id, script_body, manifest?), the generic "
+                    "GENERATOR that binds a hand-written .gs into a specific "
+                    "Doc/Sheet/Slides. as_install_automation provisions the "
+                    "per-user runtime and returns "
                     "status='needs_authorization' with an authorize_url if "
-                    "consent is missing — surface that link, then retry). "
-                    "Then as_generate_bound_script(container_id, "
-                    "script_body, manifest?) binds a script with menus / "
-                    "triggers / sidebars INTO a specific Doc/Sheet/Slides. "
-                    "Use for 'every morning', 'when I edit', 'add a button' "
-                    "— NOT for a one-off edit (use the direct tools)."
+                    "consent is missing; surface that link, then retry. "
+                    "Scheduled / reactive recipes need a one-time Run + "
+                    "Allow in the Apps Script editor before they fire. NOT "
+                    "for a one-off edit (use the direct tools)."
+                ),
+            },
+            {
+                "name": "manage_automations",
+                "goal": (
+                    "Verify, list, update, or remove automations already "
+                    "installed for the user (the automation lifecycle)"
+                ),
+                "tool_sequence": [
+                    "as_check_activation",
+                    "as_list_installed_automations",
+                    "as_update_automation",
+                    "as_uninstall_automation",
+                ],
+                "notes": (
+                    "as_check_activation(script_id) confirms a one-time Run "
+                    "+ Allow took effect. as_list_installed_automations() is "
+                    "the ONLY way to re-find installs once their messages "
+                    "scroll away (minted Apps Script projects are invisible "
+                    "to Drive listing; inventory is forward-only). "
+                    "as_update_automation(script_id) rolls a fix out in "
+                    "place with NO fresh Allow; for a recipe automation OMIT "
+                    "script_body so the server regenerates it from the "
+                    "recorded params. as_uninstall_automation(script_id) "
+                    "removes one; as_list_script_processes inspects run "
+                    "history."
+                ),
+            },
+            {
+                "name": "template_fill",
+                "goal": (
+                    "Fill (and later refill) fields in a Doc template "
+                    "robustly, without a fragile whole-doc find/replace"
+                ),
+                "tool_sequence": [
+                    "gdrive_copy_file",
+                    "gdocs_read_doc(include_indices=True)",
+                    "gdocs_create_named_range",
+                    "gdocs_replace_named_range_content",
+                ],
+                "notes": (
+                    "gdrive_copy_file duplicates a template (the original is "
+                    "untouched). gdocs_read_doc(include_indices=True) returns "
+                    "each paragraph's start_index / end_index; pass a "
+                    "field's span to gdocs_create_named_range to mark it "
+                    "once, then gdocs_replace_named_range_content("
+                    "named_range_name=...) fills it any number of times "
+                    "server-side with NO index math. A template that already "
+                    "carries named ranges skips straight to replace; "
+                    "gdocs_delete_named_range clears a marker."
                 ),
             },
             {
@@ -788,6 +856,25 @@ def server_guide() -> dict:
                 ),
             },
             {
+                "name": "batch_sheets",
+                "goal": (
+                    "Read or write several disjoint ranges of a Google "
+                    "Sheet in one round-trip"
+                ),
+                "tool_sequence": [
+                    "gsheets_batch_read",
+                    "gsheets_batch_write",
+                ],
+                "notes": (
+                    "gsheets_batch_read(spreadsheet_id, ranges=[...]) "
+                    "collapses N reads into one batchGet; "
+                    "gsheets_batch_write(spreadsheet_id, data=[{range, "
+                    "values}, ...]) collapses N writes into one batchUpdate. "
+                    "Prefer these over calling gsheets_read_range / "
+                    "gsheets_write_range once per range."
+                ),
+            },
+            {
                 "name": "presentation",
                 "goal": "Create a Google Slides deck or fill a templated one",
                 "tool_sequence": [
@@ -802,6 +889,49 @@ def server_guide() -> dict:
                     "every slide. To edit an EXISTING deck, skip create."
                 ),
             },
+            {
+                "name": "slides_elements",
+                "goal": (
+                    "Add and arrange individual elements on Slides (text "
+                    "boxes, shapes, tables, images, lines)"
+                ),
+                "tool_sequence": [
+                    "gslides_get_outline",
+                    "gslides_create_shape | gslides_create_table | "
+                    "gslides_create_image",
+                    "gslides_insert_text",
+                    "gslides_update_element_transform",
+                ],
+                "notes": (
+                    "gslides_get_outline first to discover slide/object IDs "
+                    "(never guess them). Create an element (shape / table / "
+                    "image / line), then gslides_insert_text puts text INTO "
+                    "a shape or table cell you created; "
+                    "gslides_update_element_transform moves / scales it, and "
+                    "gslides_duplicate_object / gslides_delete_object manage "
+                    "it. For bulk placeholder swaps use replace_all_text "
+                    "(workflow presentation) instead."
+                ),
+            },
+            {
+                "name": "drive_batch",
+                "goal": (
+                    "Copy a file, or share one file with several recipients "
+                    "in one call"
+                ),
+                "tool_sequence": [
+                    "gdrive_copy_file",
+                    "gdrive_share_file(email=[...])",
+                ],
+                "notes": (
+                    "gdrive_copy_file(file_id) makes a working copy (the "
+                    "template-fill starting point). gdrive_share_file with a "
+                    "LIST of emails grants several recipients access to the "
+                    "same file in one call, returning a per-recipient result "
+                    "batch. gdrive_trash_file / gdrive_untrash_file accept a "
+                    "list of file_ids."
+                ),
+            },
         ],
         "operating_rules": [
             (
@@ -809,7 +939,7 @@ def server_guide() -> dict:
                 "(workflow `retrofit_styled_doc`) to preserve formatting."
             ),
             (
-                "`docx_path` arguments do NOT work from cloud chat — the "
+                "`docx_path` arguments do NOT work from cloud chat; the "
                 "server cannot see the caller's filesystem. Use "
                 "signed-URL upload (workflow `convert_sandbox_docx`) or "
                 "drive_file_id."
@@ -826,20 +956,27 @@ def server_guide() -> dict:
             ),
             (
                 "First use requires interactive Google OAuth consent. "
-                "The client must open the consent URL in a browser — "
+                "The client must open the consent URL in a browser; "
                 "this cannot be automated. Subsequent calls reuse the "
                 "cached token until it expires."
             ),
             (
                 "For persistent automation (recurring jobs, menus, onEdit "
-                "reactions) use the install_automation workflow. For a "
-                "one-off edit, use the direct docs/sheets/slides tools — "
-                "no script needed."
+                "reactions) prefer a recipe (as_list_recipes) via the "
+                "install_automation workflow. For a one-off edit, use the "
+                "direct docs/sheets/slides tools; no script needed."
+            ),
+            (
+                "A scheduled or reactive recipe automation is NOT live "
+                "until a one-time Run + Allow in the Apps Script editor "
+                "(the installer result says so); as_check_activation "
+                "verifies it. A menu or custom-function recipe activates "
+                "on first use, no editor step."
             ),
             (
                 "On any error, pass the raw error text to server_help for a "
                 "structured next-action. An auth error's body carries a "
-                "'Click here to authorize' link — surface it to the user; "
+                "'Click here to authorize' link; surface it to the user, "
                 "do NOT silently retry."
             ),
         ],
@@ -866,6 +1003,8 @@ def server_guide() -> dict:
             "drive_management": [
                 "gdrive_find_doc_by_title",
                 "gdrive_move_to_folder",
+                "gdrive_copy_file",
+                "gdrive_share_file",
                 "gdrive_trash_file",
                 "gdrive_untrash_file",
             ],
@@ -878,21 +1017,70 @@ def server_guide() -> dict:
                 "as_install_automation",
                 "account_reset_authorization",
             ],
+            "recipes": [
+                # Browse (as_list_recipes) then call the matching typed
+                # installer. The catalog is the discoverable, no-code entry
+                # to the automation moat; as_list_recipes returns each
+                # recipe's installer_tool, params, and activation_model.
+                "as_list_recipes",
+                "as_install_doc_menu",
+                "as_install_sheet_menu",
+                "as_install_slides_menu",
+                "as_install_custom_function",
+                "as_install_sheet_dashboard",
+                "as_install_calendar_sync",
+                "as_install_task_rollover",
+                "as_install_edit_trigger",
+                "as_install_form_handler",
+                "as_install_contact_sync",
+                "as_grade_form_responses",
+                "as_refresh_linked_slides",
+                "as_generate_video_deck",
+            ],
             "automation": [
                 # Persistent Workspace automation (the appscriptly moat):
-                # install the runtime, then generate bound scripts.
+                # prefer a recipe (see the recipes group); drop to the
+                # generic generator only when no recipe fits.
                 "as_install_automation",
                 "as_generate_bound_script",
+                "as_deploy_web_app",
+            ],
+            "automation_lifecycle": [
+                # Verify / list / update / remove installed automations.
+                "as_check_activation",
+                "as_list_installed_automations",
+                "as_update_automation",
+                "as_uninstall_automation",
+                "as_list_script_processes",
+            ],
+            "template_fill": [
+                # copy a template (gdrive_copy_file, in drive_management),
+                # then mark + fill fields by named range (no index math).
+                "gdocs_create_named_range",
+                "gdocs_replace_named_range_content",
+                "gdocs_delete_named_range",
             ],
             "spreadsheets": [
                 "gsheets_create_spreadsheet",
                 "gsheets_write_range",
                 "gsheets_read_range",
+                "gsheets_batch_read",
+                "gsheets_batch_write",
             ],
             "presentations": [
                 "gslides_create_presentation",
                 "gslides_get_outline",
                 "gslides_replace_all_text",
+                "gslides_add_slide",
+                "gslides_insert_text",
+                "gslides_create_shape",
+                "gslides_create_table",
+                "gslides_create_image",
+                "gslides_create_line",
+                "gslides_duplicate_object",
+                "gslides_delete_object",
+                "gslides_update_element_transform",
+                "gslides_set_speaker_notes",
             ],
             "introspection": [
                 "server_info",
@@ -1023,10 +1211,9 @@ def server_help(error_message: str) -> dict:
         "suggestion": (
             "No registered recovery pattern matched the error text "
             "(matching is case-insensitive substring). Fetch the "
-            "resource gdocs://error-recovery for the full table, "
-            "call server_info() to capture version + commit, "
-            "and consider filing an issue at the project repo with "
-            "the raw error string so a new entry can be added."
+            "resource gdocs://error-recovery for the full table, and "
+            "call server_info() to capture the build version + commit "
+            "so the maintainers can add a recovery entry for this error."
         ),
     }
 

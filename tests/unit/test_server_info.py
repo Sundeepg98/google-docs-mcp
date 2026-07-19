@@ -230,14 +230,17 @@ def test_gdocs_test_manifest_exists_and_returns_required_shape():
     assert "missing" in guards and isinstance(guards["missing"], list)
 
 
-def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
+def test_gdocs_guide_shape_includes_all_workflows_and_rules():
     """v1.3.0 self-documenting contract: gdocs_guide must return a
     structured payload an agent can use INSTEAD of any external doc.
 
-    The 5 workflows by name (the acceptance criterion: an agent can
+    The workflows by name (the acceptance criterion: an agent can
     correctly choose and sequence tools for these without any
-    external file) and the 5 operating rules (the failure modes that
-    used to require trial-and-error to discover).
+    external file) and the operating rules (the failure modes that
+    used to require trial-and-error to discover). Kept current with the
+    shipped surface: the readiness refresh (S2) added the recipe
+    catalog, automation lifecycle, template-fill, batch, and Slides
+    element flows, and corrected the stale server name / prefix headline.
     """
     from appscriptly.services.admin.tools import gdocs_guide
 
@@ -252,14 +255,24 @@ def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
     for key in ("name", "version", "what_it_does",
                 "all_tools_prefixed", "more_info"):
         assert key in guide["server"], f"guide.server missing {key}"
-    assert guide["server"]["all_tools_prefixed"] == "gdocs_"
+    # Server identity is CURRENT (was the stale "google-docs-fly").
+    assert guide["server"]["name"] == "appscriptly"
+    # Tools are prefixed per-domain now; the headline field names the
+    # docs prefix and points at the full per-domain map rather than
+    # claiming every tool wears "gdocs_".
+    assert "gdocs_" in guide["server"]["all_tools_prefixed"]
+    assert (
+        "additional_tool_prefixes" in guide["server"]["all_tools_prefixed"]
+    )
 
     # Exact workflow set — the test analog of the golden tool-surface
     # snapshot. If any name changes the external doc is no longer the
     # canonical source — update this list deliberately. The tool-DX
     # enrichment added the spreadsheet / presentation / install_automation
-    # flows so the Sheets/Slides verticals + the automation moat are
-    # discoverable from the orientation payload (was Docs-only).
+    # flows; the readiness refresh (S2) added the recipe catalog +
+    # lifecycle + template-fill + batch + Slides-element + Drive-batch
+    # flows so the current ~150-tool surface is discoverable from the
+    # orientation payload (was Docs-only).
     expected_workflow_names = {
         # The 5 original core flows.
         "new_doc",
@@ -271,6 +284,13 @@ def test_gdocs_guide_shape_includes_all_5_workflows_and_rules():
         "install_automation",
         "spreadsheet",
         "presentation",
+        # readiness refresh (S2): recipe catalog + automation lifecycle +
+        # template fill + batch ops + Slides elements + Drive batch.
+        "manage_automations",
+        "template_fill",
+        "batch_sheets",
+        "slides_elements",
+        "drive_batch",
     }
     actual_workflow_names = {w["name"] for w in guide["workflows"]}
     assert actual_workflow_names == expected_workflow_names, (
