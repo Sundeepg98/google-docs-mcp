@@ -1381,7 +1381,9 @@ def gdocs_replace_named_range_content(
         ``{doc_id, selector, selector_value, text_length, scope}``. The
         Docs reply carries NO match count, so this echoes the request
         and does NOT report how many ranges matched. Filling a name that
-        matches nothing is a no-op success.
+        matches nothing is a SILENT no-op success (the call returns OK
+        with nothing changed), so read the doc back to confirm the fill
+        landed.
 
     Choreography: ``gdocs_create_named_range`` (or ``gdrive_copy_file``
     of a pre-marked template) -> ``gdocs_replace_named_range_content``
@@ -1429,14 +1431,20 @@ def gdocs_delete_named_range(
     deletes only the marker/anchor. The text and paragraphs the range
     covered are NOT removed, they remain in the document unchanged.
 
-    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``
-    (same addressing rules as ``gdocs_replace_named_range_content``).
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``.
+    The selector shape matches ``gdocs_replace_named_range_content``, but
+    the tab reach is ASYMMETRIC: replace-by-name spans all tabs when
+    ``tab_ids`` is omitted, delete-by-name does NOT. To remove a marker
+    in a non-default tab you MUST pass its ``tab_ids``; omitting them can
+    fail to find it ("No named range with name ...").
 
     Args:
         doc_id: Document ID.
         named_range_name: Remove every range with this name.
         named_range_id: Remove one range by its server id.
-        tab_ids: With ``named_range_name`` only, restrict to these tabs.
+        tab_ids: With ``named_range_name`` only. REQUIRED to reach a
+            marker in a non-default tab; omitting does not fan out to
+            every tab (unlike replace).
 
     Returns:
         ``{doc_id, selector, selector_value, scope}`` echoing which
