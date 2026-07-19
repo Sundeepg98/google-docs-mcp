@@ -579,6 +579,75 @@ def test_apply_markdown_content_places_post_table_text_at_refetched_index():
     assert tail[0]["location"]["index"] == 29
 
 
+def test_apply_markdown_content_exact_live_failing_payload():
+    """Regression fixture for the LIVE failure: one tab = intro paragraph,
+    a 2x2 GFM table with an emoji cell, a line after the table, an image,
+    and a final line. Live this 400'd atomically at request 9 ("insertion
+    index must be inside the bounds of an existing paragraph"), so the
+    whole batchUpdate was rejected and the tab was left with ZERO content.
+
+    Here the get() side_effect models the evolving doc; the fix applies
+    the intro, the table (server-indexed), and the WHOLE post-table run
+    (line + image + final line) each at a re-fetched index - the emoji
+    cell and the post-table content that broke the one-shot arithmetic."""
+    docs = MagicMock(name="docs-v1")
+    table_rows = [
+        {"tableCells": [{"content": [{"startIndex": 21}]},
+                        {"content": [{"startIndex": 23}]}]},
+        {"tableCells": [{"content": [{"startIndex": 26}]},
+                        {"content": [{"startIndex": 28}]}]},
+    ]
+    docs.documents().get().execute.side_effect = [
+        _doc_body([{"startIndex": 1, "endIndex": 2}]),            # seg1 -> intro at 1
+        _doc_body([{"startIndex": 1, "endIndex": 18}]),           # seg2 -> table at 17
+        _doc_body([{"startIndex": 1, "endIndex": 18},             # locate table
+                   {"startIndex": 18, "endIndex": 40,
+                    "table": {"tableRows": table_rows}}]),
+        _doc_body([{"startIndex": 1, "endIndex": 18},             # seg3 -> after-run at 59
+                   {"startIndex": 18, "endIndex": 60, "table": {}}]),
+    ]
+    docs.documents().batchUpdate().execute.return_value = {"replies": []}
+
+    payload = (
+        "intro paragraph\n\n"
+        "| H1 | H2 |\n|----|----|\n| a | Beta \U0001F389 |\n\n"
+        "Line after the table.\n\n"
+        "![diagram](https://example.com/pic.png)\n\n"
+        "final line"
+    )
+    _apply_markdown_content(docs, "DOC1", "T0", payload)
+
+    flat = [
+        (op, req[op])
+        for c in docs.documents().batchUpdate.call_args_list if "body" in c.kwargs
+        for req in c.kwargs["body"]["requests"]
+        for op in req
+    ]
+
+    # Exactly one table, created at the re-fetched body end (17).
+    insert_tables = [p for op, p in flat if op == "insertTable"]
+    assert len(insert_tables) == 1
+    assert insert_tables[0]["location"]["index"] == 17
+
+    # The emoji cell was filled (server index), proving the cell walk +
+    # utf-16 content survive the round trip.
+    emoji_fill = [p for op, p in flat
+                  if op == "insertText" and p["text"] == "Beta \U0001F389"]
+    assert len(emoji_fill) == 1
+    assert emoji_fill[0]["location"]["index"] in {21, 23, 26, 28}
+
+    # The post-table run - the request-9 failure - lands at the RE-FETCHED
+    # index (59): the line, the image, and the final line all applied
+    # AFTER the table, none arithmetic'd into a phantom paragraph.
+    line_after = [p for op, p in flat
+                  if op == "insertText" and p["text"].startswith("Line after")]
+    assert len(line_after) == 1
+    assert line_after[0]["location"]["index"] == 59
+    assert any(op == "insertInlineImage" for op, _p in flat)
+    assert any(op == "insertText" and p["text"].startswith("final line")
+               for op, p in flat)
+
+
 # ---------------------------------------------------------------------
 # edit_range — deleteContentRange [+ insertText], UTF-16 index contract
 #
