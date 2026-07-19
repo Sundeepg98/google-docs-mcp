@@ -7,7 +7,7 @@ imported. ``server.py`` performs the import at the bottom AFTER
 constructing ``mcp``, the same side-effect pattern as Phase A/B/C
 and Gap #7.
 
-**Tools registered here** (18 sheets-service tools):
+**Tools registered here** (20 sheets-service tools):
 
 1.  ``gsheets_read_range``               — read cell values from a range
 2.  ``gsheets_write_range``              — write 2D values to a range
@@ -27,6 +27,8 @@ and Gap #7.
 16. ``gsheets_merge_cells``              — merge a cell range (batchUpdate)
 17. ``gsheets_set_data_validation``      — set a validation rule (batchUpdate)
 18. ``gsheets_add_chart``                — add an embedded chart (batchUpdate)
+19. ``gsheets_batch_read``               - read N disjoint ranges (values.batchGet)
+20. ``gsheets_batch_write``              - write N disjoint ranges (values.batchUpdate)
 
 (Authoritative declaration: ``services/sheets/_expected_tools.py``.)
 
@@ -63,6 +65,8 @@ from appscriptly.services.sheets.api import (
     add_sheet as _add_sheet,
     append_rows as _append_rows,
     apply_conditional_format as _apply_conditional_format,
+    batch_read as _batch_read,
+    batch_write as _batch_write,
     clear_range as _clear_range,
     create_spreadsheet as _create_spreadsheet,
     delete_dimension as _delete_dimension,
@@ -83,6 +87,8 @@ from appscriptly.tool_schemas import (
     GSHEETS_ADD_SHEET_OUTPUT_SCHEMA,
     GSHEETS_APPEND_ROWS_OUTPUT_SCHEMA,
     GSHEETS_APPLY_CONDITIONAL_FORMAT_OUTPUT_SCHEMA,
+    GSHEETS_BATCH_READ_OUTPUT_SCHEMA,
+    GSHEETS_BATCH_WRITE_OUTPUT_SCHEMA,
     GSHEETS_CLEAR_RANGE_OUTPUT_SCHEMA,
     GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     GSHEETS_DELETE_DIMENSION_OUTPUT_SCHEMA,
@@ -233,6 +239,125 @@ def gsheets_write_range(
     """
     return _write_range(
         creds, spreadsheet_id, range, values,
+        value_input_option=value_input_option,
+    )
+
+
+# ---------------------------------------------------------------------
+# gsheets_batch_read - values.batchGet (N disjoint ranges, one call)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Read several ranges from a Google Sheet in one call",
+    readonly=True,
+    destructive=False,
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_BATCH_READ_OUTPUT_SCHEMA,
+)
+def gsheets_batch_read(
+    creds,
+    spreadsheet_id: str,
+    ranges: list[str],
+) -> dict:
+    """Read several disjoint ranges from a Google Sheet in ONE round-trip.
+
+    USE WHEN: the agent needs values from two or more separate ranges
+    (e.g. a header block AND a totals row AND a lookup table). Prefer
+    this over calling ``gsheets_read_range`` N times: it collapses N
+    round-trips into a single ``spreadsheets.values.batchGet`` call.
+
+    Args:
+        spreadsheet_id: The spreadsheet ID (the ID part of the sharing
+            URL, NOT a gid for an individual sheet).
+        ranges: A non-empty list of A1-notation ranges, e.g.
+            ``["A1:B2", "Sheet2!C1:D5", "Totals!A1"]``. Each entry must
+            be a non-empty string; an empty list or a blank entry is
+            rejected client-side (no API call is made).
+
+    Returns:
+        ``{spreadsheet_id, value_ranges}`` where ``value_ranges`` is a
+        list of ``{range, values}`` dicts, one per requested range in
+        the SAME order. ``range`` is the canonical A1 form Sheets
+        returned; ``values`` is a 2D row-major list (trailing empty
+        cells / rows trimmed, exactly like ``gsheets_read_range``), and
+        is ``[]`` for a fully-blank range.
+
+    Choreography: ``spreadsheet_id`` comes from the user (URL), a prior
+    ``gsheets_create_spreadsheet``, or ``gdocs_find_doc_by_title``.
+    """
+    return _batch_read(creds, spreadsheet_id, ranges)
+
+
+# ---------------------------------------------------------------------
+# gsheets_batch_write - values.batchUpdate (N disjoint ranges, one call)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="sheets",
+    title="Write several ranges to a Google Sheet in one call",
+    # Overwriting cells in place is not "destructive" in our sense (the
+    # spreadsheet still exists; cells can be re-written to recover),
+    # matching gsheets_write_range.
+    readonly=False,
+    destructive=False,
+    # Same batch of values to the same ranges yields the same cells, so
+    # a retry on a transient error is safe (matches gsheets_write_range).
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSHEETS_BATCH_WRITE_OUTPUT_SCHEMA,
+)
+def gsheets_batch_write(
+    creds,
+    spreadsheet_id: str,
+    data: list[dict],
+    value_input_option: str = "USER_ENTERED",
+) -> dict:
+    """Write several disjoint ranges to a Google Sheet in ONE round-trip.
+
+    USE WHEN: the agent has computed values for two or more separate
+    ranges (e.g. filling a header row AND a summary block AND a totals
+    cell) and wants them written together. Prefer this over calling
+    ``gsheets_write_range`` N times: it collapses N round-trips into a
+    single ``spreadsheets.values.batchUpdate`` call.
+
+    By default (``value_input_option="USER_ENTERED"``) values parse as if
+    the user typed them (``"=SUM(A1:A10)"`` becomes a formula, ``"1/2"``
+    a date). Pass ``value_input_option="RAW"`` to store values EXACTLY as
+    given, so a leading ``=`` stays literal text rather than a formula.
+    The chosen option applies to EVERY range in the batch.
+
+    Args:
+        spreadsheet_id: The spreadsheet ID.
+        data: A non-empty list of ``{"range": <A1 string>, "values":
+            <2D row-major list>}`` dicts, one entry per range to write.
+            Example: ``[{"range": "A1:B1", "values": [["Name", "Qty"]]},
+            {"range": "D5", "values": [[42]]}]``. Each ``range`` is an
+            anchor cell or full block (if smaller than its ``values``,
+            Sheets writes only the slice that fits); each ``values`` is a
+            non-empty list of lists. Malformed entries are rejected
+            client-side, naming the offending index (no API call is made).
+        value_input_option: ``"USER_ENTERED"`` (default) parses values as
+            if typed; ``"RAW"`` stores them literally. Applies to the
+            whole batch.
+
+    Returns:
+        ``{spreadsheet_id, total_updated_cells, total_updated_ranges,
+        responses}``. ``responses`` is a list of ``{updated_range,
+        updated_cells}`` dicts (one per written range, echoing what
+        Sheets reports); ``total_updated_cells`` is the batch total and
+        ``total_updated_ranges`` is how many ranges were written.
+
+    Choreography: typically follows ``gsheets_create_spreadsheet`` or
+    pairs with ``gsheets_batch_read`` for a multi-range read-modify-write.
+    """
+    return _batch_write(
+        creds, spreadsheet_id, data,
         value_input_option=value_input_option,
     )
 

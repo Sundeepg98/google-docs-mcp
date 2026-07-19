@@ -538,6 +538,39 @@ GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``gsheets_batch_read`` reads N disjoint ranges in one values.batchGet.
+# ``value_ranges`` is a list of ``{range, values}`` dicts, one per
+# requested range in order (same 2D row-major ``values`` shape as
+# gsheets_read_range).
+GSHEETS_BATCH_READ_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "value_ranges": {"type": "array"},
+    },
+    required=["spreadsheet_id", "value_ranges"],
+)
+
+
+# ``gsheets_batch_write`` writes N disjoint ranges in one
+# values.batchUpdate. ``responses`` is a list of ``{updated_range,
+# updated_cells}`` dicts (one per written range); the totals aggregate the
+# whole batch.
+GSHEETS_BATCH_WRITE_OUTPUT_SCHEMA = _object(
+    properties={
+        "spreadsheet_id": {"type": "string"},
+        "total_updated_cells": {"type": "integer", "minimum": 0},
+        "total_updated_ranges": {"type": "integer", "minimum": 0},
+        "responses": {"type": "array"},
+    },
+    required=[
+        "spreadsheet_id",
+        "total_updated_cells",
+        "total_updated_ranges",
+        "responses",
+    ],
+)
+
+
 GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA = _object(
     properties={
         "spreadsheet_id": {"type": "string"},
@@ -2468,6 +2501,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # v2.3.1 — Sheets (2nd new service, minimal start)
     "gsheets_read_range": GSHEETS_READ_RANGE_OUTPUT_SCHEMA,
     "gsheets_write_range": GSHEETS_WRITE_RANGE_OUTPUT_SCHEMA,
+    # Sheets VALUES batch ops (values.batchGet / values.batchUpdate)
+    "gsheets_batch_read": GSHEETS_BATCH_READ_OUTPUT_SCHEMA,
+    "gsheets_batch_write": GSHEETS_BATCH_WRITE_OUTPUT_SCHEMA,
     "gsheets_create_spreadsheet": GSHEETS_CREATE_SPREADSHEET_OUTPUT_SCHEMA,
     "gsheets_format_range": GSHEETS_FORMAT_RANGE_OUTPUT_SCHEMA,
     # Sheets conditional formatting (this PR — wires the existing builder)

@@ -8,6 +8,8 @@ from __future__ import annotations
 EXPECTED: frozenset[str] = frozenset({
     "gsheets_read_range",
     "gsheets_write_range",
+    "gsheets_batch_read",
+    "gsheets_batch_write",
     "gsheets_create_spreadsheet",
     "gsheets_format_range",
     "gsheets_apply_conditional_format",

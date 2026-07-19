@@ -75,6 +75,21 @@ def sheets_stub():
         "spreadsheetId": "S1",
         "clearedRange": "Sheet1!A1:B2",
     }
+    sheets.spreadsheets().values().batchGet().execute.return_value = {
+        "spreadsheetId": "S1",
+        "valueRanges": [
+            {"range": "Sheet1!A1:B2", "values": [["a", "b"], ["c", "d"]]},
+            {"range": "Sheet2!C1:C1", "values": [["x"]]},
+        ],
+    }
+    sheets.spreadsheets().values().batchUpdate().execute.return_value = {
+        "spreadsheetId": "S1",
+        "totalUpdatedCells": 3,
+        "responses": [
+            {"updatedRange": "Sheet1!A1:B1", "updatedCells": 2},
+            {"updatedRange": "Sheet2!C1", "updatedCells": 1},
+        ],
+    }
     return sheets
 
 
@@ -193,6 +208,104 @@ def test_gsheets_write_range_defaults_to_USER_ENTERED(with_sheets_stub):
         if "spreadsheetId" in c.kwargs
     ]
     assert real_calls[-1].kwargs["valueInputOption"] == "USER_ENTERED"
+
+
+# ---------------------------------------------------------------------
+# gsheets_batch_read - happy path + validation through the envelope
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_batch_read_returns_per_range_envelope(with_sheets_stub):
+    """The tool surfaces ``{spreadsheet_id, value_ranges}`` with one
+    entry per requested range, in order, through the decorator envelope."""
+    result = tools.gsheets_batch_read(
+        spreadsheet_id="SPREAD1", ranges=["A1:B2", "Sheet2!C1:C1"],
+    )
+    assert result == {
+        "spreadsheet_id": "S1",
+        "value_ranges": [
+            {"range": "Sheet1!A1:B2", "values": [["a", "b"], ["c", "d"]]},
+            {"range": "Sheet2!C1:C1", "values": [["x"]]},
+        ],
+    }
+
+
+def test_gsheets_batch_read_forwards_ranges_to_batchGet(with_sheets_stub):
+    """The ranges list reaches values.batchGet verbatim under ``ranges``."""
+    tools.gsheets_batch_read(
+        spreadsheet_id="SPREAD1", ranges=["A1:B2", "Sheet2!C1:C1"],
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().batchGet.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().batchGet() call captured spreadsheetId"
+    assert real_calls[-1].kwargs["ranges"] == ["A1:B2", "Sheet2!C1:C1"]
+
+
+def test_gsheets_batch_read_validation_propagates_through_tool(with_sheets_stub):
+    """Empty ``ranges`` bubbles from the api module through the decorator
+    envelope as ValueError."""
+    with pytest.raises(ValueError, match="ranges cannot be empty"):
+        tools.gsheets_batch_read(spreadsheet_id="SPREAD1", ranges=[])
+
+
+# ---------------------------------------------------------------------
+# gsheets_batch_write - happy path + RAW safety + validation
+# ---------------------------------------------------------------------
+
+
+def test_gsheets_batch_write_returns_aggregated_envelope(with_sheets_stub):
+    """The tool surfaces the aggregated ``{spreadsheet_id,
+    total_updated_cells, total_updated_ranges, responses}`` envelope."""
+    result = tools.gsheets_batch_write(
+        spreadsheet_id="SPREAD1",
+        data=[
+            {"range": "A1:B1", "values": [["Name", "Qty"]]},
+            {"range": "Sheet2!C1", "values": [[42]]},
+        ],
+    )
+    assert result == {
+        "spreadsheet_id": "S1",
+        "total_updated_cells": 3,
+        "total_updated_ranges": 2,
+        "responses": [
+            {"updated_range": "Sheet1!A1:B1", "updated_cells": 2},
+            {"updated_range": "Sheet2!C1", "updated_cells": 1},
+        ],
+    }
+
+
+def test_gsheets_batch_write_RAW_forwards_to_values_batchUpdate(with_sheets_stub):
+    """RAW safety through the tool envelope: value_input_option="RAW"
+    reaches values.batchUpdate as RAW, and every range's literal values
+    (a leading ``=``) are forwarded unchanged in the single ``data``
+    array so Sheets keeps them as text."""
+    tools.gsheets_batch_write(
+        spreadsheet_id="SPREAD1",
+        data=[{"range": "A1", "values": [["=1+1"]]}],
+        value_input_option="RAW",
+    )
+    real_calls = [
+        c
+        for c in with_sheets_stub.spreadsheets().values().batchUpdate.call_args_list
+        if "spreadsheetId" in c.kwargs
+    ]
+    assert real_calls, "no values().batchUpdate() call captured spreadsheetId"
+    body = real_calls[-1].kwargs["body"]
+    assert body["valueInputOption"] == "RAW"
+    assert body["data"] == [{"range": "A1", "values": [["=1+1"]]}]
+
+
+def test_gsheets_batch_write_validation_propagates_through_tool(with_sheets_stub):
+    """A malformed batch entry bubbles from the api module through the
+    decorator envelope as ValueError, naming the offender."""
+    with pytest.raises(ValueError, match=r"data\[0\]\['range'\]"):
+        tools.gsheets_batch_write(
+            spreadsheet_id="SPREAD1",
+            data=[{"values": [["no range"]]}],
+        )
 
 
 # ---------------------------------------------------------------------

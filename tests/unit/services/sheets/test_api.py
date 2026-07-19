@@ -46,6 +46,8 @@ from appscriptly.services.sheets.api import (
     add_sheet,
     append_rows,
     apply_conditional_format,
+    batch_read,
+    batch_write,
     clear_range,
     create_spreadsheet,
     delete_dimension,
@@ -293,6 +295,319 @@ def test_write_range_returns_zero_cells_when_sheets_omits_field(
     }
     result = write_range(MagicMock(), "SPREAD1", "A1", [["x"]])
     assert result == {"updated_range": "Sheet1!A1:A1", "updated_cells": 0}
+
+
+# ---------------------------------------------------------------------
+# batch_read - values.batchGet (N disjoint ranges, one round-trip)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_batch_read():
+    """A Sheets v4 stub whose values().batchGet returns two value ranges.
+    Set up via ``.batchGet.return_value.execute.return_value`` (NOT
+    ``.batchGet().execute...``) so ``batchGet.call_count`` starts at 0 and
+    a "one API call" / "zero API calls" spy reads cleanly."""
+    sheets = MagicMock(name="sheets-v4-stub-batch-read")
+    sheets.spreadsheets().values().batchGet.return_value.execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "valueRanges": [
+            {
+                "range": "Sheet1!A1:B2",
+                "majorDimension": "ROWS",
+                "values": [["a", "b"], ["c", "d"]],
+            },
+            {
+                "range": "Sheet2!C1:C3",
+                "majorDimension": "ROWS",
+                "values": [["x"], ["y"], ["z"]],
+            },
+        ],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def test_batch_read_issues_exactly_one_batchGet_call(stub_sheets_for_batch_read):
+    """N disjoint ranges collapse into ONE values.batchGet round-trip,
+    not one get() per range."""
+    batch_read(MagicMock(), "SPREAD1", ["A1:B2", "Sheet2!C1:C3"])
+    assert stub_sheets_for_batch_read.spreadsheets().values().batchGet.call_count == 1
+
+
+def test_batch_read_passes_all_ranges_to_batchGet(stub_sheets_for_batch_read):
+    """Every requested range reaches the single batchGet call under the
+    ``ranges`` kwarg, in order, alongside the spreadsheet id."""
+    batch_read(
+        MagicMock(), "SPREAD-XYZ",
+        ["A1:B2", "Sheet2!C1:C3", "Totals!A1"],
+    )
+    call = stub_sheets_for_batch_read.spreadsheets().values().batchGet.call_args
+    assert call.kwargs["spreadsheetId"] == "SPREAD-XYZ"
+    assert call.kwargs["ranges"] == ["A1:B2", "Sheet2!C1:C3", "Totals!A1"]
+
+
+def test_batch_read_returns_per_range_values_in_order(stub_sheets_for_batch_read):
+    """DISCRIMINATING: N disjoint ranges come back as N ``value_ranges``,
+    in request order, each carrying that range's OWN values, i.e. exactly
+    what N individual read_range calls would each return, collapsed into
+    one round-trip."""
+    result = batch_read(MagicMock(), "SPREAD1", ["A1:B2", "Sheet2!C1:C3"])
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "value_ranges": [
+            {"range": "Sheet1!A1:B2", "values": [["a", "b"], ["c", "d"]]},
+            {"range": "Sheet2!C1:C3", "values": [["x"], ["y"], ["z"]]},
+        ],
+    }
+
+
+def test_batch_read_per_range_values_match_individual_get(stub_sheets_for_batch_read):
+    """DISCRIMINATING (stronger form): each batch_read value_range equals
+    what a single read_range of that same range returns. We stub
+    values().get to echo the batch's second range and assert the batch's
+    second entry matches it cell-for-cell."""
+    # An individual get of "Sheet2!C1:C3" would return this:
+    stub_sheets_for_batch_read.spreadsheets().values().get().execute.return_value = {
+        "range": "Sheet2!C1:C3",
+        "values": [["x"], ["y"], ["z"]],
+    }
+    single = read_range(MagicMock(), "SPREAD1", "Sheet2!C1:C3")
+    batched = batch_read(MagicMock(), "SPREAD1", ["A1:B2", "Sheet2!C1:C3"])
+    assert batched["value_ranges"][1] == {
+        "range": single["range"],
+        "values": single["values"],
+    }
+
+
+def test_batch_read_blank_range_yields_empty_values(stub_sheets_for_batch_read):
+    """A fully-blank range: Sheets omits ``values`` from that valueRange;
+    the envelope defaults it to ``[]`` (not a missing key), same trailing-
+    empty semantics as read_range."""
+    stub_sheets_for_batch_read.spreadsheets().values().batchGet.return_value.execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "valueRanges": [
+            {"range": "Sheet1!A1:B2", "values": [["a"]]},
+            {"range": "Sheet1!Z1:Z9"},  # blank range: no ``values`` key
+        ],
+    }
+    result = batch_read(MagicMock(), "SPREAD1", ["A1:B2", "Z1:Z9"])
+    assert result["value_ranges"][1] == {"range": "Sheet1!Z1:Z9", "values": []}
+
+
+def test_batch_read_handles_missing_valueRanges(stub_sheets_for_batch_read):
+    """Defensive: if Sheets ever omits ``valueRanges`` entirely, the
+    envelope is an empty list rather than a KeyError."""
+    stub_sheets_for_batch_read.spreadsheets().values().batchGet.return_value.execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+    }
+    result = batch_read(MagicMock(), "SPREAD1", ["A1:B2"])
+    assert result == {"spreadsheet_id": "SPREAD1", "value_ranges": []}
+
+
+def test_batch_read_rejects_empty_ranges():
+    """Empty ``ranges`` is a caller bug, rejected client-side with a clear
+    message before any API call."""
+    with pytest.raises(ValueError, match="ranges cannot be empty"):
+        batch_read(MagicMock(), "SPREAD1", [])
+
+
+def test_batch_read_rejects_non_list_ranges():
+    """A bare string (forgetting the list wrapper) is rejected with a
+    message naming the wrong type."""
+    with pytest.raises(ValueError, match="ranges must be a list"):
+        batch_read(MagicMock(), "SPREAD1", "A1:B2")
+
+
+def test_batch_read_rejects_blank_range_naming_offender():
+    """DISCRIMINATING: a blank entry in the range list is rejected with a
+    ValueError NAMING the offending index (``ranges[1]``)."""
+    with pytest.raises(ValueError, match=r"ranges\[1\]"):
+        batch_read(MagicMock(), "SPREAD1", ["A1:B2", "   "])
+
+
+def test_batch_read_rejects_non_string_range_naming_offender():
+    """A non-string entry (e.g. an int) is rejected naming its index."""
+    with pytest.raises(ValueError, match=r"ranges\[0\]"):
+        batch_read(MagicMock(), "SPREAD1", [123, "A1:B2"])
+
+
+def test_batch_read_malformed_makes_zero_api_calls(stub_sheets_for_batch_read):
+    """DISCRIMINATING: a malformed range list fails BEFORE any Sheets
+    call, so batchGet is never invoked (call_count stays 0)."""
+    with pytest.raises(ValueError):
+        batch_read(MagicMock(), "SPREAD1", ["A1:B2", ""])
+    assert stub_sheets_for_batch_read.spreadsheets().values().batchGet.call_count == 0
+
+
+# ---------------------------------------------------------------------
+# batch_write - values.batchUpdate (N disjoint ranges, one round-trip)
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_sheets_for_batch_write():
+    """A Sheets v4 stub whose values().batchUpdate returns a two-range
+    write result. Set up via ``.batchUpdate.return_value.execute...`` so
+    the ``values().batchUpdate`` chain's ``call_count`` starts at 0 (note:
+    this is the VALUES batchUpdate, distinct from the structural
+    ``spreadsheets().batchUpdate`` used by format_range)."""
+    sheets = MagicMock(name="sheets-v4-stub-batch-write")
+    sheets.spreadsheets().values().batchUpdate.return_value.execute.return_value = {
+        "spreadsheetId": "SPREAD1",
+        "totalUpdatedCells": 6,
+        "responses": [
+            {"updatedRange": "Sheet1!A1:B1", "updatedCells": 2},
+            {"updatedRange": "Sheet1!A5:B6", "updatedCells": 4},
+        ],
+    }
+    with with_google_api_client(InMemoryGoogleAPIClient({("sheets", "v4"): sheets})):
+        yield sheets
+
+
+def test_batch_write_issues_exactly_one_batchUpdate_call(stub_sheets_for_batch_write):
+    """DISCRIMINATING (spy: call count == 1): the whole batch goes out as
+    ONE values.batchUpdate, not one update() per range."""
+    batch_write(MagicMock(), "SPREAD1", [
+        {"range": "A1:B1", "values": [["Name", "Qty"]]},
+        {"range": "A5:B6", "values": [[1, 2], [3, 4]]},
+    ])
+    assert (
+        stub_sheets_for_batch_write.spreadsheets().values().batchUpdate.call_count
+        == 1
+    )
+
+
+def test_batch_write_body_carries_all_ranges_and_value_input_option(
+    stub_sheets_for_batch_write,
+):
+    """DISCRIMINATING: the single batchUpdate body carries EVERY range in
+    its ``data`` array plus the chosen ``valueInputOption``."""
+    batch_write(MagicMock(), "SPREAD1", [
+        {"range": "A1:B1", "values": [["Name", "Qty"]]},
+        {"range": "Sheet2!C1", "values": [[42]]},
+    ], value_input_option="RAW")
+    call = stub_sheets_for_batch_write.spreadsheets().values().batchUpdate.call_args
+    assert call.kwargs["spreadsheetId"] == "SPREAD1"
+    body = call.kwargs["body"]
+    assert body["valueInputOption"] == "RAW"
+    assert body["data"] == [
+        {"range": "A1:B1", "values": [["Name", "Qty"]]},
+        {"range": "Sheet2!C1", "values": [[42]]},
+    ]
+
+
+def test_batch_write_defaults_to_USER_ENTERED(stub_sheets_for_batch_write):
+    """PINNED: omitting value_input_option keeps the USER_ENTERED default
+    for the whole batch (a leading ``=`` becomes a formula)."""
+    batch_write(
+        MagicMock(), "SPREAD1",
+        [{"range": "A1", "values": [["=SUM(B1:B10)"]]}],
+    )
+    call = stub_sheets_for_batch_write.spreadsheets().values().batchUpdate.call_args
+    assert call.kwargs["body"]["valueInputOption"] == "USER_ENTERED"
+
+
+def test_batch_write_RAW_preserves_literal_formula_string(
+    stub_sheets_for_batch_write,
+):
+    """DISCRIMINATING (RAW safety): under value_input_option="RAW" a value
+    with a leading ``=`` is forwarded verbatim, so Sheets stores the
+    literal string ``"=SUM(A1)"`` rather than evaluating it to a formula
+    result. Asserts BOTH that RAW reaches the API AND the value is
+    unmangled."""
+    batch_write(
+        MagicMock(), "SPREAD1",
+        [{"range": "A1", "values": [["=SUM(A1)"]]}],
+        value_input_option="RAW",
+    )
+    call = stub_sheets_for_batch_write.spreadsheets().values().batchUpdate.call_args
+    assert call.kwargs["body"]["valueInputOption"] == "RAW"
+    assert call.kwargs["body"]["data"] == [
+        {"range": "A1", "values": [["=SUM(A1)"]]},
+    ]
+
+
+def test_batch_write_returns_flat_envelope(stub_sheets_for_batch_write):
+    """The envelope aggregates the batch: spreadsheet id, Sheets' total
+    updated cells, a ranges count, and a per-range ``responses`` list
+    (snake_case: updatedRange -> updated_range, etc.)."""
+    result = batch_write(MagicMock(), "SPREAD1", [
+        {"range": "A1:B1", "values": [["Name", "Qty"]]},
+        {"range": "A5:B6", "values": [[1, 2], [3, 4]]},
+    ])
+    assert result == {
+        "spreadsheet_id": "SPREAD1",
+        "total_updated_cells": 6,
+        "total_updated_ranges": 2,
+        "responses": [
+            {"updated_range": "Sheet1!A1:B1", "updated_cells": 2},
+            {"updated_range": "Sheet1!A5:B6", "updated_cells": 4},
+        ],
+    }
+
+
+def test_batch_write_rejects_empty_data():
+    """Empty ``data`` is a caller bug, rejected client-side."""
+    with pytest.raises(ValueError, match="data cannot be empty"):
+        batch_write(MagicMock(), "SPREAD1", [])
+
+
+def test_batch_write_rejects_non_list_data():
+    """A non-list ``data`` (e.g. a single dict, forgetting the list
+    wrapper) is rejected naming the wrong type."""
+    with pytest.raises(ValueError, match="data must be a list"):
+        batch_write(MagicMock(), "SPREAD1", {"range": "A1", "values": [["x"]]})
+
+
+def test_batch_write_rejects_entry_missing_range_naming_offender():
+    """DISCRIMINATING: an entry lacking a valid ``range`` is rejected with
+    a ValueError NAMING the offending index (``data[1]['range']``)."""
+    with pytest.raises(ValueError, match=r"data\[1\]\['range'\]"):
+        batch_write(MagicMock(), "SPREAD1", [
+            {"range": "A1", "values": [["ok"]]},
+            {"values": [["no range"]]},
+        ])
+
+
+def test_batch_write_rejects_entry_with_non_2d_values_naming_offender():
+    """An entry whose ``values`` is not a list of lists is rejected naming
+    the offending index (``data[0]['values']``)."""
+    with pytest.raises(ValueError, match=r"data\[0\]\['values'\]"):
+        batch_write(MagicMock(), "SPREAD1", [
+            {"range": "A1", "values": ["not-a-row"]},
+        ])
+
+
+def test_batch_write_rejects_entry_with_empty_values_naming_offender():
+    """An entry whose ``values`` is an empty list is rejected naming the
+    offending index (a batch entry that writes nothing is a caller bug)."""
+    with pytest.raises(ValueError, match=r"data\[0\]\['values'\]"):
+        batch_write(MagicMock(), "SPREAD1", [
+            {"range": "A1", "values": []},
+        ])
+
+
+def test_batch_write_rejects_unknown_value_input_option(stub_sheets_for_batch_write):
+    """A typo'd option (lowercase ``"raw"``) is rejected client-side with a
+    message naming the two valid options."""
+    with pytest.raises(ValueError, match="value_input_option must be one of"):
+        batch_write(
+            MagicMock(), "SPREAD1",
+            [{"range": "A1", "values": [["x"]]}],
+            value_input_option="raw",
+        )
+
+
+def test_batch_write_malformed_makes_zero_api_calls(stub_sheets_for_batch_write):
+    """DISCRIMINATING: a malformed batch fails BEFORE any Sheets call, so
+    values.batchUpdate is never invoked (call_count stays 0)."""
+    with pytest.raises(ValueError):
+        batch_write(MagicMock(), "SPREAD1", [{"range": "", "values": [["x"]]}])
+    assert (
+        stub_sheets_for_batch_write.spreadsheets().values().batchUpdate.call_count
+        == 0
+    )
 
 
 # ---------------------------------------------------------------------

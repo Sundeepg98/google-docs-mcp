@@ -62,6 +62,10 @@ READONLY_TOOLS = {
     # ``gsheets_create_spreadsheet`` (creates a new resource) are
     # NOT readonly.
     "gsheets_read_range",
+    # Wave 4 (S2): Sheets values.batchGet, a pure multi-range read.
+    # The write counterpart ``gsheets_batch_write`` (values.batchUpdate)
+    # overwrites cells and is NOT readonly.
+    "gsheets_batch_read",
     # v2.3.2: Slides presentations.get — pure read of the deck's
     # structure + per-slide text. Sister tools
     # ``gslides_replace_all_text`` (mutates text across slides) and

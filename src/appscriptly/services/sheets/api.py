@@ -105,6 +105,78 @@ def _check_value_input_option(value_input_option: str) -> None:
         )
 
 
+def _check_read_ranges(ranges: list[str]) -> None:
+    """Reject an empty or malformed ``ranges`` list for a batch read.
+
+    Pinned client-side so a bad batch (no ranges, or a blank / non-string
+    entry) fails cheaply with a message NAMING the offending index rather
+    than issuing a doomed ``values.batchGet`` that bounces off a generic
+    Google 400. Runs before any Sheets call, so a rejected list costs zero
+    API round-trips.
+    """
+    if not isinstance(ranges, list):
+        raise ValueError(
+            f"ranges must be a list of A1-notation strings; got "
+            f"{type(ranges).__name__}."
+        )
+    if not ranges:
+        raise ValueError(
+            'ranges cannot be empty, pass at least one A1-notation range '
+            '(e.g. ["A1:B2", "Sheet2!C1:D5"]).'
+        )
+    for i, r in enumerate(ranges):
+        if not isinstance(r, str) or not r.strip():
+            raise ValueError(
+                f"ranges[{i}] must be a non-empty A1-notation string; got "
+                f"{r!r}."
+            )
+
+
+def _check_write_data(data: list[dict]) -> None:
+    """Reject an empty or malformed ``data`` list for a batch write.
+
+    Each entry must be a ``{range, values}`` dict with a non-empty
+    A1-notation ``range`` and a non-empty 2D row-major ``values`` list.
+    Pinned client-side so a malformed batch fails cheaply with a message
+    NAMING the offending index (and its range, when known) rather than
+    bouncing off a generic Google 400. Runs before any Sheets call, so a
+    rejected batch costs zero API round-trips.
+    """
+    if not isinstance(data, list):
+        raise ValueError(
+            f"data must be a list of {{range, values}} dicts; got "
+            f"{type(data).__name__}."
+        )
+    if not data:
+        raise ValueError(
+            "data cannot be empty, pass at least one {range, values} entry."
+        )
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"data[{i}] must be a {{range, values}} dict; got "
+                f"{type(item).__name__}."
+            )
+        rng = item.get("range")
+        if not isinstance(rng, str) or not rng.strip():
+            raise ValueError(
+                f"data[{i}]['range'] must be a non-empty A1-notation "
+                f"string; got {rng!r}."
+            )
+        values = item.get("values")
+        if not isinstance(values, list) or not values:
+            raise ValueError(
+                f"data[{i}]['values'] (for range {rng!r}) must be a "
+                f"non-empty 2D row-major list; got {values!r}."
+            )
+        if not all(isinstance(row, list) for row in values):
+            raise ValueError(
+                f"data[{i}]['values'] (for range {rng!r}) must be a list "
+                f"of lists (2D row-major); got element types "
+                f"{sorted({type(row).__name__ for row in values})}."
+            )
+
+
 def read_range(
     creds: Credentials,
     spreadsheet_id: str,
@@ -220,6 +292,151 @@ def write_range(
     return {
         "updated_range": resp.get("updatedRange", range_str),
         "updated_cells": resp.get("updatedCells", 0),
+    }
+
+
+def batch_read(
+    creds: Credentials,
+    spreadsheet_id: str,
+    ranges: list[str],
+) -> dict:
+    """Read several disjoint ranges in ONE round-trip via ``values.batchGet``.
+
+    The batched counterpart to ``read_range``. Reading N disjoint ranges
+    with ``read_range`` costs N round-trips; ``batch_read`` fetches them
+    all in a single ``spreadsheets.values.batchGet`` call and returns one
+    ``value_ranges`` entry per requested range, in the SAME order.
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        ranges: A non-empty list of A1-notation ranges, each either a
+            whole-tab / block form (``"A1:B2"``) or a tab-prefixed form
+            (``"Sheet2!C1:D5"``). Every entry must be a non-empty string;
+            an empty list or a blank / non-string entry is rejected
+            client-side (see Raises).
+
+    Returns:
+        ``{spreadsheet_id, value_ranges}`` where ``value_ranges`` is a
+        list of ``{range, values}`` dicts, one per requested range in
+        order. ``values`` is a 2D row-major list (Sheets trims trailing
+        empty cells / rows, same as ``read_range``); a fully-blank range
+        yields ``values: []``.
+
+    Raises:
+        ValueError: ``ranges`` empty, not a list, or containing a blank /
+            non-string entry (named by index). Rejected before any API
+            call, so a bad list costs zero round-trips.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+
+    Note:
+        Dispatched with ``idempotent=True`` (a read has no side effects),
+        so it is safe to retry on a transient 429 / 5xx.
+    """
+    _check_read_ranges(ranges)
+
+    sheets = get_service("sheets", "v4", credentials=creds)
+    resp = execute_with_retry(
+        lambda: sheets.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=ranges,
+        ).execute(),
+        idempotent=True,
+        op_name="sheets.values.batchGet",
+    )
+    return {
+        "spreadsheet_id": resp.get("spreadsheetId", spreadsheet_id),
+        "value_ranges": [
+            {
+                "range": vr.get("range", ""),
+                "values": vr.get("values", []),
+            }
+            for vr in resp.get("valueRanges", [])
+        ],
+    }
+
+
+def batch_write(
+    creds: Credentials,
+    spreadsheet_id: str,
+    data: list[dict],
+    *,
+    value_input_option: str = "USER_ENTERED",
+) -> dict:
+    """Write several disjoint ranges in ONE call via ``values.batchUpdate``.
+
+    The batched counterpart to ``write_range``. Writing N disjoint ranges
+    with ``write_range`` costs N round-trips; ``batch_write`` sends them
+    all in a single ``spreadsheets.values.batchUpdate`` call (the VALUES
+    batch endpoint, distinct from the ``spreadsheets.batchUpdate``
+    request-builder used for structural / formatting mutations).
+
+    Args:
+        creds: OAuth credentials carrying the ``spreadsheets`` scope.
+        spreadsheet_id: The Sheets file ID.
+        data: A non-empty list of ``{"range": <A1 str>, "values": <2D
+            list>}`` dicts, one per range to write. Each ``range`` is an
+            anchor cell or full block (Sheets writes only the slice that
+            fits, same rule as ``write_range``); each ``values`` is a
+            non-empty 2D row-major list. Malformed entries are rejected
+            client-side (see Raises).
+        value_input_option: How Sheets interprets EVERY range's values.
+            ``"USER_ENTERED"`` (default) parses them as if typed in the UI
+            (``"=SUM(A1:A2)"`` becomes a formula, ``"1/2"`` a date);
+            ``"RAW"`` stores every value as the literal it received, so a
+            leading ``=`` stays plain text. Applies to the whole batch.
+
+    Returns:
+        ``{spreadsheet_id, total_updated_cells, total_updated_ranges,
+        responses}`` where ``responses`` is a list of ``{updated_range,
+        updated_cells}`` dicts (one per written range, echoing what Sheets
+        reports it wrote) and ``total_updated_ranges`` is that list's
+        length.
+
+    Raises:
+        ValueError: ``data`` empty / not a list, an entry that is not a
+            ``{range, values}`` dict, a blank / non-string ``range``, a
+            ``values`` that is empty or not a list of lists, or an unknown
+            ``value_input_option``. Each names the offending index.
+            Rejected before any API call, so a bad batch costs zero
+            round-trips.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated.
+
+    Note:
+        Dispatched with ``idempotent=True`` (re-writing the same values to
+        the same ranges yields the same cells, same reasoning as
+        ``write_range``), so it is safe to retry on a transient 429 / 5xx.
+    """
+    _check_write_data(data)
+    _check_value_input_option(value_input_option)
+
+    sheets = get_service("sheets", "v4", credentials=creds)
+    resp = execute_with_retry(
+        lambda: sheets.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": value_input_option,
+                "data": [
+                    {"range": item["range"], "values": item["values"]}
+                    for item in data
+                ],
+            },
+        ).execute(),
+        idempotent=True,
+        op_name="sheets.values.batchUpdate",
+    )
+    responses = [
+        {
+            "updated_range": r.get("updatedRange", ""),
+            "updated_cells": r.get("updatedCells", 0),
+        }
+        for r in resp.get("responses", [])
+    ]
+    return {
+        "spreadsheet_id": resp.get("spreadsheetId", spreadsheet_id),
+        "total_updated_cells": resp.get("totalUpdatedCells", 0),
+        "total_updated_ranges": len(responses),
+        "responses": responses,
     }
 
 
