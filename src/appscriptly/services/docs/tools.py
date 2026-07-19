@@ -385,11 +385,15 @@ def gdocs_read_doc(
             them inline, ``"DEFAULT_FOR_CURRENT_ACCESS"`` lets Docs
             decide. Omit to use Docs' default.
         include_indices: When True, every ``paragraphs`` entry also
-            carries the server ``start_index`` / ``end_index`` of its
-            element (works in BOTH single-tab and all-tabs mode). These
-            are the exact spans ``gdocs_create_named_range`` and
-            ``gdocs_insert_page_break`` consume, so template-fill callers
-            never compute an index by hand. Default False.
+            carries ``start_index`` / ``end_index`` (works in BOTH
+            single-tab and all-tabs mode). For a paragraph the span
+            ``[start_index, end_index)`` covers exactly its ``text`` (the
+            terminating newline is NOT included), so passing it straight
+            to ``gdocs_create_named_range`` marks the field without the
+            fill later merging the next paragraph. ``gdocs_insert_page_break``
+            takes a single ``index`` (use a paragraph's ``start_index``).
+            Template-fill callers never compute an index by hand. Default
+            False.
 
     Returns:
         Single-tab mode: ``{"doc_id", "tab_id", "title",
@@ -1301,9 +1305,12 @@ def gdocs_create_named_range(
 
     The indices MUST come from a read: call
     ``gdocs_read_doc(..., include_indices=True)`` and pass a paragraph's
-    ``start_index`` / ``end_index`` straight through. This tool NEVER
-    computes indices from text; anchoring a range by searching for a
-    token is a separate, higher risk capability that is out of scope.
+    ``start_index`` / ``end_index`` straight through. That read returns
+    the CONTENT span (the paragraph's terminating newline excluded), so a
+    plain-string ``gdocs_replace_named_range_content`` fill later swaps
+    the text and preserves the paragraph break. This tool NEVER computes
+    indices from text; anchoring a range by searching for a token is a
+    separate, higher risk capability that is out of scope.
 
     Args:
         doc_id: Document ID.

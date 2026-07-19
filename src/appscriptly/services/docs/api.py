@@ -449,10 +449,14 @@ def read_tab_content(
     Omit to use Docs' default for the caller's access.
 
     ``include_indices`` (optional): when True, every ``paragraphs``
-    entry also carries the server ``start_index`` / ``end_index`` of its
-    source element. These are the exact spans ``create_named_range`` /
-    ``insert_page_break`` consume, so a caller never has to compute an
-    index client-side.
+    entry also carries ``start_index`` / ``end_index``. For a paragraph
+    ``[start_index, end_index)`` covers exactly the paragraph's ``text``
+    (its terminating newline is NOT included), which is the span
+    ``create_named_range`` consumes, so a caller can pass it straight
+    through and a later ``replace_named_range_content`` fills the field
+    without merging the next paragraph. ``insert_page_break`` takes a
+    single ``index`` (use a paragraph's ``start_index``). A caller never
+    has to compute an index client-side.
     """
     if not tab_id and not tab_title:
         raise ValueError("Provide either tab_id or tab_title")
@@ -673,9 +677,12 @@ def create_named_range(
     The indices MUST come from a prior read. Call
     ``read_tab_content`` / ``read_all_tabs`` with ``include_indices``
     and pass a paragraph's ``start_index`` / ``end_index`` straight
-    through. This function NEVER computes indices from text; searching
-    for a token and deriving its span is a separate, higher risk
-    capability that is out of scope here.
+    through. That read returns the CONTENT span (the paragraph's
+    terminating newline excluded), so a plain-string
+    ``replace_named_range_content`` fill later swaps the text and
+    preserves the paragraph break. This function NEVER computes indices
+    from text; searching for a token and deriving its span is a separate,
+    higher risk capability that is out of scope here.
 
     Args:
         creds: OAuth credentials carrying the ``documents`` scope
@@ -1883,9 +1890,11 @@ def read_all_tabs(
     omit to use Docs' default for the caller's access.
 
     ``include_indices`` (optional): when True, every ``paragraphs``
-    entry (in every tab) also carries the server ``start_index`` /
-    ``end_index`` of its source element, identical to
-    ``read_tab_content`` (the shared summarizer produces both).
+    entry (in every tab) also carries ``start_index`` / ``end_index``,
+    identical to ``read_tab_content`` (the shared summarizer produces
+    both). For a paragraph the span covers exactly its ``text`` (the
+    terminating newline excluded), ready to pass straight to
+    ``create_named_range``.
 
     Returns ``{"doc_id", "tabs": [{tab_id, title, depth,
     paragraph_count, table_count, image_count, paragraphs:
@@ -1946,6 +1955,12 @@ def read_all_tabs(
 _MAX_CELL_TABLE_DEPTH = 6
 
 
+# Sentinel: ``_tag`` distinguishes "no end_index override, use the raw
+# element endIndex" (tables, TOC) from a paragraph passing its trimmed
+# content end (possibly ``None`` for an index-0 element).
+_RAW_END = object()
+
+
 def _summarize_body_content(
     content: list[dict], *, _depth: int = 0, include_indices: bool = False
 ) -> tuple[list[dict], int, int]:
@@ -1957,12 +1972,18 @@ def _summarize_body_content(
     ``(paragraphs, table_count, image_count)``.
 
     When ``include_indices`` is True, each emitted top-level entry also
-    carries the source structural element's ``start_index`` /
-    ``end_index`` (the Docs ``startIndex`` / ``endIndex``; either may be
-    ``None`` for the first element, which Docs omits at index 0). These
-    are the server-sourced spans ``create_named_range`` /
-    ``insert_page_break`` consume. Table-cell recursion always summarizes
-    WITHOUT indices (cells are flattened to text, not addressable here).
+    carries ``start_index`` / ``end_index``. ``start_index`` is the Docs
+    element ``startIndex`` (``None`` for the index-0 element, which Docs
+    omits). For a PARAGRAPH ``end_index`` is the CONTENT end: the element
+    ``endIndex`` with its paragraph-terminating newline excluded, so the
+    returned ``[start_index, end_index)`` span covers exactly ``text``.
+    That is the span ``create_named_range`` consumes; passing the raw
+    element ``endIndex`` (which points past the ``\n``) would let a
+    later ``replace_named_range_content`` delete the terminator and merge
+    the next paragraph (finding F4). Non-paragraph elements (table, TOC)
+    keep the raw element ``endIndex``. Table-cell recursion always
+    summarizes WITHOUT indices (cells are flattened to text, not
+    addressable here).
 
     Element -> emission:
       textRun             -> its content
@@ -1985,12 +2006,21 @@ def _summarize_body_content(
     table_count = 0
     image_count = 0
 
-    def _tag(entry: dict, elem: dict) -> dict:
+    def _tag(entry: dict, elem: dict, *, end_index: Any = _RAW_END) -> dict:
         # Attach server startIndex/endIndex when requested. Docs omits
-        # startIndex on the index-0 element, so either may be None.
+        # startIndex on the index-0 element, so start_index may be None.
+        # A PARAGRAPH passes end_index = its CONTENT end (the element
+        # endIndex with the paragraph-terminating newline excluded) so
+        # the returned [start_index, end_index) covers exactly the
+        # returned text; a named range built straight from that span
+        # fills WITHOUT swallowing the paragraph break (finding F4).
+        # Non-paragraph elements (table, TOC) pass no override and keep
+        # the raw element endIndex.
         if include_indices:
             entry["start_index"] = elem.get("startIndex")
-            entry["end_index"] = elem.get("endIndex")
+            entry["end_index"] = (
+                elem.get("endIndex") if end_index is _RAW_END else end_index
+            )
         return entry
 
     for elem in content:
@@ -2015,9 +2045,21 @@ def _summarize_body_content(
                     chunks.append(f"[person:{email}]")
                 elif "richLink" in pe:
                     chunks.append("[link]")
-            text = "".join(chunks).rstrip("\n")
+            raw = "".join(chunks)
+            text = raw.rstrip("\n")
             if text or style != "NORMAL_TEXT":
-                paragraphs.append(_tag({"style": style, "text": text}, elem))
+                # Trim end_index to the content end: a Docs paragraph
+                # element's endIndex points PAST its terminating newline,
+                # so the raw span includes it and a named-range fill would
+                # delete it, merging the next paragraph (F4). len(raw) -
+                # len(text) is the trailing-newline count (1 for a normal
+                # paragraph); subtract it so the span matches ``text``.
+                end = elem.get("endIndex")
+                if end is not None:
+                    end -= len(raw) - len(text)
+                paragraphs.append(
+                    _tag({"style": style, "text": text}, elem, end_index=end)
+                )
         elif "table" in elem:
             tbl = elem["table"]
             rows = tbl.get("rows", 0)
