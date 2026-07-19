@@ -1348,8 +1348,8 @@ def server_health() -> dict:
                 runtime["detail"] = (
                     "The Apps Script API is turned OFF for this Google "
                     "account, so the automation runtime cannot be "
-                    "managed. Open the remediation URL, toggle 'Google "
-                    "Apps Script API' ON, then retry."
+                    f"managed. Open {_APPS_SCRIPT_USERSETTINGS_URL}, toggle "
+                    "'Google Apps Script API' ON, then retry."
                 )
                 return {
                     "server": "ok",

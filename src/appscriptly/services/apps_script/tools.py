@@ -104,6 +104,14 @@ def as_generate_bound_script(
     and rewrites the Doc; it then runs itself daily, forever, without
     another Claude call.
 
+    PLATFORM QUOTAS: because the automation runs on Google's own Apps
+    Script platform, it is bound by Google's per-user quotas (concurrent
+    executions, triggers created per day, UrlFetch calls per day, total
+    runtime) that appscriptly cannot see or raise. A heavy first-day
+    automation (many triggers, frequent runs, or large fetch loops) can
+    hit those limits and fail with a Google-side quota error; keep early
+    automations modest and space large jobs out.
+
     USE WHEN: the user wants something that keeps working *after* the
     conversation ends — a recurring job, a button/menu they can re-click,
     a reaction to their own future edits. For a ONE-OFF edit, use the

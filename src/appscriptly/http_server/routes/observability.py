@@ -45,7 +45,7 @@ async def health(_request: Request) -> JSONResponse:
 _SECURITY_TXT_EXPIRES = "2027-01-01T00:00:00Z"
 
 _SECURITY_TXT_BODY = f"""\
-# RFC 9116 security.txt for google-docs-mcp
+# RFC 9116 security.txt for appscriptly (repo: google-docs-mcp)
 # Machine-readable companion to /SECURITY.md + docs/THREAT_MODEL.md
 # in the source repo.
 
