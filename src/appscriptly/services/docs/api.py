@@ -727,16 +727,21 @@ def _named_range_selector(
     named_range_name: str | None,
     named_range_id: str | None,
     tab_ids: list[str] | None,
+    *,
+    name_field: str,
 ) -> tuple[dict, str, str, Any]:
-    """Build the shared ``{namedRangeName|namedRangeId (+tabsCriteria)}``.
+    """Build the shared ``{<name_field>|namedRangeId (+tabsCriteria)}``.
 
     Used by ``replace_named_range_content`` + ``delete_named_range`` so
-    their selector rules stay in lockstep. Returns
+    their selector rules stay in lockstep. The by-NAME field key differs
+    per request - a real Docs API asymmetry: ``replaceNamedRangeContent``
+    selects by ``namedRangeName`` while ``deleteNamedRange`` selects by
+    ``name``. Each caller passes the right one as ``name_field``. Returns
     ``(fields, selector, selector_value, scope)`` where ``fields`` is
     merged into the request, ``selector`` is ``"named_range_name"`` or
-    ``"named_range_id"``, and ``scope`` is the tab scope
-    (``"all_tabs"`` / a tab-id list) for name selection or ``None`` for
-    id selection.
+    ``"named_range_id"`` (the tool's own echo label, NOT the API field),
+    and ``scope`` is the tab scope (``"all_tabs"`` / a tab-id list) for
+    name selection or ``None`` for id selection.
 
     Enforces: EXACTLY ONE of name/id; ``tab_ids`` only with a name (an
     id is globally unique, so tab scoping is meaningless for it).
@@ -756,7 +761,7 @@ def _named_range_selector(
         raise ValueError(
             "Provide exactly one of named_range_name or named_range_id."
         )
-    fields: dict[str, Any] = {"namedRangeName": named_range_name}
+    fields: dict[str, Any] = {name_field: named_range_name}
     if tab_ids is not None:
         if not tab_ids:
             raise ValueError(
@@ -812,7 +817,7 @@ def replace_named_range_content(
         HttpError: from the underlying SDK on 4xx / 5xx, propagated.
     """
     fields, selector, selector_value, scope = _named_range_selector(
-        named_range_name, named_range_id, tab_ids
+        named_range_name, named_range_id, tab_ids, name_field="namedRangeName"
     )
     docs = get_service("docs", "v1", credentials=creds)
     req = {"replaceNamedRangeContent": {"text": text, **fields}}
@@ -870,7 +875,7 @@ def delete_named_range(
         HttpError: from the underlying SDK on 4xx / 5xx, propagated.
     """
     fields, selector, selector_value, scope = _named_range_selector(
-        named_range_name, named_range_id, tab_ids
+        named_range_name, named_range_id, tab_ids, name_field="name"
     )
     docs = get_service("docs", "v1", credentials=creds)
     req = {"deleteNamedRange": fields}

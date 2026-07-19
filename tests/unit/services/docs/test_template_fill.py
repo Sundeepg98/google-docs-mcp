@@ -186,14 +186,26 @@ def test_delete_by_id_builds_request():
     assert result["selector"] == "named_range_id"
 
 
+def test_delete_by_name_uses_name_field():
+    """Docs API asymmetry: DeleteNamedRangeRequest selects by ``name`` (NOT
+    ``namedRangeName``, which is replaceNamedRangeContent's field). This is
+    close-smoke step 6 (delete by name, no tabs); the wrong field 400s live."""
+    docs, client = _docs_stub()
+    with with_google_api_client(client):
+        delete_named_range(MagicMock(), "DOC1", named_range_name="field1")
+    assert _last_requests(docs) == [{"deleteNamedRange": {"name": "field1"}}]
+
+
 def test_delete_by_name_scopes_tabs_criteria():
+    """By-name delete with tabs -> ``name`` + tabsCriteria (again ``name``,
+    not ``namedRangeName``)."""
     docs, client = _docs_stub()
     with with_google_api_client(client):
         delete_named_range(
             MagicMock(), "DOC1", named_range_name="field1", tab_ids=["t.3"]
         )
     assert _last_requests(docs) == [
-        {"deleteNamedRange": {"namedRangeName": "field1", "tabsCriteria": {"tabIds": ["t.3"]}}}
+        {"deleteNamedRange": {"name": "field1", "tabsCriteria": {"tabIds": ["t.3"]}}}
     ]
 
 

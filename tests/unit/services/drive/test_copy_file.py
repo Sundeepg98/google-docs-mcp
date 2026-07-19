@@ -73,9 +73,10 @@ def test_copy_file_requests_webviewlink_field(stub_drive_for_copy):
     assert "webViewLink" in kw["fields"]
 
 
-def test_copy_file_inherits_parent_no_parents_in_body(stub_drive_for_copy):
-    """The body carries NO 'parents' key: files.copy defaults to the same
-    folder as the source, so the copy inherits the template's location."""
+def test_copy_file_sets_no_parents(stub_drive_for_copy):
+    """The body carries NO 'parents' key, so the tool never force-relocates
+    the copy; Drive applies its own default placement (My Drive root in v3).
+    A stray parents= would move the copy somewhere unexpected."""
     copy_drive_file(MagicMock(), "FILE1", "Invoice 1234")
     kw = _last_copy_kwargs(stub_drive_for_copy)
     assert "parents" not in kw["body"]
