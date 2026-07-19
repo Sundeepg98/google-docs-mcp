@@ -14,6 +14,7 @@
   "as_install_doc_menu",
   "as_install_edit_trigger",
   "as_install_form_handler",
+  "as_install_recipe",
   "as_install_sheet_dashboard",
   "as_install_sheet_menu",
   "as_install_slides_menu",

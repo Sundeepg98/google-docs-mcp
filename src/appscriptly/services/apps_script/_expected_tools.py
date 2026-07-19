@@ -27,6 +27,11 @@ EXPECTED: frozenset[str] = frozenset({
     # Read-only, no creds: projects the internal recipe registry
     # (_recipes.py) into the discovery surface for the as_install_* family.
     "as_list_recipes",
+    # Wave 2 (S6a) - generic catalog-driven installer (install_recipe.py).
+    # Installs any registry recipe by NAME (the programmatic companion to
+    # as_list_recipes); dispatches through the same render+mint path as the
+    # typed as_install_* wrappers. Additive, review-safe.
+    "as_install_recipe",
     # Automation lifecycle (lifecycle_tools.py) — the forward-only
     # inventory + honest partial uninstall + consent-preserving update,
     # backed by the per-user automation ledger. Closes the install-only gap
