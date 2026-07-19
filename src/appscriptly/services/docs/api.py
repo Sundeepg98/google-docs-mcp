@@ -749,10 +749,15 @@ def _named_range_selector(
     """Build the shared ``{<name_field>|namedRangeId (+tabsCriteria)}``.
 
     Used by ``replace_named_range_content`` + ``delete_named_range`` so
-    their selector rules stay in lockstep. The by-NAME field key differs
-    per request - a real Docs API asymmetry: ``replaceNamedRangeContent``
-    selects by ``namedRangeName`` while ``deleteNamedRange`` selects by
-    ``name``. Each caller passes the right one as ``name_field``. Returns
+    the request CONSTRUCTION stays in lockstep, but that shared shape
+    does NOT imply shared server behavior. Two real Docs API
+    asymmetries: (1) the by-NAME field key differs -
+    ``replaceNamedRangeContent`` selects by ``namedRangeName`` while
+    ``deleteNamedRange`` selects by ``name`` (each caller passes the
+    right one as ``name_field``); (2) with ``tabsCriteria`` omitted,
+    replace spans all tabs but delete does NOT, so the ``"all_tabs"``
+    scope returned for a name-only delete reflects request intent, not
+    delete's actual reach. Returns
     ``(fields, selector, selector_value, scope)`` where ``fields`` is
     merged into the request, ``selector`` is ``"named_range_name"`` or
     ``"named_range_id"`` (the tool's own echo label, NOT the API field),
@@ -870,8 +875,11 @@ def delete_named_range(
     range covered stay in the document untouched. The cleanup step of
     the mark then fill then clear template loop.
 
-    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``
-    (same addressing rules as ``replace_named_range_content``).
+    Provide EXACTLY ONE of ``named_range_name`` or ``named_range_id``.
+    Selector shape matches ``replace_named_range_content``, but the tab
+    reach is ASYMMETRIC: omitting ``tab_ids`` does NOT fan out to all
+    tabs the way replace does, so a marker in a non-default tab requires
+    its ``tab_ids`` (Docs otherwise answers "No named range with name").
 
     Args:
         creds: OAuth credentials carrying the ``documents`` scope.
@@ -879,7 +887,9 @@ def delete_named_range(
         named_range_name: Remove every range with this name.
         named_range_id: Remove one range by its server id.
         tab_ids: With ``named_range_name`` only, limit removal to these
-            tabs. Omit to hit every tab.
+            tabs. Unlike replace, omitting does NOT hit every tab: a
+            marker in a non-default tab is reached only by passing its
+            ``tab_ids``.
 
     Returns:
         ``{doc_id, selector, selector_value, scope}`` echoing which
