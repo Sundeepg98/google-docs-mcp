@@ -65,7 +65,7 @@ from .oauth_google import resolve_runtime_oauth_config
 # services/gas_deploy/tools.py (M3 Phase C extraction).
 
 _SERVER_INSTRUCTIONS = """\
-appscriptly — Workspace Automation MCP. Generates persistent workflows
+appscriptly: Workspace Automation MCP. Generates persistent workflows
 (time-driven jobs, custom menus, reactive automations) that live IN
 your Google Workspace and run on Google's infrastructure. Also creates,
 edits, reads, and manages Google Docs with native sidebar Tabs
@@ -80,16 +80,17 @@ Script automation), and ``server_`` / ``admin_`` / ``account_`` for
 introspection / admin / auth. NOTE: tools that historically wore a
 ``gdocs_`` prefix but act on Drive / admin / auth were renamed to the
 honest prefix; the old ``gdocs_`` names still work as DEPRECATED ALIASES
-(planned removal v3.0) — prefer the canonical name (e.g.
+(planned removal v3.0). Prefer the canonical name (e.g.
 ``gdrive_find_file`` not ``gdocs_find_file``, ``server_info`` not
 ``gdocs_server_info``, ``as_install_automation`` not
 ``gdocs_install_automation``).
 
 START HERE: call ``server_guide()`` for the orientation as a structured
 payload, or ``server_info()`` for build version + verified CI
-test status.
+test status. To browse the one-call automation recipes, call
+``as_list_recipes()``.
 
-THE 6 CORE WORKFLOWS
+THE 9 CORE WORKFLOWS
 ====================
 
 1. NEW DOC from content composed in chat
@@ -104,7 +105,9 @@ THE 6 CORE WORKFLOWS
    Tools: gdocs_preview_tab_split(drive_file_id=..., split_by="heading_1")
           -> gdocs_tab_existing_doc(drive_file_id=..., split_by="heading_1")
           -> gdocs_get_doc_outline(doc_id=...)   # verify the result
-   Notes: Preview first — destructive conversion is one-way.
+   Notes: Preview first; the conversion is one-way. (The HTTP
+   /api/convert route also accepts dry_run=1 to return the split PLAN
+   without creating a doc.)
 
 3. RETROFIT STYLED DOC with NO Heading 1s
    Goal: a styled doc where section breaks aren't H1s (banners in
@@ -113,7 +116,7 @@ THE 6 CORE WORKFLOWS
               markers=[{marker_text, tab_title}, ...])
    Notes: Same tool as #2; passing ``markers`` triggers RETROFIT mode
    (injects synthetic H1s before each marker block, then converts).
-   NEVER rebuild a styled .docx from text — formatting would be lost.
+   NEVER rebuild a styled .docx from text; formatting would be lost.
    Use retrofit instead.
 
 4. CONVERT SANDBOX .docx (bytes only, no Drive file)
@@ -121,41 +124,76 @@ THE 6 CORE WORKFLOWS
    its sandbox (cloud chat scenario).
    Tools: gdrive_get_signed_upload_url(...) -> POST {url} with the
           .docx bytes as multipart upload
-   Notes: ``docx_path`` arguments DO NOT WORK from cloud chat — the
+   Notes: ``docx_path`` arguments DO NOT WORK from cloud chat; the
    server cannot see the caller's filesystem. Signed-URL upload is
    the only sandbox-bytes path. The POST is equivalent to
    gdocs_tab_existing_doc; use this when the .docx lives in your
    sandbox rather than on Drive.
 
-5. CLEANUP — trash / restore Drive files
+5. CLEANUP: trash / restore Drive files
    Tools: gdrive_trash_file(file_id), gdrive_untrash_file(file_id)
    Notes: ONLY acts on files this app created. Files created
-   elsewhere return app_not_authorized (no recovery — the file
+   elsewhere return app_not_authorized (no recovery; the file
    belongs to its owner). file_id accepts a string or list (batch).
 
-6. INSTALL BOUND AUTOMATION inside a Doc / Sheet / Slides
-   Goal: make a specific Doc / Sheet / Slides DO something on its own —
-   a custom menu, a sidebar, a daily time-driven job, an onEdit reaction.
-   The automation lives IN that file and runs without Claude after one
-   deploy.
+6. INSTALL A RECIPE AUTOMATION (the easy path, no hand-written code)
+   Goal: set up a common built-in automation (a custom menu, a
+   scheduled dashboard refresh, an onEdit / onFormSubmit handler, a
+   form grader, a custom =FUNCTION()) with ONE typed call.
+   Tools: as_list_recipes() to browse the catalog, then the matching
+          typed installer, e.g. as_install_sheet_dashboard(...),
+          as_install_doc_menu(...), as_install_form_handler(...).
+   Notes: as_list_recipes returns each recipe's installer_tool, its
+   params, and its activation_model. The scheduled / reactive recipes
+   need a ONE-TIME Run + Allow in the Apps Script editor before they
+   fire (the installer result says so, and as_check_activation
+   confirms it). Prefer a recipe over #7 whenever one fits.
+
+7. INSTALL A CUSTOM BOUND SCRIPT (the low-level generator)
+   Goal: make a specific Doc / Sheet / Slides DO something no recipe
+   covers. The automation lives IN that file and runs without Claude
+   after one deploy.
    Tools: as_generate_bound_script(container_id, script_body,
               manifest={menu?, triggers?, sidebar_html?, oauth_scopes?})
-   Notes: This is the generic GENERATOR — Claude writes the .gs
-   ``script_body`` that does the work; the tool creates a bound Apps
-   Script project (auto-detecting docs/sheets/slides from the
-   container), pushes the code + manifest, and deploys it in one call.
-   Use for ANYTHING persistent (recurring jobs, re-clickable menus,
-   reactions to the user's future edits). For a one-off edit, use the
-   direct docs/sheets/slides tools instead. DISTINCT from
-   as_install_automation (that installs the standalone runtime;
-   this binds a per-file script). Example: "make this Doc refresh from
-   the linked Sheet every morning."
+   Notes: The generic GENERATOR: Claude writes the .gs ``script_body``;
+   the tool creates a bound Apps Script project (auto-detecting
+   docs/sheets/slides from the container), pushes the code + manifest,
+   and deploys it in one call. Use only when no recipe (#6) fits, and
+   NOT for a one-off edit (use the direct tools). DISTINCT from
+   as_install_automation, which installs the standalone runtime.
+
+8. MANAGE INSTALLED AUTOMATIONS (lifecycle)
+   Goal: verify, list, update, or remove automations you installed.
+   Tools: as_check_activation(script_id) confirms a one-time Run +
+          Allow took effect; as_list_installed_automations() re-finds
+          everything you installed (their script_ids);
+          as_update_automation(script_id) rolls a fix out in place
+          with NO fresh Allow (for a recipe automation OMIT
+          script_body and the server regenerates from the recorded
+          params); as_uninstall_automation(script_id) removes one.
+   Notes: Minted Apps Script projects are invisible to Drive listing,
+   so as_list_installed_automations is the ONLY way to re-find them
+   once the install messages scroll away. Inventory is forward-only.
+
+9. FILL A TEMPLATE DOC (named ranges)
+   Goal: fill (and later refill) fields in a Doc template robustly,
+   without a fragile whole-doc find/replace.
+   Tools: gdrive_copy_file(file_id) to copy a template (the original
+          is untouched) -> gdocs_read_doc(doc_id, include_indices=True)
+          to get a field's start/end index ->
+          gdocs_create_named_range(doc_id, name, start_index,
+          end_index) to mark it once -> then
+          gdocs_replace_named_range_content(doc_id, text,
+          named_range_name=...) to fill it any number of times.
+   Notes: A named range is a server-managed marker; refilling it needs
+   no re-read or index math. A template that already carries named
+   ranges skips straight to replace.
 
 NON-OBVIOUS OPERATING RULES
 ===========================
 - Never rebuild a styled .docx from text. Retrofit (workflow #3)
   preserves formatting; rebuilding loses it.
-- ``docx_path`` arguments do NOT work from cloud chat — the server
+- ``docx_path`` arguments do NOT work from cloud chat; the server
   cannot see the caller's filesystem. Use signed-URL upload
   (workflow #4) or drive_file_id.
 - ``placeholder_behavior="rename"`` preserves a title / index page;
@@ -165,8 +203,11 @@ NON-OBVIOUS OPERATING RULES
   appNotAuthorizedToFile (403) on others; the file belongs to its
   owner and only they can trash it.
 - First use requires interactive Google OAuth consent. The client
-  must open the consent URL in a browser — it cannot be automated.
+  must open the consent URL in a browser; it cannot be automated.
   Subsequent calls reuse the cached token until it expires.
+- A scheduled or reactive recipe automation is not live until a
+  ONE-TIME Run + Allow in the Apps Script editor. as_check_activation
+  verifies it; a menu or custom-function recipe activates on first use.
 
 EDIT TOOLS (after creating / converting)
 ========================================
@@ -175,25 +216,27 @@ gdocs_replace_all_text, gdocs_add_tabs, gdocs_append_to_tab
 
 READ TOOLS
 ==========
-gdocs_get_doc_outline — structure + icons, no body text (cheap)
-gdocs_read_doc(doc_id, tab_id?) — body text, one tab or all
-gdocs_get_tab_url(doc_id, tab_id) — direct deep-link to a tab
+gdocs_get_doc_outline: structure + icons, no body text (cheap)
+gdocs_read_doc(doc_id, tab_id?): body text, one tab or all
+  (include_indices=True adds per-paragraph indices for named ranges)
+gdocs_get_tab_url(doc_id, tab_id): direct deep-link to a tab
 
 DRIVE MANAGEMENT
 ================
 gdrive_find_doc_by_title, gdrive_find_file, gdrive_move_to_folder,
-gdrive_create_folder, gdrive_trash_file, gdrive_untrash_file,
-gdrive_share_file, gdrive_list_permissions, gdrive_revoke_permission,
-gdrive_export_file
+gdrive_create_folder, gdrive_copy_file, gdrive_trash_file,
+gdrive_untrash_file, gdrive_share_file, gdrive_list_permissions,
+gdrive_revoke_permission, gdrive_export_file
 (the old gdocs_* names for these still work as deprecated aliases)
 
 INTROSPECTION
 =============
-server_guide() — this orientation as a structured payload
-server_info() — version + verified CI test status (digest,
+server_guide(): this orientation as a structured payload
+as_list_recipes(): the installable automation recipe catalog
+server_info(): version + verified CI test status (digest,
   ci_run_url, mutation_check with stale_patches / imprecise_patches)
-server_test_manifest() — full test inventory + per-test outcomes
-server_help(error) — structured recovery guidance for an error string
+server_test_manifest(): full test inventory + per-test outcomes
+server_help(error): structured recovery guidance for an error string
 """
 
 mcp = FastMCP(
