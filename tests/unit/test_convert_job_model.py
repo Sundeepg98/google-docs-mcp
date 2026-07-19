@@ -110,6 +110,19 @@ def _bearer_headers() -> dict:
     return {"authorization": f"Bearer {_TEST_KEY_BYTES.decode('utf-8')}"}
 
 
+def _http_error(status: int, reason: str = "err"):
+    """Build a googleapiclient HttpError carrying a specific status."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        pass
+
+    resp = _Resp()
+    resp.status = status
+    resp.reason = reason
+    return HttpError(resp=resp, content=b"google-said-no")
+
+
 def _creds_patches():
     """Patch per-user + operator credential resolution to sentinels."""
     return (
@@ -217,6 +230,124 @@ def test_async_error_job_reports_error_via_status():
         # N9: the message lives at error.message, never error.error.
         assert final["error"] == {"message": "bad document structure"}
         assert final["error_http_status"] == 400
+
+
+# ---------------------------------------------------------------------
+# F (convert status hygiene): a Google 4xx surfaces as that 4xx, not 502
+# ---------------------------------------------------------------------
+
+
+def test_http_error_404_is_404_on_sync_and_replays_on_status_poll():
+    """A Google 4xx (a bad drive_file_id is a 404) surfaces as the 404
+    OUTER status on the SYNC response, and the SAME stored job replays
+    404 on a later STATUS poll (error_http_status): one classification,
+    persisted once, coherent across both read paths. Pre-fix both were a
+    blanket 502 (revert-check: fails on main)."""
+    from appscriptly.crypto import sign_job_status_url
+
+    app = _build_app_under_test()
+
+    def failing_convert(creds, **kwargs):
+        raise _http_error(404, "Not Found")
+
+    seen_ids: list[str] = []
+    real_create = job_store.create_job
+
+    def spy_create(user_key, fingerprint):
+        jid = real_create(user_key, fingerprint)
+        seen_ids.append(jid)
+        return jid
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=failing_convert,
+    ), patch.object(job_store, "create_job", side_effect=spy_create), \
+            TestClient(app) as client:
+        # SYNC (bearer) response: the 404 is now the OUTER status.
+        sync = client.post(
+            "/api/convert", files=_docx_form(), headers=_bearer_headers(),
+        )
+        assert sync.status_code == 404, sync.text
+        assert sync.json()["status_code"] == 404
+
+        # Poll the SAME stored job: it replays 404, never 502.
+        assert len(seen_ids) == 1, seen_ids
+        jid = seen_ids[0]
+        minted = sign_job_status_url(
+            base_url=f"http://testserver/api/convert/status/{jid}",
+            signing_key=_TEST_KEY_BYTES,
+            job_id=jid,
+        )
+        parsed = urlparse(minted["status_url"])
+        poll = client.get(f"{parsed.path}?{parsed.query}")
+        assert poll.status_code == 200, poll.text
+        body = poll.json()
+        assert body["status"] == "error"
+        assert body["error_http_status"] == 404
+
+
+@pytest.mark.parametrize(
+    "status, expected_outer",
+    [
+        (400, 400),  # malformed request
+        (403, 403),  # permission
+        (404, 404),  # bad drive_file_id
+        (500, 502),  # Google server-side
+        (503, 502),  # service unavailable
+        (504, 502),  # gateway timeout (transport-flavored 5xx)
+    ],
+)
+def test_http_error_status_persists_and_replays_on_poll(status, expected_outer):
+    """The converter's Google HttpError is classified by status and the
+    classification persists into the row: a 4xx caller-input failure
+    keeps that 4xx, a 5xx (server / gateway / transport) stays 502, and
+    a status poll's error_http_status matches the sync caller's outer
+    status. 429 is EXCLUDED - it has its own requeue path
+    (test_raised_429_also_requeues); an exhausted 429's classification is
+    pinned in test_convert_job_runner.py. Revert-check: every 4xx row
+    reads 502 on main."""
+    app = _build_app_under_test()
+
+    def failing_convert(creds, **kwargs):
+        raise _http_error(status)
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=failing_convert,
+    ), TestClient(app) as client:
+        resp = client.post(
+            f"/api/convert?{_mint_qs()}",
+            files=_docx_form(),
+            data={"async": "1"},
+        )
+        assert resp.status_code == 202, resp.text
+        final = _poll_until_terminal(client, _status_path(resp.json()))
+        assert final["status"] == "error"
+        assert final["error_http_status"] == expected_outer
+
+
+def test_http_error_5xx_stays_502_on_sync():
+    """Regression guard for the 4xx carve-out: a Google 5xx (service
+    unavailable / gateway) still maps to 502 on the sync response - the
+    change carved out ONLY 4xx. (Passes on main too; guards against
+    over-carving 5xx down to a bare status.)"""
+    app = _build_app_under_test()
+
+    def failing_convert(creds, **kwargs):
+        raise _http_error(503, "Service Unavailable")
+
+    p1, p2, p3 = _creds_patches()
+    with p1, p2, p3, patch(
+        "appscriptly.http_server.routes.convert._convert_docx",
+        side_effect=failing_convert,
+    ), TestClient(app) as client:
+        resp = client.post(
+            "/api/convert", files=_docx_form(), headers=_bearer_headers(),
+        )
+        assert resp.status_code == 502, resp.text
+        assert resp.json()["status_code"] == 503
 
 
 # ---------------------------------------------------------------------

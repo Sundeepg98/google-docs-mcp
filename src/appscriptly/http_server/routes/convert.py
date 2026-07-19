@@ -52,7 +52,10 @@ from appscriptly import job_store, keys
 from appscriptly.auth import default_data_dir, load_credentials
 from appscriptly.credentials import NeedsReauthError, get_credentials_for_user
 from appscriptly.docx_import import convert_docx_to_tabbed_doc as _convert_docx
-from appscriptly.errors import friendly_http_error_message
+from appscriptly.errors import (
+    caller_facing_http_status,
+    friendly_http_error_message,
+)
 from appscriptly.http_server import _state, jobs
 from appscriptly.http_server._helpers import (
     _resolve_base_url,
@@ -1130,10 +1133,14 @@ async def convert_endpoint(request: Request) -> JSONResponse:
     except RuntimeError as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     except HttpError as e:
+        # HttpErrors raised in the endpoint's own body (cred resolution,
+        # dry_run's Drive reads). Same status mapping the converter-thread
+        # path applies via jobs.classify_convert_error: a 4xx caller-input
+        # error keeps that 4xx; 5xx/transport stays 502.
         return JSONResponse(
             {
                 "error": friendly_http_error_message(e),
                 "status_code": e.status_code,
             },
-            status_code=502,
+            status_code=caller_facing_http_status(e),
         )

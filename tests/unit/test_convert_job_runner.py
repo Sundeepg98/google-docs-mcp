@@ -128,6 +128,90 @@ def test_classifier_matches_historical_sync_mapping():
     assert "KeyError" in payload["error"]
 
 
+# ---------------------------------------------------------------------
+# F (convert status hygiene): HttpError classified by status, not a
+# blanket 502
+# ---------------------------------------------------------------------
+
+
+def _http_error(status: int, reason: str = "err"):
+    """Build a googleapiclient HttpError carrying a specific status."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        pass
+
+    resp = _Resp()
+    resp.status = status
+    resp.reason = reason
+    return HttpError(resp=resp, content=b"google-said-no")
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        (400, 400),  # malformed request: caller fixes input
+        (403, 403),  # permission: caller fixes access, must not retry
+        (404, 404),  # bad drive_file_id: caller fixes the id
+        (429, 429),  # exhausted rate limit surfaces honestly (see note)
+        (500, 502),  # Google server-side -> genuine upstream failure
+        (502, 502),  # already a gateway error
+        (503, 502),  # service unavailable
+        (504, 502),  # gateway timeout (the transport-timeout-flavored 5xx)
+    ],
+)
+def test_classifier_maps_http_error_by_status(status, expected):
+    """An HttpError is classified by its status: a 4xx caller-input
+    failure keeps that SAME 4xx so a REST client fixes its request
+    instead of retrying a "502 upstream broke"; 5xx (server / gateway /
+    transport) stays 502. Pre-fix EVERY HttpError was a blanket 502
+    (revert-check: the 4xx rows below all read 502 on main).
+
+    429 note: the runner intercepts a TRANSIENT 429 with a requeue
+    (test_raised_429_also_requeues) BEFORE it reaches the classifier; an
+    EXHAUSTED 429 that does reach here surfaces honestly as 429."""
+    http_status, payload = jobs.classify_convert_error(_http_error(status))
+    assert http_status == expected
+    assert payload["status_code"] == status
+
+
+def test_classifier_http_error_without_status_is_502():
+    """An HttpError with no resolvable status at all is a genuine
+    upstream failure -> 502, never a bare 4xx from a missing field."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        status = None
+        reason = "mystery"
+
+    http_status, _ = jobs.classify_convert_error(
+        HttpError(resp=_Resp(), content=b"")
+    )
+    assert http_status == 502
+
+
+def test_http_error_404_outcome_persists_as_404_row():
+    """A converter HttpError(404) is recorded as a terminal error row
+    carrying http_status 404 - the value the sync response returns AND
+    the status poll replays (single source of truth). Revert-check: 502
+    on main."""
+    job_id = job_store.create_job("user-A", "fp-http-404")
+
+    def failing(_prior=None):
+        raise _http_error(404, "Not Found")
+
+    async def scenario():
+        return await jobs.start_job(job_id, failing)
+
+    kind, status, payload = asyncio.run(scenario())
+    assert (kind, status) == ("error", 404)
+    assert payload["status_code"] == 404
+    row = job_store.get_job(job_id)
+    assert row is not None and row["status"] == "error"
+    stored = job_store.error_dict(row)
+    assert stored is not None and stored["http_status"] == 404
+
+
 def test_heartbeat_fires_while_converter_runs(monkeypatch):
     """With a shrunken interval, a slow converter gets multiple
     heartbeat touches - the signal the stalled derivation depends on."""

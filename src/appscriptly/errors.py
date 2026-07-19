@@ -117,6 +117,34 @@ def friendly_http_error_message(error: Any) -> str:
     return base
 
 
+def caller_facing_http_status(error: Any) -> int:
+    """Outer HTTP status for a Google ``HttpError`` surfaced to a REST caller.
+
+    A 4xx from Google is caller-fixable input (a bad ``drive_file_id``
+    is 404, a missing permission is 403, a malformed request is 400):
+    surface that SAME 4xx so a well-behaved client fixes its request
+    instead of retrying a "502 upstream broken". A 5xx (Google
+    server-side trouble, gateway timeout, or a transport failure that
+    still produced an HTTP response), or an ``HttpError`` with no
+    resolvable status at all, is a genuine upstream/gateway failure and
+    stays 502 Bad Gateway.
+
+    429 "Too Many Requests" is a 4xx and surfaces honestly as 429; the
+    convert job runner intercepts a TRANSIENT 429 with a requeue well
+    before an exhausted one ever reaches this mapping (see
+    ``http_server/jobs.py``).
+
+    Status resolution mirrors ``friendly_http_error_message``: prefer the
+    SDK's ``status_code`` property, fall back to the raw ``resp.status``.
+    """
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "resp", None), "status", None)
+    if isinstance(status, int) and 400 <= status < 500:
+        return status
+    return 502
+
+
 def friendly_transport_error_message(
     error: Any, *, request_id: str | None = None
 ) -> str:

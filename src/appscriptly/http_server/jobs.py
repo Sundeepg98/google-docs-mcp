@@ -68,7 +68,10 @@ from typing import Any, Callable
 from googleapiclient.errors import HttpError
 
 from appscriptly import job_store
-from appscriptly.errors import friendly_http_error_message
+from appscriptly.errors import (
+    caller_facing_http_status,
+    friendly_http_error_message,
+)
 
 log = logging.getLogger("appscriptly.http.jobs")
 
@@ -136,15 +139,22 @@ _TASKS: dict[str, "asyncio.Task[tuple[str, Any, Any]]"] = {}
 def classify_convert_error(exc: BaseException) -> tuple[int, dict[str, Any]]:
     """Map a converter exception to (http_status, response_payload).
 
-    This is the EXACT mapping the pre-job-model synchronous handler
-    implemented as except-clauses; it lives here so the job runner can
-    persist the classification and every read path (sync response,
-    status endpoint, attach) replays it identically.
+    The SAME mapping the synchronous endpoint handler applies (the
+    ``except`` clauses in ``routes/convert.py``), kept here as the single
+    source of truth so the job runner persists the classification and
+    every read path (sync response, status endpoint, attach) replays it
+    identically.
+
+    A Google ``HttpError`` is classified by its status via
+    ``caller_facing_http_status``: a 4xx caller-input failure (bad file
+    id, missing permission, malformed request) keeps that SAME 4xx so a
+    well-behaved REST client fixes its input rather than retrying a "502
+    upstream broke"; 5xx / transport / status-less HttpErrors stay 502.
     """
     if isinstance(exc, (FileNotFoundError, ValueError)):
         return 400, {"error": str(exc)}
     if isinstance(exc, HttpError):
-        return 502, {
+        return caller_facing_http_status(exc), {
             "error": friendly_http_error_message(exc),
             "status_code": exc.status_code,
         }

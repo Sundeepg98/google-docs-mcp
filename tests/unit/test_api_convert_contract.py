@@ -202,3 +202,58 @@ def test_success_returns_200_with_result_body():
     resp, _ = _post_convert()
     assert resp.status_code == 200
     assert resp.json()["doc_id"] == "DOC123"
+
+
+# ---------------------------------------------------------------------
+# F (convert status hygiene): the endpoint's OWN `except HttpError`
+# mirrors classify_convert_error - a 4xx keeps its status, 5xx -> 502
+# ---------------------------------------------------------------------
+
+
+def test_endpoint_http_error_on_cred_resolution_maps_4xx_by_status():
+    """An HttpError raised in the endpoint's OWN body (here: operator
+    cred resolution, BEFORE any job spawns) is caught by the endpoint's
+    `except HttpError` and mapped by status - a 403 stays 403, not the
+    old blanket 502. This is the mirror of the converter-thread path
+    (jobs.classify_convert_error). Revert-check: 502 on main."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        status = 403
+        reason = "Forbidden"
+
+    def boom(_data_dir):
+        raise HttpError(resp=_Resp(), content=b"no access")
+
+    with patch(
+        "appscriptly.http_server.routes.convert.load_credentials",
+        side_effect=boom,
+    ):
+        resp = _client().post(
+            "/api/convert", files=_docx_form(), data={}, headers=_bearer(),
+        )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["status_code"] == 403
+
+
+def test_endpoint_http_error_5xx_stays_502():
+    """Regression guard: a 5xx raised in the endpoint body still maps to
+    502 Bad Gateway (the carve-out is 4xx-only)."""
+    from googleapiclient.errors import HttpError
+
+    class _Resp:
+        status = 500
+        reason = "Internal Server Error"
+
+    def boom(_data_dir):
+        raise HttpError(resp=_Resp(), content=b"boom")
+
+    with patch(
+        "appscriptly.http_server.routes.convert.load_credentials",
+        side_effect=boom,
+    ):
+        resp = _client().post(
+            "/api/convert", files=_docx_form(), data={}, headers=_bearer(),
+        )
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["status_code"] == 500
