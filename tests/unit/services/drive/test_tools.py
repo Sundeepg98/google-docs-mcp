@@ -716,3 +716,243 @@ def test_gdrive_rename_file_app_not_authorized_returns_soft_failure(
     assert result["reason"] == "app_not_authorized"
     assert result["file_id"] == "F1"
     assert result["name"] == "someone-elses.pdf"
+
+
+# ---------------------------------------------------------------------
+# Wave-5 S4 — batch move (files-into-one-folder) + batch share
+# (emails-per-file). Both extend the tool to accept str | list[str] and
+# dispatch the list form through _run_batch, mirroring trash/untrash.
+#
+# These tests monkeypatch the api/sharing DELEGATE (tools._move_to_folder
+# / tools._grant_permission) rather than driving the Drive stub, because
+# the concern here is the tool-layer BATCH DISPATCH (str-vs-list branch,
+# closure threading of the fixed dimension, _run_batch aggregation +
+# item_key labeling), not the api-layer Drive shapes (covered in
+# test_api.py + test_soft_failure_contracts.py).
+# ---------------------------------------------------------------------
+
+
+def test_gdrive_move_to_folder_single_str_returns_flat_shape_backcompat(
+    monkeypatch,
+):
+    """BACK-COMPAT: a single file_id (str) returns the flat move result
+    unchanged - NOT wrapped in the batch envelope. Existing single-arg
+    callers keep the exact old shape."""
+    def fake_move(_creds, fid, folder_id):
+        return {
+            "file_id": fid, "name": "Doc", "mimeType": "m",
+            "parents": [folder_id],
+        }
+    monkeypatch.setattr(tools, "_move_to_folder", fake_move)
+
+    result = tools.gdrive_move_to_folder(file_id="F1", folder_id="DEST")
+    assert result == {
+        "file_id": "F1", "name": "Doc", "mimeType": "m", "parents": ["DEST"],
+    }
+    assert "results" not in result and "summary" not in result
+
+
+def test_gdrive_move_to_folder_list_form_returns_batch_envelope(monkeypatch):
+    """List input dispatches through _run_batch: one result per id, an
+    honest all-succeeded summary, and every file routed into the SAME
+    destination folder (the closure threads the fixed folder_id). The
+    envelope validates against the (loosened) output schema."""
+    import jsonschema
+
+    from appscriptly.tool_schemas import GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_move(_creds, fid, folder_id):
+        seen.append((fid, folder_id))
+        return {
+            "file_id": fid, "name": f"n-{fid}", "mimeType": "m",
+            "parents": [folder_id],
+        }
+    monkeypatch.setattr(tools, "_move_to_folder", fake_move)
+
+    result = tools.gdrive_move_to_folder(file_id=["A", "B"], folder_id="DEST")
+
+    jsonschema.validate(result, GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA)
+    assert set(result.keys()) == {"results", "summary"}
+    assert len(result["results"]) == 2
+    assert result["summary"] == {"succeeded": 2, "skipped": 0, "failed": 0}
+    # files-into-one-folder: both ids routed to the same destination.
+    assert seen == [("A", "DEST"), ("B", "DEST")]
+
+
+def test_gdrive_move_to_folder_batch_mixed_success_and_soft_failure(
+    monkeypatch,
+):
+    """DISCRIMINATING: a mixed batch (one valid + one soft-failure) yields
+    per-item results and an honest summary, with NO abort-on-first-failure.
+    move's soft-failures (not_found) come back as data, so they count as
+    skipped."""
+    processed: list[str] = []
+
+    def fake_move(_creds, fid, folder_id):
+        processed.append(fid)
+        if fid == "BAD":
+            return {"file_id": fid, "reason": "not_found", "message": "gone"}
+        return {
+            "file_id": fid, "name": "n", "mimeType": "m",
+            "parents": [folder_id],
+        }
+    monkeypatch.setattr(tools, "_move_to_folder", fake_move)
+
+    result = tools.gdrive_move_to_folder(
+        file_id=["OK", "BAD", "OK2"], folder_id="DEST",
+    )
+
+    assert processed == ["OK", "BAD", "OK2"], "a soft-failure aborted the rest"
+    assert len(result["results"]) == 3
+    assert result["summary"] == {"succeeded": 2, "skipped": 1, "failed": 0}
+    reasons = [r.get("reason") for r in result["results"]]
+    assert reasons.count("not_found") == 1
+
+
+def test_gdocs_move_to_folder_alias_inherits_batch(monkeypatch):
+    """The deprecated gdocs_ alias must inherit the str|list batch form."""
+    monkeypatch.setattr(
+        tools, "_move_to_folder",
+        lambda _c, fid, folder_id: {
+            "file_id": fid, "name": "n", "mimeType": "m",
+            "parents": [folder_id],
+        },
+    )
+    result = tools.gdocs_move_to_folder(file_id=["A", "B"], folder_id="D")
+    assert result["summary"]["succeeded"] == 2
+    assert len(result["results"]) == 2
+
+
+def test_gdrive_share_file_single_str_returns_flat_backcompat(monkeypatch):
+    """BACK-COMPAT: a single email (str) returns the flat grant result
+    unchanged - NOT the batch envelope."""
+    def fake_grant(_creds, *, drive_file_id, email, role, notify, message):
+        return {
+            "permission_id": "P1", "role": role, "granted_to": email,
+            "file_id": drive_file_id,
+        }
+    monkeypatch.setattr(tools, "_grant_permission", fake_grant)
+
+    result = tools.gdrive_share_file(
+        drive_file_id="FILE-1", email="solo@e.com",
+    )
+    assert result == {
+        "permission_id": "P1", "role": "writer",
+        "granted_to": "solo@e.com", "file_id": "FILE-1",
+    }
+    assert "results" not in result
+
+
+def test_gdrive_share_file_list_form_shares_one_file_with_each_email(
+    monkeypatch,
+):
+    """EMAILS-PER-FILE: a list of emails shares the ONE drive_file_id with
+    each recipient. Returns the batch envelope; the fixed file_id and role
+    are threaded to every grant (the closure closes over them)."""
+    import jsonschema
+
+    from appscriptly.tool_schemas import GDOCS_SHARE_FILE_OUTPUT_SCHEMA
+
+    seen: list[tuple[str, str, str]] = []
+
+    def fake_grant(_creds, *, drive_file_id, email, role, notify, message):
+        seen.append((drive_file_id, email, role))
+        return {
+            "permission_id": f"perm-{email}", "role": role,
+            "granted_to": email, "file_id": drive_file_id,
+        }
+    monkeypatch.setattr(tools, "_grant_permission", fake_grant)
+
+    result = tools.gdrive_share_file(
+        drive_file_id="FILE-1",
+        email=["a@e.com", "b@e.com"],
+        role="reader",
+    )
+
+    jsonschema.validate(result, GDOCS_SHARE_FILE_OUTPUT_SCHEMA)
+    assert set(result.keys()) == {"results", "summary"}
+    assert result["summary"] == {"succeeded": 2, "skipped": 0, "failed": 0}
+    # one fixed file, two recipients, role threaded to each.
+    assert seen == [
+        ("FILE-1", "a@e.com", "reader"),
+        ("FILE-1", "b@e.com", "reader"),
+    ]
+
+
+def test_gdrive_share_file_batch_one_bad_email_does_not_abort_rest(
+    monkeypatch,
+):
+    """DISCRIMINATING: one valid + one invalid recipient -> per-item
+    results, honest summary, NO abort-on-first-failure. grant_permission
+    (single-call) raises on bad input; _run_batch captures the raise as a
+    per-item failure labeled by ``email`` (NOT file_id) and continues."""
+    processed: list[str] = []
+
+    def fake_grant(_creds, *, drive_file_id, email, role, notify, message):
+        processed.append(email)
+        if email == "bad-addr":
+            raise ValueError("email cannot be empty / invalid")
+        return {
+            "permission_id": "p", "role": role, "granted_to": email,
+            "file_id": drive_file_id,
+        }
+    monkeypatch.setattr(tools, "_grant_permission", fake_grant)
+
+    result = tools.gdrive_share_file(
+        drive_file_id="FILE-1",
+        email=["good@e.com", "bad-addr", "also@e.com"],
+    )
+
+    assert processed == ["good@e.com", "bad-addr", "also@e.com"], (
+        "a bad recipient aborted the rest of the batch"
+    )
+    assert len(result["results"]) == 3
+    assert result["summary"]["succeeded"] == 2
+    assert result["summary"]["failed"] == 1
+    # The failed recipient is labeled by email, not file_id.
+    failed = [r for r in result["results"] if r.get("reason") == "unexpected_error"]
+    assert len(failed) == 1
+    assert failed[0]["email"] == "bad-addr"
+    assert "file_id" not in failed[0]
+
+
+def test_gdrive_share_file_batch_rejects_bad_role_before_any_share(
+    monkeypatch,
+):
+    """Role is validated ONCE up front, so a batch with a bad role raises
+    ToolError BEFORE any recipient is contacted (no partial shares)."""
+    from fastmcp.exceptions import ToolError
+
+    calls = {"n": 0}
+
+    def fake_grant(*_a, **_k):
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(tools, "_grant_permission", fake_grant)
+
+    with pytest.raises(ToolError, match="role must be one of"):
+        tools.gdrive_share_file(
+            drive_file_id="F",
+            email=["a@e.com", "b@e.com"],
+            role="editor",  # UI label, not a valid API role literal
+        )
+    assert calls["n"] == 0, "a share fired despite the bad role"
+
+
+def test_gdocs_share_file_alias_inherits_batch(monkeypatch):
+    """The deprecated gdocs_ share alias must inherit the emails-per-file
+    batch form."""
+    monkeypatch.setattr(
+        tools, "_grant_permission",
+        lambda _c, *, drive_file_id, email, role, notify, message: {
+            "permission_id": "p", "role": role, "granted_to": email,
+            "file_id": drive_file_id,
+        },
+    )
+    result = tools.gdocs_share_file(
+        drive_file_id="FILE-1", email=["a@e.com", "b@e.com"],
+    )
+    assert result["summary"]["succeeded"] == 2
+    assert len(result["results"]) == 2

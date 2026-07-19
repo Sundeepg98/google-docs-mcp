@@ -262,6 +262,41 @@ def test_trash_file_id_accepts_str_or_list(all_tools, tool_name):
     )
 
 
+@pytest.mark.parametrize(
+    "tool_name,param_name",
+    [
+        # Wave-5 S4: move batches over file_id (files-into-one-folder);
+        # share batches over email (emails-per-file). Both the canonical
+        # gdrive_ tool and its deprecated gdocs_ alias must expose the
+        # batch dimension as anyOf str|array (same regression guard as
+        # trash/untrash) so claude.ai's MCP client does not coerce a list
+        # input down to a string and silently break batch mode.
+        ("gdrive_move_to_folder", "file_id"),
+        ("gdocs_move_to_folder", "file_id"),
+        ("gdrive_share_file", "email"),
+        ("gdocs_share_file", "email"),
+    ],
+)
+def test_batch_dimension_accepts_str_or_list(all_tools, tool_name, param_name):
+    """The batch dimension of move (file_id) and share (email) MUST accept
+    both a single value (str) and a list (array) in its anyOf, matching the
+    trash/untrash guard above."""
+    tool = all_tools[tool_name]
+    props = (tool.parameters or {}).get("properties") or {}
+    param_schema = props.get(param_name) or {}
+    any_of = param_schema.get("anyOf") or []
+    types_offered = {entry.get("type") for entry in any_of}
+    assert "string" in types_offered, (
+        f"{tool_name}.{param_name} must accept 'string' in anyOf; "
+        f"got: {param_schema}"
+    )
+    assert "array" in types_offered, (
+        f"{tool_name}.{param_name} must accept 'array' in anyOf to enable "
+        f"batch mode; got: {param_schema}. "
+        f"Likely cause: missing/wrong type annotation on the function."
+    )
+
+
 def test_tool_count_consistency(all_tools):
     """Server's view of its tool count must agree with the registry."""
     assert len(all_tools) == len(EXPECTED_TOOLS)

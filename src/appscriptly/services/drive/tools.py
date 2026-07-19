@@ -23,10 +23,10 @@ removal: v3.0.
 deprecated alias):
 
 1. ``gdrive_find_doc_by_title``  (alias ``gdocs_find_doc_by_title``)   — look up a Google Doc / .docx by title
-2. ``gdrive_move_to_folder``     (alias ``gdocs_move_to_folder``)      — move a file into a Drive folder
+2. ``gdrive_move_to_folder``     (alias ``gdocs_move_to_folder``)      — move a file into a Drive folder (single or batch)
 3. ``gdrive_untrash_file``       (alias ``gdocs_untrash_file``)        — restore a trashed file (single or batch)
 4. ``gdrive_trash_file``         (alias ``gdocs_trash_file``)          — move a file to trash (single or batch)
-5. ``gdrive_share_file``         (alias ``gdocs_share_file``)          — grant a user permission on a file (v2.3.0)
+5. ``gdrive_share_file``         (alias ``gdocs_share_file``)          — grant a user permission on a file (v2.3.0; single or batch, emails-per-file)
 6. ``gdrive_list_permissions``   (alias ``gdocs_list_permissions``)    — list who has access to a file (v2.3.0)
 7. ``gdrive_create_folder``      (alias ``gdocs_create_folder``)       — create a Drive folder (destination for move)
 8. ``gdrive_revoke_permission``  (alias ``gdocs_revoke_permission``)   — revoke a previously-granted share
@@ -34,10 +34,14 @@ deprecated alias):
 10. ``gdrive_find_file``         (alias ``gdocs_find_file``)           — find app-accessible files of ANY type (filters)
 11. ``gdrive_rename_file``       (NO alias; new in the 2026-07 wave)   — rename a file in place (files.update name)
 
-The trash/untrash tools accept either a single ``file_id: str`` or a
-``list[str]``; the list form delegates to ``_run_batch`` (also lives
-in this module since it's drive-specific). Soft-failure handling (404 /
-403 returned as data, not raised) is preserved bit-for-bit.
+The trash / untrash / move tools accept either a single ``file_id:
+str`` or a ``list[str]``, and share accepts a single ``email: str`` or
+a ``list[str]`` (EMAILS-PER-FILE: one file, N recipients); every list
+form delegates to ``_run_batch`` (also lives in this module since it's
+drive-specific) and returns the ``{results, summary}`` envelope, while
+a single value returns the flat result unchanged (back-compat).
+Soft-failure handling (404 / 403 returned as data, not raised) is
+preserved bit-for-bit.
 
 The sharing tools (5, 6) delegate to ``services/drive/sharing.py`` —
 a separate sub-module per the multi-service feasibility audit
@@ -115,27 +119,53 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------
 
 
-def _run_batch(items: list[str], fn, success_key: str) -> dict:
-    """Apply ``fn(creds, file_id)`` to each id, aggregate per-item.
+def _run_batch(
+    items: list[str],
+    fn,
+    success_key: str | None = None,
+    *,
+    item_key: str = "file_id",
+) -> dict:
+    """Apply ``fn(creds, item)`` to each item, aggregate per-item.
 
-    Used by the batch forms of trash/untrash. Each item's outcome is
-    independent — a 403/404 on one doesn't stop the rest. Returns
-    ``{results: [...], summary: {succeeded, skipped, failed}}`` where:
+    Used by the batch forms of trash / untrash / move / share. Each
+    item's outcome is independent, so a 403/404 on one doesn't stop the
+    rest. Returns ``{results: [...], summary: {succeeded, skipped,
+    failed}}`` where:
     - succeeded = item ended in the desired terminal state
     - skipped   = soft-failure (not_found, app_not_authorized)
     - failed    = unexpected hard error captured per-item
+
+    Success classification:
+    - ``success_key`` (e.g. ``"trashed"``): a result whose
+      ``success_key`` is ``True`` counts as succeeded. ``"active"`` is a
+      special case for untrash (success = ``trashed is False``). This is
+      the trash/untrash path, unchanged.
+    - ``success_key=None`` (the move/share path): any result that
+      carries no ``reason`` key (and did not raise) counts as succeeded.
+      Move and share return no boolean success flag, so absence of a
+      ``reason`` is the success signal.
+
+    ``item_key`` labels the item in the per-item error result. Defaults
+    to ``"file_id"`` (trash/untrash/move all batch over file ids); share
+    batches over recipient emails and passes ``item_key="email"`` so a
+    failed recipient is labeled honestly.
     """
     creds = _get_credentials()
     results: list[dict] = []
     succeeded = 0
     skipped = 0
     failed = 0
-    for fid in items:
+    for item in items:
         try:
-            r = fn(creds, fid)
+            r = fn(creds, item)
             results.append(r)
             if r.get("reason"):
                 skipped += 1
+            elif success_key is None:
+                # move/share: a result without a ``reason`` (and no
+                # exception) is a success.
+                succeeded += 1
             elif r.get(success_key) is True or (
                 success_key == "active" and r.get("trashed") is False
             ):
@@ -150,10 +180,10 @@ def _run_batch(items: list[str], fn, success_key: str) -> dict:
             # but log the FULL exception at debug so the operator doesn't
             # lose the tail when diagnosing a failure.
             _logger.debug(
-                "drive batch item %s failed: %s", fid, e, exc_info=True
+                "drive batch item %s failed: %s", item, e, exc_info=True
             )
             results.append({
-                "file_id": fid,
+                item_key: item,
                 "reason": "unexpected_error",
                 "message": str(e)[:300],
             })
@@ -297,7 +327,9 @@ def gdocs_find_doc_by_title(
     creds=True,
     output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
 )
-def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
+def gdrive_move_to_folder(
+    creds, file_id: str | list[str], folder_id: str
+) -> dict:
     """Move a Drive file into a folder (out of root or wherever it lives).
 
     USE WHEN: the MCP just created a doc (which lands in Drive root by
@@ -306,6 +338,14 @@ def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
 
     Uses ``files.update(addParents, removeParents)`` — moves in place,
     not a copy. The file's content and ID are unchanged.
+
+    Batch form: pass a LIST of file ids to move several files into the
+    SAME destination folder in one call (files-into-one-folder). The
+    list form returns the shared batch envelope ``{results: [...],
+    summary: {succeeded, skipped, failed}}`` (identical to
+    ``gdrive_trash_file``), with one result per input id processed
+    independently, so one soft-failure does not abort the rest. A single
+    file id (str) returns the flat move result unchanged (back-compat).
 
     Soft-failure (returned as data, not raised) matches the trash
     tools' contract so batch workflows can skip-and-continue:
@@ -316,13 +356,18 @@ def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
       can't write to this file (file wasn't created by this app)
 
     Args:
-        file_id: The file to move.
-        folder_id: The destination folder's Drive ID.
+        file_id: The file to move (str), OR a list of file ids for a
+            batch move into the same ``folder_id``. The list form
+            returns the batch envelope described under Returns.
+        folder_id: The destination folder's Drive ID. Shared by every
+            file in a batch move.
 
     Returns:
-        Success: ``{file_id, name, mimeType, parents: [folder_id, ...]}``.
-        No-op (already there): same shape plus ``note`` explaining.
-        Soft-failure: ``{file_id, reason, message, ...}``.
+        Single id (str): Success ``{file_id, name, mimeType, parents:
+        [folder_id, ...]}``; no-op (already there) same shape plus
+        ``note``; soft-failure ``{file_id, reason, message, ...}``.
+        Batch (list): ``{results: [<one per id>], summary: {succeeded,
+        skipped, failed}}``.
 
     Choreography: file_id typically from ``gdocs_find_doc_by_title`` or
     from a prior create call. ``folder_id`` from the user (URL) or
@@ -332,6 +377,11 @@ def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     NOTE: same app-ownership constraint as the trash tools — moving a
     file this app didn't create returns ``reason: "app_not_authorized"``.
     """
+    if isinstance(file_id, list):
+        return _run_batch(
+            file_id,
+            lambda c, fid: _move_to_folder(c, fid, folder_id),
+        )
     return _move_to_folder(creds, file_id, folder_id)
 
 
@@ -342,14 +392,22 @@ def gdrive_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
     creds=True,
     output_schema=GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA,
 )
-def gdocs_move_to_folder(creds, file_id: str, folder_id: str) -> dict:
+def gdocs_move_to_folder(
+    creds, file_id: str | list[str], folder_id: str
+) -> dict:
     """DEPRECATED — use ``gdrive_move_to_folder`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
-    not Docs). Behavior is identical; the old name stays registered as
-    an alias and is slated for removal in v3.0.
+    not Docs). Behavior is identical (including the str-or-list batch
+    form); the old name stays registered as an alias and is slated for
+    removal in v3.0.
     """
     warn_deprecated_alias("gdocs_move_to_folder", "gdrive_move_to_folder")
+    if isinstance(file_id, list):
+        return _run_batch(
+            file_id,
+            lambda c, fid: _move_to_folder(c, fid, folder_id),
+        )
     return _move_to_folder(creds, file_id, folder_id)
 
 
@@ -567,7 +625,7 @@ def gdrive_rename_file(creds, file_id: str, new_name: str) -> dict:
 def gdrive_share_file(
     creds,
     drive_file_id: str,
-    email: str,
+    email: str | list[str],
     role: str = "writer",
     notify: bool = True,
     message: str = "",
@@ -583,11 +641,24 @@ def gdrive_share_file(
     Drive UI labels: ``"reader"`` = "Viewer", ``"writer"`` = "Editor"
     (DEFAULT), ``"commenter"`` = "Commenter".
 
+    Batch form: pass a LIST of emails to share the SAME file with
+    several recipients in one call. This tool batches EMAILS-PER-FILE
+    (one fixed ``drive_file_id``, N recipients), because inviting
+    several people to a single document is the common case. To share
+    several FILES, call once per file. The list form returns the shared
+    batch envelope ``{results, summary: {succeeded, skipped, failed}}``
+    with one result per recipient, processed independently so a bad
+    address does not abort the rest. A single email (str) returns the
+    flat grant result unchanged (back-compat).
+
     Args:
         drive_file_id: The file to share. From a prior create call,
-            ``gdocs_find_doc_by_title``, or the user.
-        email: Recipient's email address. Drive validates the address
-            format and returns 400 on garbage input.
+            ``gdocs_find_doc_by_title``, or the user. In a batch (list
+            of emails) this one file is shared with every recipient.
+        email: Recipient's email address (str), OR a list of addresses
+            to share this one file with several recipients (see the
+            batch note above). Drive validates the address format and
+            returns 400 on garbage input.
         role: Permission level — ``"reader"`` / ``"writer"`` (default)
             / ``"commenter"``. Other values rejected client-side.
         notify: When True (default), Drive sends a notification email
@@ -599,9 +670,14 @@ def gdrive_share_file(
             email. Ignored when ``notify=False``.
 
     Returns:
-        ``{permission_id, role, granted_to, file_id}``. Record the
-        ``permission_id`` if you might want to revoke the share later
-        (pass it to ``gdocs_revoke_permission`` to revoke the share).
+        Single email (str): ``{permission_id, role, granted_to,
+        file_id}``. Record the ``permission_id`` if you might want to
+        revoke the share later (pass it to ``gdocs_revoke_permission``
+        to revoke the share).
+        Batch (list of emails): ``{results: [<one per recipient>],
+        summary: {succeeded, skipped, failed}}``; a failed recipient
+        appears in ``results`` labeled by ``email`` with the Drive
+        error message.
 
     Choreography: ``drive_file_id`` typically from a recent create
     call (``gdocs_make_tabbed_doc`` / ``gdocs_tab_existing_doc``) or
@@ -618,13 +694,31 @@ def gdrive_share_file(
     # reject a bad role / blank email as a structured ToolError BEFORE
     # delegating, rather than letting sharing.grant_permission's bare
     # ValueError surface. ``_VALID_ROLES`` is the single source of truth
-    # in sharing.py; the delegate re-checks (defense in depth).
+    # in sharing.py; the delegate re-checks (defense in depth). Role is
+    # validated once here so a batch rejects a bad role before any share.
     if role not in _VALID_ROLES:
         raise ToolError(
             f"role must be one of {sorted(_VALID_ROLES)}, got {role!r}. "
             "Drive accepts only reader / writer / commenter for "
             "user-type permissions ('editor' is a UI label, not an API "
             "role literal)."
+        )
+    if isinstance(email, list):
+        # EMAILS-PER-FILE batch: share the one drive_file_id with each
+        # recipient. grant_permission (single-call) raises on bad input;
+        # _run_batch captures each raise as a per-item failure labeled by
+        # email, so one bad address never aborts the rest of the batch.
+        return _run_batch(
+            email,
+            lambda c, addr: _grant_permission(
+                c,
+                drive_file_id=drive_file_id,
+                email=addr,
+                role=role,
+                notify=notify,
+                message=message,
+            ),
+            item_key="email",
         )
     try:
         return _grant_permission(
@@ -649,7 +743,7 @@ def gdrive_share_file(
 def gdocs_share_file(
     creds,
     drive_file_id: str,
-    email: str,
+    email: str | list[str],
     role: str = "writer",
     notify: bool = True,
     message: str = "",
@@ -657,8 +751,9 @@ def gdocs_share_file(
     """DEPRECATED — use ``gdrive_share_file`` instead.
 
     Renamed off the historical ``gdocs_`` prefix (this acts on Drive,
-    not Docs). Behavior is identical; the old name stays registered as
-    an alias and is slated for removal in v3.0.
+    not Docs). Behavior is identical (including the EMAILS-PER-FILE
+    str-or-list batch form); the old name stays registered as an alias
+    and is slated for removal in v3.0.
     """
     warn_deprecated_alias("gdocs_share_file", "gdrive_share_file")
     if role not in _VALID_ROLES:
@@ -667,6 +762,19 @@ def gdocs_share_file(
             "Drive accepts only reader / writer / commenter for "
             "user-type permissions ('editor' is a UI label, not an API "
             "role literal)."
+        )
+    if isinstance(email, list):
+        return _run_batch(
+            email,
+            lambda c, addr: _grant_permission(
+                c,
+                drive_file_id=drive_file_id,
+                email=addr,
+                role=role,
+                notify=notify,
+                message=message,
+            ),
+            item_key="email",
         )
     try:
         return _grant_permission(
