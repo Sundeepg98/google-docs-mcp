@@ -69,6 +69,8 @@ EXPECTED_TOOLS = {
     "gdocs_find_file",  # Drive files.list — any mimeType, app-accessible corpus
     "gsheets_read_range",  # v2.3.1: Sheets values.get
     "gsheets_write_range",  # v2.3.1: Sheets values.update
+    "gsheets_batch_read",  # Wave 4 (S2): Sheets values.batchGet (N disjoint ranges)
+    "gsheets_batch_write",  # Wave 4 (S2): Sheets values.batchUpdate (N disjoint ranges)
     "gsheets_create_spreadsheet",  # v2.3.1: Sheets spreadsheets.create
     "gsheets_format_range",  # Sheets batchUpdate (repeatCell) via the request-builder
     "gsheets_apply_conditional_format",  # Sheets batchUpdate (addConditionalFormatRule)

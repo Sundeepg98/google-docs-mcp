@@ -105,6 +105,8 @@
   "gsheets_add_sheet",
   "gsheets_append_rows",
   "gsheets_apply_conditional_format",
+  "gsheets_batch_read",
+  "gsheets_batch_write",
   "gsheets_clear_range",
   "gsheets_create_spreadsheet",
   "gsheets_delete_dimension",
