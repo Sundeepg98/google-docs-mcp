@@ -33,6 +33,9 @@ from appscriptly.google_api_client import (
     with_google_api_client,
 )
 from appscriptly.services.docs.api import (
+    _apply_markdown_content,
+    _content_has_table,
+    _split_content_segments,
     _summarize_body_content,
     _summarize_body_paragraphs,
     create_comment,
@@ -455,6 +458,125 @@ def test_summarize_body_content_empty_table_stays_marker_only():
         [{"table": {"rows": 3, "columns": 2}}]
     )
     assert paras == [{"style": "TABLE", "text": "[table 3x2]"}]
+
+
+# ---------------------------------------------------------------------
+# Table-in-content two-phase (regression fix for the mid-content
+# insertTable leading-newline shift that 400'd make_tabbed_doc LIVE:
+# "insertText index must be inside the bounds of an existing paragraph").
+# _apply_markdown_content splits content at tables and applies each
+# segment at a RE-FETCHED index, so there is NO client-side table
+# arithmetic - cell starts AND post-table content come from the server.
+# ---------------------------------------------------------------------
+
+
+def test_content_has_table_detects_gfm_table():
+    assert _content_has_table("intro\n\n| A | B |\n|---|---|\n| x | y |")
+    assert _content_has_table("| A |\n|---|\n| v |")
+    assert not _content_has_table("no table here\njust prose")
+    assert not _content_has_table("a | b without a separator row\nmore")
+    # A thematic break is NOT a table separator (no pipe on the rule line).
+    assert not _content_has_table("intro\n\n---\n\nmore")
+
+
+def test_split_content_segments_isolates_table_from_prose():
+    content = "intro\n\n| A | B |\n|---|---|\n| x | y |\n\ntail"
+    segments = _split_content_segments(content)
+    assert [k for k, _ in segments] == ["text", "table", "text"]
+    assert segments[0][1].strip() == "intro"
+    assert segments[1][1] == "| A | B |\n|---|---|\n| x | y |"
+    assert segments[2][1].strip() == "tail"
+
+
+def test_split_content_segments_plain_text_is_one_segment():
+    assert _split_content_segments("just prose\n\nmore prose") == [
+        ("text", "just prose\n\nmore prose")
+    ]
+
+
+def test_table_like_text_inside_a_code_fence_is_not_a_table():
+    """Pipes inside a fenced code block are code, not a GFM table - they
+    must NOT be detected or split out (that would corrupt the fence)."""
+    fenced = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+    assert not _content_has_table(fenced)
+    # The whole fence stays a single text segment (no 'table' segment).
+    assert _split_content_segments(fenced) == [("text", fenced)]
+    # A REAL table after a fenced example is still found + split.
+    mixed = fenced + "\n\n| R | S |\n|---|---|\n| 3 | 4 |"
+    assert _content_has_table(mixed)
+    kinds = [k for k, _ in _split_content_segments(mixed)]
+    assert kinds == ["text", "table"]
+
+
+def _doc_body(elements: list[dict]) -> dict:
+    """A documents.get() response: one tab whose body is ``elements``."""
+    return {
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "T0"},
+                "documentTab": {"body": {"content": elements}},
+            }
+        ]
+    }
+
+
+def test_apply_markdown_content_places_post_table_text_at_refetched_index():
+    """THE FIX: content after a table is inserted at an index READ BACK
+    from the live doc (post-fill), never a client-computed table span.
+
+    A get() side_effect models the evolving doc: empty body -> body after
+    'intro' -> body with the inserted table (for cell location) -> body
+    after the filled table. On the reverted one-shot code the trailing
+    'tail' would sit at a client-arithmetic index (the live 400)."""
+    docs = MagicMock(name="docs-v1")
+    table_rows = [
+        {"tableCells": [{"content": [{"startIndex": 11}]},
+                        {"content": [{"startIndex": 13}]}]},
+        {"tableCells": [{"content": [{"startIndex": 16}]},
+                        {"content": [{"startIndex": 18}]}]},
+    ]
+    docs.documents().get().execute.side_effect = [
+        _doc_body([{"startIndex": 1, "endIndex": 2}]),          # seg1 -> insert at 1
+        _doc_body([{"startIndex": 1, "endIndex": 8}]),          # seg2 -> table at 7
+        _doc_body([{"startIndex": 1, "endIndex": 8},            # locate: table at 8
+                   {"startIndex": 8, "endIndex": 20,
+                    "table": {"tableRows": table_rows}}]),
+        _doc_body([{"startIndex": 1, "endIndex": 8},            # seg3 -> tail at 29
+                   {"startIndex": 8, "endIndex": 30, "table": {}}]),
+    ]
+    docs.documents().batchUpdate().execute.return_value = {"replies": []}
+
+    content = "intro\n\n| A | B |\n|---|---|\n| x | y |\n\ntail"
+    _apply_markdown_content(docs, "DOC1", "T0", content)
+
+    batches = [
+        c.kwargs["body"]["requests"]
+        for c in docs.documents().batchUpdate.call_args_list
+        if "body" in c.kwargs
+    ]
+    flat = [(op, req[op]) for reqs in batches for req in reqs for op in req]
+
+    # insertTable at the RE-FETCHED body end (7), not a client index.
+    insert_tables = [p for op, p in flat if op == "insertTable"]
+    assert len(insert_tables) == 1
+    assert insert_tables[0]["location"]["index"] == 7
+    assert (insert_tables[0]["rows"], insert_tables[0]["columns"]) == (2, 2)
+
+    # Cell fills use SERVER cell indices, reverse-ordered.
+    cell_fills = [
+        p["location"]["index"]
+        for op, p in flat
+        if op == "insertText" and p["text"] in ("A", "B", "x", "y")
+    ]
+    assert cell_fills == sorted(cell_fills, reverse=True)
+    assert set(cell_fills) == {11, 13, 16, 18}
+
+    # Post-table 'tail' lands at the RE-FETCHED post-table index (29) -
+    # the exact position the one-shot client arithmetic got wrong live.
+    tail = [p for op, p in flat
+            if op == "insertText" and p["text"].startswith("tail")]
+    assert len(tail) == 1
+    assert tail[0]["location"]["index"] == 29
 
 
 # ---------------------------------------------------------------------
