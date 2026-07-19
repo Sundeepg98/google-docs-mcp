@@ -804,75 +804,31 @@ def test_plain_paragraph_emits_no_styling_requests():
 
 
 # ---------------------------------------------------------------------
-# S3 renderer coverage: GFM tables, inline images, horizontal rules, and
-# task lists — all silently DROPPED by render_content_to_requests before.
-# All new insertions advance the running index in UTF-16 units.
+# S3 renderer coverage: inline images, horizontal rules, task lists.
+# GFM TABLES are deliberately NOT rendered here - a real Docs table needs
+# the two-phase insertTable -> re-fetch -> fill (server cell indices),
+# which a one-shot request list can't express. The one-shot client-side
+# table arithmetic shipped in the wave produced out-of-bounds insert
+# indices for a table placed mid-content (the leading-newline shift on a
+# non-body-start insertTable) and 400'd the whole call live. Tables now go
+# through api._apply_markdown_content; the renderer only sees table-free
+# text. These tests pin that the renderer never emits an insertTable.
 # ---------------------------------------------------------------------
 
 
-def test_table_renders_insertTable_then_reverse_order_cell_fills():
-    """A GFM table -> one insertTable of the right shape, then the cell
-    text inserted HIGHEST index first (reverse document order) so earlier
-    fills don't shift the indices of later ones inside the single batch —
-    the same trick gdocs_insert_markdown_table uses."""
-    md = "| Name | Age |\n|------|-----|\n| Al | 30 |\n| Bo | 25 |"
+def test_renderer_does_not_emit_insertTable_for_a_gfm_table():
+    """The renderer must NEVER emit an insertTable (the removed client-side
+    table path). Given table markdown it degrades to literal pipe text so a
+    caller that bypasses the two-phase path can't crash - the real table
+    rendering lives in api._apply_markdown_content."""
+    md = "intro\n\n| A | B |\n|---|---|\n| x | y |\n\ntail"
     requests = render_content_to_requests(md, "t1")
-    it = _one_op(requests, "insertTable")
-    assert (it["rows"], it["columns"]) == (3, 2)
-    assert it["location"]["index"] == 1
-    fill_indices = [
-        r["insertText"]["location"]["index"]
-        for r in requests
-        if "insertText" in r
-    ]
-    assert fill_indices == sorted(fill_indices, reverse=True), (
-        f"cell fills must be reverse-ordered; got {fill_indices}"
-    )
-
-
-def test_table_cell_indices_match_documented_google_layout():
-    """Pin the exact cell indices against Google's documented table
-    layout: insertTable at L makes cell(r, c)'s content land at
-    L + 4 + r*(1 + 2C) + 2c. For a 2x2 table at index 1 that is
-    A1=5, B1=7, A2=10, B2=12 (the worked example in the Docs API docs)."""
-    md = "| A1 | B1 |\n|----|----|\n| A2 | B2 |"
-    requests = render_content_to_requests(md, "t1")
-    placed = {
-        r["insertText"]["text"]: r["insertText"]["location"]["index"]
-        for r in requests
-        if "insertText" in r
-    }
-    assert placed == {"A1": 5, "B1": 7, "A2": 10, "B2": 12}
-
-
-def test_table_empty_cell_is_skipped_others_keep_indices():
-    """An empty cell emits no insertText; the remaining cells keep the
-    indices they'd have in the empty table (fills are position-based)."""
-    md = "| A1 | B1 |\n|----|----|\n|  | B2 |"
-    requests = render_content_to_requests(md, "t1")
-    placed = {
-        r["insertText"]["text"]: r["insertText"]["location"]["index"]
-        for r in requests
-        if "insertText" in r
-    }
-    assert placed == {"A1": 5, "B1": 7, "B2": 12}  # A2 (empty) absent
-
-
-def test_table_location_and_downstream_index_are_tab_scoped_and_advanced():
-    """The insertTable + fills carry the tabId, and content AFTER the
-    table resumes past the full table span (empty span + cell text)."""
-    md = "| A1 | B1 |\n|----|----|\n| A2 | B2 |\n\ntail"
-    requests = render_content_to_requests(md, "t9")
-    it = _one_op(requests, "insertTable")
-    assert it["location"]["tabId"] == "t9"
-    # Empty 2x2 span from L=1 is 2 + R*(1+2C) = 2 + 2*5 = 12 -> content
-    # after resumes at 13, PLUS the 8 cell-text units (A1,B1,A2,B2 = 2 each)
-    # = 21.
-    tail = next(
-        r["insertText"] for r in requests
-        if "insertText" in r and r["insertText"]["text"].startswith("tail")
-    )
-    assert tail["location"]["index"] == 21
+    assert _ops(requests, "insertTable") == []
+    # Every insert index stays within a contiguous forward run (no gaps
+    # into phantom table structure) - the failure mode was an index past
+    # the real paragraph bounds.
+    body = _inserted_text(requests)
+    assert "intro" in body and "tail" in body
 
 
 def test_hr_renders_empty_paragraph_with_bottom_border():
@@ -933,22 +889,3 @@ def test_task_marker_in_ordered_list_is_not_a_task():
     presets = {b["bulletPreset"] for b in _ops(requests, "createParagraphBullets")}
     assert "BULLET_CHECKBOX" not in presets
     assert "[ ]" in _inserted_text(requests)
-
-
-def test_emoji_in_table_cell_holds_utf16_offsets():
-    """R6/UTF-16 regression for tables: an emoji cell is 1 UTF-16 unit
-    longer than a 1-char ASCII cell, so content AFTER the table shifts by
-    exactly 1. Under the buggy len() (code-point) count they'd be equal —
-    this fails there and passes with the utf-16 unit count."""
-    def after_index(md: str) -> int:
-        reqs = render_content_to_requests(md, "t1")
-        return next(
-            r["insertText"]["location"]["index"] for r in reqs
-            if "insertText" in r and r["insertText"]["text"].startswith("after")
-        )
-    emoji = after_index("| H |\n|---|\n| 😀 |\n\nafter")
-    ascii_ = after_index("| H |\n|---|\n| z |\n\nafter")
-    assert emoji == ascii_ + 1, (
-        f"emoji cell must shift downstream content by exactly 1 UTF-16 "
-        f"unit; emoji={emoji} ascii={ascii_}"
-    )

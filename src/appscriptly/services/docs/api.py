@@ -39,8 +39,10 @@ from .markdown_render import (
     CODE_FONT,
     TabSpec,
     _add_tab_request,
+    _is_table_separator,
     _plain_text_requests,
     _rename_tab_request,
+    _split_table_row,
     _tab_properties,
     parse_markdown_table,
     render_content_to_requests,
@@ -88,12 +90,17 @@ def make_doc_with_tabs(
     path_to_tab_id = _materialize_tab_tree(docs, doc_id, flat)
 
     content_requests: list[dict] = []
+    table_tabs: list[tuple[str, str]] = []
     for _depth, path, spec in flat:
         tab_id = path_to_tab_id[path]
         fmt = spec.get("content_format", "markdown")
         content = spec.get("content", "")
         if fmt == "text":
             content_requests.extend(_plain_text_requests(content, tab_id))
+        elif _content_has_table(content):
+            # Tables need the two-phase (insertTable -> re-fetch -> fill),
+            # which can't share the one-shot batch; apply per tab below.
+            table_tabs.append((tab_id, content))
         else:
             content_requests.extend(render_content_to_requests(content, tab_id))
 
@@ -101,6 +108,8 @@ def make_doc_with_tabs(
         docs.documents().batchUpdate(
             documentId=doc_id, body={"requests": content_requests}
         ).execute()
+    for tab_id, content in table_tabs:
+        _apply_markdown_content(docs, doc_id, tab_id, content)
 
     return {
         "doc_id": doc_id,
@@ -272,12 +281,17 @@ def add_tabs_to_doc(
                     path_to_tab_id[path] = new_children[i]["tabProperties"]["tabId"]
 
     content_requests: list[dict] = []
+    table_tabs: list[tuple[str, str]] = []
     for _depth, path, spec in flat:
         tab_id = path_to_tab_id[path]
         fmt = spec.get("content_format", "markdown")
         content = spec.get("content", "")
         if fmt == "text":
             content_requests.extend(_plain_text_requests(content, tab_id))
+        elif _content_has_table(content):
+            # Tables need the two-phase (insertTable -> re-fetch -> fill),
+            # which can't share the one-shot batch; apply per tab below.
+            table_tabs.append((tab_id, content))
         else:
             content_requests.extend(render_content_to_requests(content, tab_id))
 
@@ -285,6 +299,8 @@ def add_tabs_to_doc(
         docs.documents().batchUpdate(
             documentId=doc_id, body={"requests": content_requests}
         ).execute()
+    for tab_id, content in table_tabs:
+        _apply_markdown_content(docs, doc_id, tab_id, content)
 
     return {
         "doc_id": doc_id,
@@ -1180,32 +1196,62 @@ def insert_markdown_table(
     """
     if index < 1:
         raise ValueError("index must be >= 1 (index 0 is reserved by Docs).")
+    if tab_id is not None and not tab_id.strip():
+        raise ValueError("tab_id cannot be the empty string; omit it instead.")
     parsed = parse_markdown_table(markdown)  # raises ValueError if bad
-    rows, columns, cells = parsed["rows"], parsed["columns"], parsed["cells"]
 
     docs = get_service("docs", "v1", credentials=creds)
+    cells_filled = _fill_table_cells(
+        docs, doc_id, markdown, index=index, tab_id=tab_id
+    )
+    return {
+        "doc_id": doc_id,
+        "rows": parsed["rows"],
+        "columns": parsed["columns"],
+        "index": index,
+        "tab_id": tab_id,
+        "cells_filled": cells_filled,
+    }
+
+
+def _batch_update(
+    docs: Any, doc_id: str, requests: list[dict], *, op_name: str
+) -> None:
+    """Run one non-idempotent ``documents.batchUpdate`` with retry."""
+    execute_with_retry(
+        lambda: docs.documents().batchUpdate(
+            documentId=doc_id, body={"requests": requests}
+        ).execute(),
+        idempotent=False,
+        op_name=op_name,
+    )
+
+
+def _fill_table_cells(
+    docs: Any, doc_id: str, markdown: str, *, index: int, tab_id: str | None
+) -> int:
+    """Insert a real Docs table at ``index`` and fill its cells.
+
+    The live-proven two-phase (see ``insert_markdown_table``): ``insertTable``,
+    then re-fetch and ``insertText`` each cell's content at its
+    SERVER-assigned start index in REVERSE document order. No client-side
+    index arithmetic. Returns the count of non-empty cells filled.
+    """
+    parsed = parse_markdown_table(markdown)
+    rows, columns, cells = parsed["rows"], parsed["columns"], parsed["cells"]
+
     location: dict[str, Any] = {"index": index}
     if tab_id is not None:
-        if not tab_id.strip():
-            raise ValueError("tab_id cannot be the empty string; omit it instead.")
         location["tabId"] = tab_id
 
     # Phase 1: create the empty table.
-    execute_with_retry(
-        lambda: docs.documents().batchUpdate(
-            documentId=doc_id,
-            body={"requests": [{
-                "insertTable": {
-                    "location": location, "rows": rows, "columns": columns,
-                }
-            }]},
-        ).execute(),
-        idempotent=False,
+    _batch_update(
+        docs,
+        doc_id,
+        [{"insertTable": {"location": location, "rows": rows, "columns": columns}}],
         op_name="docs.documents.batchUpdate.insertTable",
     )
-
-    # Phase 2: re-fetch, find the table, map (row, col) -> cell start
-    # index, then insert text in reverse index order.
+    # Phase 2: re-fetch, map (row, col) -> server cell start, fill reverse.
     fetched = execute_with_retry(
         lambda: docs.documents().get(
             documentId=doc_id, includeTabsContent=True,
@@ -1222,38 +1268,150 @@ def insert_markdown_table(
             if not text:
                 continue
             start = cell_starts[(r, c)]
-            text_requests.append((
-                start,
-                {"insertText": {
-                    "location": (
-                        {"index": start, "tabId": tab_id}
-                        if tab_id is not None else {"index": start}
-                    ),
-                    "text": text,
-                }},
-            ))
+            loc = (
+                {"index": start, "tabId": tab_id}
+                if tab_id is not None else {"index": start}
+            )
+            text_requests.append(
+                (start, {"insertText": {"location": loc, "text": text}})
+            )
     # Reverse document order so each insertion's index stays valid as we
     # mutate the doc from the bottom up.
     text_requests.sort(key=lambda pair: pair[0], reverse=True)
-    cells_filled = len(text_requests)
     if text_requests:
-        execute_with_retry(
-            lambda: docs.documents().batchUpdate(
-                documentId=doc_id,
-                body={"requests": [req for _idx, req in text_requests]},
-            ).execute(),
-            idempotent=False,
+        _batch_update(
+            docs,
+            doc_id,
+            [req for _idx, req in text_requests],
             op_name="docs.documents.batchUpdate.fillTableCells",
         )
+    return len(text_requests)
 
-    return {
-        "doc_id": doc_id,
-        "rows": rows,
-        "columns": columns,
-        "index": index,
-        "tab_id": tab_id,
-        "cells_filled": cells_filled,
-    }
+
+def _is_fence(line: str) -> bool:
+    """A fenced-code-block delimiter line (``` or ~~~)."""
+    s = line.lstrip()
+    return s.startswith("```") or s.startswith("~~~")
+
+
+def _content_has_table(content: str) -> bool:
+    """True if markdown ``content`` contains a GFM table OUTSIDE a fenced
+    code block (a header line immediately followed by a ``|---|---|``
+    separator). Pipes inside a fence are code, not a table."""
+    lines = content.split("\n")
+    in_fence = False
+    for i in range(len(lines) - 1):
+        if _is_fence(lines[i]):
+            in_fence = not in_fence
+            continue
+        if (
+            not in_fence
+            and "|" in lines[i]
+            and "|" in lines[i + 1]
+            and _is_table_separator(lines[i + 1])
+        ):
+            return True
+    return False
+
+
+def _split_content_segments(content: str) -> list[tuple[str, str]]:
+    """Split markdown ``content`` into ordered ``("text"|"table", chunk)``
+    segments, isolating each GFM table block.
+
+    The doc builder renders each ``table`` segment through the two-phase
+    table path (real Docs table) and each ``text`` segment through the
+    one-shot markdown renderer, applying them in order at re-fetched
+    indices. A table block is a header line, its ``|---|---|`` separator,
+    and the consecutive non-blank pipe rows that follow.
+    """
+    lines = content.split("\n")
+    segments: list[tuple[str, str]] = []
+    text_buf: list[str] = []
+    n = len(lines)
+
+    def flush_text() -> None:
+        if text_buf:
+            chunk = "\n".join(text_buf)
+            if chunk.strip():
+                segments.append(("text", chunk))
+            text_buf.clear()
+
+    i = 0
+    in_fence = False
+    while i < n:
+        if _is_fence(lines[i]):
+            # Pipes inside a fenced code block are code, not a table;
+            # keep the whole fence in the text segment.
+            in_fence = not in_fence
+            text_buf.append(lines[i])
+            i += 1
+            continue
+        is_table_header = (
+            not in_fence
+            and "|" in lines[i]
+            and i + 1 < n
+            and "|" in lines[i + 1]
+            and _is_table_separator(lines[i + 1])
+            and len(_split_table_row(lines[i + 1])) == len(_split_table_row(lines[i]))
+        )
+        if is_table_header:
+            flush_text()
+            block = [lines[i], lines[i + 1]]
+            j = i + 2
+            while j < n and lines[j].strip() and "|" in lines[j]:
+                block.append(lines[j])
+                j += 1
+            segments.append(("table", "\n".join(block)))
+            i = j
+        else:
+            text_buf.append(lines[i])
+            i += 1
+    flush_text()
+    return segments
+
+
+def _tab_body_end_index(docs: Any, doc_id: str, tab_id: str | None) -> int:
+    """Re-fetch and return the index to insert at the END of the tab body
+    (just before the body's implicit trailing newline)."""
+    fetched = execute_with_retry(
+        lambda: docs.documents().get(
+            documentId=doc_id, includeTabsContent=True,
+        ).execute(),
+        idempotent=True,
+        op_name="docs.documents.get.tabBodyEnd",
+    )
+    body_content = _table_search_content(fetched, tab_id)
+    return body_content[-1]["endIndex"] - 1 if body_content else 1
+
+
+def _apply_markdown_content(
+    docs: Any, doc_id: str, tab_id: str, content: str
+) -> None:
+    """Apply markdown ``content`` to ``tab_id`` with GFM tables as real
+    Docs tables via the live-proven two-phase.
+
+    Content is split at table boundaries and each segment is applied at a
+    FRESHLY RE-FETCHED insertion index. There is NO client-side table-index
+    arithmetic: every index - cell starts AND the position of content that
+    follows a table - is read back from the live document. This is the fix
+    for the mid-content ``insertTable`` leading-newline shift that made the
+    one-shot renderer emit out-of-bounds insert indices.
+    """
+    for kind, segment in _split_content_segments(content):
+        insert_at = _tab_body_end_index(docs, doc_id, tab_id)
+        if kind == "text":
+            requests = render_content_to_requests(
+                segment, tab_id, starting_index=insert_at
+            )
+            if requests:
+                _batch_update(
+                    docs,
+                    doc_id,
+                    requests,
+                    op_name="docs.documents.batchUpdate.tabTextSegment",
+                )
+        else:
+            _fill_table_cells(docs, doc_id, segment, index=insert_at, tab_id=tab_id)
 
 
 def _locate_table_cell_starts(
@@ -1935,23 +2093,28 @@ def append_to_tab(
     )
 
     if content_format == "text":
-        requests = [
-            {
-                "insertText": {
-                    "location": {"tabId": tab_id, "index": end_index},
-                    "text": content,
-                }
-            }
-        ]
+        _batch_update(
+            docs,
+            doc_id,
+            [{"insertText": {
+                "location": {"tabId": tab_id, "index": end_index},
+                "text": content,
+            }}],
+            op_name="docs.documents.batchUpdate.appendText",
+        )
+    elif _content_has_table(content):
+        # Tables render via the two-phase re-fetch path (real Docs tables,
+        # no client-side index arithmetic).
+        _apply_markdown_content(docs, doc_id, tab_id, content)
     else:
         requests = render_content_to_requests(
             content, tab_id, starting_index=end_index
         )
-
-    if requests:
-        docs.documents().batchUpdate(
-            documentId=doc_id, body={"requests": requests}
-        ).execute()
+        if requests:
+            _batch_update(
+                docs, doc_id, requests,
+                op_name="docs.documents.batchUpdate.appendMarkdown",
+            )
 
     return {"tab_id": tab_id, "appended_chars": len(content)}
 

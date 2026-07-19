@@ -141,27 +141,45 @@ def test_gdocs_make_tabbed_doc_rejects_oversized_emoji():
         )
 
 
-def test_gdocs_make_tabbed_doc_content_carries_table_and_image(with_docs_stub):
-    """S3b: a tab whose markdown content has a GFM table + an inline image
-    must reach the API as insertTable + insertInlineImage requests. Before
-    the renderer gained table/image coverage these were silently dropped,
-    so make_tabbed_doc produced a doc missing the table and image."""
+def test_gdocs_make_tabbed_doc_routes_table_content_to_two_phase(
+    with_docs_stub, monkeypatch
+):
+    """S3 fix: a tab whose markdown has a GFM table is applied via the
+    two-phase ``_apply_markdown_content`` (real Docs table, server-assigned
+    cell indices) - NOT rendered inline. The one-shot client-side table
+    arithmetic that shipped in the wave produced an out-of-bounds insert
+    index for a mid-content table and 400'd the whole call live; the fix
+    is that no ``insertTable`` (or its cell fills) is arithmetic'd into the
+    shared content batch."""
+    from appscriptly.services.docs import api as docs_api
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        docs_api,
+        "_apply_markdown_content",
+        lambda docs, doc_id, tab_id, content: calls.append((tab_id, content)),
+    )
+
     tools.gdocs_make_tabbed_doc(
         title="Doc",
         tabs=[{
             "title": "T",
             "content": (
-                "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+                "intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
                 "![pic](https://ex.com/i.png)"
             ),
         }],
     )
-    ops: set[str] = set()
+
+    # The whole tab content (table + surrounding prose/image) is routed to
+    # the two-phase applier.
+    assert len(calls) == 1
+    _tab_id, routed = calls[0]
+    assert "| A | B |" in routed and "intro" in routed
+    # And nothing table-shaped leaked into the shared one-shot batch.
     for call in with_docs_stub.documents().batchUpdate.call_args_list:
         for req in call.kwargs.get("body", {}).get("requests", []):
-            ops.update(req.keys())
-    assert "insertTable" in ops
-    assert "insertInlineImage" in ops
+            assert "insertTable" not in req
 
 
 # ---------------------------------------------------------------------
