@@ -384,8 +384,10 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # (gdocs_create_named_range + gdocs_replace_named_range_content +
 # gdocs_delete_named_range + gdocs_insert_page_break on the deployed
 # documents scope; gdrive_copy_file on the deployed drive.file scope -
-# canonical-only, no new OAuth scope).
-_MIN_EXPECTED_TOOL_COUNT = 151
+# canonical-only, no new OAuth scope); then 151 -> 152 with the Wave 5
+# (S2) gslides_insert_text (insertText into an existing shape object -
+# slides service, deployed presentations scope, no new OAuth scope).
+_MIN_EXPECTED_TOOL_COUNT = 152
 
 _discovery_failures: list[tuple[str, str]] = []
 

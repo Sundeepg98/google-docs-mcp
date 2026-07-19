@@ -135,6 +135,7 @@
   "gslides_delete_object",
   "gslides_duplicate_object",
   "gslides_get_outline",
+  "gslides_insert_text",
   "gslides_replace_all_text",
   "gslides_set_speaker_notes",
   "gslides_update_element_transform",

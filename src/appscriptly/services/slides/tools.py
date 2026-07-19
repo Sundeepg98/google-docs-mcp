@@ -4,7 +4,7 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (12 slides-service tools):
+**Tools registered here** (13 slides-service tools):
 
 1. ``gslides_get_outline``         — read structure + per-slide text/elements/notes
 2. ``gslides_replace_all_text``    — find/replace across all slides
@@ -18,6 +18,7 @@ live ``mcp`` instance via ``server.py``'s side-effect import.
 10. ``gslides_delete_object``      (delete a page element or a whole slide)
 11. ``gslides_duplicate_object``   (duplicate an element or slide; returns the new id)
 12. ``gslides_update_element_transform`` (move / resize an element via its EMU transform)
+13. ``gslides_insert_text``        (insert text into an existing shape object)
 
 The first three were the minimal trio; ``gslides_add_slide`` closed
 the slide-population gap; ``gslides_create_image`` /
@@ -55,6 +56,7 @@ from appscriptly.services.slides.api import (
     delete_object as _delete_object,
     duplicate_object as _duplicate_object,
     get_outline as _get_outline,
+    insert_text as _insert_text,
     replace_all_text as _replace_all_text,
     set_speaker_notes as _set_speaker_notes,
     update_element_transform as _update_element_transform,
@@ -69,6 +71,7 @@ from appscriptly.tool_schemas import (
     GSLIDES_DELETE_OBJECT_OUTPUT_SCHEMA,
     GSLIDES_DUPLICATE_OBJECT_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
+    GSLIDES_INSERT_TEXT_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
     GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA,
@@ -908,4 +911,77 @@ def gslides_update_element_transform(
         translate_x_emu=translate_x_emu,
         translate_y_emu=translate_y_emu,
         apply_mode=apply_mode,
+    )
+
+
+# ---------------------------------------------------------------------
+# 13. gslides_insert_text — batchUpdate (insertText)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Insert text into an existing shape object on a slide",
+    # Adds text to a shape: a write, but not destructive (existing
+    # content is untouched; the inserted text can be edited or removed
+    # later). Same posture as the gslides_create_* verbs.
+    readonly=False,
+    destructive=False,
+    # Re-running inserts ANOTHER copy of the text at the index: NOT
+    # idempotent, matching the create_* verbs.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_INSERT_TEXT_OUTPUT_SCHEMA,
+)
+def gslides_insert_text(
+    creds,
+    presentation_id: str,
+    object_id: str,
+    text: str,
+    insertion_index: int = 0,
+) -> dict:
+    """Insert text into an existing shape object on a slide.
+
+    USE WHEN: you created an EMPTY shape with ``gslides_create_shape``
+    and now need to put copy into it. That tool returns an ``object_id``
+    but no text; this is how the text gets there.
+    (``gslides_replace_all_text`` only rewrites text that already exists,
+    so it cannot fill an empty shape.)
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``insertText`` request, addressing the shape by its ``object_id``.
+
+    Scope: shapes and other single-text-body objects. Inserting into a
+    TABLE cell is NOT supported here: Slides' ``insertText`` needs a cell
+    location (rowIndex / columnIndex) to target a table cell, and this
+    tool does not accept one, so a bare table objectId is rejected by
+    Google. Table-cell text is a deliberate follow-up.
+
+    Args:
+        presentation_id: The presentation to edit.
+        object_id: The shape objectId to insert text into. Pass a
+            ``shape_object_id`` from ``gslides_create_shape``. Empty
+            rejected.
+        text: The text to insert. Empty rejected (an empty insert is a
+            no-op and Slides rejects it with HTTP 400).
+        insertion_index: 0-based character offset within the shape's
+            existing text at which to insert (default 0, the start).
+            Negative rejected.
+
+    Returns:
+        ``{presentation_id, object_id, insertion_index, text_length}``.
+        ``text_length`` is the number of characters inserted (a size
+        confirmation; ``insertText`` returns no new objectId to surface).
+
+    Choreography: ``gslides_add_slide`` -> ``gslides_create_shape`` ->
+    ``gslides_insert_text`` -> ``gslides_get_outline`` to verify the text
+    landed.
+    """
+    return _insert_text(
+        creds,
+        presentation_id=presentation_id,
+        object_id=object_id,
+        text=text,
+        insertion_index=insertion_index,
     )

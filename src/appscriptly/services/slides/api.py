@@ -1259,6 +1259,94 @@ def update_element_transform(
     }
 
 
+def insert_text(
+    creds: Credentials,
+    presentation_id: str,
+    object_id: str,
+    text: str,
+    insertion_index: int = 0,
+) -> dict:
+    """Insert text into an existing shape object via ``insertText``.
+
+    Uses ``presentations.batchUpdate`` with a single ``insertText``
+    request. This is the companion to ``create_shape``, which creates an
+    EMPTY shape: it gives you an ``object_id`` with no text, and this
+    puts copy into it. (``replace_all_text`` cannot help there, because
+    it only rewrites text that already exists.)
+
+    Scope: shapes and other single-text-body objects (a shape has one
+    text body, addressed by ``object_id`` alone). Inserting into a TABLE
+    cell is NOT supported here: the Slides ``insertText`` request needs a
+    ``cellLocation`` (rowIndex / columnIndex) to target a cell, and this
+    wrapper does not accept one, so a bare table objectId has no
+    top-level text body and Google rejects it. Table-cell text is a
+    deliberate follow-up.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline, no extra grant).
+        presentation_id: The Slides file ID.
+        object_id: The target shape objectId to insert text into (a
+            ``shape_object_id`` from ``create_shape``). Empty rejected
+            client-side.
+        text: The text to insert. Empty rejected client-side (Slides 400s
+            on an empty insertText, and an empty insert is a no-op).
+        insertion_index: The 0-based character offset within the shape's
+            existing text at which to insert (default 0, the start). A
+            negative value is rejected client-side.
+
+    Returns:
+        ``{presentation_id, object_id, insertion_index, text_length}``, a
+        flat echo of the target plus ``text_length`` (the number of
+        characters inserted) as a size confirmation. ``insertText``
+        returns no reply payload, so there is no server-generated id to
+        surface.
+
+    Raises:
+        ValueError: empty ``object_id``, empty ``text``, or a negative
+            ``insertion_index``.
+        HttpError: from the underlying SDK on 4xx / 5xx (propagated). A
+            bogus objectId, or a table objectId passed without a cell
+            location, surfaces as a Slides 400.
+    """
+    if not object_id or not object_id.strip():
+        raise ValueError("object_id cannot be empty.")
+    if not text:
+        raise ValueError(
+            "text cannot be empty; pass at least one character to insert. "
+            "(Slides rejects an empty insertText with HTTP 400.)"
+        )
+    if insertion_index < 0:
+        raise ValueError("insertion_index cannot be negative.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    requests = [
+        {
+            "insertText": {
+                "objectId": object_id,
+                "text": text,
+                "insertionIndex": insertion_index,
+            },
+        },
+    ]
+    # NOT idempotent: each call inserts ANOTHER copy of the text at the
+    # given index, so a retry after a lost success would double-insert.
+    execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.insertText",
+    )
+    return {
+        "presentation_id": presentation_id,
+        "object_id": object_id,
+        "insertion_index": insertion_index,
+        "text_length": len(text),
+    }
+
+
 # ---------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------
