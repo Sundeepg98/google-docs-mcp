@@ -107,6 +107,15 @@ def nonce_store():
     return NonceStore()
 
 
+@pytest.fixture
+def enc_key() -> bytes:
+    """AES-GCM key for the encrypted PKCE verifier embedded in the state
+    token (matches keys.get_key("oauth_state_enc") length). Threaded into
+    the (re-)auth URL builder + the callback exchange, mirroring
+    resolve_runtime_oauth_config()."""
+    return bytes(range(32))
+
+
 def _mock_flow_returning(refresh_token: str, access_token: str, scopes: list[str]):
     """Stand-in for ``google_auth_oauthlib.flow.Flow`` after fetch_token.
 
@@ -144,7 +153,7 @@ def _mock_flow_returning(refresh_token: str, access_token: str, scopes: list[str
 
 
 def test_first_tool_call_with_no_creds_raises_needs_reauth(
-    client_config, signing_key_bytes, base_url
+    client_config, signing_key_bytes, enc_key, base_url
 ):
     """Fresh user with no row in user_store: the credentials resolver must
     raise ``NeedsReauthError`` carrying a clickable auth_url, not a
@@ -158,6 +167,7 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
             "fresh-user-sub-001",
             client_config=client_config,
             signing_key=signing_key_bytes,
+            enc_key=enc_key,
             base_url=base_url,
         )
 
@@ -168,9 +178,10 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
     # The auth_url must include a signed state binding this user_id —
     # otherwise the callback can't tell which user is coming back.
     qs = parse_qs(urlparse(exc.value.auth_url).query)
-    assert "state" in qs and qs["state"][0].count(".") == 3, (
+    assert "state" in qs and qs["state"][0].count(".") == 4, (
         "auth_url is missing the signed state token "
-        "(expected 4 dot-separated parts: sub_b64.nonce.exp.sig)"
+        "(expected 5 dot-separated parts with encrypted PKCE: "
+        "sub_b64.nonce.exp.enc.sig)"
     )
 
 
@@ -180,7 +191,7 @@ def test_first_tool_call_with_no_creds_raises_needs_reauth(
 
 
 def test_fresh_user_full_oauth_dance_persists_usable_creds(
-    client_config, signing_key_bytes, base_url, nonce_store
+    client_config, signing_key_bytes, enc_key, base_url, nonce_store
 ):
     """The big one: drive a fresh user from no-creds to usable creds via
     the same code paths the production HTTP server calls.
@@ -206,6 +217,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
             user_id,
             client_config=client_config,
             signing_key=signing_key_bytes,
+            enc_key=enc_key,
             base_url=base_url,
         )
     auth_url = exc.value.auth_url
@@ -232,6 +244,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key_bytes,
+            enc_key=enc_key,
             nonce_store=nonce_store,
         )
 
@@ -250,6 +263,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
         user_id,
         client_config=client_config,
         signing_key=signing_key_bytes,
+        enc_key=enc_key,
         base_url=base_url,
     )
     assert creds.token == "ACCESS_FROM_GOOGLE"
@@ -261,7 +275,7 @@ def test_fresh_user_full_oauth_dance_persists_usable_creds(
 
 
 def test_fresh_user_persisted_state_strips_operator_secrets(
-    client_config, signing_key_bytes, base_url, nonce_store
+    client_config, signing_key_bytes, enc_key, base_url, nonce_store
 ):
     """Regression guard: ``save_credentials_json`` must never persist the
     operator's ``client_id``/``client_secret`` to the per-user row.
@@ -279,7 +293,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
     user_id = "fresh-user-sub-003"
     auth_url = build_authorization_url(
         user_id, base_url=base_url, client_config=client_config,
-        signing_key=signing_key_bytes,
+        signing_key=signing_key_bytes, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -297,6 +311,7 @@ def test_fresh_user_persisted_state_strips_operator_secrets(
             base_url=base_url,
             client_config=client_config,
             signing_key=signing_key_bytes,
+            enc_key=enc_key,
             nonce_store=nonce_store,
         )
 
@@ -448,7 +463,7 @@ def test_oauth_callback_endpoint_strips_operator_secrets_in_production(
 
 
 def test_replayed_callback_state_cannot_overwrite_existing_creds(
-    client_config, signing_key_bytes, base_url, nonce_store
+    client_config, signing_key_bytes, enc_key, base_url, nonce_store
 ):
     """An attacker who captures a victim's state token (browser history /
     access logs) MUST NOT be able to re-use it to plant alternate creds
@@ -465,7 +480,7 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
 
     auth_url = build_authorization_url(
         "victim-sub", base_url=base_url, client_config=client_config,
-        signing_key=signing_key_bytes,
+        signing_key=signing_key_bytes, enc_key=enc_key,
     )
     state = parse_qs(urlparse(auth_url).query)["state"][0]
 
@@ -483,7 +498,8 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
                 f"{base_url}/oauth/google/api/callback?state={state}&code=X"
             ),
             base_url=base_url, client_config=client_config,
-            signing_key=signing_key_bytes, nonce_store=nonce_store,
+            signing_key=signing_key_bytes, enc_key=enc_key,
+            nonce_store=nonce_store,
         )
         # Second redemption (attacker replay) must fail loudly — the
         # NonceStore consumed the nonce on first use.
@@ -494,5 +510,6 @@ def test_replayed_callback_state_cannot_overwrite_existing_creds(
                     f"{base_url}/oauth/google/api/callback?state={state}&code=Y"
                 ),
                 base_url=base_url, client_config=client_config,
-                signing_key=signing_key_bytes, nonce_store=nonce_store,
+                signing_key=signing_key_bytes, enc_key=enc_key,
+                nonce_store=nonce_store,
             )

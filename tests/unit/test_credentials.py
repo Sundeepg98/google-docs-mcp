@@ -51,6 +51,10 @@ def runtime_oauth(client_config):
         # v2.0b: get_credentials_for_user takes signing_key as bytes
         # (matches keys.get_key("oauth_state") return type).
         "signing_key": b"test-signing-key",
+        # AES-GCM key for the encrypted PKCE verifier in the state token
+        # (matches keys.get_key("oauth_state_enc")); threaded into the
+        # (re-)auth URL builder, mirroring resolve_runtime_oauth_config().
+        "enc_key": bytes(range(32)),
         "base_url": "https://example.fly.dev",
     }
 

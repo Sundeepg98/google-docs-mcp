@@ -382,6 +382,11 @@ def resolve_runtime_oauth_config() -> dict:
     # get_credentials_for_user → sign_state) accept bytes directly.
     try:
         signing_key = _keys.get_key("oauth_state")
+        # Second, independent HKDF key: encrypts the PKCE verifier carried
+        # inside the state token (stateless encrypted PKCE). Same master,
+        # same failure mode as the HMAC key above — derive it here, beside
+        # signing_key, so both travel together through the resolver.
+        enc_key = _keys.get_key("oauth_state_enc")
     except RuntimeError as e:
         # Preserve the historical message wording so callers /
         # integration tests that match on it keep working.
@@ -414,6 +419,7 @@ def resolve_runtime_oauth_config() -> dict:
     return {
         "client_config": client_config,
         "signing_key": signing_key,
+        "enc_key": enc_key,
         "base_url": base_url.rstrip("/"),
     }
 
@@ -453,6 +459,7 @@ def build_authorization_url(
     base_url: str,
     client_config: dict,
     signing_key: bytes,
+    enc_key: bytes | None,
     scopes: list[str] | None = None,
     ttl_seconds: int = 600,
 ) -> str:
@@ -468,19 +475,21 @@ def build_authorization_url(
     flow = Flow.from_client_config(client_config, scopes=scopes or GOOGLE_API_SCOPES)
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
 
-    # Proper PKCE: generate our own code_verifier so we control storage,
-    # then pass it to sign_state for server-side persistence keyed by
-    # the state's nonce. verify_state retrieves it on callback so the
-    # token exchange can complete. This makes PKCE behavior
-    # deterministic across all auth URLs (every URL has code_challenge;
-    # the matching verifier is always recoverable on callback).
+    # Proper PKCE: generate our own code_verifier, then hand it to
+    # sign_state, which AES-GCM-encrypts it under ``enc_key`` and embeds
+    # the ciphertext IN the state token (stateless PKCE — no server-side
+    # store). verify_state decrypts it on callback so the token exchange
+    # can complete even after a restart or on a different instance. PKCE
+    # behavior is deterministic across all auth URLs (every URL has
+    # code_challenge; the matching verifier is always recoverable on
+    # callback because it rides inside the state).
     import secrets as _secrets
     code_verifier = _secrets.token_urlsafe(48)  # 64 chars, within RFC 7636 limits
     flow.code_verifier = code_verifier
 
     state = sign_state(
         user_id, signing_key, ttl_seconds=ttl_seconds,
-        code_verifier=code_verifier,
+        code_verifier=code_verifier, enc_key=enc_key,
     )
     # access_type=offline + prompt=consent: the only combination that
     # *reliably* returns a refresh_token. Without prompt=consent Google
@@ -502,6 +511,7 @@ def exchange_code_for_credentials(
     base_url: str,
     client_config: dict,
     signing_key: bytes,
+    enc_key: bytes | None,
     nonce_store: NonceStore,
     scopes: list[str] | None = None,
 ) -> tuple[str, str]:
@@ -515,7 +525,9 @@ def exchange_code_for_credentials(
     raw in user_store and reconstruct with ``Credentials(...)`` at
     consumption time.
     """
-    ok, user_id, err, code_verifier = verify_state(state, signing_key, nonce_store)
+    ok, user_id, err, code_verifier = verify_state(
+        state, signing_key, nonce_store, enc_key=enc_key,
+    )
     if not ok:
         # Don't leak which validation failed publicly — could help an
         # attacker probe HMAC vs replay vs expiry. The server log
@@ -530,12 +542,13 @@ def exchange_code_for_credentials(
         client_config, scopes=scopes or GOOGLE_API_SCOPES, state=state,
     )
     flow.redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
-    # Restore the PKCE verifier from server-side store so fetch_token
-    # can pass it to Google. If verifier is None here, either PKCE
-    # wasn't used at sign time OR the server restarted between sign
-    # and verify — fetch_token will fail loudly with "invalid_grant:
-    # Missing code verifier" in that case, which is the right
-    # behavior (user just retries the auth flow).
+    # Recover the PKCE verifier decrypted out of the state token so
+    # fetch_token can pass it to Google. Because it rode inside the state
+    # (encrypted), it survives a restart / cross-instance callback — the
+    # narrow "deploy drops in-flight logins" failure this replaces. If
+    # verifier is None here, PKCE wasn't used at sign time (a legacy
+    # 4-part state); fetch_token then fails loudly with "invalid_grant:
+    # Missing code verifier" and the user just retries the auth flow.
     if code_verifier:
         flow.code_verifier = code_verifier
 

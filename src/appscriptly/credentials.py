@@ -214,8 +214,15 @@ def get_credentials_for_user(
     signing_key: bytes,
     base_url: str,
     required_scopes: list[str] | None = None,
+    enc_key: bytes | None = None,
 ) -> Credentials:
     """Return valid Google API ``Credentials`` for ``user_id``.
+
+    ``enc_key`` (AES-GCM key for the encrypted PKCE verifier) is threaded
+    into the auth-URL builder for the (re-)authorization paths. In
+    production it always arrives via ``**resolve_runtime_oauth_config()``;
+    it is Optional only so direct test callers that never mint an auth
+    URL need not supply it.
 
     Raises ``NeedsReauthError`` if the user needs to (re-)authorize.
     The caller (tool function) should catch it and surface
@@ -236,7 +243,9 @@ def get_credentials_for_user(
         )
         raise NeedsReauthError(
             user_id,
-            auth_url=_auth_url(user_id, client_config, signing_key, base_url),
+            auth_url=_auth_url(
+                user_id, client_config, signing_key, base_url, enc_key=enc_key,
+            ),
             reason="Google API credentials not yet authorized",
         )
 
@@ -245,6 +254,7 @@ def get_credentials_for_user(
     if creds.valid:
         checked = _check_scopes_or_raise(
             creds, user_id, required_scopes, client_config, signing_key, base_url,
+            enc_key=enc_key,
         )
         _emit_tenant_audit_log(
             user_id,
@@ -264,7 +274,9 @@ def get_credentials_for_user(
         )
         raise NeedsReauthError(
             user_id,
-            auth_url=_auth_url(user_id, client_config, signing_key, base_url),
+            auth_url=_auth_url(
+                user_id, client_config, signing_key, base_url, enc_key=enc_key,
+            ),
             reason="Credentials expired and no refresh token available",
         )
 
@@ -278,7 +290,7 @@ def get_credentials_for_user(
         if creds.valid:
             checked = _check_scopes_or_raise(
                 creds, user_id, required_scopes, client_config,
-                signing_key, base_url,
+                signing_key, base_url, enc_key=enc_key,
             )
             _emit_tenant_audit_log(
                 user_id,
@@ -305,7 +317,10 @@ def get_credentials_for_user(
                 )
                 raise NeedsReauthError(
                     user_id,
-                    auth_url=_auth_url(user_id, client_config, signing_key, base_url),
+                    auth_url=_auth_url(
+                        user_id, client_config, signing_key, base_url,
+                        enc_key=enc_key,
+                    ),
                     reason=(
                         "Google credentials were revoked or rotated. "
                         "Re-authorize to continue."
@@ -319,6 +334,7 @@ def get_credentials_for_user(
 
     checked = _check_scopes_or_raise(
         creds, user_id, required_scopes, client_config, signing_key, base_url,
+        enc_key=enc_key,
     )
     _emit_tenant_audit_log(
         user_id,
@@ -385,6 +401,7 @@ def _check_scopes_or_raise(
     client_config: dict,
     signing_key: bytes,
     base_url: str,
+    enc_key: bytes | None = None,
 ) -> Credentials:
     """If any required scope is missing, raise NeedsReauthError.
 
@@ -403,6 +420,7 @@ def _check_scopes_or_raise(
             auth_url=_auth_url(
                 user_id, client_config, signing_key, base_url,
                 scopes=list(set(GOOGLE_API_SCOPES) | set(required_scopes)),
+                enc_key=enc_key,
             ),
             reason=f"Missing required scopes: {missing}",
         )
@@ -429,11 +447,13 @@ def _auth_url(
     base_url: str,
     *,
     scopes: list[str] | None = None,
+    enc_key: bytes | None = None,
 ) -> str:
     return build_authorization_url(
         user_id,
         base_url=base_url,
         client_config=client_config,
         signing_key=signing_key,
+        enc_key=enc_key,
         scopes=scopes,
     )

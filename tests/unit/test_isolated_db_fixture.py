@@ -36,6 +36,7 @@ def test_isolated_db_fixture_clears_all_module_state(isolated_db):
         "api_bearer": 0,
         "oauth_state": 0,
         "signed_url": 0,
+        "oauth_state_enc": 0,
     }, (
         "keys._shim_hit_counter not zeroed — assertions of "
         "'shim_hits == 0' will spuriously fail after a prior test "
@@ -93,5 +94,6 @@ def test_qq_followup_after_pollution_starts_clean(isolated_db):
         "api_bearer": 0,
         "oauth_state": 0,
         "signed_url": 0,
+        "oauth_state_enc": 0,
     }, "post-yield reset regressed"
     assert server_mod._creds_cache is None, "post-yield reset regressed"

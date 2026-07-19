@@ -62,6 +62,7 @@ def setup_keys():
         InMemoryKeyProvider({
             "api_bearer": _TEST_BEARER_BYTES,
             "oauth_state": _TEST_BEARER_BYTES,
+            "oauth_state_enc": _TEST_BEARER_BYTES,
             "signed_url": _TEST_BEARER_BYTES,
         }),
     ])
