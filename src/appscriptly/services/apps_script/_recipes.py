@@ -250,6 +250,73 @@ def render(spec: RecipeSpec, params: Params) -> RenderResult:
 
 
 # ---------------------------------------------------------------------
+# Params validation + container-id derivation. Registry-level helpers that
+# operate on a recipe's input_schema (metadata, NOT the byte-identity
+# contract). Shared by the generic installer (``as_install_recipe``) and the
+# update regeneration path (``as_update_automation``) so both validate an
+# install-params bag against the recipe's declared inputs the same way.
+# ---------------------------------------------------------------------
+
+
+def container_param_of(spec: RecipeSpec) -> str:
+    """Return the params key holding the recipe's container Drive id.
+
+    That is the FIRST required input of every recipe (``doc_id`` / ``sheet_id``
+    / ``form_id`` / ``presentation_id``) -- the value the typed wrapper hands
+    ``mint_bound_automation`` as ``container_id``. The generic installer derives
+    ``container_id`` this way; the per-recipe mapping is pinned in
+    ``test_install_recipe`` so a future recipe that reorders its required list
+    cannot silently mis-bind.
+    """
+    return spec.input_schema["required"][0]
+
+
+def _param_type_ok(value: Any, declared: str | None) -> bool:
+    """True if ``value`` satisfies the JSON-schema ``declared`` primitive type.
+
+    Returns True for an unknown / unmapped type (only the primitives the recipe
+    input schemas actually use are checked; presence + non-null are enforced by
+    the caller). ``integer`` / ``number`` reject ``bool`` explicitly because
+    ``bool`` is an ``int`` subclass.
+    """
+    if declared == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if declared == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    simple: dict[str, type] = {
+        "string": str, "array": list, "object": dict, "boolean": bool,
+    }
+    expected = simple.get(declared) if declared else None
+    return expected is None or isinstance(value, expected)
+
+
+def required_param_offenders(spec: RecipeSpec, params: Params) -> list[str]:
+    """One offender string per REQUIRED input that is missing, null, or the
+    wrong JSON type in ``params``; an empty list means every required input is
+    valid.
+
+    Optional inputs are not checked (they may legitimately be absent or null).
+    Each offender names the key -- and, for a type error, the expected vs actual
+    type. This is the shared validation the generic installer surfaces before an
+    install AND ``as_update_automation`` surfaces before a recipe regeneration,
+    so a bad input becomes a clean ``ValueError`` naming the offender instead of
+    a cryptic ``TypeError`` from deep inside a generator builder.
+    """
+    schema = spec.input_schema
+    props = schema.get("properties", {})
+    offenders: list[str] = []
+    for key in schema.get("required", []):
+        declared = props.get(key, {}).get("type")
+        if key not in params or params[key] is None:
+            offenders.append(f"{key} (required, must not be null)")
+        elif not _param_type_ok(params[key], declared):
+            offenders.append(
+                f"{key} (expected {declared}, got {type(params[key]).__name__})"
+            )
+    return offenders
+
+
+# ---------------------------------------------------------------------
 # build callables (LAZY imports of the pure generator builders).
 # Each returns the exact .gs body the generator produces for these params.
 # ---------------------------------------------------------------------

@@ -42,7 +42,7 @@ in the `.docx` / OOXML spec, so any pipeline that round-trips through
 `.docx` collapses to one tab. The only way to create tabs
 programmatically is to call the Google Docs API directly. This server
 wraps that flow + the supporting Drive / Sheets / Slides / Apps Script
-operations into 141 tools (primarily `gdocs_*`, plus `gsheets_*` /
+operations into 153 tools (primarily `gdocs_*`, plus `gsheets_*` /
 `gslides_*` / `as_*` for the newer services) covering the full
 lifecycle: create, edit, read, find, retrofit, trash/untrash, convert
 existing docs, one-shot per-user Apps Script Web App setup, plus
@@ -59,7 +59,7 @@ No external reference file required.
 Most tools are prefixed `gdocs_`; the Sheets / Slides verticals use
 `gsheets_` / `gslides_` and the appscriptly-native automation tools use
 `as_`. Call `gdocs_server_info` on a live server to get the
-authoritative list (all 141 tools) with descriptions.
+authoritative list (all 153 tools) with descriptions.
 
 | Purpose | Tool |
 |---|---|
@@ -285,7 +285,7 @@ Verify: `curl https://<your-app>.fly.dev/health` returns `{"ok":true,...}`.
 1. Settings → Connectors → **Add custom connector**
 2. URL: `https://<your-app>.fly.dev/mcp`
 3. (No OAuth fields needed — the `/mcp` endpoint is open by convention; auth lives at `/api/*` and is bypassed by signed URLs)
-4. Save → start a new chat. All 141 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
+4. Save → start a new chat. All 153 tools appear (`gdocs_*` plus the `gsheets_*` / `gslides_*` / `as_*` services).
 
 **Also add `<your-app>.fly.dev` to Settings → Capabilities → Additional allowed domains** so cloud chat's Python sandbox can POST to `/api/convert`.
 

@@ -29,7 +29,6 @@ hold (S0-2); the inventory is where those ids now come from.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from fastmcp.exceptions import ToolError
 
@@ -46,6 +45,7 @@ from appscriptly.services.apps_script._recipes import (
     RECIPES,
     RecipeSpec,
     render as _render,
+    required_param_offenders as _required_param_offenders,
 )
 from appscriptly.services.apps_script.api import build_manifest as _build_manifest
 from appscriptly.services.apps_script.scopes import GAS_BOUND_SCOPES
@@ -134,50 +134,21 @@ def _stored_recipe_params(row: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _param_type_ok(value: Any, declared: str | None) -> bool:
-    """True if ``value`` satisfies the JSON-schema ``declared`` type.
-
-    Returns True for an unknown / unmapped type (only the primitives the
-    recipe input schemas actually use are checked; presence + non-null are
-    enforced separately). ``integer`` / ``number`` reject ``bool`` explicitly
-    because ``bool`` is a subclass of ``int``.
-    """
-    if declared == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if declared == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    simple: dict[str, type] = {
-        "string": str, "array": list, "object": dict, "boolean": bool,
-    }
-    expected = simple.get(declared) if declared else None
-    return expected is None or isinstance(value, expected)
-
-
 def _validate_recipe_regeneration_params(spec: RecipeSpec, params: dict) -> None:
     """Reject a recipe regeneration whose params null / wrong-type a required
     input, with a clean ValueError instead of a cryptic template TypeError.
 
     A ``params`` override that sets a REQUIRED recipe input to null (or the
     wrong JSON type) would otherwise surface as a raw ``TypeError`` from deep
-    inside a generator builder (atomic, but cryptic). This checks the recipe's
-    required inputs against its ``input_schema`` FIRST -- each must be present,
-    non-null, and match the declared JSON type -- and names the offending
-    key(s) + the recipe. Optional params may legitimately be absent or null,
-    so only required inputs are checked. Runs BEFORE render (and thus before
-    any Apps Script push or ledger write): a bad override changes nothing.
+    inside a generator builder (atomic, but cryptic). Delegates the
+    required-present / non-null / type check to the shared registry validator
+    (``_recipes.required_param_offenders`` -- the SAME one ``as_install_recipe``
+    uses), then raises naming the offending key(s) + the recipe. Optional params
+    may legitimately be absent or null, so only required inputs are checked.
+    Runs BEFORE render (and thus before any Apps Script push or ledger write):
+    a bad override changes nothing.
     """
-    schema = spec.input_schema
-    required = schema.get("required", [])
-    props = schema.get("properties", {})
-    offenders: list[str] = []
-    for key in required:
-        declared = props.get(key, {}).get("type")
-        if key not in params or params[key] is None:
-            offenders.append(f"{key} (required, must not be null)")
-        elif not _param_type_ok(params[key], declared):
-            offenders.append(
-                f"{key} (expected {declared}, got {type(params[key]).__name__})"
-            )
+    offenders = _required_param_offenders(spec, params)
     if offenders:
         raise ValueError(
             f"Cannot regenerate the '{spec.name}' automation: a params "

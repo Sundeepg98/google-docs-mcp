@@ -387,7 +387,7 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # canonical-only, no new OAuth scope); then 151 -> 152 with the Wave 5
 # (S2) gslides_insert_text (insertText into an existing shape object -
 # slides service, deployed presentations scope, no new OAuth scope).
-_MIN_EXPECTED_TOOL_COUNT = 152
+_MIN_EXPECTED_TOOL_COUNT = 153
 
 _discovery_failures: list[tuple[str, str]] = []
 

@@ -406,6 +406,8 @@ _APPS_SCRIPT_TOOL_MODULE: dict[str, str] = {
     "as_check_activation": "appscriptly.services.apps_script.check_activation",
     # Wave 2 (S4) - recipe catalog browse tool in its own feature file.
     "as_list_recipes": "appscriptly.services.apps_script.recipes_catalog",
+    # Wave 2 (S6a) - generic catalog-driven installer in its own feature file.
+    "as_install_recipe": "appscriptly.services.apps_script.install_recipe",
     # Automation lifecycle — inventory + uninstall + update (all in
     # lifecycle_tools).
     "as_list_installed_automations": (

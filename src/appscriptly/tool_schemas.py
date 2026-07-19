@@ -1831,6 +1831,40 @@ AS_LIST_RECIPES_OUTPUT_SCHEMA = _object(
 )
 
 
+# ``as_install_recipe`` (Wave 2 / S6a) - the generic catalog-driven installer.
+# Installs any registry recipe by NAME through the same render+mint path as the
+# typed as_install_* wrappers, so it returns the COMMON install fields (the
+# per-recipe extras a typed tool adds -- e.g. usage_hint / menu_title -- are not
+# knowable generically). ``activation_model`` + ``message`` say what it takes to
+# make the automation live (a trigger automation is NOT live until a one-time
+# in-editor Run + Allow). additionalProperties stays True (the _object default).
+AS_INSTALL_RECIPE_OUTPUT_SCHEMA = _object(
+    properties={
+        "recipe": {"type": "string"},
+        "script_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "container_id": {"type": "string"},
+        "container_kind": {"type": "string"},
+        "activation_model": {"type": "string"},
+        "on_conflict": {"type": "string"},
+        "reused_existing": {"type": "boolean"},
+        "replaced_count": {"type": "integer", "minimum": 0},
+        "project_url": {"type": "string", "format": "uri"},
+        "message": {"type": "string"},
+    },
+    required=[
+        "recipe",
+        "script_id",
+        "deployment_id",
+        "container_id",
+        "activation_model",
+        "on_conflict",
+        "project_url",
+        "message",
+    ],
+)
+
+
 # ``as_install_custom_function`` (PR-Δ10) returns the deployed IDs plus
 # the Sheets-friendly ``usage_hint`` (the literal ``=FUNCTION(...)`` the
 # user types) and the echoed ``function_name`` / ``sheet_id``.
@@ -2768,6 +2802,9 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     # Wave 2 (S4) - read-only install catalog projected from the recipe
     # registry (_recipes.py); the discovery surface for the as_install_* family.
     "as_list_recipes": AS_LIST_RECIPES_OUTPUT_SCHEMA,
+    # Wave 2 (S6a) - generic catalog-driven installer; installs any registry
+    # recipe by name (the programmatic companion to as_list_recipes).
+    "as_install_recipe": AS_INSTALL_RECIPE_OUTPUT_SCHEMA,
     # Automation lifecycle — forward-only inventory + honest partial
     # uninstall (ledger-backed; closes the install-only gap, S0-1..S0-4).
     "as_list_installed_automations": AS_LIST_INSTALLED_AUTOMATIONS_OUTPUT_SCHEMA,

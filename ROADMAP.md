@@ -111,7 +111,7 @@ These postdate the audited per-item list below and are recorded here as DONE wit
 - ✅ **DONE** (backstop) - **Coverage `fail_under` backstop in `pyproject.toml`** - `[tool.coverage.report] fail_under = 55` is present (`pyproject.toml:262`, rationale at `:241-259`) as a workflow-independent floor alongside the `--cov-fail-under=55` CLI gate in `test.yml`. (The separate 55 to 56 ratchet remains a future item.)
 
 ### Confirmed strengths (DONE — no action)
-- **Fail-loud boot guards** — `on_duplicate='error'`, aggregated import-failure raise, and a `_MIN_EXPECTED_TOOL_COUNT=141` floor crash boot rather than serving a partial surface. Safe to extend.
+- **Fail-loud boot guards** — `on_duplicate='error'`, aggregated import-failure raise, and a `_MIN_EXPECTED_TOOL_COUNT=153` floor crash boot rather than serving a partial surface. Safe to extend.
 - **SQLite layer + runtime-chown entrypoint are hardened for the long-running-Fly model** — real WAL write-probe (`assert_state_db_writable`), root→setpriv privilege drop, fail-loud chown. Excellent for Fly; every line is Fly-volume-specific and must NOT leak onto the serverless path.
 
 ---
