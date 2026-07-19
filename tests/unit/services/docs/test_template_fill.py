@@ -271,12 +271,16 @@ def test_page_break_validates():
 
 
 def _para_with_index(text: str, start: int, end: int, style: str = "NORMAL_TEXT") -> dict:
+    # A real Docs paragraph element carries its terminating newline in the
+    # last textRun content, and the element endIndex points PAST it. Model
+    # that faithfully (``text + "\n"``) so ``end - start == len(text) + 1``;
+    # a stub without the ``\n`` cannot exercise the F4 terminator trim.
     return {
         "startIndex": start,
         "endIndex": end,
         "paragraph": {
             "paragraphStyle": {"namedStyleType": style},
-            "elements": [{"textRun": {"content": text}}],
+            "elements": [{"textRun": {"content": text + "\n"}}],
         },
     }
 
@@ -297,8 +301,11 @@ def _read_stubs(tabs: list[dict]):
 
 
 def test_read_tab_content_include_indices_adds_server_span():
-    """With include_indices, each paragraph carries the element's server
-    start_index/end_index (the span create_named_range consumes)."""
+    """With include_indices, each paragraph carries the span
+    create_named_range consumes: the CONTENT span, terminating newline
+    excluded. The element endIndex is 12 (past the ``\\n``); end_index is
+    11 so ``[1, 11)`` covers exactly "REPLACE_ME". On main (raw endIndex)
+    this would be 12 and the fill would swallow the paragraph break."""
     tab = _tab("t.2", "Two", [_para_with_index("REPLACE_ME", 1, 12)])
     client = _read_stubs([tab])
     with with_google_api_client(client):
@@ -308,18 +315,21 @@ def test_read_tab_content_include_indices_adds_server_span():
     para = result["paragraphs"][0]
     assert para["text"] == "REPLACE_ME"
     assert para["start_index"] == 1
-    assert para["end_index"] == 12
+    assert para["end_index"] == 11
+    # The span covers exactly the visible text (no terminator).
+    assert para["end_index"] - para["start_index"] == len("REPLACE_ME")
 
 
 def test_read_all_tabs_include_indices_adds_server_span():
-    """The SAME server span appears via the bulk read path too."""
+    """The SAME content span (terminator excluded) appears via the bulk
+    read path too."""
     tab = _tab("t.2", "Two", [_para_with_index("REPLACE_ME", 1, 12)])
     client = _read_stubs([tab])
     with with_google_api_client(client):
         result = read_all_tabs(MagicMock(), "DOC1", include_indices=True)
     para = result["tabs"][0]["paragraphs"][0]
     assert para["start_index"] == 1
-    assert para["end_index"] == 12
+    assert para["end_index"] == 11
 
 
 def test_include_indices_default_off_omits_span_both_paths():
@@ -336,3 +346,157 @@ def test_include_indices_default_off_omits_span_both_paths():
     with with_google_api_client(client):
         bulk = read_all_tabs(MagicMock(), "DOC1")
     assert set(bulk["tabs"][0]["paragraphs"][0]) == {"style", "text"}
+
+
+# ---------------------------------------------------------------------
+# F4 regression: template fill must not swallow paragraph breaks
+#
+# The read hands out a paragraph's CONTENT span (terminator excluded), so
+# a named range built straight from it and filled by
+# replaceNamedRangeContent swaps only the text and leaves the paragraph
+# break intact. Each test threads the REAL read span through the REAL
+# create_named_range, then applies Docs' documented replace semantics
+# (delete [start, end), insert text at start) to a faithfully 1-indexed
+# model of the document, and asserts neighbouring paragraphs stay
+# separate. On main the read returns the raw element endIndex (past the
+# newline), so the same simulation deletes the terminator and the
+# paragraphs merge -> every assertion below fails. That is the revert
+# check the dogfood F4 finding demands.
+# ---------------------------------------------------------------------
+
+
+def _doc_and_flat(paras: list[tuple[str, str]]) -> tuple[dict, str]:
+    """Build a realistic single-tab doc + its 1-indexed flat text.
+
+    ``paras`` is a list of ``(text, style)``. Docs numbers body content
+    from index 1; every paragraph ends with a newline terminator that
+    lives in its final textRun content and is counted by the element's
+    ``[startIndex, endIndex)``. Returns ``(tab, flat)`` where Docs index
+    ``k`` maps to ``flat[k - 1]``.
+    """
+    content: list[dict] = []
+    idx = 1
+    for text, style in paras:
+        body = text + "\n"
+        content.append(
+            {
+                "startIndex": idx,
+                "endIndex": idx + len(body),
+                "paragraph": {
+                    "paragraphStyle": {"namedStyleType": style},
+                    "elements": [{"textRun": {"content": body}}],
+                },
+            }
+        )
+        idx += len(body)
+    flat = "".join(text + "\n" for text, _ in paras)
+    return _tab("t.1", "One", content), flat
+
+
+def _fill_via_real_span(
+    tab: dict, flat: str, para_index: int, fill: str
+) -> list[str]:
+    """Read the doc, mark paragraph ``para_index`` straight through, then
+    apply Docs' replaceNamedRangeContent to ``flat``; return the resulting
+    paragraph texts. Every index flows from the real read + create path."""
+    read_client = _read_stubs([tab])
+    with with_google_api_client(read_client):
+        read = read_tab_content(
+            MagicMock(), "DOC1", tab_id="t.1", include_indices=True
+        )
+    field = read["paragraphs"][para_index]
+
+    docs, cr_client = _docs_stub(
+        {"replies": [{"createNamedRange": {"namedRangeId": "nr.1"}}]}
+    )
+    with with_google_api_client(cr_client):
+        create_named_range(
+            MagicMock(), "DOC1", "field",
+            field["start_index"], field["end_index"],
+        )
+    rng = _last_requests(docs)[0]["createNamedRange"]["range"]
+    start, end = rng["startIndex"], rng["endIndex"]
+
+    # Docs replaceNamedRangeContent = delete [start, end), insert at start.
+    new_flat = flat[: start - 1] + fill + flat[end - 1:]
+    return new_flat.split("\n")[:-1]  # drop the artefact after the final \n
+
+
+def test_fill_middle_paragraph_keeps_neighbours_separate():
+    """THE dogfood F4 repro: mark the middle field's read span straight
+    through, fill with a plain string -> the value replaces that field and
+    the following paragraph stays SEPARATE (no merge, no lost break)."""
+    tab, flat = _doc_and_flat(
+        [
+            ("Client", "HEADING_2"),
+            ("[client]", "NORMAL_TEXT"),
+            ("Effective Date", "HEADING_2"),
+        ]
+    )
+    paras = _fill_via_real_span(tab, flat, 1, "Acme Corporation")
+    assert paras == ["Client", "Acme Corporation", "Effective Date"]
+    # The exact corruption the dogfood observed must not reappear.
+    assert "Acme CorporationEffective Date" not in paras
+
+
+def test_fill_first_paragraph_keeps_next_separate():
+    """Edge position: filling the FIRST paragraph must not merge it into
+    the second."""
+    tab, flat = _doc_and_flat(
+        [("[title]", "NORMAL_TEXT"), ("Body text", "NORMAL_TEXT")]
+    )
+    paras = _fill_via_real_span(tab, flat, 0, "Quarterly Report")
+    assert paras == ["Quarterly Report", "Body text"]
+
+
+def test_fill_last_paragraph_preserves_final_terminator():
+    """Edge position: filling the LAST paragraph must keep the document's
+    final newline, so the field stays its own paragraph."""
+    tab, flat = _doc_and_flat(
+        [("Intro", "NORMAL_TEXT"), ("[signoff]", "NORMAL_TEXT")]
+    )
+    paras = _fill_via_real_span(tab, flat, 1, "Best regards")
+    assert paras == ["Intro", "Best regards"]
+
+
+def test_trailing_newline_fill_passes_text_verbatim_no_double_break():
+    """A caller who supplies text already ending in a newline gets it
+    passed through verbatim. The read-side fix never appends a newline
+    (unlike a write-side self-heal), so 'value\\n' cannot become a double
+    break: the request text is exactly what the caller sent."""
+    docs, client = _docs_stub()
+    with with_google_api_client(client):
+        replace_named_range_content(
+            MagicMock(), "DOC1", "value\n", named_range_name="field"
+        )
+    req = _last_requests(docs)[0]["replaceNamedRangeContent"]
+    assert req["text"] == "value\n"  # verbatim, not "value\n\n"
+
+
+def test_empty_heading_content_span_collapses_not_includes_terminator():
+    """Defensive: an empty heading has no content, so its content span
+    collapses to start==end rather than including the terminator. The
+    trim arithmetic must not crash or go negative."""
+    tab = _tab(
+        "t.1",
+        "One",
+        [
+            {
+                "startIndex": 5,
+                "endIndex": 6,  # just the '\n'
+                "paragraph": {
+                    "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                    "elements": [{"textRun": {"content": "\n"}}],
+                },
+            }
+        ],
+    )
+    client = _read_stubs([tab])
+    with with_google_api_client(client):
+        result = read_tab_content(
+            MagicMock(), "DOC1", tab_id="t.1", include_indices=True
+        )
+    para = result["paragraphs"][0]
+    assert para["text"] == ""
+    assert para["start_index"] == 5
+    assert para["end_index"] == 5
