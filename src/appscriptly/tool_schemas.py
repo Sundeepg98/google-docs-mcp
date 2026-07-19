@@ -402,11 +402,21 @@ GDOCS_PREVIEW_TAB_SPLIT_OUTPUT_SCHEMA = _object(
 # ---------------------------------------------------------------------
 
 
+# gdrive_move_to_folder accepts a single file_id (str) OR a list of ids
+# (batch). The single form returns the flat move result ({file_id, name,
+# mimeType, parents}, or a {file_id, reason, message} soft-failure); the
+# list form returns the shared batch envelope ({results, summary}) via
+# _run_batch, exactly like gdrive_trash_file. Only the UNION is pinned:
+# file_id is present on the single form but absent from the batch
+# envelope, so nothing is required across both shapes (same permissive
+# posture as GDOCS_TRASH_FILE_OUTPUT_SCHEMA).
 GDOCS_MOVE_TO_FOLDER_OUTPUT_SCHEMA = _object(
     properties={
         "file_id": {"type": "string"},
+        "results": {"type": "array"},
+        "summary": {"type": "object"},
     },
-    required=["file_id"],
+    required=[],
 )
 
 
@@ -445,14 +455,23 @@ GDRIVE_RENAME_FILE_OUTPUT_SCHEMA = _object(
 
 
 # v2.3.0 — Drive sharing (services/drive/sharing.py)
+# gdrive_share_file accepts a single email (str) OR a list of emails
+# (batch, EMAILS-PER-FILE: one fixed file shared with N recipients). The
+# single form returns the flat grant result ({permission_id, role,
+# granted_to, file_id}); the list form returns the shared batch envelope
+# ({results, summary}) via _run_batch, mirroring gdrive_trash_file. Only
+# the UNION is pinned: permission_id is on the single form but absent
+# from the batch envelope, so nothing is required across both shapes.
 GDOCS_SHARE_FILE_OUTPUT_SCHEMA = _object(
     properties={
         "permission_id": {"type": "string"},
         "role": {"type": "string"},
         "granted_to": {"type": "string"},
         "file_id": {"type": "string"},
+        "results": {"type": "array"},
+        "summary": {"type": "object"},
     },
-    required=["permission_id", "role", "file_id"],
+    required=[],
 )
 
 

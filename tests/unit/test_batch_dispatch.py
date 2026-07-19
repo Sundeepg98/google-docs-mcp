@@ -72,3 +72,45 @@ def test_batch_empty_list(mock_creds_loader):
     result = _run_batch([], lambda c, x: {}, "trashed")
     assert result["results"] == []
     assert result["summary"] == {"succeeded": 0, "skipped": 0, "failed": 0}
+
+
+# ---------------------------------------------------------------------
+# Wave-5 S4 generalization: success_key=None (move/share have no boolean
+# success flag) and item_key (share batches over emails, not file ids).
+# ---------------------------------------------------------------------
+
+
+def test_batch_success_key_none_counts_non_reason_result_as_succeeded(
+    mock_creds_loader,
+):
+    """The move/share path passes success_key=None: any result that
+    carries no ``reason`` (and did not raise) is a success; a ``reason``
+    result is a skip. Move/share return no boolean success flag, so
+    absence of a reason IS the success signal."""
+    from appscriptly.services.drive.tools import _run_batch
+
+    def fake_fn(_creds, item):
+        if item == "SOFT":
+            return {"file_id": item, "reason": "not_found"}
+        # A success dict with NO boolean success flag (like move/share).
+        return {"file_id": item, "name": "n", "parents": ["D"]}
+
+    result = _run_batch(["OK", "SOFT"], fake_fn)  # success_key defaults None
+    assert result["summary"] == {"succeeded": 1, "skipped": 1, "failed": 0}
+
+
+def test_batch_item_key_labels_the_error_result(mock_creds_loader):
+    """``item_key`` names the item in the per-item error dict. Share
+    batches over emails, so it passes item_key='email' and a failed
+    recipient is labeled honestly (not as a file_id)."""
+    from appscriptly.services.drive.tools import _run_batch
+
+    def boom(_creds, _item):
+        raise RuntimeError("nope")
+
+    result = _run_batch(["a@e.com"], boom, item_key="email")
+    item = result["results"][0]
+    assert item["email"] == "a@e.com"
+    assert "file_id" not in item
+    assert item["reason"] == "unexpected_error"
+    assert result["summary"] == {"succeeded": 0, "skipped": 0, "failed": 1}
