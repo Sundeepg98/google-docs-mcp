@@ -1023,6 +1023,54 @@ GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA = _object(
 )
 
 
+# Wave 4 (S1) element-management verbs. ``gslides_delete_object`` removes
+# a page element or slide by objectId; echoes the objectId that was
+# deleted.
+GSLIDES_DELETE_OBJECT_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "deleted_object_id": {"type": "string"},
+    },
+    required=["presentation_id", "deleted_object_id"],
+)
+
+
+# ``gslides_duplicate_object`` copies a page element or slide; returns the
+# duplicate's objectId plus the ``{source: new}`` id map Slides returned.
+GSLIDES_DUPLICATE_OBJECT_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "source_object_id": {"type": "string"},
+        "new_object_id": {"type": "string"},
+        "id_map": {"type": "object"},
+    },
+    required=[
+        "presentation_id",
+        "source_object_id",
+        "new_object_id",
+        "id_map",
+    ],
+)
+
+
+# ``gslides_update_element_transform`` sets or composes a page element's
+# affine transform; echoes the resolved applyMode + the exact matrix sent.
+GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA = _object(
+    properties={
+        "presentation_id": {"type": "string"},
+        "object_id": {"type": "string"},
+        "apply_mode": {"type": "string"},
+        "transform": {"type": "object"},
+    },
+    required=[
+        "presentation_id",
+        "object_id",
+        "apply_mode",
+        "transform",
+    ],
+)
+
+
 # ---------------------------------------------------------------------
 # Forms (services/forms/) — new service (sensitive scopes, no CASA)
 # ---------------------------------------------------------------------
@@ -2546,6 +2594,12 @@ TOOL_OUTPUT_SCHEMAS: dict[str, dict] = {
     "gslides_create_line": GSLIDES_CREATE_LINE_OUTPUT_SCHEMA,
     # Speaker-notes write path (rides the deployed presentations scope)
     "gslides_set_speaker_notes": GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
+    # Wave 4 (S1) element-management verbs (delete / duplicate / transform)
+    "gslides_delete_object": GSLIDES_DELETE_OBJECT_OUTPUT_SCHEMA,
+    "gslides_duplicate_object": GSLIDES_DUPLICATE_OBJECT_OUTPUT_SCHEMA,
+    "gslides_update_element_transform": (
+        GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA
+    ),
     # Forms (new service, sensitive scopes forms.body +
     # forms.responses.readonly — NOT restricted, no CASA)
     "gforms_create_form": GFORMS_CREATE_FORM_OUTPUT_SCHEMA,

@@ -375,8 +375,12 @@ _DISCOVERY_DENYLIST = frozenset({"api", "scopes"})
 # service; read-only projection of the internal recipe registry); then
 # 141 -> 143 with the Wave 4 (S2) Sheets VALUES batch tools
 # (gsheets_batch_read + gsheets_batch_write - values.batchGet /
-# values.batchUpdate, deployed spreadsheets scope, no new scope).
-_MIN_EXPECTED_TOOL_COUNT = 143
+# values.batchUpdate, deployed spreadsheets scope, no new scope); then
+# 143 -> 146 with the Wave 4 (S1) Slides element-management verbs
+# (gslides_delete_object + gslides_duplicate_object +
+# gslides_update_element_transform - canonical-only, slides service;
+# all ride the deployed presentations scope, no new OAuth scope).
+_MIN_EXPECTED_TOOL_COUNT = 146
 
 _discovery_failures: list[tuple[str, str]] = []
 

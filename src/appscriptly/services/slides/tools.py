@@ -4,7 +4,7 @@ Mirrors the layout established by ``services/sheets/tools.py`` (v2.3.1,
 PR #119): ``@workspace_tool``-decorated functions registered with the
 live ``mcp`` instance via ``server.py``'s side-effect import.
 
-**Tools registered here** (9 slides-service tools):
+**Tools registered here** (12 slides-service tools):
 
 1. ``gslides_get_outline``         — read structure + per-slide text/elements/notes
 2. ``gslides_replace_all_text``    — find/replace across all slides
@@ -15,6 +15,9 @@ live ``mcp`` instance via ``server.py``'s side-effect import.
 7. ``gslides_create_shape``        — insert a shape (rect/ellipse/…) on a slide
 8. ``gslides_create_line``         — draw a line (start→end) on a slide
 9. ``gslides_set_speaker_notes``   — set (replace) a slide's speaker notes
+10. ``gslides_delete_object``      (delete a page element or a whole slide)
+11. ``gslides_duplicate_object``   (duplicate an element or slide; returns the new id)
+12. ``gslides_update_element_transform`` (move / resize an element via its EMU transform)
 
 The first three were the minimal trio; ``gslides_add_slide`` closed
 the slide-population gap; ``gslides_create_image`` /
@@ -27,9 +30,7 @@ end-to-end — including diagrams: ``create_presentation`` →
 
 **Still deferred to a follow-up PR**: the rest of the Slides
 ``batchUpdate`` tagged-union (updateTextStyle, updateShapeProperties,
-element transform/delete, speaker notes, etc.). The six write tools
-here are
-``createSlide``/``insertText``/``createImage``/``createTable``/``createShape``/``createLine``
+updateTableCellProperties, etc.). The write tools here are targeted
 carve-outs from that surface; the broader tagged-union abstraction
 can be designed when more request types have real consumers.
 
@@ -51,9 +52,12 @@ from appscriptly.services.slides.api import (
     create_presentation as _create_presentation,
     create_shape as _create_shape,
     create_table as _create_table,
+    delete_object as _delete_object,
+    duplicate_object as _duplicate_object,
     get_outline as _get_outline,
     replace_all_text as _replace_all_text,
     set_speaker_notes as _set_speaker_notes,
+    update_element_transform as _update_element_transform,
 )
 from appscriptly.tool_schemas import (
     GSLIDES_ADD_SLIDE_OUTPUT_SCHEMA,
@@ -62,9 +66,12 @@ from appscriptly.tool_schemas import (
     GSLIDES_CREATE_PRESENTATION_OUTPUT_SCHEMA,
     GSLIDES_CREATE_SHAPE_OUTPUT_SCHEMA,
     GSLIDES_CREATE_TABLE_OUTPUT_SCHEMA,
+    GSLIDES_DELETE_OBJECT_OUTPUT_SCHEMA,
+    GSLIDES_DUPLICATE_OBJECT_OUTPUT_SCHEMA,
     GSLIDES_GET_OUTLINE_OUTPUT_SCHEMA,
     GSLIDES_REPLACE_ALL_TEXT_OUTPUT_SCHEMA,
     GSLIDES_SET_SPEAKER_NOTES_OUTPUT_SCHEMA,
+    GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA,
 )
 
 # Imported for parity with services/sheets/tools.py; not currently
@@ -691,4 +698,214 @@ def gslides_set_speaker_notes(
         presentation_id=presentation_id,
         slide_object_id=slide_object_id,
         notes_text=notes_text,
+    )
+
+
+# ---------------------------------------------------------------------
+# 10. gslides_delete_object - batchUpdate (deleteObject)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Delete a page element or slide by its objectId",
+    # Removes an element (or a whole slide) and its content, so this is
+    # destructive. Matches gsheets_delete_sheet's posture.
+    readonly=False,
+    destructive=True,
+    # Deleting an already-deleted objectId 400s rather than double
+    # deleting, so semantically idempotent (same convention as
+    # gsheets_delete_sheet). The api layer dispatches single-shot.
+    idempotent=True,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_DELETE_OBJECT_OUTPUT_SCHEMA,
+)
+def gslides_delete_object(
+    creds,
+    presentation_id: str,
+    object_id: str,
+) -> dict:
+    """Delete a page element, or an entire slide, by its objectId.
+
+    USE WHEN: removing a shape / image / table / line you (or a prior
+    step) placed on a slide, or deleting a whole slide from a deck. The
+    ``object_id`` is any objectId from ``gslides_get_outline``: a
+    slide's ``object_id`` deletes that slide (and everything on it), or
+    an entry from a slide's ``elements[].object_id`` deletes just that
+    element.
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``deleteObject`` request. The deletion is permanent (there is no
+    undo through the API); re-create the content if you need it back.
+
+    Args:
+        presentation_id: The presentation to delete from.
+        object_id: The objectId of the element or slide to remove
+            (from ``gslides_get_outline``).
+
+    Returns:
+        ``{presentation_id, deleted_object_id}``. ``deleted_object_id``
+        echoes the objectId that was removed, so the caller can confirm
+        which object it acted on.
+
+    Choreography: ``gslides_get_outline`` (to pick the objectId) then
+    ``gslides_delete_object``. Verify with another
+    ``gslides_get_outline`` (the object is absent from the deck).
+    """
+    return _delete_object(
+        creds,
+        presentation_id=presentation_id,
+        object_id=object_id,
+    )
+
+
+# ---------------------------------------------------------------------
+# 11. gslides_duplicate_object - batchUpdate (duplicateObject)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Duplicate a page element or slide",
+    # Adds a copy alongside the original; existing content untouched, and
+    # the copy can be deleted later. Not destructive. Matches the
+    # create_* posture.
+    readonly=False,
+    destructive=False,
+    # Re-running adds ANOTHER copy - NOT idempotent. Same convention as
+    # gslides_create_shape / gslides_add_slide.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_DUPLICATE_OBJECT_OUTPUT_SCHEMA,
+)
+def gslides_duplicate_object(
+    creds,
+    presentation_id: str,
+    object_id: str,
+) -> dict:
+    """Duplicate a page element (or slide), returning the new objectId.
+
+    USE WHEN: cloning an element you have already styled or positioned
+    (a shape, image, table, line) so you can reuse it, or duplicating a
+    whole slide as a template for the next one. Pairs with
+    ``gslides_update_element_transform`` to reposition the copy after
+    duplicating.
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``duplicateObject`` request. Slides copies the object (and, for a
+    table / group / slide, its child objects) with fresh objectIds and
+    returns the new top-level objectId.
+
+    Args:
+        presentation_id: The presentation to duplicate within.
+        object_id: The objectId of the element or slide to duplicate
+            (from ``gslides_get_outline``).
+
+    Returns:
+        ``{presentation_id, source_object_id, new_object_id, id_map}``.
+        ``new_object_id`` is the duplicate's stable objectId (a valid
+        target for a later ``gslides_update_element_transform`` /
+        ``gslides_delete_object``); ``id_map`` is the
+        ``{source_object_id: new_object_id}`` mapping Slides returned.
+
+    Choreography: ``gslides_get_outline`` (pick the source objectId) then
+    ``gslides_duplicate_object``, then usually
+    ``gslides_update_element_transform`` to move the copy off the
+    original. Verify with ``gslides_get_outline``.
+    """
+    return _duplicate_object(
+        creds,
+        presentation_id=presentation_id,
+        object_id=object_id,
+    )
+
+
+# ---------------------------------------------------------------------
+# 12. gslides_update_element_transform - batchUpdate
+#     (updatePageElementTransform)
+# ---------------------------------------------------------------------
+
+
+@workspace_tool(
+    service="slides",
+    title="Move or resize a page element via its affine transform",
+    # Repositions / rescales an element in place; existing content and
+    # other elements untouched, and the move is reversible. Not
+    # destructive. Matches gslides_replace_all_text's posture.
+    readonly=False,
+    destructive=False,
+    # The default RELATIVE apply COMPOSES onto the current transform, so
+    # re-running keeps moving the element - NOT idempotent.
+    idempotent=False,
+    external=True,
+    creds=True,
+    output_schema=GSLIDES_UPDATE_ELEMENT_TRANSFORM_OUTPUT_SCHEMA,
+)
+def gslides_update_element_transform(
+    creds,
+    presentation_id: str,
+    object_id: str,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    translate_x_emu: float = 0.0,
+    translate_y_emu: float = 0.0,
+    apply_mode: str = "RELATIVE",
+) -> dict:
+    """Move or resize a page element by setting its affine transform.
+
+    USE WHEN: repositioning or rescaling a shape / image / table / line
+    already on a slide, or nudging a freshly duplicated copy off its
+    original. Pairs with ``gslides_duplicate_object`` (duplicate, then
+    move the copy) and ``gslides_create_*`` (place, then fine-tune).
+
+    Uses Slides' ``presentations.batchUpdate`` with a single
+    ``updatePageElementTransform`` request. ``apply_mode`` chooses how
+    the given matrix combines with the element's CURRENT transform:
+
+      * ``"RELATIVE"`` (default, the safe one) COMPOSES onto the existing
+        transform. ``scale_x`` / ``scale_y`` of 1 keep the size;
+        ``translate_x_emu`` / ``translate_y_emu`` nudge the element by
+        that many EMU. A bare call with all defaults is a no-op, so an
+        under-specified call cannot collapse or teleport the element.
+      * ``"ABSOLUTE"`` REPLACES the transform outright: the element moves
+        to exactly (``translate_x_emu``, ``translate_y_emu``) at scale
+        (``scale_x``, ``scale_y``) regardless of where it was. Set
+        ``scale_x`` / ``scale_y`` explicitly (the 1.0 defaults mean unit
+        scale) or the element resets to unit size.
+
+    Units: translate is EMU (914400 EMU per inch, the same unit the
+    ``gslides_create_*`` tools use internally); scale is a dimensionless
+    multiplier (2.0 doubles the size, -1.0 mirrors).
+
+    Args:
+        presentation_id: The presentation the element lives in.
+        object_id: The element's objectId (from ``gslides_get_outline``'s
+            ``elements[].object_id``).
+        scale_x: X-axis scale multiplier (default 1.0). Non-zero.
+        scale_y: Y-axis scale multiplier (default 1.0). Non-zero.
+        translate_x_emu: X translation in EMU (default 0).
+        translate_y_emu: Y translation in EMU (default 0).
+        apply_mode: ``"RELATIVE"`` (default) or ``"ABSOLUTE"``.
+
+    Returns:
+        ``{presentation_id, object_id, apply_mode, transform}``.
+        ``transform`` echoes the exact matrix sent
+        (``{scaleX, scaleY, translateX, translateY, unit}``), and
+        ``object_id`` names the element that was moved.
+
+    Choreography: ``gslides_get_outline`` (pick the element objectId)
+    then ``gslides_update_element_transform``. Verify by re-reading with
+    ``gslides_get_outline``.
+    """
+    return _update_element_transform(
+        creds,
+        presentation_id=presentation_id,
+        object_id=object_id,
+        scale_x=scale_x,
+        scale_y=scale_y,
+        translate_x_emu=translate_x_emu,
+        translate_y_emu=translate_y_emu,
+        apply_mode=apply_mode,
     )

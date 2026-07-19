@@ -1023,6 +1023,242 @@ def create_line(
     }
 
 
+# Accepted ``updatePageElementTransform`` apply modes. RELATIVE composes
+# the given matrix onto the element's existing transform; ABSOLUTE
+# replaces it outright. (Slides' APPLY_MODE_UNSPECIFIED is deliberately
+# not exposed.)
+_APPLY_MODES = frozenset({"RELATIVE", "ABSOLUTE"})
+
+
+def delete_object(
+    creds: Credentials,
+    presentation_id: str,
+    object_id: str,
+) -> dict:
+    """Delete a page element (or an entire slide) by its objectId.
+
+    Uses ``presentations.batchUpdate`` with a single ``deleteObject``
+    request. The ``object_id`` may be a page element's objectId (a
+    shape / image / table / line taken from ``gslides_get_outline``'s
+    per-slide ``elements``) OR a slide's ``object_id``. Slides'
+    ``deleteObject`` removes either: deleting a slide removes the slide
+    and everything on it; deleting an element removes just that element.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline, no extra grant).
+        presentation_id: The Slides file ID.
+        object_id: The objectId of the page element or slide to delete
+            (from ``get_outline``: a slide's ``object_id``, or an entry
+            in a slide's ``elements[].object_id``).
+
+    Returns:
+        ``{presentation_id, deleted_object_id}``. ``deleted_object_id``
+        echoes the objectId that was removed.
+
+    Raises:
+        ValueError: empty ``object_id``.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated. A
+            bogus or already-deleted objectId surfaces Slides' 400.
+    """
+    if not object_id or not object_id.strip():
+        raise ValueError("object_id cannot be empty.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    requests = [{"deleteObject": {"objectId": object_id}}]
+    # Single-shot (idempotent=False): deleting an already-deleted objectId
+    # 400s, so retrying after a lost success would surface a spurious error
+    # instead of a clean no-op. Same non-retried posture the sheets
+    # delete_sheet uses for its destructive floor.
+    execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.deleteObject",
+    )
+    return {
+        "presentation_id": presentation_id,
+        "deleted_object_id": object_id,
+    }
+
+
+def duplicate_object(
+    creds: Credentials,
+    presentation_id: str,
+    object_id: str,
+) -> dict:
+    """Duplicate a page element (or slide), surfacing the new-id mapping.
+
+    Uses ``presentations.batchUpdate`` with a single ``duplicateObject``
+    request. Slides copies the object (and, for a table / group / slide,
+    all of its child objects) and assigns fresh objectIds. The reply
+    carries the new top-level objectId; this wrapper surfaces it as
+    ``new_object_id`` (the headline copy, a valid target for a later
+    transform / delete) plus an ``id_map`` of the ``{source: new}``
+    mapping Slides returned.
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline, no extra grant).
+        presentation_id: The Slides file ID.
+        object_id: The objectId of the page element or slide to
+            duplicate (from ``get_outline``).
+
+    Returns:
+        ``{presentation_id, source_object_id, new_object_id, id_map}``.
+        ``new_object_id`` is the duplicate's stable objectId; ``id_map``
+        is ``{source_object_id: new_object_id}`` (one entry, the
+        top-level object). Slides does not enumerate copied child ids in
+        the reply, so ``id_map`` mirrors exactly what it returned.
+
+    Raises:
+        ValueError: empty ``object_id``.
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated. A
+            bogus ``object_id`` surfaces Slides' 400.
+    """
+    if not object_id or not object_id.strip():
+        raise ValueError("object_id cannot be empty.")
+
+    slides = get_service("slides", "v1", credentials=creds)
+    requests = [{"duplicateObject": {"objectId": object_id}}]
+    # NOT idempotent: each call adds ANOTHER copy. Same single-shot
+    # convention as the create_* ops.
+    resp = execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.duplicateObject",
+    )
+    new_object_id = ""
+    for reply in resp.get("replies", []) or []:
+        do = reply.get("duplicateObject")
+        if do and do.get("objectId"):
+            new_object_id = do["objectId"]
+            break
+    return {
+        "presentation_id": presentation_id,
+        "source_object_id": object_id,
+        "new_object_id": new_object_id,
+        "id_map": {object_id: new_object_id} if new_object_id else {},
+    }
+
+
+def update_element_transform(
+    creds: Credentials,
+    presentation_id: str,
+    object_id: str,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    translate_x_emu: float = 0.0,
+    translate_y_emu: float = 0.0,
+    apply_mode: str = "RELATIVE",
+) -> dict:
+    """Reposition / resize a page element via its affine transform.
+
+    Uses ``presentations.batchUpdate`` with a single
+    ``updatePageElementTransform`` request. Slides positions every page
+    element with an affine matrix (scale + translate); this sets or
+    composes that matrix.
+
+    ``apply_mode`` (default ``"RELATIVE"``) chooses how the given matrix
+    combines with the element's CURRENT transform:
+
+      * ``"RELATIVE"`` (the safe default) COMPOSES the given matrix onto
+        the existing one. ``scale_x`` / ``scale_y`` of 1 leave the
+        element's size unchanged; ``translate_x_emu`` / ``translate_y_emu``
+        NUDGE it by that many EMU. A bare call (all defaults) is a no-op,
+        so an under-specified call can never collapse or teleport the
+        element.
+      * ``"ABSOLUTE"`` REPLACES the element's transform outright with the
+        given matrix: the element is placed at exactly
+        (``translate_x_emu``, ``translate_y_emu``) with scale
+        (``scale_x``, ``scale_y``), regardless of where it was. Pass
+        ``scale_x`` / ``scale_y`` explicitly (the 1.0 defaults mean unit
+        scale) or the element resets to unit size.
+
+    Units: translate is in EMU (914400 EMU per inch, the same unit the
+    ``create_*`` tools convert their inch arguments into); scale is a
+    dimensionless multiplier (2.0 doubles the size, -1.0 mirrors).
+
+    Args:
+        creds: OAuth credentials carrying the ``presentations`` scope
+            (baseline, no extra grant).
+        presentation_id: The Slides file ID.
+        object_id: The page element's objectId (from
+            ``get_outline``'s ``elements[].object_id``).
+        scale_x: X-axis scale multiplier (default 1.0). Must be non-zero.
+        scale_y: Y-axis scale multiplier (default 1.0). Must be non-zero.
+        translate_x_emu: X translation in EMU (default 0).
+        translate_y_emu: Y translation in EMU (default 0).
+        apply_mode: ``"RELATIVE"`` (default) or ``"ABSOLUTE"`` (see
+            above). Other values rejected client-side.
+
+    Returns:
+        ``{presentation_id, object_id, apply_mode, transform}``.
+        ``transform`` echoes the exact matrix sent to Slides
+        (``{scaleX, scaleY, translateX, translateY, unit}``).
+
+    Raises:
+        ValueError: empty ``object_id``, unsupported ``apply_mode``, or a
+            zero ``scale_x`` / ``scale_y`` (a zero scale collapses the
+            element to nothing).
+        HttpError: from the underlying SDK on 4xx / 5xx, propagated. A
+            bogus ``object_id`` surfaces Slides' 400.
+    """
+    if not object_id or not object_id.strip():
+        raise ValueError("object_id cannot be empty.")
+    if apply_mode not in _APPLY_MODES:
+        raise ValueError(
+            f"apply_mode must be one of {sorted(_APPLY_MODES)} (got "
+            f"{apply_mode!r})."
+        )
+    if scale_x == 0 or scale_y == 0:
+        raise ValueError(
+            "scale_x and scale_y must be non-zero (a zero scale collapses "
+            "the element to nothing)."
+        )
+
+    slides = get_service("slides", "v1", credentials=creds)
+    transform = {
+        "scaleX": scale_x,
+        "scaleY": scale_y,
+        "translateX": translate_x_emu,
+        "translateY": translate_y_emu,
+        "unit": "EMU",
+    }
+    requests = [
+        {
+            "updatePageElementTransform": {
+                "objectId": object_id,
+                "transform": transform,
+                "applyMode": apply_mode,
+            },
+        },
+    ]
+    # Single-shot (idempotent=False): a RELATIVE apply COMPOSES, so a
+    # retry after a lost success would double-apply the matrix. (ABSOLUTE
+    # alone would be retry-safe, but the default is RELATIVE; keep one
+    # posture matching the create_* single-shot convention.)
+    execute_with_retry(
+        lambda: slides.presentations().batchUpdate(
+            presentationId=presentation_id,
+            body={"requests": requests},
+        ).execute(),
+        idempotent=False,
+        op_name="slides.presentations.batchUpdate.updatePageElementTransform",
+    )
+    return {
+        "presentation_id": presentation_id,
+        "object_id": object_id,
+        "apply_mode": apply_mode,
+        "transform": transform,
+    }
+
+
 # ---------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------
