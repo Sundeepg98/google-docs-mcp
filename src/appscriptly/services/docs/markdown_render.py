@@ -132,6 +132,34 @@ def _plain_text_requests(content: str, tab_id: str) -> list[dict]:
 # Markdown renderer — state machine
 # ---------------------------------------------------------------------
 
+# An image src is inserted as a real inline image only if Google can fetch
+# it (public http(s)); anything else (relative path, data: URI) falls back
+# to its alt text so a bad URL can't fail the whole batchUpdate.
+_HTTP_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+# GFM task-list marker at the very start of a bullet item: "[ ] " / "[x] ".
+_TASK_RE = re.compile(r"\[([ xX])\]\s+")
+
+# Block tokens markdown-it emits for a GFM table (rows delimited by tr;
+# cells by th/td). Once table_open is seen the whole group routes to the
+# table state machine until table_close.
+_TABLE_TOKENS = frozenset({
+    "table_open", "table_close", "thead_open", "thead_close",
+    "tbody_open", "tbody_close", "tr_open", "tr_close",
+    "th_open", "th_close", "td_open", "td_close",
+})
+
+
+def _utf16_len(text: str) -> int:
+    """UTF-16 code-unit length of ``text`` — Docs' index unit.
+
+    Above-BMP characters (emoji, math-alphanumerics) are surrogate pairs:
+    1 Python code point but 2 UTF-16 units. Docs addresses positions in
+    UTF-16 code units, so every index advance uses this, not ``len()``
+    (the R6 bug — see module docstring).
+    """
+    return len(text.encode("utf-16-le")) // 2
+
 
 @dataclass
 class _Ctx:
@@ -147,6 +175,12 @@ class _Ctx:
     list_stack: list[str] = field(default_factory=list)
     para_start: int | None = None
     heading_level: int | None = None
+    # Table capture: None normally; a {"rows", "row", "cell"} dict while
+    # walking a GFM table's tokens (emitted as a real Docs table at close).
+    table: dict | None = None
+    # Index into list_items of a just-opened bullet item whose first text
+    # child may carry a "[ ]"/"[x]" task marker; None otherwise.
+    task_pending: int | None = None
 
 
 def _loc(ctx: _Ctx, idx: int) -> dict:
@@ -163,12 +197,10 @@ def _insert(ctx: _Ctx, text: str) -> None:
     ctx.inserts.append(
         {"insertText": {"location": _loc(ctx, ctx.current_index), "text": text}}
     )
-    # R6 (FIXED — see module docstring): Google Docs addresses positions
-    # in UTF-16 code units, not Python code points. Above-BMP characters
-    # (emoji, math-alphanumerics) are surrogate pairs = 1 code point but 2
-    # UTF-16 units, so len(text) would drift every later index. Counting
-    # utf-16-le bytes // 2 gives the exact UTF-16 unit count.
-    ctx.current_index += len(text.encode("utf-16-le")) // 2
+    # R6 (FIXED — see module docstring + _utf16_len): advance by UTF-16
+    # code units, not Python code points, so above-BMP characters don't
+    # drift every later index.
+    ctx.current_index += _utf16_len(text)
 
 
 def _merge_style(stack: list[dict]) -> dict:
@@ -181,11 +213,25 @@ def _merge_style(stack: list[dict]) -> dict:
 def _last_ends_nl(ctx: _Ctx) -> bool:
     if not ctx.inserts:
         return True
-    return ctx.inserts[-1]["insertText"]["text"].endswith("\n")
+    last = ctx.inserts[-1]
+    text_insert = last.get("insertText")
+    if text_insert is not None:
+        return text_insert["text"].endswith("\n")
+    # Non-text inserts: a table's trailing structure sits at a paragraph
+    # boundary (treat as newline); an inline image does NOT end the line.
+    return "insertTable" in last
 
 
 def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token dispatch
     t = tok.type
+    # Table capture: once inside a table, EVERY token (structure + cell
+    # inline) is routed to the table state machine until table_close.
+    if ctx.table is not None:
+        _process_in_table(tok, ctx)
+        return
+    if t == "table_open":
+        ctx.table = {"rows": [], "row": None, "cell": None}
+        return
     if t == "heading_open":
         ctx.heading_level = int(tok.tag[1])
         ctx.para_start = ctx.current_index
@@ -211,10 +257,21 @@ def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token di
         for child in tok.children or []:
             _process(child, ctx)
     elif t == "text":
-        if not tok.content:
+        content = tok.content
+        if ctx.task_pending is not None:
+            # First text of a fresh bullet item: a "[ ] "/"[x] " marker
+            # turns it into a checkbox item (marker stripped). Docs has no
+            # batchUpdate field to pre-CHECK a box, so "[x]" also renders
+            # unchecked — the checkbox itself is the gain over literal text.
+            m = _TASK_RE.match(content)
+            if m:
+                ctx.list_items[ctx.task_pending]["preset"] = "BULLET_CHECKBOX"
+                content = content[m.end():]
+            ctx.task_pending = None
+        if not content:
             return
         s = ctx.current_index
-        _insert(ctx, tok.content)
+        _insert(ctx, content)
         style = _merge_style(ctx.style_stack)
         if style:
             ctx.text_ranges.append((s, ctx.current_index, style))
@@ -249,8 +306,12 @@ def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token di
         # units, so above-BMP body content needs the same unit basis here.
         ctx.text_ranges.append((s, ctx.current_index - 1, {"code": True}))
     elif t == "bullet_list_open":
+        # Entering a (possibly nested) list before any text means the
+        # parent item had no leading marker: clear any pending detection.
+        ctx.task_pending = None
         ctx.list_stack.append("bullet")
     elif t == "ordered_list_open":
+        ctx.task_pending = None
         ctx.list_stack.append("ordered")
     elif t in ("bullet_list_close", "ordered_list_close"):
         if ctx.list_stack:
@@ -273,7 +334,15 @@ def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token di
             }
         )
         ctx.open_items.append(len(ctx.list_items) - 1)
+        # Only bullet items can be GFM tasks; arm marker detection for the
+        # first text child of this item.
+        ctx.task_pending = (
+            len(ctx.list_items) - 1
+            if ctx.list_stack and ctx.list_stack[-1] == "bullet"
+            else None
+        )
     elif t == "list_item_close":
+        ctx.task_pending = None
         idx = ctx.open_items.pop()
         item = ctx.list_items[idx]
         if item["end"] is None:
@@ -288,6 +357,133 @@ def _process(tok: Token, ctx: _Ctx) -> None:  # noqa: C901, PLR0912 — token di
         if ctx.para_start is not None:
             ctx.para_ranges.append((ctx.para_start, ctx.current_index, "_QUOTE"))
         ctx.para_start = None
+    elif t == "hr":
+        # Horizontal rule: an empty paragraph carrying a bottom border
+        # (Docs has no dedicated HR insert). Its border is applied in
+        # _finalize via the "_HR" para range.
+        if not _last_ends_nl(ctx):
+            _insert(ctx, "\n")
+        s = ctx.current_index
+        _insert(ctx, "\n")
+        ctx.para_ranges.append((s, ctx.current_index, "_HR"))
+    elif t == "image":
+        _insert_image(ctx, tok)
+
+
+def _insert_image(ctx: _Ctx, tok: Token) -> None:
+    """Insert a markdown ``![alt](src)`` image.
+
+    A public ``http(s)`` src becomes a real ``insertInlineImage`` (Docs
+    fetches it server-side; it occupies exactly ONE UTF-16 index unit).
+    Any other src (relative path, ``data:`` URI) falls back to the alt
+    text so content is preserved and a non-fetchable URL can't fail the
+    whole batchUpdate.
+    """
+    src = str((tok.attrs or {}).get("src") or "").strip()
+    if _HTTP_RE.match(src):
+        ctx.inserts.append(
+            {"insertInlineImage": {"location": _loc(ctx, ctx.current_index), "uri": src}}
+        )
+        ctx.current_index += 1  # an inline image is one UTF-16 unit
+    else:
+        _insert(ctx, tok.content or "")
+
+
+def _cell_plain_text(tok: Token) -> str:
+    """Plain visible text of a table cell's ``inline`` token.
+
+    Concatenates text / inline-code, softbreaks -> spaces, image -> alt.
+    Emphasis, link, and code markers are flattened to their text: table
+    cells render as PLAIN text (parity with gdocs_insert_markdown_table,
+    whose two-phase fill also inserts only cell strings).
+    """
+    parts: list[str] = []
+    for child in tok.children or []:
+        ct = child.type
+        if ct in ("text", "code_inline"):
+            parts.append(child.content)
+        elif ct == "softbreak":
+            parts.append(" ")
+        elif ct == "image":
+            # An image token's ``content`` is its alt text (str).
+            parts.append(child.content)
+    return "".join(parts).replace("\n", " ").strip()
+
+
+def _process_in_table(tok: Token, ctx: _Ctx) -> None:
+    """Handle one token while capturing a GFM table (ctx.table is set).
+
+    Collects the cell grid; ``table_close`` emits the real Docs table.
+    thead/tbody wrappers are ignored (rows are delimited by ``tr``).
+    """
+    t = tok.type
+    tbl = ctx.table
+    assert tbl is not None
+    if t == "tr_open":
+        tbl["row"] = []
+    elif t == "tr_close":
+        if tbl["row"] is not None:
+            tbl["rows"].append(tbl["row"])
+            tbl["row"] = None
+    elif t in ("th_open", "td_open"):
+        tbl["cell"] = []
+    elif t in ("th_close", "td_close"):
+        if tbl["cell"] is not None and tbl["row"] is not None:
+            tbl["row"].append("".join(tbl["cell"]))
+            tbl["cell"] = None
+    elif t == "inline":
+        if tbl["cell"] is not None:
+            tbl["cell"].append(_cell_plain_text(tok))
+    elif t == "table_close":
+        _emit_table(ctx)
+        ctx.table = None
+
+
+def _emit_table(ctx: _Ctx) -> None:
+    """Emit a real Docs table for the captured grid (insertTable + fills).
+
+    Index math confirmed against Google's documented table layout:
+    ``insertTable`` at location ``L`` inserts a newline before the table,
+    so cell (row r, col c)'s first content index is
+    ``L + 4 + r*(1 + 2*C) + 2*c`` (first cell at L+4, +2 per column,
+    +(1+2C) per row). Cells are filled HIGHEST index first so each insert
+    leaves the lower, not-yet-filled cell indices valid within the single
+    batchUpdate — the same reverse-order trick as insert_markdown_table.
+    Content after the table resumes past the empty-table span plus the
+    inserted cell text (counted in UTF-16 units, so an emoji cell shifts
+    everything downstream by the right amount).
+    """
+    rows: list[list[str]] = ctx.table["rows"] if ctx.table else []
+    r_count = len(rows)
+    c_count = max((len(r) for r in rows), default=0)
+    if r_count == 0 or c_count == 0:
+        return
+    grid = [(row + [""] * c_count)[:c_count] for row in rows]
+    start = ctx.current_index
+    ctx.inserts.append(
+        {
+            "insertTable": {
+                "location": _loc(ctx, start),
+                "rows": r_count,
+                "columns": c_count,
+            }
+        }
+    )
+    fills: list[tuple[int, str]] = []
+    cell_text_units = 0
+    for r in range(r_count):
+        for c in range(c_count):
+            text = grid[r][c].replace("\n", " ")
+            if not text:
+                continue
+            cell_index = start + 4 + r * (1 + 2 * c_count) + 2 * c
+            fills.append((cell_index, text))
+            cell_text_units += _utf16_len(text)
+    for cell_index, text in sorted(fills, key=lambda pair: pair[0], reverse=True):
+        ctx.inserts.append(
+            {"insertText": {"location": _loc(ctx, cell_index), "text": text}}
+        )
+    ctx.current_index = start + 2 + r_count * (1 + 2 * c_count) + cell_text_units
 
 
 def _finalize(ctx: _Ctx) -> None:
@@ -331,6 +527,31 @@ def _finalize(ctx: _Ctx) -> None:
                             "indentStart": {"magnitude": 36, "unit": "PT"}
                         },
                         "fields": "indentStart",
+                    }
+                }
+            )
+        elif style == "_HR":
+            ctx.formats.append(
+                {
+                    "updateParagraphStyle": {
+                        "range": _range(ctx, s, e),
+                        "paragraphStyle": {
+                            "borderBottom": {
+                                "color": {
+                                    "color": {
+                                        "rgbColor": {
+                                            "red": 0.5,
+                                            "green": 0.5,
+                                            "blue": 0.5,
+                                        }
+                                    }
+                                },
+                                "width": {"magnitude": 1, "unit": "PT"},
+                                "padding": {"magnitude": 1, "unit": "PT"},
+                                "dashStyle": "SOLID",
+                            }
+                        },
+                        "fields": "borderBottom",
                     }
                 }
             )
@@ -381,16 +602,21 @@ def render_content_to_requests(
     start of an empty body); styling runs after. Coverage:
     H1–H6, ``**bold**``, ``*italic*``, ``~~strike~~``, ``\\`inline code\\```,
     fenced code blocks, links (including bare URLs via linkify),
-    bulleted/numbered lists (nested), blockquotes, soft/hard breaks.
-    Tables and images are deferred. Use ``starting_index > 1`` when
-    appending to an existing tab body — pass the body's current
-    end index minus 1 to insert before the trailing newline.
+    bulleted/numbered lists (nested), blockquotes, soft/hard breaks,
+    GFM tables (rendered as real Docs tables with plain-text cells),
+    inline images (public ``http(s)`` URLs; other srcs fall back to alt
+    text), horizontal rules, and task lists (rendered as checkbox
+    bullets — an unchecked box for both ``[ ]`` and ``[x]``, as Docs has
+    no batchUpdate field to pre-check one). Use ``starting_index > 1``
+    when appending to an existing tab body — pass the body's current end
+    index minus 1 to insert before the trailing newline.
     """
     if not content or not content.strip():
         return []
     ctx = _Ctx(tab_id=tab_id, current_index=starting_index)
     md = MarkdownIt("commonmark", {"html": False, "linkify": True, "breaks": False})
     md.enable("strikethrough")
+    md.enable("table")
     for tok in md.parse(content):
         _process(tok, ctx)
     _finalize(ctx)

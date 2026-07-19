@@ -402,9 +402,12 @@ def read_tab_content(
     after ``convert_docx_to_tabbed_doc`` to confirm content moved
     correctly.
 
-    Tables are reported as a count + a placeholder line; full table
-    cell extraction is deferred to a later iteration. Inline images
-    show up as ``[image]`` markers within the paragraph text.
+    Tables are reported as a ``[table RxC]`` marker followed by the
+    extracted cell text (rows joined by " || ", cells by " | ");
+    ``table_count`` still counts them. Inline images show up as
+    ``[image]`` markers within the paragraph text (and ``image_count``).
+    Both read paths share one element-summarizer, so ``read_all_tabs``
+    emits the identical per-element markers.
 
     ``suggestions_view_mode`` (optional) controls how tracked-change
     suggestions render: ``PREVIEW_WITHOUT_SUGGESTIONS`` reads the clean
@@ -443,44 +446,7 @@ def read_tab_content(
         )
 
     body_content = tab["documentTab"]["body"]["content"]
-    paragraphs: list[dict] = []
-    table_count = 0
-    image_count = 0
-
-    for elem in body_content:
-        if "paragraph" in elem:
-            para = elem["paragraph"]
-            style = para.get("paragraphStyle", {}).get(
-                "namedStyleType", "NORMAL_TEXT"
-            )
-            chunks: list[str] = []
-            for pe in para.get("elements", []):
-                if "textRun" in pe:
-                    chunks.append(pe["textRun"].get("content", ""))
-                elif "inlineObjectElement" in pe:
-                    chunks.append("[image]")
-                    image_count += 1
-                elif "person" in pe:
-                    chunks.append(
-                        f"[person:{pe['person'].get('personProperties', {}).get('email', '?')}]"
-                    )
-                elif "richLink" in pe:
-                    chunks.append("[link]")
-            text = "".join(chunks).rstrip("\n")
-            if text or style != "NORMAL_TEXT":
-                paragraphs.append({"style": style, "text": text})
-        elif "table" in elem:
-            tbl = elem["table"]
-            rows = tbl.get("rows", 0)
-            cols = tbl.get("columns", 0)
-            table_count += 1
-            paragraphs.append(
-                {"style": "TABLE", "text": f"[table {rows}x{cols}]"}
-            )
-        elif "sectionBreak" in elem:
-            continue
-        elif "tableOfContents" in elem:
-            paragraphs.append({"style": "TOC", "text": "[table of contents]"})
+    paragraphs, table_count, image_count = _summarize_body_content(body_content)
 
     from appscriptly.services.drive.api import is_file_trashed
     return {
@@ -1379,8 +1345,11 @@ def read_all_tabs(
     suggestions render (same values + meaning as ``read_tab_content``);
     omit to use Docs' default for the caller's access.
 
-    Returns ``{"doc_id", "tabs": [{tab_id, title, depth, paragraphs:
-    [{style, text}, ...]}, ...]}`` (tabs in pre-order traversal).
+    Returns ``{"doc_id", "tabs": [{tab_id, title, depth,
+    paragraph_count, table_count, image_count, paragraphs:
+    [{style, text}, ...]}, ...]}`` (tabs in pre-order traversal). Each
+    tab's ``paragraphs`` come from the same element-summarizer
+    ``read_tab_content`` uses, so the per-element markers match.
     """
     _check_suggestions_view_mode(suggestions_view_mode)
     docs = get_service("docs", "v1", credentials=creds)
@@ -1403,13 +1372,19 @@ def read_all_tabs(
         for tab in tabs:
             props = tab["tabProperties"]
             body = tab.get("documentTab", {}).get("body", {})
-            paragraphs = _summarize_body_paragraphs(body.get("content") or [])
+            paragraphs, table_count, image_count = _summarize_body_content(
+                body.get("content") or []
+            )
             out.append(
                 {
                     "tab_id": props["tabId"],
                     "title": props.get("title", ""),
                     "depth": depth,
-                    "paragraph_count": len(paragraphs),
+                    "paragraph_count": sum(
+                        1 for p in paragraphs if p["style"] not in ("TABLE", "TOC")
+                    ),
+                    "table_count": table_count,
+                    "image_count": image_count,
                     "paragraphs": paragraphs,
                 }
             )
@@ -1424,23 +1399,114 @@ def read_all_tabs(
     }
 
 
-def _summarize_body_paragraphs(content: list[dict]) -> list[dict]:
-    """Extract paragraph style + visible text from a body's content list."""
-    out: list[dict] = []
+# Recursion cap for nested tables (Docs permits a table inside a cell).
+# Bounds the cell-text walk; real docs nest at most a couple of levels.
+_MAX_CELL_TABLE_DEPTH = 6
+
+
+def _summarize_body_content(
+    content: list[dict], *, _depth: int = 0
+) -> tuple[list[dict], int, int]:
+    """Summarize a body content list into ``{style, text}`` entries + counts.
+
+    The SINGLE element-summarizer shared by both read paths -
+    ``read_tab_content`` (single tab) and ``read_all_tabs`` (bulk) - so
+    their per-element emission is byte-identical. Returns
+    ``(paragraphs, table_count, image_count)``.
+
+    Element -> emission:
+      textRun             -> its content
+      inlineObjectElement -> "[image]"              (+ image_count)
+      person              -> "[person:<email>]"     (email, or "?")
+      richLink            -> "[link]"
+      table               -> "[table RxC]" + extracted cell text (+ table_count)
+      tableOfContents     -> "[table of contents]"
+      sectionBreak        -> skipped
+
+    Empty ``NORMAL_TEXT`` paragraphs are dropped (blank lines); a
+    styled-but-empty paragraph (e.g. an empty heading) is kept so the
+    structure stays visible.
+    """
+    paragraphs: list[dict] = []
+    table_count = 0
+    image_count = 0
     for elem in content:
         if "paragraph" in elem:
             para = elem["paragraph"]
-            style = para.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
-            text = "".join(
-                pe.get("textRun", {}).get("content", "")
-                for pe in para.get("elements", [])
-            ).rstrip("\n")
-            out.append({"style": style, "text": text})
+            style = para.get("paragraphStyle", {}).get(
+                "namedStyleType", "NORMAL_TEXT"
+            )
+            chunks: list[str] = []
+            for pe in para.get("elements", []):
+                if "textRun" in pe:
+                    chunks.append(pe["textRun"].get("content", ""))
+                elif "inlineObjectElement" in pe:
+                    chunks.append("[image]")
+                    image_count += 1
+                elif "person" in pe:
+                    email = (
+                        pe["person"]
+                        .get("personProperties", {})
+                        .get("email", "?")
+                    )
+                    chunks.append(f"[person:{email}]")
+                elif "richLink" in pe:
+                    chunks.append("[link]")
+            text = "".join(chunks).rstrip("\n")
+            if text or style != "NORMAL_TEXT":
+                paragraphs.append({"style": style, "text": text})
         elif "table" in elem:
-            out.append({"style": "TABLE", "text": ""})
+            tbl = elem["table"]
+            rows = tbl.get("rows", 0)
+            cols = tbl.get("columns", 0)
+            table_count += 1
+            marker = f"[table {rows}x{cols}]"
+            cell_text = _extract_table_cell_text(tbl, _depth=_depth)
+            paragraphs.append(
+                {
+                    "style": "TABLE",
+                    "text": f"{marker} {cell_text}" if cell_text else marker,
+                }
+            )
+        elif "sectionBreak" in elem:
+            continue
         elif "tableOfContents" in elem:
-            out.append({"style": "TOC", "text": ""})
-    return out
+            paragraphs.append({"style": "TOC", "text": "[table of contents]"})
+    return paragraphs, table_count, image_count
+
+
+def _extract_table_cell_text(table: dict, *, _depth: int = 0) -> str:
+    """Extract visible cell text from a Docs ``table`` structural element.
+
+    Walks ``tableRows[].tableCells[].content`` - the same traversal the
+    write path uses in ``_locate_table_cell_starts`` - and summarizes
+    each cell with ``_summarize_body_content`` so nested markers (images,
+    links, nested tables) render consistently. Cells are joined by " | "
+    within a row; non-empty rows by " || ". Returns "" when the table has
+    no cell text, so an empty table stays just its ``[table RxC]`` marker.
+    """
+    if _depth >= _MAX_CELL_TABLE_DEPTH:
+        return ""
+    rows_out: list[str] = []
+    for table_row in table.get("tableRows", []):
+        cells_out: list[str] = []
+        for cell in table_row.get("tableCells", []):
+            cell_paras, _t, _i = _summarize_body_content(
+                cell.get("content", []), _depth=_depth + 1
+            )
+            cells_out.append(" ".join(p["text"] for p in cell_paras if p["text"]))
+        if any(cells_out):
+            rows_out.append(" | ".join(cells_out))
+    return " || ".join(rows_out)
+
+
+def _summarize_body_paragraphs(content: list[dict]) -> list[dict]:
+    """Back-compat wrapper: the paragraph list only.
+
+    Kept so pre-existing importers keep working; the shared logic (and
+    the table_count / image_count) lives in ``_summarize_body_content``.
+    """
+    return _summarize_body_content(content)[0]
 
 
 # ---------------------------------------------------------------------

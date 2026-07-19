@@ -33,6 +33,7 @@ from appscriptly.google_api_client import (
     with_google_api_client,
 )
 from appscriptly.services.docs.api import (
+    _summarize_body_content,
     _summarize_body_paragraphs,
     create_comment,
     insert_image,
@@ -86,16 +87,19 @@ def test_summarize_body_paragraphs_defaults_missing_style_to_NORMAL_TEXT():
     assert summary == [{"style": "NORMAL_TEXT", "text": "naked"}]
 
 
-def test_summarize_body_paragraphs_emits_TABLE_and_TOC_sentinels():
-    """Tables and ToCs surface as style-only entries with empty text."""
+def test_summarize_body_paragraphs_emits_TABLE_and_TOC_markers():
+    """Tables surface as a ``[table RxC]`` marker, ToCs as
+    ``[table of contents]``. (Before the S3 read-fidelity unification the
+    bulk wrapper emitted empty strings for both — this pins the new,
+    consistent-with-single-tab emission.)"""
     content = [
-        {"table": {"rows": []}},
+        {"table": {"rows": 1, "columns": 2}},  # no tableRows -> no cell text
         {"tableOfContents": {}},
     ]
     summary = _summarize_body_paragraphs(content)
     assert summary == [
-        {"style": "TABLE", "text": ""},
-        {"style": "TOC", "text": ""},
+        {"style": "TABLE", "text": "[table 1x2]"},
+        {"style": "TOC", "text": "[table of contents]"},
     ]
 
 
@@ -347,6 +351,110 @@ def test_read_tab_content_requires_an_identifier():
     """Neither tab_id nor tab_title -> ValueError (the up-front guard)."""
     with pytest.raises(ValueError, match="Provide either tab_id or tab_title"):
         _read_tab([], tab_id=None, tab_title=None)
+
+
+# ---------------------------------------------------------------------
+# S3 read-fidelity: ONE element-summarizer feeds BOTH read paths, so
+# their per-element markers are identical, tables carry extracted cell
+# text, and read_all_tabs no longer silently drops images/persons/links
+# (it pulled only textRun content before, emitting empty text for tables).
+# ---------------------------------------------------------------------
+
+
+def _cell(text: str) -> dict:
+    """A table cell whose single paragraph holds ``text``."""
+    return {"content": [_para({"textRun": {"content": text + "\n"}})]}
+
+
+def _rich_tab() -> dict:
+    """A tab exercising every element type: a styled heading, a paragraph
+    mixing inline image + person + rich link, a 2x2 table with real cell
+    text, and a table of contents."""
+    return {
+        "tabProperties": {"tabId": "T0", "title": "Rich"},
+        "documentTab": {
+            "body": {
+                "content": [
+                    _para({"textRun": {"content": "Heading\n"}}, style="HEADING_1"),
+                    _para(
+                        {"textRun": {"content": "see "}},
+                        {"inlineObjectElement": {"inlineObjectId": "io1"}},
+                        {"person": {"personProperties": {"email": "amy@x.com"}}},
+                        {"richLink": {"richLinkProperties": {"uri": "https://x"}}},
+                    ),
+                    {"table": {"rows": 2, "columns": 2, "tableRows": [
+                        {"tableCells": [_cell("Name"), _cell("Age")]},
+                        {"tableCells": [_cell("Al"), _cell("30")]},
+                    ]}},
+                    {"tableOfContents": {}},
+                ]
+            }
+        },
+    }
+
+
+def test_read_paths_emit_identical_per_element_output():
+    """DISCRIMINATING (S3a): the same tab read via read_tab_content
+    (single tab) and read_all_tabs (bulk) yields BYTE-IDENTICAL per-element
+    paragraphs, the table carries extracted cell text, and the counts
+    agree. On main this fails: the bulk path dropped image/person/link and
+    emitted empty text for the table, and the single-tab table had no cell
+    text."""
+    tab = _rich_tab()
+    _d, _dr, client = _docs_drive_stubs([tab])
+    with with_google_api_client(client):
+        single = read_tab_content(MagicMock(), "DOC1", tab_id="T0")
+    _d2, _dr2, client2 = _docs_drive_stubs([tab])
+    with with_google_api_client(client2):
+        bulk = read_all_tabs(MagicMock(), "DOC1")
+
+    # Per-element output is identical between the two paths.
+    assert single["paragraphs"] == bulk["tabs"][0]["paragraphs"]
+    # The table entry carries the RxC marker AND the extracted cell text.
+    table_entry = next(p for p in single["paragraphs"] if p["style"] == "TABLE")
+    assert table_entry["text"] == "[table 2x2] Name | Age || Al | 30"
+    # Counts are consistent across the two (different) envelopes.
+    assert single["table_count"] == bulk["tabs"][0]["table_count"] == 1
+    assert single["image_count"] == bulk["tabs"][0]["image_count"] == 1
+    assert single["paragraph_count"] == bulk["tabs"][0]["paragraph_count"] == 2
+
+
+def test_read_all_tabs_now_emits_image_person_link_and_cell_text():
+    """Revert-check (S3a): the bulk path used to pull only textRun content,
+    silently dropping [image]/[person]/[link] and emitting empty text for
+    tables/ToCs. It now emits them all via the shared summarizer."""
+    tab = _rich_tab()
+    _d, _dr, client = _docs_drive_stubs([tab])
+    with with_google_api_client(client):
+        bulk = read_all_tabs(MagicMock(), "DOC1")
+    texts = [p["text"] for p in bulk["tabs"][0]["paragraphs"]]
+    assert "see [image][person:amy@x.com][link]" in texts
+    assert "[table 2x2] Name | Age || Al | 30" in texts
+    assert "[table of contents]" in texts
+
+
+def test_summarize_body_content_returns_counts_and_recurses_cells():
+    """The shared summarizer returns (paragraphs, table_count, image_count)
+    and recurses tableRows[].tableCells[].content for cell text."""
+    content = [
+        _para({"inlineObjectElement": {"inlineObjectId": "io1"}}),
+        {"table": {"rows": 1, "columns": 2, "tableRows": [
+            {"tableCells": [_cell("A"), _cell("B")]},
+        ]}},
+    ]
+    paras, table_count, image_count = _summarize_body_content(content)
+    assert (table_count, image_count) == (1, 1)
+    table_entry = next(p for p in paras if p["style"] == "TABLE")
+    assert table_entry["text"] == "[table 1x2] A | B"
+
+
+def test_summarize_body_content_empty_table_stays_marker_only():
+    """A table with no cell content keeps just its [table RxC] marker —
+    no trailing separators."""
+    paras, _tc, _ic = _summarize_body_content(
+        [{"table": {"rows": 3, "columns": 2}}]
+    )
+    assert paras == [{"style": "TABLE", "text": "[table 3x2]"}]
 
 
 # ---------------------------------------------------------------------

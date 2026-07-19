@@ -141,6 +141,29 @@ def test_gdocs_make_tabbed_doc_rejects_oversized_emoji():
         )
 
 
+def test_gdocs_make_tabbed_doc_content_carries_table_and_image(with_docs_stub):
+    """S3b: a tab whose markdown content has a GFM table + an inline image
+    must reach the API as insertTable + insertInlineImage requests. Before
+    the renderer gained table/image coverage these were silently dropped,
+    so make_tabbed_doc produced a doc missing the table and image."""
+    tools.gdocs_make_tabbed_doc(
+        title="Doc",
+        tabs=[{
+            "title": "T",
+            "content": (
+                "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+                "![pic](https://ex.com/i.png)"
+            ),
+        }],
+    )
+    ops: set[str] = set()
+    for call in with_docs_stub.documents().batchUpdate.call_args_list:
+        for req in call.kwargs.get("body", {}).get("requests", []):
+            ops.update(req.keys())
+    assert "insertTable" in ops
+    assert "insertInlineImage" in ops
+
+
 # ---------------------------------------------------------------------
 # 2. gdocs_add_tabs — append to existing doc
 # ---------------------------------------------------------------------
